@@ -61,9 +61,20 @@ long AsyncPrefetcher::prefetch(int layer, int expert, const void* src, size_t nb
     }
     const long existing = find_inflight(layer, expert);
     if (existing >= 0 && existing < static_cast<long>(inflight_.size())) {
-        const Transfer& prior = inflight_[existing];
+        Transfer& prior = inflight_[existing];
         if (!prior.done && !prior.abandoned) return prior.id;  // never duplicate an in-flight DMA
-        if (prior.done && cache_.is_resident(layer, expert)) return prior.id;
+        if (prior.done && cache_.is_resident(layer, expert)) {
+            // A resident hit must remain protected while the caller stages
+            // other experts in the same batch.  Otherwise a later cold load
+            // can evict this hit before wait() consumes it.
+            // Route the hit through ensure() so cache-hit accounting, recency,
+            // and Oracle priority stay correct on the fast path.
+            if (!cache_.ensure(layer, expert, nbytes, priority) ||
+                (!prior.cache_pin_held && !cache_.pin(layer, expert))) return -1;
+            prior.cache_pin_held = true;
+            ++stats_.issued;  // CLI reports requests, including resident hits.
+            return prior.id;
+        }
         key_to_idx_.erase(static_cast<long>(key_id(layer, expert)));
     }
     if (!cache_.ensure(layer, expert, nbytes, priority)) return -1;
@@ -111,7 +122,10 @@ bool AsyncPrefetcher::wait(int layer, int expert) {
     }
     Transfer& transfer = inflight_[index];
     if (transfer.abandoned) return false;
-    if (transfer.done) return cache_.is_resident(layer, expert);
+    if (transfer.done) {
+        release_transfer(transfer);
+        return cache_.is_resident(layer, expert);
+    }
     if (use_cuda_) return cuda_wait(index);
     drain_until(static_cast<int>(index));
     return transfer.done && cache_.is_resident(layer, expert);

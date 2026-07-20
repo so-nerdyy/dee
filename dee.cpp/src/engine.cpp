@@ -17,6 +17,14 @@
 #endif
 
 namespace dee {
+namespace {
+
+uint64_t staging_key(int layer, int expert) {
+    return (static_cast<uint64_t>(static_cast<uint32_t>(layer)) << 32) |
+           static_cast<uint32_t>(expert);
+}
+
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // static SwiGLU kernel (raw C++; CUDA/ggml slots in later)
@@ -47,14 +55,14 @@ int Engine::avail_layer(int layer) const {
     return requested.ok() ? layer : 0;
 }
 
-const float* Engine::get_staging(int expert) {
-    auto it = staging_.find(expert);
+const float* Engine::get_staging(int source_layer, int expert) {
+    const uint64_t key = staging_key(source_layer, expert);
+    auto it = staging_.find(key);
     if (it != staging_.end()) return it->second.data();
 
-    int sl = avail_layer(0);
-    TensorView gv = resolver_.resolve_expert(sl, expert, TensorResolver::GATE_PROJ);
-    TensorView uv = resolver_.resolve_expert(sl, expert, TensorResolver::UP_PROJ);
-    TensorView dv = resolver_.resolve_expert(sl, expert, TensorResolver::DOWN_PROJ);
+    TensorView gv = resolver_.resolve_expert(source_layer, expert, TensorResolver::GATE_PROJ);
+    TensorView uv = resolver_.resolve_expert(source_layer, expert, TensorResolver::UP_PROJ);
+    TensorView dv = resolver_.resolve_expert(source_layer, expert, TensorResolver::DOWN_PROJ);
     const size_t gh = (size_t)inter_ * hidden_;
     const size_t dh = (size_t)hidden_ * inter_;
     if (!gv.ok() || !uv.ok() || !dv.ok() || gv.dtype != DType::BF16 || uv.dtype != DType::BF16 || dv.dtype != DType::BF16 ||
@@ -68,17 +76,17 @@ const float* Engine::get_staging(int expert) {
     for (size_t i = 0; i < gh; ++i) blob[gh + i] = bf16_to_f32(*(const uint16_t*)(uv.data + i * 2));
     for (size_t i = 0; i < dh; ++i) blob[2 * gh + i] = bf16_to_f32(*(const uint16_t*)(dv.data + i * 2));
 
-    auto res = staging_.emplace(expert, std::move(blob));
+    auto res = staging_.emplace(key, std::move(blob));
     return res.first->second.data();
 }
 
-bool Engine::stage_expert(int layer, int expert, int priority) {
-    const float* blob = get_staging(expert);
+bool Engine::stage_expert(int source_layer, int expert, int priority) {
+    const float* blob = get_staging(source_layer, expert);
     if (!blob) {
-        std::fprintf(stderr, "[engine] missing source weights for expert (%d,%d)\n", layer, expert);
+        std::fprintf(stderr, "[engine] missing source weights for expert (%d,%d)\n", source_layer, expert);
         return false;
     }
-    return prefetcher_.prefetch(layer, expert, blob, blob_bytes_, priority) >= 0;
+    return prefetcher_.prefetch(source_layer, expert, blob, blob_bytes_, priority) >= 0;
 }
 
 void Engine::forward_layer(int layer, const float* h_in, float* h_out) {
@@ -88,19 +96,20 @@ void Engine::forward_layer(int layer, const float* h_in, float* h_out) {
     // CPU/mock mode processes one expert at a time. This preserves the fixed
     // budget contract even when top-K is larger than the cache capacity.
     std::vector<float> acc(hidden_, 0.0f);
+    const int source_layer = avail_layer(layer);
     for (size_t k = 0; k < experts.size(); ++k) {
         int e = experts[k];
-        if (!stage_expert(layer, e, static_cast<int>(cfg_.topk - k)) || !prefetcher_.wait(layer, e)) {
+        if (!stage_expert(source_layer, e, static_cast<int>(cfg_.topk - k)) || !prefetcher_.wait(source_layer, e)) {
             stats_.fallbacks++;
             continue;
         }
-        const void* p = cache_.data(layer, e);
+        const void* p = cache_.data(source_layer, e);
         if (!p) {  // should not happen (wait guarantees resident)
             stats_.fallbacks++;
             continue;
         }
         swiglu((const float*)p, h_in, inter_, hidden_, acc.data());
-        cache_.touch(layer, e);
+        cache_.touch(source_layer, e);
     }
     // 3) combine (mean over top-K) then stabilize (frozen layer-norm stand-in).
     //    The mock has no residual/LN, so without this the recurrent loop
@@ -329,24 +338,25 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
                               "cudaMemcpyAsync(hidden host to device)")) return false;
 
     const int batch_size = std::max(1, static_cast<int>(cache_.budget_bytes() / blob_bytes_));
+    const int source_layer = avail_layer(layer);
     for (int first = 0; first < K; first += batch_size) {
         const int last = std::min(K, first + batch_size);
         for (int k = first; k < last; ++k) {
-            if (!stage_expert(layer, experts[k], cfg_.topk - k)) return false;
+            if (!stage_expert(source_layer, experts[k], cfg_.topk - k)) return false;
         }
         for (int k = first; k < last; ++k) {
             const int e = experts[k];
-            if (!prefetcher_.wait(layer, e) || !cache_.pin(layer, e)) return false;
-            const float* d_blob = static_cast<const float*>(cache_.data(layer, e));
+            if (!prefetcher_.wait(source_layer, e) || !cache_.pin(source_layer, e)) return false;
+            const float* d_blob = static_cast<const float*>(cache_.data(source_layer, e));
             if (!d_blob || !swiglu_expert_cuda(cublas_handle_, d_blob, d_h_in_, d_hbuf_, d_ubuf_,
                                                 d_ybuf_ + (size_t)k * hidden_, inter_, hidden_, compute_stream_)) {
-                cache_.unpin(layer, e);
+                cache_.unpin(source_layer, e);
                 return false;
             }
         }
         // Keep cache blocks pinned until the compute stream has consumed them.
         if (!DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(compute_stream_), "cudaStreamSynchronize(expert batch)")) return false;
-        for (int k = first; k < last; ++k) cache_.unpin(layer, experts[k]);
+        for (int k = first; k < last; ++k) cache_.unpin(source_layer, experts[k]);
     }
     if (!combine_cuda(d_ybuf_, d_h_out_, K, hidden_, compute_stream_) ||
         !DEE_CUDA_CHECK_NAMED(cudaMemcpyAsync(h_out, d_h_out_, (size_t)hidden_ * sizeof(float),

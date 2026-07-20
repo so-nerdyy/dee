@@ -33,6 +33,7 @@
 #include "dee/vram_cache.h"
 #include "dee/weight_mmap.h"
 
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -129,10 +130,10 @@ private:
     bool forward_layer_cuda(int layer, const float* h_in, float* h_out);
 #endif
 
-    // host staging: shard-expert -> F32 blob [gate|up|down]
-    // keyed by (shard) expert only; all model layers map onto the same shard
-    // layer in a synthetic single-layer shard (see avail_layer()).
-    std::unordered_map<int, std::vector<float>> staging_;
+    // host staging: resolved shard (layer, expert) -> F32 blob
+    // [gate|up|down].  Synthetic single-layer shards intentionally map every
+    // model layer to source layer 0; real multi-layer shards stay distinct.
+    std::unordered_map<uint64_t, std::vector<float>> staging_;
 
     std::vector<float> hidden_buf_[2];  // double buffer for the loop
 
@@ -142,11 +143,13 @@ private:
     // single-layer shards expose only layer 0).
     int avail_layer(int layer) const;
 
-    // ensure the F32 staging blob for `expert` exists (fill from mmap/upcast).
-    const float* get_staging(int expert);
+    // Ensure the F32 staging blob for a resolved shard expert exists (fill
+    // from mmap/upcast).
+    const float* get_staging(int source_layer, int expert);
 
-    // stream `expert` (shard-expert, model-layer `layer`) into VRAM.
-    bool stage_expert(int layer, int expert, int priority);
+    // Stream `expert` from a resolved shard layer into VRAM.  The cache key
+    // must describe the source weights, not merely the logical model layer.
+    bool stage_expert(int source_layer, int expert, int priority);
 };
 
 } // namespace dee

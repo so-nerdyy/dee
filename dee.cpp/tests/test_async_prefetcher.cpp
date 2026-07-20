@@ -106,13 +106,20 @@ int main() {
     for (int i = 0; i < 5; ++i) if (std::fabs(bf16_to_f32(up[i]) - exp_up[i]) > 1e-2f) up_ok = false;
     check("expert1 up_proj matches source", up_ok);
 
-    // --- Eviction under streaming: budget holds 2 experts. Prefetch expert2
-    //     (new, distinct from 0 and 1) -> one of {0,1} must be evicted by the
-    //     cache's ensure(). ---
+    // --- Cache-hit lifetime: re-request resident expert0, then stage a cold
+    //     expert2 in the same batch.  The hit must be pinned until wait(0,0),
+    //     or the cold allocation could evict it before compute consumes it. ---
     dee::TensorView v2 = resolver.resolve_expert(0, 2, dee::TensorResolver::DOWN_PROJ);
     check("resolved expert2 down_proj", v2.ok());
+    const uint64_t hits_before = cache.stats().hits;
+    long id0_hit = prefetcher.prefetch(0, 0, v.data, v.nbytes, 1);
+    check("resident expert0 request reuses transfer", id0_hit == id);
+    check("resident expert0 request increments cache hit accounting", cache.stats().hits == hits_before + 1);
     long id2 = prefetcher.prefetch(0, 2, v2.data, v2.nbytes, 0);
     check("prefetch expert2 issued", id2 >= 0);
+    check("resident hit survives later cold staging", cache.is_resident(0, 0));
+    check("wait resident hit releases its staging pin", prefetcher.wait(0, 0));
+    check("wait expert2 ready", prefetcher.wait(0, 2));
     check("resident count capped at 2", cache.resident_count() <= 2);
     check("evictions happened (budget)", cache.stats().evictions >= 1);
 
