@@ -34,6 +34,9 @@ struct Transfer {
     bool      done     = false;    // mock event "signaled"
     bool      abandoned = false;
     void*     event    = nullptr;  // cudaEvent_t* (DEE_CUDA path only)
+    long      id       = -1;
+    size_t    staging_slot = static_cast<size_t>(-1);
+    bool      cache_pin_held = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -65,8 +68,8 @@ public:
     // calls cudaStreamSynchronize; mock drains the queue in order.
     void synchronize_all();
 
-    // Drop all in-flight transfers + events (call between sequences to bound
-    // memory + event churn).
+    // Drain then drop all in-flight transfers + events. Events are never
+    // destroyed while their copy can still be executing.
     void reset();
 
     size_t in_flight() const { return inflight_.size(); }
@@ -90,10 +93,18 @@ private:
     std::vector<Transfer>        inflight_;   // ordered submission queue
     std::unordered_map<long, int> key_to_idx_; // ExpertKey -> idx in inflight_
 
-    // cuda backend handles (only valid when use_cuda_)
-    void*  stream_  = nullptr;  // cudaStream_t*
-    void*  host_buf_ = nullptr; // pinned staging buffer base (optional)
-    size_t host_buf_bytes_ = 0;
+    struct PinnedStagingSlot {
+        void* ptr = nullptr;
+        size_t bytes = 0;
+        bool busy = false;
+    };
+
+    // CUDA uses a bounded ring. Source data is copied into a pinned slot on
+    // the host, then the pinned slot is copied asynchronously to device. This
+    // avoids describing a pageable mmap as an asynchronous NVMe-to-VRAM path.
+    void* stream_ = nullptr;  // cudaStream_t
+    std::vector<PinnedStagingSlot> staging_slots_;
+    size_t next_staging_slot_ = 0;
 
     long   next_id_ = 0;
     Stats  stats_{};
@@ -101,8 +112,9 @@ private:
     long   find_inflight(int layer, int expert) const;
     void   drain_until(int idx);   // mock: run copies up to idx (inclusive)
     bool   cuda_init();            // guarded real init
-    void   cuda_submit(long idx);  // guarded real submit + event record
-    void   cuda_wait(long idx);    // guarded real event sync
+    bool   cuda_submit(long idx);  // guarded real submit + event record
+    bool   cuda_wait(long idx);    // guarded real event sync
+    bool   release_transfer(Transfer& transfer);
 };
 
 } // namespace dee

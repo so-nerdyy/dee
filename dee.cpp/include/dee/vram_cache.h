@@ -44,6 +44,7 @@ struct ExpertBlock {
     int64_t   last_used = 0;        // monotonic tick of last touch
     int       priority  = 0;        // Oracle priority (higher => keep longer)
     bool      resident  = false;
+    uint32_t  pins      = 0;        // DMA or compute users that forbid eviction
 };
 
 // ---------------------------------------------------------------------------
@@ -131,6 +132,12 @@ public:
     size_t  used_bytes() const { return arena_.used(); }
     size_t  budget_bytes() const { return arena_.capacity(); }
     size_t  resident_count() const;
+    size_t  pinned_count() const;
+
+    // A pinned block cannot be evicted. AsyncPrefetcher pins during DMA and
+    // Engine pins while a CUDA compute stream may still dereference the block.
+    bool pin(int layer, int expert);
+    void unpin(int layer, int expert);
 
 private:
     Arena arena_;

@@ -77,6 +77,7 @@ public:
 
 private:
     int            fd_   = -1;
+    void*          mapping_handle_ = nullptr;  // Windows file mapping handle
     uint8_t*       base_ = nullptr;
     size_t         size_ = 0;
     std::string    header_json_;

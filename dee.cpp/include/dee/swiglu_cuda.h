@@ -18,11 +18,11 @@ namespace dee {
 //   y[o] = Σ_i Wd[o*inter + i] * h[i]                 (phase 2)
 // W layout: [gate: inter*hidden][up: inter*hidden][down: hidden*inter].
 // d_hbuf is a caller-owned inter-float scratch buffer (reused across experts).
-void swiglu_expert_cuda(const float* d_W, const float* d_x, float* d_hbuf,
+bool swiglu_expert_cuda(const float* d_W, const float* d_x, float* d_hbuf,
                         float* d_y, int inter, int hidden, cudaStream_t stream);
 
 // Combine K expert outputs (each hidden floats, packed in d_ybuf) -> mean.
-void combine_cuda(const float* d_ybuf, float* d_out, int K, int hidden,
+bool combine_cuda(const float* d_ybuf, float* d_out, int K, int hidden,
                   cudaStream_t stream);
 
 } // namespace dee

@@ -4,10 +4,14 @@
 
 #include <cstdio>
 #include <cstring>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#endif
 
 namespace dee {
 
@@ -65,15 +69,55 @@ WeightMmap::WeightMmap() = default;
 WeightMmap::~WeightMmap() { close(); }
 
 void WeightMmap::close() {
+#ifdef _WIN32
+    if (base_) UnmapViewOfFile(base_);
+    if (mapping_handle_) CloseHandle(static_cast<HANDLE>(mapping_handle_));
+    mapping_handle_ = nullptr;
+#else
     if (base_ && base_ != MAP_FAILED) munmap(base_, size_);
+#endif
     base_ = nullptr; size_ = 0;
+#ifndef _WIN32
     if (fd_ >= 0) ::close(fd_);
+#endif
     fd_ = -1;
     tensors_.clear();
     header_json_.clear();
 }
 
 bool WeightMmap::map_file(const std::string& path) {
+#ifdef _WIN32
+    HANDLE file = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        std::fprintf(stderr, "WeightMmap: CreateFile failed for %s (error %lu)\n", path.c_str(), GetLastError());
+        return false;
+    }
+    LARGE_INTEGER file_size{};
+    if (!GetFileSizeEx(file, &file_size) || file_size.QuadPart < 8 ||
+        static_cast<unsigned long long>(file_size.QuadPart) > static_cast<unsigned long long>(SIZE_MAX)) {
+        std::fprintf(stderr, "WeightMmap: invalid file size for %s\n", path.c_str());
+        CloseHandle(file);
+        return false;
+    }
+    HANDLE mapping = CreateFileMappingA(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
+    CloseHandle(file);
+    if (!mapping) {
+        std::fprintf(stderr, "WeightMmap: CreateFileMapping failed for %s (error %lu)\n", path.c_str(), GetLastError());
+        return false;
+    }
+    void* mapped = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
+    if (!mapped) {
+        std::fprintf(stderr, "WeightMmap: MapViewOfFile failed for %s (error %lu)\n", path.c_str(), GetLastError());
+        CloseHandle(mapping);
+        return false;
+    }
+    mapping_handle_ = mapping;
+    base_ = static_cast<uint8_t*>(mapped);
+    size_ = static_cast<size_t>(file_size.QuadPart);
+    fd_ = 0;
+    return true;
+#else
     fd_ = ::open(path.c_str(), O_RDONLY);
     if (fd_ < 0) { fprintf(stderr, "WeightMmap: open failed: %s\n", path.c_str()); return false; }
     struct stat st;
@@ -86,6 +130,7 @@ bool WeightMmap::map_file(const std::string& path) {
     // exactly as llama.cpp does with POSIX_MADV_RANDOM.
     posix_madvise(base_, size_, POSIX_MADV_RANDOM);
     return true;
+#endif
 }
 
 bool WeightMmap::open(const std::string& path) {
@@ -134,6 +179,7 @@ bool WeightMmap::parse_header_json(const std::string& json) {
         }
         long long start = off_v->arr[0]->i;
         long long end   = off_v->arr[1]->i;
+        if (start < 0 || end < start) continue;
         m.data_offset = (size_t)start;
         m.nbytes      = (size_t)(end - start);
         tensors_[name] = m;
@@ -153,6 +199,7 @@ TensorView WeightMmap::lookup(const std::string& tensor_name) const {
     uint64_t hlen = 0;
     std::memcpy(&hlen, base_, 8);
     size_t abs = 8 + (size_t)hlen + m.data_offset;
+    if (abs > size_ || m.nbytes > size_ - abs) return view;
     view.data   = base_ + abs;
     view.nbytes = m.nbytes;
     view.dtype  = m.dtype;

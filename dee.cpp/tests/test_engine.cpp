@@ -51,7 +51,7 @@ static void test_swiglu_tiny() {
 static void test_engine_e2e() {
     dee::EngineConfig cfg;
     cfg.shard_path = "tests/data/ornith_moe256.safetensors";
-    cfg.oracle_path = "/mnt/c/Users/carth/Downloads/dynamic_expert_eviction/oracle.pt";
+    cfg.oracle_path = "oracle.pt";
     cfg.num_tokens = 4;
     cfg.topk = 8;
     cfg.num_layers = 8;

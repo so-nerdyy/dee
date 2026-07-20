@@ -101,7 +101,7 @@ void VramCacheManager::evict_until_free(size_t need) {
         bool first = true;
         for (auto& kv : blocks_) {
             ExpertBlock& b = kv.second;
-            if (!b.resident) continue;
+            if (!b.resident || b.pins != 0) continue;
             int64_t s = eviction_score(b);
             if (first || s < worst) { worst = s; victim = &b; first = false; }
         }
@@ -130,7 +130,7 @@ bool VramCacheManager::ensure(int layer, int expert, size_t nbytes, int priority
     if (off == size_t(-1)) {
         // still no room (nbytes > budget). Allocate at bump even if over budget
         // so the engine doesn't deadlock; caller's budget should prevent this.
-        fprintf(stderr, "VramCacheManager: expert (%d,%d) %zuB exceeds budget %zuB\n",
+        fprintf(stderr, "VramCacheManager: cannot allocate expert (%d,%d) %zuB in budget %zuB; all remaining blocks may be pinned\n",
                 layer, expert, nbytes, arena_.capacity());
         return false;
     }
@@ -186,6 +186,25 @@ size_t VramCacheManager::resident_count() const {
     size_t n = 0;
     for (const auto& kv : blocks_) if (kv.second.resident) ++n;
     return n;
+}
+
+size_t VramCacheManager::pinned_count() const {
+    size_t n = 0;
+    for (const auto& kv : blocks_) if (kv.second.resident && kv.second.pins != 0) ++n;
+    return n;
+}
+
+bool VramCacheManager::pin(int layer, int expert) {
+    ExpertBlock* b = find_block(layer, expert);
+    if (!b || !b->resident) return false;
+    ++b->pins;
+    return true;
+}
+
+void VramCacheManager::unpin(int layer, int expert) {
+    ExpertBlock* b = find_block(layer, expert);
+    if (!b || b->pins == 0) return;
+    --b->pins;
 }
 
 } // namespace dee

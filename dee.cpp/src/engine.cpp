@@ -2,12 +2,17 @@
 #include "dee/engine.h"
 
 #include <cmath>
+#include <algorithm>
 #include <cstring>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 
 #ifdef DEE_CUDA
 #include <cuda_runtime.h>
+#include "dee/cuda_check.h"
 #include "dee/swiglu_cuda.h"
 #endif
 
@@ -31,20 +36,15 @@ void Engine::swiglu(const float* blob, const float* x,
         for (int j = 0; j < hidden; ++j) { g += rg[j] * x[j]; f += ru[j] * x[j]; }
         float s = g / (1.0f + std::exp(-g));   // SiLU
         float h = s * f;
-        const float* rd = Wd + (size_t)i * hidden;  // down row i -> output HIDDEN
-        for (int o = 0; o < hidden; ++o) acc[o] += rd[o] * h;
+        for (int o = 0; o < hidden; ++o) acc[o] += Wd[(size_t)o * inter + i] * h;
     }
 }
 
 int Engine::avail_layer(int layer) const {
     // synthetic single-layer shard exposes only layer 0; map everything to it.
     // (Real multi-layer shards return `layer` directly.)
-    std::string probe = TensorResolver::expert_tensor_name(0, 0, TensorResolver::GATE_PROJ);
-    (void)probe;
-    // If layer 0 exists we assume the shard is single-layer; else assume full.
-    TensorView v = resolver_.resolve_expert(0, 0, TensorResolver::GATE_PROJ);
-    if (v.ok()) return 0;                 // only layer 0 present -> map all to 0
-    return layer;                         // full shard -> identity mapping
+    TensorView requested = resolver_.resolve_expert(layer, 0, TensorResolver::GATE_PROJ);
+    return requested.ok() ? layer : 0;
 }
 
 const float* Engine::get_staging(int expert) {
@@ -55,39 +55,45 @@ const float* Engine::get_staging(int expert) {
     TensorView gv = resolver_.resolve_expert(sl, expert, TensorResolver::GATE_PROJ);
     TensorView uv = resolver_.resolve_expert(sl, expert, TensorResolver::UP_PROJ);
     TensorView dv = resolver_.resolve_expert(sl, expert, TensorResolver::DOWN_PROJ);
-    if (!gv.ok() || !uv.ok() || !dv.ok()) return nullptr;
+    const size_t gh = (size_t)inter_ * hidden_;
+    const size_t dh = (size_t)hidden_ * inter_;
+    if (!gv.ok() || !uv.ok() || !dv.ok() || gv.dtype != DType::BF16 || uv.dtype != DType::BF16 || dv.dtype != DType::BF16 ||
+        gv.nbytes != gh * sizeof(uint16_t) || uv.nbytes != gh * sizeof(uint16_t) || dv.nbytes != dh * sizeof(uint16_t)) {
+        std::fprintf(stderr, "[engine] expert %d has unsupported or inconsistent BF16 tensor layout\n", expert);
+        return nullptr;
+    }
 
     std::vector<float> blob(blob_elems_);
-    size_t gh = (size_t)inter_ * hidden_;
     for (size_t i = 0; i < gh; ++i) blob[i] = bf16_to_f32(*(const uint16_t*)(gv.data + i * 2));
     for (size_t i = 0; i < gh; ++i) blob[gh + i] = bf16_to_f32(*(const uint16_t*)(uv.data + i * 2));
-    size_t dh = (size_t)hidden_ * inter_;
     for (size_t i = 0; i < dh; ++i) blob[2 * gh + i] = bf16_to_f32(*(const uint16_t*)(dv.data + i * 2));
 
     auto res = staging_.emplace(expert, std::move(blob));
     return res.first->second.data();
 }
 
-void Engine::stage_expert(int layer, int expert, int priority) {
+bool Engine::stage_expert(int layer, int expert, int priority) {
     const float* blob = get_staging(expert);
-    if (!blob) return;
-    prefetcher_.prefetch(layer, expert, blob, blob_bytes_, priority);
+    if (!blob) {
+        std::fprintf(stderr, "[engine] missing source weights for expert (%d,%d)\n", layer, expert);
+        return false;
+    }
+    return prefetcher_.prefetch(layer, expert, blob, blob_bytes_, priority) >= 0;
 }
 
 void Engine::forward_layer(int layer, const float* h_in, float* h_out) {
     std::vector<int> experts;
     oracle_.predict(layer, h_in, cfg_.topk, experts);
 
-    // 1) issue prefetches for all predicted experts (decoupled stream)
-    for (size_t k = 0; k < experts.size(); ++k) {
-        int pri = (int)(cfg_.topk - k);   // higher priority for top-ranked expert
-        stage_expert(layer, experts[k], pri);
-    }
-    // 2) sync fallback + accumulate SwiGLU
+    // CPU/mock mode processes one expert at a time. This preserves the fixed
+    // budget contract even when top-K is larger than the cache capacity.
     std::vector<float> acc(hidden_, 0.0f);
     for (size_t k = 0; k < experts.size(); ++k) {
         int e = experts[k];
-        prefetcher_.wait(layer, e);
+        if (!stage_expert(layer, e, static_cast<int>(cfg_.topk - k)) || !prefetcher_.wait(layer, e)) {
+            stats_.fallbacks++;
+            continue;
+        }
         const void* p = cache_.data(layer, e);
         if (!p) {  // should not happen (wait guarantees resident)
             stats_.fallbacks++;
@@ -112,6 +118,10 @@ void Engine::forward_layer(int layer, const float* h_in, float* h_out) {
 
 bool Engine::init(const EngineConfig& cfg) {
     cfg_ = cfg;
+    if (cfg.num_tokens <= 0 || cfg.topk <= 0 || cfg.num_layers <= 0 || cfg.hidden <= 0) {
+        std::fprintf(stderr, "[engine] tokens, topk, layers, and hidden must be positive\n");
+        return false;
+    }
     hidden_ = cfg.hidden;
     // Expert dims are taken from the SHARD (so a mock inter=64 and the real
     // inter=256 are both handled). The Oracle's own MLP width (H=256) is a
@@ -120,6 +130,10 @@ bool Engine::init(const EngineConfig& cfg) {
     blob_elems_ = 3ULL * (size_t)inter_ * hidden_;
     blob_bytes_ = blob_elems_ * sizeof(float);
 
+    if (!std::filesystem::is_regular_file(cfg.shard_path)) {
+        std::fprintf(stderr, "[engine] shard does not exist or is not a file: %s\n", cfg.shard_path.c_str());
+        return false;
+    }
     if (!mmap_.open(cfg.shard_path)) {
         fprintf(stderr, "[engine] cannot open shard %s\n", cfg.shard_path.c_str());
         return false;
@@ -145,6 +159,18 @@ bool Engine::init(const EngineConfig& cfg) {
         return false;
     }
 
+    std::ifstream oracle_file(cfg.oracle_path, std::ios::binary);
+    if (!oracle_file) {
+        std::fprintf(stderr, "[engine] oracle does not exist or is unreadable: %s\n", cfg.oracle_path.c_str());
+        return false;
+    }
+    char oracle_prefix[64]{};
+    oracle_file.read(oracle_prefix, sizeof(oracle_prefix) - 1);
+    if (std::string(oracle_prefix).find("version https://git-lfs.github.com/spec/v1") != std::string::npos) {
+        std::fprintf(stderr, "[engine] oracle is an unresolved Git LFS pointer: %s\n"
+                             "[engine] run: git lfs pull\n", cfg.oracle_path.c_str());
+        return false;
+    }
     if (!oracle_.load(cfg.oracle_path, hidden_, 256, 256)) {
         fprintf(stderr, "[engine] oracle load failed: %s\n", oracle_.error().c_str());
         return false;
@@ -155,12 +181,13 @@ bool Engine::init(const EngineConfig& cfg) {
     // VRAM budget. default: 4 experts. The arena backend is cudaMalloc when the
     // CUDA path is active, else a malloc'd host arena (mock backend).
     size_t budget = cfg.budget_bytes ? cfg.budget_bytes : (4 * blob_bytes_);
+    cfg_.budget_bytes = budget;
     Arena::Backend be;
     if (cfg.use_cuda) {
 #ifdef DEE_CUDA
         be.kind = "cuda";
-        be.alloc = [](size_t n) -> void* { void* p = nullptr; cudaMalloc(&p, n); return p; };
-        be.free  = [](void* p) { if (p) cudaFree(p); };
+        be.alloc = [](size_t n) -> void* { void* p = nullptr; return DEE_CUDA_CHECK_NAMED(cudaMalloc(&p, n), "cudaMalloc(expert cache)") ? p : nullptr; };
+        be.free  = [](void* p) { if (p) DEE_CUDA_CHECK_NAMED(cudaFree(p), "cudaFree(expert cache)"); };
 #else
         fprintf(stderr, "[engine] --cuda requested but this build has DEE_CUDA=OFF\n");
         return false;
@@ -177,24 +204,33 @@ bool Engine::init(const EngineConfig& cfg) {
 
 #ifdef DEE_CUDA
     if (cfg.use_cuda) {
-        if (cudaStreamCreate(&compute_stream_) != cudaSuccess) {
-            fprintf(stderr, "[engine] cudaStreamCreate failed\n");
-            return false;
-        }
-        auto dev_alloc = [](size_t n) -> float* { float* p = nullptr; cudaMalloc((void**)&p, n); return p; };
+        int device = -1;
+        if (!DEE_CUDA_CHECK_NAMED(cudaGetDevice(&device), "cudaGetDevice")) return false;
+        cudaDeviceProp prop{};
+        if (!DEE_CUDA_CHECK_NAMED(cudaGetDeviceProperties(&prop, device), "cudaGetDeviceProperties")) return false;
+        if (!DEE_CUDA_CHECK_NAMED(cudaStreamCreateWithFlags(&compute_stream_, cudaStreamNonBlocking),
+                                  "cudaStreamCreateWithFlags(compute)")) return false;
+        auto dev_alloc = [](size_t n) -> float* { float* p = nullptr; return DEE_CUDA_CHECK_NAMED(cudaMalloc(reinterpret_cast<void**>(&p), n), "cudaMalloc(engine work buffer)") ? p : nullptr; };
         d_h_in_  = dev_alloc((size_t)hidden_ * sizeof(float));
         d_h_out_ = dev_alloc((size_t)hidden_ * sizeof(float));
         d_hbuf_  = dev_alloc((size_t)inter_  * sizeof(float));
         d_ybuf_  = dev_alloc((size_t)cfg.topk * hidden_ * sizeof(float));
         if (!d_h_in_ || !d_h_out_ || !d_hbuf_ || !d_ybuf_) {
-            fprintf(stderr, "[engine] device buffer alloc failed\n");
+            fprintf(stderr, "[engine] device work-buffer allocation failed\n");
             return false;
         }
         size_t freeB = 0, totalB = 0;
-        if (cudaMemGetInfo(&freeB, &totalB) == cudaSuccess) {
+        if (DEE_CUDA_CHECK_NAMED(cudaMemGetInfo(&freeB, &totalB), "cudaMemGetInfo")) {
             cuda_total_ = totalB; cuda_free_ = freeB;
             stats_.cuda_total = totalB; stats_.cuda_free = freeB;
         }
+        int runtime_version = 0;
+        if (DEE_CUDA_CHECK_NAMED(cudaRuntimeGetVersion(&runtime_version), "cudaRuntimeGetVersion")) {
+            stats_.cuda_runtime_version = runtime_version;
+        }
+        stats_.cuda_device_name = prop.name;
+        stats_.cuda_compute_major = prop.major;
+        stats_.cuda_compute_minor = prop.minor;
     }
 #endif
 
@@ -221,7 +257,9 @@ bool Engine::generate() {
         float* h_out = hidden_buf_[nxt].data();
         for (int L = 0; L < cfg_.num_layers; ++L) {
 #ifdef DEE_CUDA
-            if (cfg_.use_cuda) forward_layer_cuda(L, h_in, h_out);
+            if (cfg_.use_cuda) {
+                if (!forward_layer_cuda(L, h_in, h_out)) return false;
+            }
             else              forward_layer(L, h_in, h_out);
 #else
             forward_layer(L, h_in, h_out);
@@ -263,43 +301,53 @@ bool Engine::generate() {
 
 #ifdef DEE_CUDA
 void Engine::cuda_cleanup() {
-    if (d_h_in_)  { cudaFree(d_h_in_);  d_h_in_  = nullptr; }
-    if (d_h_out_) { cudaFree(d_h_out_); d_h_out_ = nullptr; }
-    if (d_hbuf_)  { cudaFree(d_hbuf_);  d_hbuf_  = nullptr; }
-    if (d_ybuf_)  { cudaFree(d_ybuf_);  d_ybuf_  = nullptr; }
-    if (compute_stream_) { cudaStreamDestroy(compute_stream_); compute_stream_ = nullptr; }
+    if (d_h_in_)  { DEE_CUDA_CHECK_NAMED(cudaFree(d_h_in_), "cudaFree(d_h_in)");  d_h_in_  = nullptr; }
+    if (d_h_out_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_h_out_), "cudaFree(d_h_out)"); d_h_out_ = nullptr; }
+    if (d_hbuf_)  { DEE_CUDA_CHECK_NAMED(cudaFree(d_hbuf_), "cudaFree(d_hbuf)");  d_hbuf_  = nullptr; }
+    if (d_ybuf_)  { DEE_CUDA_CHECK_NAMED(cudaFree(d_ybuf_), "cudaFree(d_ybuf)");  d_ybuf_  = nullptr; }
+    if (compute_stream_) { DEE_CUDA_CHECK_NAMED(cudaStreamDestroy(compute_stream_), "cudaStreamDestroy(compute)"); compute_stream_ = nullptr; }
 }
 
 // GPU forward: Oracle predicts experts -> H2D weight copies (secondary stream)
 // -> SwiGLU kernels on the compute stream -> mean combine -> D2H. The host
 // gates each kernel launch on prefetcher.wait() (cudaEventSynchronize of that
 // expert's copy), so the compute stream only blocks when a weight isn't ready.
-void Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
+bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
     std::vector<int> experts;
     oracle_.predict(layer, h_in, cfg_.topk, experts);
     int K = (int)experts.size();
-    if (K == 0) { for (int i = 0; i < hidden_; ++i) h_out[i] = 0.0f; return; }
+    if (K == 0) { for (int i = 0; i < hidden_; ++i) h_out[i] = 0.0f; return true; }
 
     // 1) issue all expert weight H2D copies (async, secondary stream)
-    for (int k = 0; k < K; ++k) stage_expert(layer, experts[k], cfg_.topk - k);
+    if (!DEE_CUDA_CHECK_NAMED(cudaMemcpyAsync(d_h_in_, h_in, (size_t)hidden_ * sizeof(float),
+                                              cudaMemcpyHostToDevice, compute_stream_),
+                              "cudaMemcpyAsync(hidden host to device)")) return false;
 
-    // 2) upload hidden to device, run kernels, download result
-    cudaMemcpyAsync(d_h_in_, h_in, (size_t)hidden_ * sizeof(float),
-                    cudaMemcpyHostToDevice, compute_stream_);
-
-    for (int k = 0; k < K; ++k) {
-        int e = experts[k];
-        prefetcher_.wait(layer, e);   // cudaEventSynchronize: H2D done
-        const float* d_blob = (const float*)cache_.data(layer, e);
-        if (!d_blob) { stats_.fallbacks++; continue; }
-        swiglu_expert_cuda(d_blob, d_h_in_, d_hbuf_,
-                           d_ybuf_ + (size_t)k * hidden_,
-                           inter_, hidden_, compute_stream_);
+    const int batch_size = std::max(1, static_cast<int>(cache_.budget_bytes() / blob_bytes_));
+    for (int first = 0; first < K; first += batch_size) {
+        const int last = std::min(K, first + batch_size);
+        for (int k = first; k < last; ++k) {
+            if (!stage_expert(layer, experts[k], cfg_.topk - k)) return false;
+        }
+        for (int k = first; k < last; ++k) {
+            const int e = experts[k];
+            if (!prefetcher_.wait(layer, e) || !cache_.pin(layer, e)) return false;
+            const float* d_blob = static_cast<const float*>(cache_.data(layer, e));
+            if (!d_blob || !swiglu_expert_cuda(d_blob, d_h_in_, d_hbuf_,
+                                                d_ybuf_ + (size_t)k * hidden_, inter_, hidden_, compute_stream_)) {
+                cache_.unpin(layer, e);
+                return false;
+            }
+        }
+        // Keep cache blocks pinned until the compute stream has consumed them.
+        if (!DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(compute_stream_), "cudaStreamSynchronize(expert batch)")) return false;
+        for (int k = first; k < last; ++k) cache_.unpin(layer, experts[k]);
     }
-    combine_cuda(d_ybuf_, d_h_out_, K, hidden_, compute_stream_);
-    cudaMemcpyAsync(h_out, d_h_out_, (size_t)hidden_ * sizeof(float),
-                    cudaMemcpyDeviceToHost, compute_stream_);
-    cudaStreamSynchronize(compute_stream_);
+    if (!combine_cuda(d_ybuf_, d_h_out_, K, hidden_, compute_stream_) ||
+        !DEE_CUDA_CHECK_NAMED(cudaMemcpyAsync(h_out, d_h_out_, (size_t)hidden_ * sizeof(float),
+                                              cudaMemcpyDeviceToHost, compute_stream_),
+                              "cudaMemcpyAsync(hidden device to host)") ||
+        !DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(compute_stream_), "cudaStreamSynchronize(layer output)")) return false;
 
     // 3) stabilize (frozen layer-norm stand-in) — same as CPU path
     double ss = 0.0;
@@ -309,6 +357,7 @@ void Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
         float s = 1.0f / (float)rms;
         for (int i = 0; i < hidden_; ++i) h_out[i] *= s;
     }
+    return true;
 }
 
 Engine::~Engine() {

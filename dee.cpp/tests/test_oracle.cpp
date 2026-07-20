@@ -37,7 +37,7 @@ static bool all_finite(const std::vector<float>& v) {
 int main(int argc, char** argv) {
     printf("=== dee.cpp Step 7 Oracle test ===\n");
     std::string oracle_path = (argc > 1) ? argv[1]
-        : "/mnt/c/Users/carth/Downloads/dynamic_expert_eviction/oracle.pt";
+        : "oracle.pt";
 
     // ---- PtLoader ----
     dee::PtLoader loader;

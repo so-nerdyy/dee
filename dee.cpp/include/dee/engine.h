@@ -34,7 +34,12 @@
 #include "dee/weight_mmap.h"
 
 #include <string>
+#include <unordered_map>
 #include <vector>
+
+#ifdef DEE_CUDA
+#include <cuda_runtime.h>
+#endif
 
 namespace dee {
 
@@ -65,6 +70,10 @@ struct EngineStats {
     bool   hidden_finite = true;   // output hidden all-finite at the end
     size_t cuda_total    = 0;       // GPU memory total (cudaMemGetInfo), 0 if N/A
     size_t cuda_free     = 0;       // GPU memory free  (cudaMemGetInfo), 0 if N/A
+    std::string cuda_device_name;
+    int cuda_compute_major = 0;
+    int cuda_compute_minor = 0;
+    int cuda_runtime_version = 0;
 };
 
 class Engine {
@@ -114,7 +123,7 @@ private:
     float* d_ybuf_   = nullptr;   // [topk * hidden] per-expert outputs
     size_t cuda_total_ = 0, cuda_free_ = 0;  // from cudaMemGetInfo
     void cuda_cleanup();
-    void forward_layer_cuda(int layer, const float* h_in, float* h_out);
+    bool forward_layer_cuda(int layer, const float* h_in, float* h_out);
 #endif
 
     // host staging: shard-expert -> F32 blob [gate|up|down]
@@ -134,7 +143,7 @@ private:
     const float* get_staging(int expert);
 
     // stream `expert` (shard-expert, model-layer `layer`) into VRAM.
-    void stage_expert(int layer, int expert, int priority);
+    bool stage_expert(int layer, int expert, int priority);
 };
 
 } // namespace dee
