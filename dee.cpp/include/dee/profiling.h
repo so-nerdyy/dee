@@ -28,6 +28,7 @@ enum class CpuStage : size_t {
 
 enum class GpuStage : size_t {
     H2D,
+    WeightConversion,
     GateProjection,
     UpProjection,
     SiluMultiply,
@@ -93,6 +94,7 @@ struct StageProfile {
     double average_h2d_copy_bytes = 0.0;
     double total_gpu_compute_ms = 0.0;
     double total_gpu_transfer_ms = 0.0;
+    double total_gpu_weight_conversion_ms = 0.0;
     double average_working_set_per_token = 0.0;
     uint64_t max_working_set_per_token = 0;
     uint64_t repeated_requests = 0;

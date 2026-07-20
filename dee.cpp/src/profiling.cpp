@@ -291,6 +291,8 @@ StageProfile StageProfiler::finish(double total_wall_ms, uint64_t resident_hits,
         : 0.0;
 
     result.total_gpu_transfer_ms = gpu_ms_[static_cast<size_t>(GpuStage::H2D)];
+    result.total_gpu_weight_conversion_ms =
+        gpu_ms_[static_cast<size_t>(GpuStage::WeightConversion)];
     result.total_gpu_compute_ms =
         gpu_ms_[static_cast<size_t>(GpuStage::GateProjection)] +
         gpu_ms_[static_cast<size_t>(GpuStage::UpProjection)] +
@@ -369,7 +371,7 @@ const char* cpu_stage_name(CpuStage stage) {
 
 const char* gpu_stage_name(GpuStage stage) {
     static const char* names[] = {
-        "h2d", "gate_projection", "up_projection", "silu_multiply",
+        "h2d", "weight_conversion", "gate_projection", "up_projection", "silu_multiply",
         "down_projection", "combine", "stream_wait"
     };
     return names[static_cast<size_t>(stage)];
@@ -431,6 +433,7 @@ std::string stage_profile_json(const StageProfile& profile, bool include_trace) 
         << ",\"average_cold_load_us\":" << profile.average_cold_load_us
         << ",\"total_gpu_compute_ms\":" << profile.total_gpu_compute_ms
         << ",\"total_gpu_transfer_ms\":" << profile.total_gpu_transfer_ms
+        << ",\"total_gpu_weight_conversion_ms\":" << profile.total_gpu_weight_conversion_ms
         << ",\"average_working_set_per_token\":" << profile.average_working_set_per_token
         << ",\"max_working_set_per_token\":" << profile.max_working_set_per_token
         << ",\"repeated_requests\":" << profile.repeated_requests

@@ -45,7 +45,7 @@ find_package(ZLIB REQUIRED)
 target_link_libraries(dee_core PUBLIC ZLIB::ZLIB)
 
 if(DEE_CUDA)
-    target_sources(dee_core PRIVATE src/swiglu_cuda.cu)
+    target_sources(dee_core PRIVATE src/cuda_convert.cu src/swiglu_cuda.cu)
     target_compile_definitions(dee_core PUBLIC DEE_CUDA=1)
     if(DEE_CUDA_VALIDATE)
         target_compile_definitions(dee_core PUBLIC DEE_CUDA_VALIDATE=1)

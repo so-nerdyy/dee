@@ -30,7 +30,9 @@ struct Transfer {
     ExpertKey key{};
     void*     dst      = nullptr;  // VRAM arena slot (from VramCacheManager)
     const void* src    = nullptr;  // WeightMmap host pointer
-    size_t    nbytes   = 0;
+    size_t    nbytes   = 0;        // destination/cache bytes
+    size_t    source_nbytes = 0;   // bytes copied through pinned memory/H2D
+    bool      expand_bf16 = false;
     bool      done     = false;    // mock event "signaled"
     bool      abandoned = false;
     void*     event    = nullptr;  // cudaEvent_t* (DEE_CUDA path only)
@@ -58,6 +60,12 @@ public:
     // Returns a transfer id (>=0) or -1 on failure. `priority` feeds the cache.
     long prefetch(int layer, int expert, const void* src, size_t nbytes,
                   int priority = 0, int token = -1, int logical_layer = -1);
+
+    // CUDA streaming specialization: transfer packed BF16, then expand into
+    // the FP32 cache block on the prefetch stream before signaling readiness.
+    long prefetch_bf16_to_f32(int layer, int expert, const uint16_t* src,
+                              size_t elements, int priority = 0,
+                              int token = -1, int logical_layer = -1);
 
     // Delimit one logical expert batch for duplicate-request accounting.
     void begin_batch() { batch_keys_.clear(); }
@@ -113,6 +121,8 @@ private:
     struct PinnedStagingSlot {
         void* ptr = nullptr;
         size_t bytes = 0;
+        void* device_ptr = nullptr;
+        size_t device_bytes = 0;
         bool busy = false;
     };
 
@@ -128,6 +138,10 @@ private:
     StageProfiler* profiler_ = nullptr;
 
     long   find_inflight(int layer, int expert) const;
+    long   prefetch_impl(int layer, int expert, const void* src,
+                         size_t source_nbytes, size_t destination_nbytes,
+                         bool expand_bf16, int priority, int token,
+                         int logical_layer);
     void   drain_until(int idx);   // mock: run copies up to idx (inclusive)
     bool   cuda_init();            // guarded real init
     bool   cuda_submit(long idx);  // guarded real submit + event record

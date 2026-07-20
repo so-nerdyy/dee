@@ -156,6 +156,7 @@ private:
     // [gate|up|down].  Synthetic single-layer shards intentionally map every
     // model layer to source layer 0; real multi-layer shards stay distinct.
     std::unordered_map<uint64_t, std::vector<float>> staging_;
+    std::unordered_map<uint64_t, std::vector<uint16_t>> staging_bf16_;
 
     std::vector<float> hidden_buf_[2];  // double buffer for the loop
 
@@ -172,6 +173,7 @@ private:
     // Ensure the F32 staging blob for a resolved shard expert exists (fill
     // from mmap/upcast).
     const float* get_staging(int source_layer, int expert);
+    const uint16_t* get_staging_bf16(int source_layer, int expert);
 
     // Stream `expert` from a resolved shard layer into VRAM.  The cache key
     // must describe the source weights, not merely the logical model layer.

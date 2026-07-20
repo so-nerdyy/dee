@@ -102,7 +102,51 @@ const float* Engine::get_staging(int source_layer, int expert) {
     return res.first->second.data();
 }
 
+const uint16_t* Engine::get_staging_bf16(int source_layer, int expert) {
+    const auto profile_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
+    const uint64_t key = staging_key(source_layer, expert);
+    auto it = staging_bf16_.find(key);
+    if (it != staging_bf16_.end()) {
+        if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
+        return it->second.data();
+    }
+
+    TensorView gv = resolver_.resolve_expert(source_layer, expert, TensorResolver::GATE_PROJ);
+    TensorView uv = resolver_.resolve_expert(source_layer, expert, TensorResolver::UP_PROJ);
+    TensorView dv = resolver_.resolve_expert(source_layer, expert, TensorResolver::DOWN_PROJ);
+    const size_t projection = static_cast<size_t>(inter_) * hidden_;
+    const size_t projection_bytes = projection * sizeof(uint16_t);
+    if (!gv.ok() || !uv.ok() || !dv.ok() || gv.dtype != DType::BF16 ||
+        uv.dtype != DType::BF16 || dv.dtype != DType::BF16 ||
+        gv.nbytes != projection_bytes || uv.nbytes != projection_bytes ||
+        dv.nbytes != projection_bytes) {
+        std::fprintf(stderr, "[engine] expert %d has unsupported or inconsistent BF16 tensor layout\n",
+                     expert);
+        if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
+        return nullptr;
+    }
+
+    std::vector<uint16_t> blob(blob_elems_);
+    std::memcpy(blob.data(), gv.data, projection_bytes);
+    std::memcpy(blob.data() + projection, uv.data, projection_bytes);
+    std::memcpy(blob.data() + 2 * projection, dv.data, projection_bytes);
+    auto result = staging_bf16_.emplace(key, std::move(blob));
+    if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
+    return result.first->second.data();
+}
+
 bool Engine::stage_expert(int logical_layer, int source_layer, int expert, int priority) {
+    if (cfg_.use_cuda) {
+        const uint16_t* blob = get_staging_bf16(source_layer, expert);
+        if (!blob) {
+            std::fprintf(stderr, "[engine] missing BF16 source weights for expert (%d,%d)\n",
+                         source_layer, expert);
+            return false;
+        }
+        return prefetcher_.prefetch_bf16_to_f32(
+                   source_layer, expert, blob, blob_elems_, priority,
+                   current_token_, logical_layer) >= 0;
+    }
     const float* blob = get_staging(source_layer, expert);
     if (!blob) {
         std::fprintf(stderr, "[engine] missing source weights for expert (%d,%d)\n", source_layer, expert);

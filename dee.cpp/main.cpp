@@ -133,6 +133,9 @@ void print_result(const dee::EngineConfig& cfg, const dee::EngineStats& stats, i
                 wall_ms > 0.0 ? profile.total_gpu_compute_ms * 100.0 / wall_ms : 0.0);
     std::printf("GPU transfer total     : %.3f ms (%.2f%% wall)\n", profile.total_gpu_transfer_ms,
                 wall_ms > 0.0 ? profile.total_gpu_transfer_ms * 100.0 / wall_ms : 0.0);
+    std::printf("GPU weight conversion  : %.3f ms (%.2f%% wall)\n",
+                profile.total_gpu_weight_conversion_ms,
+                wall_ms > 0.0 ? profile.total_gpu_weight_conversion_ms * 100.0 / wall_ms : 0.0);
     std::printf("layer wall total/avg   : %.3f / %.3f ms\n", profile.layer_wall_ms,
                 profile.layer_count ? profile.layer_wall_ms / profile.layer_count : 0.0);
     std::printf("token latency avg      : %.3f ms\n", profile.token_latency_avg_ms);
