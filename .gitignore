@@ -18,3 +18,5 @@ cmake-build-*/
 .mypy_cache/
 .ruff_cache/
 
+# Local-only remote benchmark evidence.
+benchmark_reports/
