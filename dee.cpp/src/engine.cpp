@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <algorithm>
+#include <cassert>
 #include <cstring>
 #include <chrono>
 #include <cstdio>
@@ -56,9 +57,13 @@ int Engine::avail_layer(int layer) const {
 }
 
 const float* Engine::get_staging(int source_layer, int expert) {
+    const auto profile_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
     const uint64_t key = staging_key(source_layer, expert);
     auto it = staging_.find(key);
-    if (it != staging_.end()) return it->second.data();
+    if (it != staging_.end()) {
+        if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
+        return it->second.data();
+    }
 
     TensorView gv = resolver_.resolve_expert(source_layer, expert, TensorResolver::GATE_PROJ);
     TensorView uv = resolver_.resolve_expert(source_layer, expert, TensorResolver::UP_PROJ);
@@ -68,6 +73,7 @@ const float* Engine::get_staging(int source_layer, int expert) {
     if (!gv.ok() || !uv.ok() || !dv.ok() || gv.dtype != DType::BF16 || uv.dtype != DType::BF16 || dv.dtype != DType::BF16 ||
         gv.nbytes != gh * sizeof(uint16_t) || uv.nbytes != gh * sizeof(uint16_t) || dv.nbytes != dh * sizeof(uint16_t)) {
         std::fprintf(stderr, "[engine] expert %d has unsupported or inconsistent BF16 tensor layout\n", expert);
+        if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
         return nullptr;
     }
 
@@ -77,29 +83,35 @@ const float* Engine::get_staging(int source_layer, int expert) {
     for (size_t i = 0; i < dh; ++i) blob[2 * gh + i] = bf16_to_f32(*(const uint16_t*)(dv.data + i * 2));
 
     auto res = staging_.emplace(key, std::move(blob));
+    if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
     return res.first->second.data();
 }
 
-bool Engine::stage_expert(int source_layer, int expert, int priority) {
+bool Engine::stage_expert(int logical_layer, int source_layer, int expert, int priority) {
     const float* blob = get_staging(source_layer, expert);
     if (!blob) {
         std::fprintf(stderr, "[engine] missing source weights for expert (%d,%d)\n", source_layer, expert);
         return false;
     }
-    return prefetcher_.prefetch(source_layer, expert, blob, blob_bytes_, priority) >= 0;
+    return prefetcher_.prefetch(source_layer, expert, blob, blob_bytes_, priority,
+                                current_token_, logical_layer) >= 0;
 }
 
 void Engine::forward_layer(int layer, const float* h_in, float* h_out) {
     std::vector<int> experts;
+    const auto oracle_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
     oracle_.predict(layer, h_in, cfg_.topk, experts);
+    if (profiler_.enabled()) profiler_.add_cpu(CpuStage::Oracle, oracle_begin);
 
     // CPU/mock mode processes one expert at a time. This preserves the fixed
     // budget contract even when top-K is larger than the cache capacity.
     std::vector<float> acc(hidden_, 0.0f);
     const int source_layer = avail_layer(layer);
+    profiler_.note_prediction(current_token_, layer, source_layer, experts);
     for (size_t k = 0; k < experts.size(); ++k) {
         int e = experts[k];
-        if (!stage_expert(source_layer, e, static_cast<int>(cfg_.topk - k)) || !prefetcher_.wait(source_layer, e)) {
+        prefetcher_.begin_batch();
+        if (!stage_expert(layer, source_layer, e, static_cast<int>(cfg_.topk - k)) || !prefetcher_.wait(source_layer, e)) {
             stats_.fallbacks++;
             continue;
         }
@@ -186,6 +198,9 @@ bool Engine::init(const EngineConfig& cfg) {
     }
     int nl = std::min(cfg.num_layers, oracle_.num_layers());
     cfg_.num_layers = nl;
+    profiler_.configure(cfg.profile_stages, cfg.trace_requests, blob_bytes_, oracle_.num_experts());
+    cache_.set_profiler(cfg.profile_stages ? &profiler_ : nullptr);
+    prefetcher_.set_profiler(cfg.profile_stages ? &profiler_ : nullptr);
 
     // VRAM budget. default: 4 experts. The arena backend is cudaMalloc when the
     // CUDA path is active, else a malloc'd host arena (mock backend).
@@ -265,9 +280,12 @@ bool Engine::generate() {
 
     int cur = 0, nxt = 1;
     for (int t = 0; t < cfg_.num_tokens; ++t) {
+        current_token_ = t;
+        const auto token_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
         float* h_in  = hidden_buf_[cur].data();
         float* h_out = hidden_buf_[nxt].data();
         for (int L = 0; L < cfg_.num_layers; ++L) {
+            const auto layer_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
 #ifdef DEE_CUDA
             if (cfg_.use_cuda) {
                 if (!forward_layer_cuda(L, h_in, h_out)) return false;
@@ -276,12 +294,14 @@ bool Engine::generate() {
 #else
             forward_layer(L, h_in, h_out);
 #endif
+            if (profiler_.enabled()) profiler_.add_layer_latency(layer_begin);
         }
         // autoregressive (recurrent mock): next token input = this token output
         std::swap(cur, nxt);
         // track peak VRAM (mock arena high-water / CUDA arena used)
         size_t used = cache_.used_bytes();
         if (used > stats_.peak_vram) stats_.peak_vram = used;
+        if (profiler_.enabled()) profiler_.add_token_latency(token_begin);
     }
 
     prefetcher_.reset();   // bound inflight_/event churn between tokens
@@ -292,6 +312,30 @@ bool Engine::generate() {
     // gather stats
     const VramCacheManager::Stats& cs = cache_.stats();
     const AsyncPrefetcher::Stats& ps = prefetcher_.stats();
+    if (!prefetcher_.accounting_valid()) {
+        std::fprintf(stderr,
+                     "[engine] request accounting invariant failed: requests=%llu resident=%llu inflight=%llu cold=%llu\n",
+                     static_cast<unsigned long long>(ps.requests),
+                     static_cast<unsigned long long>(ps.resident_hits),
+                     static_cast<unsigned long long>(ps.inflight_hits),
+                     static_cast<unsigned long long>(ps.cold_loads));
+#ifdef DEE_CUDA_VALIDATE
+        assert(prefetcher_.accounting_valid());
+#endif
+        return false;
+    }
+    if (cs.hits != ps.resident_hits || cs.loads != ps.cold_loads) {
+        std::fprintf(stderr,
+                     "[engine] cache/request accounting mismatch: cache_hits=%llu resident=%llu cache_loads=%llu cold=%llu\n",
+                     static_cast<unsigned long long>(cs.hits),
+                     static_cast<unsigned long long>(ps.resident_hits),
+                     static_cast<unsigned long long>(cs.loads),
+                     static_cast<unsigned long long>(ps.cold_loads));
+#ifdef DEE_CUDA_VALIDATE
+        assert(cs.hits == ps.resident_hits && cs.loads == ps.cold_loads);
+#endif
+        return false;
+    }
     stats_.tokens = cfg_.num_tokens;
     stats_.elapsed_sec = sec;
     stats_.tok_per_sec = sec > 0 ? cfg_.num_tokens / sec : 0.0;
@@ -299,8 +343,15 @@ bool Engine::generate() {
     stats_.cache_loads = cs.loads;
     stats_.evictions   = cs.evictions;
     stats_.fallbacks   = cs.fallbacks;
-    stats_.prefetch_issued = ps.issued;
+    stats_.prefetch_issued = ps.requests;
     stats_.prefetch_fallbacks = ps.fallbacks;
+    stats_.resident_hits = ps.resident_hits;
+    stats_.inflight_hits = ps.inflight_hits;
+    stats_.cold_loads = ps.cold_loads;
+    stats_.duplicate_requests = ps.duplicate_requests;
+    stats_.profile = profiler_.finish(sec * 1000.0, ps.resident_hits, ps.inflight_hits,
+                                      ps.cold_loads, ps.duplicate_requests, cs.evictions,
+                                      cs.pinned_blocks_skipped);
 
     // validate output hidden is finite
     const float* out = hidden_buf_[cur].data();
@@ -328,41 +379,67 @@ void Engine::cuda_cleanup() {
 // expert's copy), so the compute stream only blocks when a weight isn't ready.
 bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
     std::vector<int> experts;
+    const auto oracle_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
     oracle_.predict(layer, h_in, cfg_.topk, experts);
+    if (profiler_.enabled()) profiler_.add_cpu(CpuStage::Oracle, oracle_begin);
     int K = (int)experts.size();
     if (K == 0) { for (int i = 0; i < hidden_; ++i) h_out[i] = 0.0f; return true; }
 
     // 1) issue all expert weight H2D copies (async, secondary stream)
+    const size_t input_h2d_ticket = profiler_.enabled()
+        ? profiler_.cuda_begin(GpuStage::H2D, static_cast<void*>(compute_stream_)) : static_cast<size_t>(-1);
     if (!DEE_CUDA_CHECK_NAMED(cudaMemcpyAsync(d_h_in_, h_in, (size_t)hidden_ * sizeof(float),
                                               cudaMemcpyHostToDevice, compute_stream_),
                               "cudaMemcpyAsync(hidden host to device)")) return false;
+    if (profiler_.enabled()) {
+        if (!profiler_.cuda_end(input_h2d_ticket, static_cast<void*>(compute_stream_))) return false;
+        profiler_.note_h2d_copy(static_cast<size_t>(hidden_) * sizeof(float));
+    }
 
+    const auto batch_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
     const int batch_size = std::max(1, static_cast<int>(cache_.budget_bytes() / blob_bytes_));
     const int source_layer = avail_layer(layer);
+    profiler_.note_prediction(current_token_, layer, source_layer, experts);
+    if (profiler_.enabled()) profiler_.add_cpu(CpuStage::BatchConstruction, batch_begin);
     for (int first = 0; first < K; first += batch_size) {
         const int last = std::min(K, first + batch_size);
+        prefetcher_.begin_batch();
         for (int k = first; k < last; ++k) {
-            if (!stage_expert(source_layer, experts[k], cfg_.topk - k)) return false;
+            if (!stage_expert(layer, source_layer, experts[k], cfg_.topk - k)) return false;
         }
         for (int k = first; k < last; ++k) {
             const int e = experts[k];
             if (!prefetcher_.wait(source_layer, e) || !cache_.pin(source_layer, e)) return false;
             const float* d_blob = static_cast<const float*>(cache_.data(source_layer, e));
             if (!d_blob || !swiglu_expert_cuda(cublas_handle_, d_blob, d_h_in_, d_hbuf_, d_ubuf_,
-                                                d_ybuf_ + (size_t)k * hidden_, inter_, hidden_, compute_stream_)) {
+                                                d_ybuf_ + (size_t)k * hidden_, inter_, hidden_, compute_stream_,
+                                                profiler_.enabled() ? &profiler_ : nullptr)) {
                 cache_.unpin(source_layer, e);
                 return false;
             }
         }
         // Keep cache blocks pinned until the compute stream has consumed them.
+        const auto sync_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
         if (!DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(compute_stream_), "cudaStreamSynchronize(expert batch)")) return false;
+        if (profiler_.enabled()) {
+            profiler_.add_cpu(CpuStage::Synchronization, sync_begin);
+            profiler_.note_host_synchronization();
+            if (!profiler_.cuda_collect_ready()) return false;
+        }
         for (int k = first; k < last; ++k) cache_.unpin(source_layer, experts[k]);
     }
-    if (!combine_cuda(d_ybuf_, d_h_out_, K, hidden_, compute_stream_) ||
+    if (!combine_cuda(d_ybuf_, d_h_out_, K, hidden_, compute_stream_,
+                      profiler_.enabled() ? &profiler_ : nullptr) ||
         !DEE_CUDA_CHECK_NAMED(cudaMemcpyAsync(h_out, d_h_out_, (size_t)hidden_ * sizeof(float),
                                               cudaMemcpyDeviceToHost, compute_stream_),
-                              "cudaMemcpyAsync(hidden device to host)") ||
-        !DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(compute_stream_), "cudaStreamSynchronize(layer output)")) return false;
+                              "cudaMemcpyAsync(hidden device to host)")) return false;
+    const auto output_sync_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
+    if (!DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(compute_stream_), "cudaStreamSynchronize(layer output)")) return false;
+    if (profiler_.enabled()) {
+        profiler_.add_cpu(CpuStage::Synchronization, output_sync_begin);
+        profiler_.note_host_synchronization();
+        if (!profiler_.cuda_collect_ready()) return false;
+    }
 
     // 3) stabilize (frozen layer-norm stand-in) — same as CPU path
     double ss = 0.0;
@@ -376,7 +453,15 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
 }
 
 Engine::~Engine() {
-    if (cfg_.use_cuda) cuda_cleanup();
+    if (cfg_.use_cuda) {
+        prefetcher_.synchronize_all();
+        if (compute_stream_) {
+            DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(compute_stream_),
+                                 "cudaStreamSynchronize(engine teardown)");
+        }
+        if (profiler_.enabled()) profiler_.cuda_collect_ready();
+        cuda_cleanup();
+    }
 }
 #else
 Engine::~Engine() = default;

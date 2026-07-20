@@ -56,6 +56,8 @@ static void test_engine_e2e() {
     cfg.topk = 8;
     cfg.num_layers = 8;
     cfg.budget_bytes = 4 * 3ULL * 2048 * 64 * 4;  // 4 experts (inter=64) -> forces eviction
+    cfg.profile_stages = true;
+    cfg.trace_requests = true;
 
     dee::Engine engine;
     if (!engine.init(cfg)) {
@@ -70,6 +72,12 @@ static void test_engine_e2e() {
     const dee::EngineStats& s = engine.stats();
     CHECK(s.hidden_finite, "output hidden all-finite");
     CHECK(s.prefetch_issued > 0, "prefetcher issued transfers");
+    CHECK(s.prefetch_issued == s.resident_hits + s.inflight_hits + s.cold_loads,
+          "request classification invariant");
+    CHECK(s.profile.enabled, "stage profile enabled");
+    CHECK(s.profile.trace.size() == s.prefetch_issued, "request trace covers every request");
+    CHECK(s.profile.layer_count == static_cast<uint64_t>(cfg.num_tokens * cfg.num_layers),
+          "layer timing count excludes no measured layers");
     CHECK(s.cache_loads > 0, "cache performed loads");
     // with an 8-expert activation and 4-expert budget, eviction MUST occur
     CHECK(s.evictions > 0, "cache evictions occurred (budget < topk*depth pressure)");

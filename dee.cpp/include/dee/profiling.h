@@ -1,0 +1,206 @@
+#pragma once
+
+#include <array>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+namespace dee {
+
+enum class CpuStage : size_t {
+    Oracle,
+    TensorResolution,
+    CacheLookup,
+    CacheHitPinning,
+    EvictionSelection,
+    MmapToPinned,
+    TransferSubmission,
+    BatchConstruction,
+    HostWaiting,
+    Synchronization,
+    MiscEngine,
+    Count
+};
+
+enum class GpuStage : size_t {
+    H2D,
+    GateProjection,
+    UpProjection,
+    SiluMultiply,
+    DownProjection,
+    Combine,
+    StreamWait,
+    Count
+};
+
+enum class RequestKind : uint8_t { ResidentHit, InflightHit, ColdLoad };
+
+struct RequestTraceRecord {
+    uint64_t index = 0;
+    int token = -1;
+    int logical_layer = -1;
+    int resolved_layer = -1;
+    int expert = -1;
+    RequestKind kind = RequestKind::ColdLoad;
+    size_t cache_bytes_used = 0;
+    int evicted_layer = -1;
+    int evicted_expert = -1;
+    int64_t reuse_distance = -1;
+    int64_t distinct_reuse_distance = -1;
+    size_t theoretical_min_cache_bytes = 0;
+    int priority = 0;
+};
+
+struct StageProfile {
+    bool enabled = false;
+    bool trace_enabled = false;
+    std::array<double, static_cast<size_t>(CpuStage::Count)> cpu_ms{};
+    std::array<double, static_cast<size_t>(GpuStage::Count)> gpu_ms{};
+    std::array<uint64_t, static_cast<size_t>(GpuStage::Count)> gpu_samples{};
+
+    double layer_wall_ms = 0.0;
+    uint64_t layer_count = 0;
+    double token_latency_avg_ms = 0.0;
+    double token_latency_median_ms = 0.0;
+    double token_latency_p95_ms = 0.0;
+    double token_latency_max_ms = 0.0;
+
+    uint64_t expert_requests = 0;
+    uint64_t resident_hits = 0;
+    uint64_t inflight_hits = 0;
+    uint64_t cold_loads = 0;
+    uint64_t duplicate_requests = 0;
+    uint64_t unique_experts_requested = 0;
+    uint64_t unique_experts_loaded = 0;
+    uint64_t evictions = 0;
+    uint64_t pinned_blocks_skipped = 0;
+
+    uint64_t mmap_to_pinned_bytes = 0;
+    uint64_t h2d_bytes = 0;
+    uint64_t h2d_copies = 0;
+    uint64_t cublas_calls = 0;
+    uint64_t kernel_launches = 0;
+    uint64_t stream_waits = 0;
+    uint64_t host_synchronizations = 0;
+    uint64_t timing_events_allocated = 0;
+
+    double average_expert_request_us = 0.0;
+    double average_cold_load_us = 0.0;
+    double average_h2d_copy_bytes = 0.0;
+    double total_gpu_compute_ms = 0.0;
+    double total_gpu_transfer_ms = 0.0;
+    double average_working_set_per_token = 0.0;
+    uint64_t max_working_set_per_token = 0;
+    uint64_t repeated_requests = 0;
+    double reused_before_eviction_fraction = 0.0;
+    double oracle_adjacent_topk_overlap = 0.0;
+    double oracle_random_overlap_expectation = 0.0;
+
+    std::vector<RequestTraceRecord> trace;
+};
+
+class StageProfiler {
+public:
+    using Clock = std::chrono::steady_clock;
+    using TimePoint = Clock::time_point;
+
+    StageProfiler() = default;
+    ~StageProfiler();
+
+    StageProfiler(const StageProfiler&) = delete;
+    StageProfiler& operator=(const StageProfiler&) = delete;
+
+    void configure(bool enabled, bool trace_enabled, size_t expert_blob_bytes,
+                   int oracle_experts);
+    bool enabled() const { return enabled_; }
+    bool trace_enabled() const { return trace_enabled_; }
+
+    static TimePoint now() { return Clock::now(); }
+    void add_cpu(CpuStage stage, TimePoint begin);
+    void add_cpu_ms(CpuStage stage, double milliseconds);
+    void add_layer_latency(TimePoint begin);
+    void add_token_latency(TimePoint begin);
+
+    void note_request(int token, int logical_layer, int resolved_layer, int expert,
+                      RequestKind kind, size_t cache_bytes_used, int evicted_layer,
+                      int evicted_expert, int priority);
+    void note_prediction(int token, int logical_layer, int resolved_layer,
+                         const std::vector<int>& experts);
+    void note_eviction(uint64_t count = 1) { evictions_ += count; }
+    void note_pinned_skip(uint64_t count = 1) { pinned_blocks_skipped_ += count; }
+    void note_mmap_copy(size_t bytes) { mmap_to_pinned_bytes_ += bytes; }
+    void note_h2d_copy(size_t bytes) { h2d_bytes_ += bytes; ++h2d_copies_; }
+    void note_cublas_call(uint64_t count = 1) { cublas_calls_ += count; }
+    void note_kernel_launch(uint64_t count = 1) { kernel_launches_ += count; }
+    void note_stream_wait(uint64_t count = 1) { stream_waits_ += count; }
+    void note_host_synchronization(uint64_t count = 1) { host_synchronizations_ += count; }
+    void note_duplicate_request(uint64_t count = 1) { duplicate_requests_ += count; }
+
+#ifdef DEE_CUDA
+    size_t cuda_begin(GpuStage stage, void* stream);
+    bool cuda_end(size_t ticket, void* stream);
+    bool cuda_collect_ready();
+#endif
+
+    StageProfile finish(double total_wall_ms, uint64_t resident_hits,
+                        uint64_t inflight_hits, uint64_t cold_loads,
+                        uint64_t duplicate_requests, uint64_t evictions,
+                        uint64_t pinned_blocks_skipped);
+
+private:
+    bool enabled_ = false;
+    bool trace_enabled_ = false;
+    size_t expert_blob_bytes_ = 0;
+    int oracle_experts_ = 0;
+    std::array<double, static_cast<size_t>(CpuStage::Count)> cpu_ms_{};
+    std::array<double, static_cast<size_t>(GpuStage::Count)> gpu_ms_{};
+    std::array<uint64_t, static_cast<size_t>(GpuStage::Count)> gpu_samples_{};
+    std::vector<double> token_latencies_ms_;
+    double layer_wall_ms_ = 0.0;
+    uint64_t layer_count_ = 0;
+
+    uint64_t evictions_ = 0;
+    uint64_t pinned_blocks_skipped_ = 0;
+    uint64_t mmap_to_pinned_bytes_ = 0;
+    uint64_t h2d_bytes_ = 0;
+    uint64_t h2d_copies_ = 0;
+    uint64_t cublas_calls_ = 0;
+    uint64_t kernel_launches_ = 0;
+    uint64_t stream_waits_ = 0;
+    uint64_t host_synchronizations_ = 0;
+    uint64_t duplicate_requests_ = 0;
+
+    uint64_t request_index_ = 0;
+    std::unordered_map<uint64_t, uint64_t> last_request_index_;
+    std::unordered_set<uint64_t> unique_requested_;
+    std::unordered_set<uint64_t> unique_loaded_;
+    std::unordered_map<int, std::unordered_set<uint64_t>> token_working_sets_;
+    std::vector<RequestTraceRecord> trace_;
+    std::vector<std::vector<uint64_t>> predictions_;
+
+#ifdef DEE_CUDA
+    struct PendingCudaSample {
+        GpuStage stage = GpuStage::H2D;
+        void* begin = nullptr;
+        void* end = nullptr;
+        bool ended = false;
+    };
+    static constexpr size_t kMaxTimingEvents = 128;
+    std::vector<void*> all_cuda_events_;
+    std::vector<void*> free_cuda_events_;
+    std::vector<PendingCudaSample> pending_cuda_;
+    void* acquire_cuda_event();
+    void release_cuda_event(void* event);
+#endif
+};
+
+const char* cpu_stage_name(CpuStage stage);
+const char* gpu_stage_name(GpuStage stage);
+const char* request_kind_name(RequestKind kind);
+std::string stage_profile_json(const StageProfile& profile, bool include_trace);
+
+}  // namespace dee

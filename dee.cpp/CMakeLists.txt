@@ -27,6 +27,7 @@ endif()
 set(DEE_CORE_SOURCES
     src/dee.cpp
     src/json_min.cpp
+    src/profiling.cpp
     src/weight_mmap.cpp
     src/vram_cache.cpp
     src/async_prefetcher.cpp

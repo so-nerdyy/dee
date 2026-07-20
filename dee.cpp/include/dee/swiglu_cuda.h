@@ -9,6 +9,7 @@
 #pragma once
 
 #ifdef DEE_CUDA
+#include "dee/profiling.h"
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 
@@ -21,11 +22,12 @@ namespace dee {
 // d_hbuf is a caller-owned inter-float scratch buffer (reused across experts).
 bool swiglu_expert_cuda(cublasHandle_t handle, const float* d_W, const float* d_x,
                         float* d_gate, float* d_up, float* d_y,
-                        int inter, int hidden, cudaStream_t stream);
+                        int inter, int hidden, cudaStream_t stream,
+                        StageProfiler* profiler = nullptr);
 
 // Combine K expert outputs (each hidden floats, packed in d_ybuf) -> mean.
 bool combine_cuda(const float* d_ybuf, float* d_out, int K, int hidden,
-                  cudaStream_t stream);
+                  cudaStream_t stream, StageProfiler* profiler = nullptr);
 
 } // namespace dee
 #endif

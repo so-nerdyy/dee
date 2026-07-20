@@ -30,6 +30,7 @@
 
 #include "dee/async_prefetcher.h"
 #include "dee/oracle.h"
+#include "dee/profiling.h"
 #include "dee/vram_cache.h"
 #include "dee/weight_mmap.h"
 
@@ -56,6 +57,8 @@ struct EngineConfig {
     int         hidden      = 2048; // model hidden dim (checked vs shard)
     int         inter       = 256;  // expert intermediate dim (checked vs shard)
     bool        verbose     = false;
+    bool        profile_stages = false;
+    bool        trace_requests = false;
 };
 
 struct EngineStats {
@@ -69,6 +72,10 @@ struct EngineStats {
     uint64_t fallbacks   = 0;       // sync_fallback stalls
     uint64_t prefetch_issued = 0;
     uint64_t prefetch_fallbacks = 0;
+    uint64_t resident_hits = 0;
+    uint64_t inflight_hits = 0;
+    uint64_t cold_loads = 0;
+    uint64_t duplicate_requests = 0;
     bool   hidden_finite = true;   // output hidden all-finite at the end
     size_t cuda_total    = 0;       // GPU memory total (cudaMemGetInfo), 0 if N/A
     size_t cuda_free     = 0;       // GPU memory free  (cudaMemGetInfo), 0 if N/A
@@ -76,6 +83,7 @@ struct EngineStats {
     int cuda_compute_major = 0;
     int cuda_compute_minor = 0;
     int cuda_runtime_version = 0;
+    StageProfile profile{};
 };
 
 class Engine {
@@ -110,6 +118,7 @@ private:
     OracleScheduler oracle_;
     VramCacheManager cache_;
     AsyncPrefetcher prefetcher_;
+    StageProfiler profiler_;
 
     int    hidden_ = 2048;
     int    inter_  = 256;
@@ -138,6 +147,7 @@ private:
     std::vector<float> hidden_buf_[2];  // double buffer for the loop
 
     EngineStats stats_{};
+    int current_token_ = -1;
 
     // map a model layer to the shard layer that actually exists (synthetic
     // single-layer shards expose only layer 0).
@@ -149,7 +159,7 @@ private:
 
     // Stream `expert` from a resolved shard layer into VRAM.  The cache key
     // must describe the source weights, not merely the logical model layer.
-    bool stage_expert(int source_layer, int expert, int priority);
+    bool stage_expert(int logical_layer, int source_layer, int expert, int priority);
 };
 
 } // namespace dee

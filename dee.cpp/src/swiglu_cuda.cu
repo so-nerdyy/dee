@@ -29,32 +29,46 @@ __global__ void combine_kernel(const float* ybuf, float* output, int experts, in
 int grid_for(int count) { return (count + kThreads - 1) / kThreads; }
 
 bool gemv_row_major(cublasHandle_t handle, const float* matrix, int rows, int cols,
-                    const float* input, float* output) {
+                    const float* input, float* output, cudaStream_t stream,
+                    GpuStage stage, StageProfiler* profiler) {
     // Row-major [rows, cols] is the storage-equivalent of column-major
     // [cols, rows]; transposed SGEMV therefore computes W * input.
     constexpr float alpha = 1.0f;
     constexpr float beta = 0.0f;
-    return DEE_CUBLAS_CHECK_NAMED(
+    const size_t ticket = profiler && profiler->enabled()
+        ? profiler->cuda_begin(stage, static_cast<void*>(stream)) : static_cast<size_t>(-1);
+    if (profiler && profiler->enabled()) profiler->note_cublas_call();
+    const bool ok = DEE_CUBLAS_CHECK_NAMED(
         cublasSgemv(handle, CUBLAS_OP_T, cols, rows, &alpha, matrix, cols,
                     input, 1, &beta, output, 1),
         "cublasSgemv(row-major expert projection)");
+    if (!ok) return false;
+    return !profiler || !profiler->enabled() || profiler->cuda_end(ticket, static_cast<void*>(stream));
 }
 
 }  // namespace
 
 bool swiglu_expert_cuda(cublasHandle_t handle, const float* d_weights, const float* d_x,
                         float* d_gate, float* d_up, float* d_y,
-                        int inter, int hidden, cudaStream_t stream) {
+                        int inter, int hidden, cudaStream_t stream, StageProfiler* profiler) {
     if (!handle || !d_weights || !d_x || !d_gate || !d_up || !d_y || !stream || inter <= 0 || hidden <= 0) {
         std::fprintf(stderr, "[cuda] invalid cuBLAS SwiGLU arguments (inter=%d hidden=%d)\n", inter, hidden);
         return false;
     }
     const size_t projection = static_cast<size_t>(inter) * hidden;
-    if (!gemv_row_major(handle, d_weights, inter, hidden, d_x, d_gate) ||
-        !gemv_row_major(handle, d_weights + projection, inter, hidden, d_x, d_up)) return false;
+    if (!gemv_row_major(handle, d_weights, inter, hidden, d_x, d_gate, stream,
+                        GpuStage::GateProjection, profiler) ||
+        !gemv_row_major(handle, d_weights + projection, inter, hidden, d_x, d_up, stream,
+                        GpuStage::UpProjection, profiler)) return false;
+    const size_t activation_ticket = profiler && profiler->enabled()
+        ? profiler->cuda_begin(GpuStage::SiluMultiply, static_cast<void*>(stream)) : static_cast<size_t>(-1);
     swiglu_activation_kernel<<<grid_for(inter), kThreads, 0, stream>>>(d_gate, d_up, inter);
+    if (profiler && profiler->enabled()) profiler->note_kernel_launch();
     if (!DEE_CUDA_CHECK_LAUNCH("swiglu_activation_kernel launch")) return false;
-    if (!gemv_row_major(handle, d_weights + 2 * projection, hidden, inter, d_gate, d_y)) return false;
+    if (profiler && profiler->enabled() &&
+        !profiler->cuda_end(activation_ticket, static_cast<void*>(stream))) return false;
+    if (!gemv_row_major(handle, d_weights + 2 * projection, hidden, inter, d_gate, d_y, stream,
+                        GpuStage::DownProjection, profiler)) return false;
 #ifdef DEE_CUDA_VALIDATE
     return DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(stream), "cudaStreamSynchronize(SwiGLU validation)");
 #else
@@ -62,13 +76,18 @@ bool swiglu_expert_cuda(cublasHandle_t handle, const float* d_weights, const flo
 #endif
 }
 
-bool combine_cuda(const float* d_ybuf, float* d_output, int experts, int hidden, cudaStream_t stream) {
+bool combine_cuda(const float* d_ybuf, float* d_output, int experts, int hidden,
+                  cudaStream_t stream, StageProfiler* profiler) {
     if (!d_ybuf || !d_output || !stream || experts <= 0 || hidden <= 0) {
         std::fprintf(stderr, "[cuda] invalid combine launch arguments (experts=%d hidden=%d)\n", experts, hidden);
         return false;
     }
+    const size_t ticket = profiler && profiler->enabled()
+        ? profiler->cuda_begin(GpuStage::Combine, static_cast<void*>(stream)) : static_cast<size_t>(-1);
     combine_kernel<<<grid_for(hidden), kThreads, 0, stream>>>(d_ybuf, d_output, experts, hidden);
+    if (profiler && profiler->enabled()) profiler->note_kernel_launch();
     if (!DEE_CUDA_CHECK_LAUNCH("combine_kernel launch")) return false;
+    if (profiler && profiler->enabled() && !profiler->cuda_end(ticket, static_cast<void*>(stream))) return false;
 #ifdef DEE_CUDA_VALIDATE
     return DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(stream), "cudaStreamSynchronize(combine validation)");
 #else

@@ -87,6 +87,18 @@ int main() {
     check("fallback counted", mgr.stats().fallbacks == 1);
     check("E0 resident again", mgr.is_resident(0, 0));
 
+    // --- A pinned block is skipped, reported, and never selected as victim. ---
+    dee::VramCacheManager pinned_mgr;
+    check("init pinned-skip manager", pinned_mgr.init(BLK * 2, host_backend()));
+    check("load pinned-skip E0", pinned_mgr.ensure(0, 0, BLK, 0));
+    check("load pinned-skip E1", pinned_mgr.ensure(0, 1, BLK, 0));
+    check("pin E0", pinned_mgr.pin(0, 0));
+    check("load E2 while E0 pinned", pinned_mgr.ensure(0, 2, BLK, 0));
+    check("pinned E0 survived", pinned_mgr.is_resident(0, 0));
+    check("unpinned E1 was evicted", !pinned_mgr.is_resident(0, 1));
+    check("pinned candidate skip counted", pinned_mgr.stats().pinned_blocks_skipped >= 1);
+    pinned_mgr.unpin(0, 0);
+
     // --- clear ---
     mgr.clear();
     check("clear empties cache", mgr.resident_count() == 0);

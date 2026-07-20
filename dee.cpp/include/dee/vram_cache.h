@@ -13,6 +13,8 @@
 
 #pragma once
 
+#include "dee/profiling.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -101,6 +103,13 @@ public:
         uint64_t loads     = 0;  // ensure() had to load (alloc)
         uint64_t evictions = 0;  // blocks evicted to make room
         uint64_t fallbacks = 0;  // sync_fallback stalls (miss at compute time)
+        uint64_t pinned_blocks_skipped = 0;  // eviction candidates rejected due to active pins
+    };
+
+    struct EnsureInfo {
+        bool resident_hit = false;
+        bool evicted = false;
+        ExpertKey evicted_key{-1, -1};
     };
 
     // Create a manager with a `budget_bytes` arena using backend `be`.
@@ -129,6 +138,9 @@ public:
     void clear();
 
     const Stats& stats() const { return stats_; }
+    const EnsureInfo& last_ensure_info() const { return last_ensure_info_; }
+    void reset_stats() { stats_ = Stats{}; last_ensure_info_ = EnsureInfo{}; }
+    void set_profiler(StageProfiler* profiler) { profiler_ = profiler; }
     size_t  used_bytes() const { return arena_.used(); }
     size_t  budget_bytes() const { return arena_.capacity(); }
     size_t  resident_count() const;
@@ -144,6 +156,8 @@ private:
     std::unordered_map<ExpertKey, ExpertBlock, ExpertKeyHash> blocks_;
     int64_t tick_ = 0;
     Stats   stats_{};
+    EnsureInfo last_ensure_info_{};
+    StageProfiler* profiler_ = nullptr;
 
     ExpertBlock* find_block(int layer, int expert);
     const ExpertBlock* find_block(int layer, int expert) const;

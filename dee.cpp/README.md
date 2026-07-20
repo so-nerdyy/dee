@@ -75,7 +75,8 @@ asset, not an Ornith model checkpoint.
 ```text
 dee_cli --help
 dee_cli --shard PATH --oracle PATH --tokens N --warmup N --topk N --layers N
-        --budget BYTES --cuda --verbose
+        --budget BYTES --cuda --profile-stages
+        --profile-json PATH --trace-requests PATH --verbose
 ```
 
 Defaults are `tests/data/ornith_moe256.safetensors` and `oracle.pt`, relative to
@@ -85,12 +86,54 @@ starting a benchmark. It reports device/runtime metadata, warmup and measured
 tokens, throughput, cache budget/peak, cache activity, prefetch activity, and
 whether the output is finite.
 
+### Stage profiling and request traces
+
+Detailed profiling is opt-in so CUDA timing events do not affect the normal
+regression benchmark. Warmup uses a separate unprofiled Engine instance, so
+all reported stage timings and counters cover measured tokens only:
+
+```bash
+./build/dee_cli \
+  --shard tests/data/ornith_moe256.safetensors \
+  --oracle oracle.pt \
+  --tokens 32 --warmup 2 --topk 8 --layers 40 --cuda \
+  --profile-stages \
+  --profile-json benchmark_reports/t4-stage-profile.json
+```
+
+Add the request trace only when working-set analysis is needed:
+
+```bash
+./build/dee_cli \
+  --shard tests/data/ornith_moe256.safetensors \
+  --oracle oracle.pt \
+  --tokens 32 --warmup 2 --topk 8 --layers 40 --cuda \
+  --profile-stages \
+  --profile-json benchmark_reports/t4-stage-profile.json \
+  --trace-requests benchmark_reports/t4-request-trace.json
+```
+
+The stage profile reports CPU wall-clock spans, CUDA-event device durations,
+operation counts, token latency percentiles, request classification, transfer
+volume, and working-set/reuse statistics. CUDA timing uses a bounded reusable
+event pool and collects samples only at synchronization points already present
+in the runtime. The trace contains one record per expert request and is not
+enabled by the normal benchmark command.
+
+Summarize working-set and reuse-distance behavior with:
+
+```bash
+python3 scripts/analyze_request_trace.py \
+  benchmark_reports/t4-request-trace.json \
+  --output benchmark_reports/t4-working-set.json
+```
+
 ### What the benchmark means
 
 This is a synthetic-kernel/control-path benchmark. It validates cache
-residency, bounded pinned staging, H2D transfers, and scalar FP32 SwiGLU
+residency, bounded pinned staging, H2D transfers, and FP32 cuBLAS SwiGLU
 correctness. It is **not complete 35B end-to-end model inference**, and the
-reference scalar kernels must not be interpreted as a claim of 30+ tok/s on a
+reference kernels must not be interpreted as a claim of 30+ tok/s on a
 real 35B model. In particular, copying file-backed/pageable data into a pinned
 staging slot is host work; only the pinned-host-to-device leg is asynchronous.
 

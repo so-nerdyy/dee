@@ -101,31 +101,45 @@ void VramCacheManager::evict_until_free(size_t need) {
         bool first = true;
         for (auto& kv : blocks_) {
             ExpertBlock& b = kv.second;
-            if (!b.resident || b.pins != 0) continue;
+            if (!b.resident) continue;
+            if (b.pins != 0) {
+                ++stats_.pinned_blocks_skipped;
+                if (profiler_) profiler_->note_pinned_skip();
+                continue;
+            }
             int64_t s = eviction_score(b);
             if (first || s < worst) { worst = s; victim = &b; first = false; }
         }
         if (!victim) break; // nothing resident to evict
         arena_.free(victim->offset, victim->size);
+        last_ensure_info_.evicted = true;
+        last_ensure_info_.evicted_key = victim->key;
         victim->resident = false;
         victim->ptr = nullptr;
         // remove from map so a later ensure re-loads it
         blocks_.erase(ExpertKey{victim->key.layer, victim->key.expert});
         ++stats_.evictions;
+        if (profiler_) profiler_->note_eviction();
     }
 }
 
 bool VramCacheManager::ensure(int layer, int expert, size_t nbytes, int priority) {
     ++stats_.ensures;
+    last_ensure_info_ = EnsureInfo{};
+    const auto lookup_begin = profiler_ && profiler_->enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
     ExpertBlock* b = find_block(layer, expert);
+    if (profiler_ && profiler_->enabled()) profiler_->add_cpu(CpuStage::CacheLookup, lookup_begin);
     if (b && b->resident) {
+        last_ensure_info_.resident_hit = true;
         b->last_used = ++tick_;
         b->priority  = priority;
         ++stats_.hits;
         return true;
     }
     // not resident -> evict to make room, then allocate
+    const auto eviction_begin = profiler_ && profiler_->enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
     evict_until_free(nbytes);
+    if (profiler_ && profiler_->enabled()) profiler_->add_cpu(CpuStage::EvictionSelection, eviction_begin);
     size_t off = arena_.alloc(nbytes);
     if (off == size_t(-1)) {
         // still no room (nbytes > budget). Allocate at bump even if over budget

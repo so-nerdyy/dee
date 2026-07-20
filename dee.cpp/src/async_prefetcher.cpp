@@ -1,5 +1,6 @@
 #include "dee/async_prefetcher.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -54,30 +55,60 @@ bool AsyncPrefetcher::release_transfer(Transfer& transfer) {
     return true;
 }
 
-long AsyncPrefetcher::prefetch(int layer, int expert, const void* src, size_t nbytes, int priority) {
+void AsyncPrefetcher::record_request(RequestKind kind, int token, int logical_layer,
+                                     int resolved_layer, int expert, int priority,
+                                     int evicted_layer, int evicted_expert) {
+    ++stats_.requests;
+    ++stats_.issued;
+    switch (kind) {
+        case RequestKind::ResidentHit: ++stats_.resident_hits; break;
+        case RequestKind::InflightHit: ++stats_.inflight_hits; break;
+        case RequestKind::ColdLoad: ++stats_.cold_loads; break;
+    }
+    if (profiler_) {
+        profiler_->note_request(token, logical_layer, resolved_layer, expert, kind,
+                                cache_.used_bytes(), evicted_layer, evicted_expert, priority);
+    }
+}
+
+long AsyncPrefetcher::prefetch(int layer, int expert, const void* src, size_t nbytes,
+                               int priority, int token, int logical_layer) {
     if (!src || nbytes == 0) {
         std::fprintf(stderr, "AsyncPrefetcher: invalid source for expert (%d,%d)\n", layer, expert);
         return -1;
     }
+    const long request_key = static_cast<long>(key_id(layer, expert));
+    if (std::find(batch_keys_.begin(), batch_keys_.end(), request_key) != batch_keys_.end()) {
+        ++stats_.duplicate_requests;
+        if (profiler_) profiler_->note_duplicate_request();
+    } else {
+        batch_keys_.push_back(request_key);
+    }
     const long existing = find_inflight(layer, expert);
     if (existing >= 0 && existing < static_cast<long>(inflight_.size())) {
         Transfer& prior = inflight_[existing];
-        if (!prior.done && !prior.abandoned) return prior.id;  // never duplicate an in-flight DMA
+        if (!prior.done && !prior.abandoned) {
+            record_request(RequestKind::InflightHit, token, logical_layer, layer, expert, priority);
+            return prior.id;  // never duplicate an in-flight DMA
+        }
         if (prior.done && cache_.is_resident(layer, expert)) {
             // A resident hit must remain protected while the caller stages
             // other experts in the same batch.  Otherwise a later cold load
             // can evict this hit before wait() consumes it.
             // Route the hit through ensure() so cache-hit accounting, recency,
             // and Oracle priority stay correct on the fast path.
-            if (!cache_.ensure(layer, expert, nbytes, priority) ||
-                (!prior.cache_pin_held && !cache_.pin(layer, expert))) return -1;
+            if (!cache_.ensure(layer, expert, nbytes, priority)) return -1;
+            const auto pin_begin = profiler_ && profiler_->enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
+            if (!prior.cache_pin_held && !cache_.pin(layer, expert)) return -1;
+            if (profiler_ && profiler_->enabled()) profiler_->add_cpu(CpuStage::CacheHitPinning, pin_begin);
             prior.cache_pin_held = true;
-            ++stats_.issued;  // CLI reports requests, including resident hits.
+            record_request(RequestKind::ResidentHit, token, logical_layer, layer, expert, priority);
             return prior.id;
         }
         key_to_idx_.erase(static_cast<long>(key_id(layer, expert)));
     }
     if (!cache_.ensure(layer, expert, nbytes, priority)) return -1;
+    const VramCacheManager::EnsureInfo ensure_info = cache_.last_ensure_info();
     void* dst = cache_.data(layer, expert);
     if (!dst || !cache_.pin(layer, expert)) return -1;
 
@@ -98,7 +129,9 @@ long AsyncPrefetcher::prefetch(int layer, int expert, const void* src, size_t nb
         key_to_idx_.erase(static_cast<long>(key_id(layer, expert)));
         return -1;
     }
-    ++stats_.issued;
+    record_request(RequestKind::ColdLoad, token, logical_layer, layer, expert, priority,
+                   ensure_info.evicted ? ensure_info.evicted_key.layer : -1,
+                   ensure_info.evicted ? ensure_info.evicted_key.expert : -1);
     return transfer.id;
 }
 
@@ -127,15 +160,23 @@ bool AsyncPrefetcher::wait(int layer, int expert) {
         return cache_.is_resident(layer, expert);
     }
     if (use_cuda_) return cuda_wait(index);
+    const auto wait_begin = profiler_ && profiler_->enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
     drain_until(static_cast<int>(index));
+    if (profiler_ && profiler_->enabled()) profiler_->add_cpu(CpuStage::HostWaiting, wait_begin);
     return transfer.done && cache_.is_resident(layer, expert);
 }
 
 void AsyncPrefetcher::synchronize_all() {
     if (use_cuda_) {
 #ifdef DEE_CUDA
+        const auto wait_begin = profiler_ && profiler_->enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
         if (stream_ && !DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(static_cast<cudaStream_t>(stream_)),
                                               "cudaStreamSynchronize(prefetch)")) return;
+        if (stream_ && profiler_ && profiler_->enabled()) {
+            profiler_->add_cpu(CpuStage::Synchronization, wait_begin);
+            profiler_->note_host_synchronization();
+            profiler_->cuda_collect_ready();
+        }
 #endif
         for (auto& transfer : inflight_) {
             if (!transfer.done && !transfer.abandoned) {
@@ -218,20 +259,36 @@ bool AsyncPrefetcher::cuda_submit(long index) {
     }
 
     PinnedStagingSlot& slot = staging_slots_[chosen];
+    const auto copy_begin = profiler_ && profiler_->enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
     std::memcpy(slot.ptr, transfer.src, transfer.nbytes);  // mmap/pageable -> pinned is CPU work
+    if (profiler_ && profiler_->enabled()) {
+        profiler_->add_cpu(CpuStage::MmapToPinned, copy_begin);
+        profiler_->note_mmap_copy(transfer.nbytes);
+    }
+    stats_.mmap_to_pinned_bytes += transfer.nbytes;
     slot.busy = true;
     next_staging_slot_ = (chosen + 1) % staging_slots_.size();
     transfer.staging_slot = chosen;
 
+    const auto submission_begin = profiler_ && profiler_->enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
     cudaEvent_t event = nullptr;
     if (!DEE_CUDA_CHECK_NAMED(cudaEventCreateWithFlags(&event, cudaEventDisableTiming),
                               "cudaEventCreateWithFlags(prefetch completion)")) return false;
     transfer.event = static_cast<void*>(event);
+    const size_t h2d_ticket = profiler_ && profiler_->enabled()
+        ? profiler_->cuda_begin(GpuStage::H2D, stream_) : static_cast<size_t>(-1);
     if (!DEE_CUDA_CHECK_NAMED(cudaMemcpyAsync(transfer.dst, slot.ptr, transfer.nbytes,
                                               cudaMemcpyHostToDevice, static_cast<cudaStream_t>(stream_)),
                               "cudaMemcpyAsync(pinned staging to expert cache)")) return false;
+    if (profiler_ && profiler_->enabled() && !profiler_->cuda_end(h2d_ticket, stream_)) return false;
     if (!DEE_CUDA_CHECK_NAMED(cudaEventRecord(event, static_cast<cudaStream_t>(stream_)),
                               "cudaEventRecord(prefetch completion)")) return false;
+    if (profiler_ && profiler_->enabled()) {
+        profiler_->add_cpu(CpuStage::TransferSubmission, submission_begin);
+        profiler_->note_h2d_copy(transfer.nbytes);
+    }
+    stats_.h2d_bytes += transfer.nbytes;
+    ++stats_.h2d_copies;
     return true;
 #else
     (void)index;
@@ -243,8 +300,13 @@ bool AsyncPrefetcher::cuda_wait(long index) {
 #ifdef DEE_CUDA
     if (index < 0 || index >= static_cast<long>(inflight_.size())) return false;
     Transfer& transfer = inflight_[index];
+    const auto wait_begin = profiler_ && profiler_->enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
     if (transfer.event && !DEE_CUDA_CHECK_NAMED(cudaEventSynchronize(static_cast<cudaEvent_t>(transfer.event)),
                                                  "cudaEventSynchronize(prefetch completion)")) return false;
+    if (profiler_ && profiler_->enabled()) {
+        profiler_->add_cpu(CpuStage::HostWaiting, wait_begin);
+        profiler_->note_host_synchronization();
+    }
     transfer.done = true;
     release_transfer(transfer);
     return cache_.is_resident(transfer.key.layer, transfer.key.expert);

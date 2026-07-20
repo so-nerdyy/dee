@@ -57,7 +57,10 @@ public:
     // cache slot for (layer, expert). Reserves the VRAM slot via the cache.
     // Returns a transfer id (>=0) or -1 on failure. `priority` feeds the cache.
     long prefetch(int layer, int expert, const void* src, size_t nbytes,
-                  int priority = 0);
+                  int priority = 0, int token = -1, int logical_layer = -1);
+
+    // Delimit one logical expert batch for duplicate-request accounting.
+    void begin_batch() { batch_keys_.clear(); }
 
     // Ensure (layer, expert) is resident AND its transfer has completed before
     // compute uses it. Blocks only on this one expert (sync fallback). Returns
@@ -76,11 +79,24 @@ public:
 
     // Stats (mirrors prototype's fallback accounting)
     struct Stats {
-        uint64_t issued     = 0;
+        uint64_t issued     = 0;  // compatibility alias for requests
+        uint64_t requests   = 0;
+        uint64_t resident_hits = 0;
+        uint64_t inflight_hits = 0;
+        uint64_t cold_loads = 0;
+        uint64_t duplicate_requests = 0;
         uint64_t waited     = 0;  // wait() calls
         uint64_t fallbacks  = 0;  // wait() had to block on an unfinished xfer
+        uint64_t mmap_to_pinned_bytes = 0;
+        uint64_t h2d_bytes = 0;
+        uint64_t h2d_copies = 0;
     };
     const Stats& stats() const { return stats_; }
+    bool accounting_valid() const {
+        return stats_.requests == stats_.resident_hits + stats_.inflight_hits + stats_.cold_loads;
+    }
+    void reset_stats() { stats_ = Stats{}; batch_keys_.clear(); }
+    void set_profiler(StageProfiler* profiler) { profiler_ = profiler; }
 
     bool using_cuda() const { return use_cuda_; }
 
@@ -92,6 +108,7 @@ private:
     // mock backend state
     std::vector<Transfer>        inflight_;   // ordered submission queue
     std::unordered_map<long, int> key_to_idx_; // ExpertKey -> idx in inflight_
+    std::vector<long> batch_keys_;
 
     struct PinnedStagingSlot {
         void* ptr = nullptr;
@@ -108,6 +125,7 @@ private:
 
     long   next_id_ = 0;
     Stats  stats_{};
+    StageProfiler* profiler_ = nullptr;
 
     long   find_inflight(int layer, int expert) const;
     void   drain_until(int idx);   // mock: run copies up to idx (inclusive)
@@ -115,6 +133,9 @@ private:
     bool   cuda_submit(long idx);  // guarded real submit + event record
     bool   cuda_wait(long idx);    // guarded real event sync
     bool   release_transfer(Transfer& transfer);
+    void   record_request(RequestKind kind, int token, int logical_layer,
+                          int resolved_layer, int expert, int priority,
+                          int evicted_layer = -1, int evicted_expert = -1);
 };
 
 } // namespace dee

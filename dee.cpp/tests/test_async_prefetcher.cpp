@@ -67,8 +67,11 @@ int main() {
     // --- Prefetch Layer0/Expert0 gate_proj (BF16, 256 B) ---
     dee::TensorView v = resolver.resolve_expert(0, 0, dee::TensorResolver::GATE_PROJ);
     check("resolved expert0 gate_proj", v.ok());
+    prefetcher.begin_batch();
     long id = prefetcher.prefetch(0, 0, v.data, v.nbytes, /*priority=*/0);
     check("prefetch issued id>=0", id >= 0);
+    long duplicate_id = prefetcher.prefetch(0, 0, v.data, v.nbytes, /*priority=*/0);
+    check("duplicate in-flight request reuses transfer", duplicate_id == id);
     check("in_flight == 1", prefetcher.in_flight() == 1);
     check("not yet resident-done (mock: copy is lazy)", cache.is_resident(0, 0));
 
@@ -93,6 +96,7 @@ int main() {
     //     expert's wait() should not require expert1 to be "needed" by compute.
     //     Here we just confirm issuing more transfers doesn't mutate expert0. ---
     dee::TensorView v1 = resolver.resolve_expert(0, 1, dee::TensorResolver::UP_PROJ);
+    prefetcher.begin_batch();
     long id1 = prefetcher.prefetch(0, 1, v1.data, v1.nbytes, 0);
     check("prefetch expert1 issued", id1 >= 0);
     check("expert0 data still intact after expert1 issued",
@@ -111,6 +115,7 @@ int main() {
     //     or the cold allocation could evict it before compute consumes it. ---
     dee::TensorView v2 = resolver.resolve_expert(0, 2, dee::TensorResolver::DOWN_PROJ);
     check("resolved expert2 down_proj", v2.ok());
+    prefetcher.begin_batch();
     const uint64_t hits_before = cache.stats().hits;
     long id0_hit = prefetcher.prefetch(0, 0, v.data, v.nbytes, 1);
     check("resident expert0 request reuses transfer", id0_hit == id);
@@ -132,6 +137,13 @@ int main() {
     // --- synchronize_all drains everything; cache sanity. ---
     prefetcher.synchronize_all();
     check("after sync, expert2 resident", cache.is_resident(0, 2));
+    const dee::AsyncPrefetcher::Stats& stats = prefetcher.stats();
+    check("request accounting invariant", prefetcher.accounting_valid());
+    check("request classifications total five", stats.requests == 5);
+    check("resident hit classified", stats.resident_hits == 1);
+    check("in-flight hit classified", stats.inflight_hits == 1);
+    check("cold loads classified", stats.cold_loads == 3);
+    check("same-batch duplicate classified", stats.duplicate_requests == 1);
 
     printf("=== %s ===\n", g_fail == 0 ? "ALL PASS" : "FAILURES");
     return g_fail == 0 ? 0 : 1;
