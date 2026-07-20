@@ -49,7 +49,7 @@ if(DEE_CUDA)
     if(DEE_CUDA_VALIDATE)
         target_compile_definitions(dee_core PUBLIC DEE_CUDA_VALIDATE=1)
     endif()
-    target_link_libraries(dee_core PUBLIC CUDA::cudart)
+    target_link_libraries(dee_core PUBLIC CUDA::cudart CUDA::cublas)
     set_target_properties(dee_core PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 endif()
 

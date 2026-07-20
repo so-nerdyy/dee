@@ -39,6 +39,7 @@
 
 #ifdef DEE_CUDA
 #include <cuda_runtime.h>
+#include <cublas_v2.h>
 #endif
 
 namespace dee {
@@ -120,7 +121,9 @@ private:
     float* d_h_in_   = nullptr;   // [hidden]
     float* d_h_out_  = nullptr;   // [hidden]
     float* d_hbuf_   = nullptr;   // [inter]  scratch for swiglu phase 1
+    float* d_ubuf_   = nullptr;   // [inter]  up-projection scratch
     float* d_ybuf_   = nullptr;   // [topk * hidden] per-expert outputs
+    cublasHandle_t cublas_handle_ = nullptr;
     size_t cuda_total_ = 0, cuda_free_ = 0;  // from cudaMemGetInfo
     void cuda_cleanup();
     bool forward_layer_cuda(int layer, const float* h_in, float* h_out);

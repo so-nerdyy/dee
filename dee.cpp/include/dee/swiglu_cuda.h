@@ -10,6 +10,7 @@
 
 #ifdef DEE_CUDA
 #include <cuda_runtime.h>
+#include <cublas_v2.h>
 
 namespace dee {
 
@@ -18,8 +19,9 @@ namespace dee {
 //   y[o] = Σ_i Wd[o*inter + i] * h[i]                 (phase 2)
 // W layout: [gate: inter*hidden][up: inter*hidden][down: hidden*inter].
 // d_hbuf is a caller-owned inter-float scratch buffer (reused across experts).
-bool swiglu_expert_cuda(const float* d_W, const float* d_x, float* d_hbuf,
-                        float* d_y, int inter, int hidden, cudaStream_t stream);
+bool swiglu_expert_cuda(cublasHandle_t handle, const float* d_W, const float* d_x,
+                        float* d_gate, float* d_up, float* d_y,
+                        int inter, int hidden, cudaStream_t stream);
 
 // Combine K expert outputs (each hidden floats, packed in d_ybuf) -> mean.
 bool combine_cuda(const float* d_ybuf, float* d_out, int K, int hidden,

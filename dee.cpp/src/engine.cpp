@@ -210,12 +210,15 @@ bool Engine::init(const EngineConfig& cfg) {
         if (!DEE_CUDA_CHECK_NAMED(cudaGetDeviceProperties(&prop, device), "cudaGetDeviceProperties")) return false;
         if (!DEE_CUDA_CHECK_NAMED(cudaStreamCreateWithFlags(&compute_stream_, cudaStreamNonBlocking),
                                   "cudaStreamCreateWithFlags(compute)")) return false;
+        if (!DEE_CUBLAS_CHECK_NAMED(cublasCreate(&cublas_handle_), "cublasCreate") ||
+            !DEE_CUBLAS_CHECK_NAMED(cublasSetStream(cublas_handle_, compute_stream_), "cublasSetStream(compute)")) return false;
         auto dev_alloc = [](size_t n) -> float* { float* p = nullptr; return DEE_CUDA_CHECK_NAMED(cudaMalloc(reinterpret_cast<void**>(&p), n), "cudaMalloc(engine work buffer)") ? p : nullptr; };
         d_h_in_  = dev_alloc((size_t)hidden_ * sizeof(float));
         d_h_out_ = dev_alloc((size_t)hidden_ * sizeof(float));
         d_hbuf_  = dev_alloc((size_t)inter_  * sizeof(float));
+        d_ubuf_  = dev_alloc((size_t)inter_  * sizeof(float));
         d_ybuf_  = dev_alloc((size_t)cfg.topk * hidden_ * sizeof(float));
-        if (!d_h_in_ || !d_h_out_ || !d_hbuf_ || !d_ybuf_) {
+        if (!d_h_in_ || !d_h_out_ || !d_hbuf_ || !d_ubuf_ || !d_ybuf_) {
             fprintf(stderr, "[engine] device work-buffer allocation failed\n");
             return false;
         }
@@ -304,7 +307,9 @@ void Engine::cuda_cleanup() {
     if (d_h_in_)  { DEE_CUDA_CHECK_NAMED(cudaFree(d_h_in_), "cudaFree(d_h_in)");  d_h_in_  = nullptr; }
     if (d_h_out_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_h_out_), "cudaFree(d_h_out)"); d_h_out_ = nullptr; }
     if (d_hbuf_)  { DEE_CUDA_CHECK_NAMED(cudaFree(d_hbuf_), "cudaFree(d_hbuf)");  d_hbuf_  = nullptr; }
+    if (d_ubuf_)  { DEE_CUDA_CHECK_NAMED(cudaFree(d_ubuf_), "cudaFree(d_ubuf)");  d_ubuf_  = nullptr; }
     if (d_ybuf_)  { DEE_CUDA_CHECK_NAMED(cudaFree(d_ybuf_), "cudaFree(d_ybuf)");  d_ybuf_  = nullptr; }
+    if (cublas_handle_) { DEE_CUBLAS_CHECK_NAMED(cublasDestroy(cublas_handle_), "cublasDestroy"); cublas_handle_ = nullptr; }
     if (compute_stream_) { DEE_CUDA_CHECK_NAMED(cudaStreamDestroy(compute_stream_), "cudaStreamDestroy(compute)"); compute_stream_ = nullptr; }
 }
 
@@ -333,7 +338,7 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
             const int e = experts[k];
             if (!prefetcher_.wait(layer, e) || !cache_.pin(layer, e)) return false;
             const float* d_blob = static_cast<const float*>(cache_.data(layer, e));
-            if (!d_blob || !swiglu_expert_cuda(d_blob, d_h_in_, d_hbuf_,
+            if (!d_blob || !swiglu_expert_cuda(cublas_handle_, d_blob, d_h_in_, d_hbuf_, d_ubuf_,
                                                 d_ybuf_ + (size_t)k * hidden_, inter_, hidden_, compute_stream_)) {
                 cache_.unpin(layer, e);
                 return false;
