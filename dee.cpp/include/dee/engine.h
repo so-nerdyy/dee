@@ -16,9 +16,10 @@
 //       hidden = moe_swiglu(L, hidden, experts)      // SwiGLU combine
 //     emit(hidden)
 //
-// The expert weights are bundled (gate|up|down) into one F32 staging blob per
-// shard-expert and streamed into the VRAM arena as a single block. The forward
-// pass slices the three projections out of that block. SwiGLU is plain C++
+// CPU mode bundles gate|up|down into an F32 host blob. CUDA keeps a BF16 host
+// blob through pinned staging and H2D, then expands it into one F32 cache block
+// on the prefetch stream. The forward pass slices the projections from that
+// block. SwiGLU is plain C++
 // (row-major matmuls); the CUDA/ggml path slots in later behind the same API.
 //
 // On a box without a GPU (this WSL build, DEE_CUDA=OFF) the cache + prefetcher

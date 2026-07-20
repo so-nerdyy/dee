@@ -5,6 +5,11 @@ Expert Eviction control path: a safetensors shard is mapped read-only, Oracle
 predictions select experts, a fixed cache manages residency, and CUDA runs a
 small FP32 SwiGLU reference kernel on resident expert weights.
 
+On the CUDA streaming path, BF16 weights remain packed through the bounded
+pinned staging ring and H2D copy, then expand exactly to FP32 on the prefetch
+stream before the cache entry becomes ready. This halves weight-transfer bytes
+without changing the FP32 cache budget or cuBLAS compute layout.
+
 The supported implementation is deliberately singular:
 
 ```text
@@ -117,8 +122,9 @@ The stage profile reports CPU wall-clock spans, CUDA-event device durations,
 operation counts, token latency percentiles, request classification, transfer
 volume, and working-set/reuse statistics. CUDA timing uses a bounded reusable
 event pool and collects samples only at synchronization points already present
-in the runtime. The trace contains one record per expert request and is not
-enabled by the normal benchmark command.
+in the runtime. BF16-to-FP32 device expansion is reported separately from H2D
+and projection time. The trace contains one record per expert request and is
+not enabled by the normal benchmark command.
 
 Summarize working-set and reuse-distance behavior with:
 
@@ -147,11 +153,15 @@ claims; the default 6 MiB end-to-end regression remains unchanged.
 ### What the benchmark means
 
 This is a synthetic-kernel/control-path benchmark. It validates cache
-residency, bounded pinned staging, H2D transfers, and FP32 cuBLAS SwiGLU
-correctness. It is **not complete 35B end-to-end model inference**, and the
+residency, bounded pinned BF16 staging, H2D transfers, exact GPU expansion, and
+FP32 cuBLAS SwiGLU correctness. It is **not complete 35B end-to-end model inference**, and the
 reference kernels must not be interpreted as a claim of 30+ tok/s on a
 real 35B model. In particular, copying file-backed/pageable data into a pinned
 staging slot is host work; only the pinned-host-to-device leg is asynchronous.
+
+The measured T4 profiling campaign, controlled A-G decomposition, accepted
+optimization, and rejected experiments are recorded in
+[`T4_PROFILE_RESULTS.md`](T4_PROFILE_RESULTS.md).
 
 ### Debugging CUDA
 

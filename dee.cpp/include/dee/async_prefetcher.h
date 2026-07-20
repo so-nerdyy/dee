@@ -29,7 +29,7 @@ namespace dee {
 struct Transfer {
     ExpertKey key{};
     void*     dst      = nullptr;  // VRAM arena slot (from VramCacheManager)
-    const void* src    = nullptr;  // WeightMmap host pointer
+    const void* src    = nullptr;  // stable pageable host staging pointer
     size_t    nbytes   = 0;        // destination/cache bytes
     size_t    source_nbytes = 0;   // bytes copied through pinned memory/H2D
     bool      expand_bf16 = false;
