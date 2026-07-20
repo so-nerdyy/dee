@@ -95,11 +95,16 @@ def main() -> int:
     parser.add_argument("--stage", required=True, choices=("baseline", "candidate"))
     parser.add_argument("--remote-repo", default="~/dee/dee")
     parser.add_argument("--prepare", help="one-time remote build/setup command")
-    parser.add_argument("--benchmark", required=True, help="remote command run exactly three times")
+    # Must be the final controller argument. Using REMAINDER preserves a remote
+    # command's own flags when this controller is launched from PowerShell.
+    parser.add_argument("--benchmark", nargs=argparse.REMAINDER, help="remote command run exactly three times")
     parser.add_argument("--profile", help="optional one-time remote profiler command")
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--reports", type=Path, default=Path("benchmark_reports"))
     args = parser.parse_args()
+    if not args.benchmark:
+        parser.error("--benchmark requires a remote command and must be the final controller argument")
+    benchmark_command = " ".join(args.benchmark)
 
     local_clean(Path.cwd())
     report: dict[str, Any] = {
@@ -127,7 +132,7 @@ def main() -> int:
 
     for index in range(3):
         preflight(args.target, args.remote_repo, args.timeout, args.branch, args.commit)
-        run = ssh(args.target, f"set -e; cd {args.remote_repo}/dee.cpp; {args.benchmark}", args.timeout)
+        run = ssh(args.target, f"set -e; cd {args.remote_repo}/dee.cpp; {benchmark_command}", args.timeout)
         require_ok(run, f"benchmark run {index + 1}")
         run["throughput_tokens_per_second"] = throughput(run["stdout"])
         report["runs"].append(run)
