@@ -145,6 +145,22 @@ int main() {
     check("cold loads classified", stats.cold_loads == 3);
     check("same-batch duplicate classified", stats.duplicate_requests == 1);
 
+    // A controlled full-resident profile preloads the cache and then resets
+    // transfer/event state before measurement. Re-requesting such a resident
+    // block must create a fresh completed transfer record and hold a pin until
+    // wait(), without issuing another copy.
+    prefetcher.reset();
+    prefetcher.reset_stats();
+    cache.reset_stats();
+    prefetcher.begin_batch();
+    long preloaded_hit = prefetcher.prefetch(0, 2, v2.data, v2.nbytes, 0);
+    check("preloaded resident is reusable after transfer reset", preloaded_hit >= 0);
+    check("preloaded resident wait succeeds", prefetcher.wait(0, 2));
+    check("preloaded request classified as resident hit",
+          prefetcher.stats().requests == 1 && prefetcher.stats().resident_hits == 1 &&
+          prefetcher.stats().cold_loads == 0);
+    check("preloaded resident does not reload", cache.stats().hits == 1 && cache.stats().loads == 0);
+
     printf("=== %s ===\n", g_fail == 0 ? "ALL PASS" : "FAILURES");
     return g_fail == 0 ? 0 : 1;
 }

@@ -173,6 +173,7 @@ private:
     uint64_t stream_waits_ = 0;
     uint64_t host_synchronizations_ = 0;
     uint64_t duplicate_requests_ = 0;
+    uint64_t repeated_hits_ = 0;
 
     uint64_t request_index_ = 0;
     std::unordered_map<uint64_t, uint64_t> last_request_index_;

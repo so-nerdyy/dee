@@ -24,6 +24,9 @@ void usage(const char* argv0) {
         "  --budget BYTES     Expert-cache budget (0 = four expert blobs)\n"
         "  --cuda             Use CUDA; requires a DEE_CUDA build and a GPU\n"
         "  --profile-stages   Enable detailed CPU/CUDA stage timing\n"
+        "  --profile-scenario M Controlled profile: end-to-end, full-resident,\n"
+        "                       resident-bypass, transfer-only, compute-only,\n"
+        "                       oracle-only, or cache-metadata-only\n"
         "  --profile-json P   Write benchmark and stage summary JSON to P\n"
         "  --trace-requests P Write detailed expert-request trace JSON to P\n"
         "  --verbose          Print additional configuration details\n",
@@ -59,6 +62,23 @@ bool parse_size(const char* text, size_t& out) {
     return true;
 }
 
+bool parse_scenario(const char* text, dee::BenchmarkScenario& out) {
+    if (!text) return false;
+    const std::string value(text);
+    if (value == "end-to-end") out = dee::BenchmarkScenario::EndToEnd;
+    else if (value == "full-resident") out = dee::BenchmarkScenario::FullResident;
+    else if (value == "resident-bypass") out = dee::BenchmarkScenario::ResidentBypass;
+    else if (value == "transfer-only") out = dee::BenchmarkScenario::TransferOnly;
+    else if (value == "compute-only") out = dee::BenchmarkScenario::ComputeOnly;
+    else if (value == "oracle-only") out = dee::BenchmarkScenario::OracleOnly;
+    else if (value == "cache-metadata-only") out = dee::BenchmarkScenario::CacheMetadataOnly;
+    else {
+        std::fprintf(stderr, "[cli] invalid --profile-scenario value: %s\n", text);
+        return false;
+    }
+    return true;
+}
+
 const char* require_value(int& index, int argc, char** argv, const char* option) {
     if (index + 1 >= argc) {
         std::fprintf(stderr, "[cli] %s requires a value\n", option);
@@ -69,6 +89,7 @@ const char* require_value(int& index, int argc, char** argv, const char* option)
 
 void print_result(const dee::EngineConfig& cfg, const dee::EngineStats& stats, int warmup) {
     std::printf("\n=== dee.cpp benchmark ===\n");
+    std::printf("profile scenario       : %s\n", dee::benchmark_scenario_name(cfg.scenario));
     if (cfg.use_cuda) {
         std::printf("CUDA device name       : %s\n", stats.cuda_device_name.c_str());
         std::printf("compute capability     : %d.%d\n", stats.cuda_compute_major, stats.cuda_compute_minor);
@@ -164,6 +185,7 @@ std::string benchmark_json(const dee::EngineConfig& cfg, const dee::EngineStats&
     std::ostringstream out;
     out << std::fixed << std::setprecision(6);
     out << "{\"benchmark\":{\"backend\":\"" << (cfg.use_cuda ? "cuda" : "cpu") << '\"'
+        << ",\"scenario\":\"" << dee::benchmark_scenario_name(cfg.scenario) << '\"'
         << ",\"cuda_device\":\"" << json_escape(stats.cuda_device_name) << '\"'
         << ",\"compute_capability\":\"" << stats.cuda_compute_major << '.' << stats.cuda_compute_minor << '\"'
         << ",\"cuda_runtime_version\":" << stats.cuda_runtime_version
@@ -236,6 +258,10 @@ int main(int argc, char** argv) {
             if (!(value = require_value(i, argc, argv, "--profile-json"))) return 2;
             profile_json_path = value;
             cfg.profile_stages = true;
+        } else if (arg == "--profile-scenario") {
+            if (!(value = require_value(i, argc, argv, "--profile-scenario")) ||
+                !parse_scenario(value, cfg.scenario)) return 2;
+            cfg.profile_stages = true;
         } else if (arg == "--trace-requests") {
             if (!(value = require_value(i, argc, argv, "--trace-requests"))) return 2;
             trace_json_path = value;
@@ -254,6 +280,12 @@ int main(int argc, char** argv) {
         return 2;
     }
 #endif
+
+    if (cfg.scenario != dee::BenchmarkScenario::EndToEnd && !cfg.use_cuda) {
+        std::fprintf(stderr, "[cli] --profile-scenario %s requires --cuda\n",
+                     dee::benchmark_scenario_name(cfg.scenario));
+        return 2;
+    }
 
     if (warmup_tokens > 0) {
         dee::EngineConfig warmup = cfg;

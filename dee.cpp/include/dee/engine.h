@@ -46,6 +46,18 @@
 
 namespace dee {
 
+enum class BenchmarkScenario {
+    EndToEnd,
+    FullResident,
+    ResidentBypass,
+    TransferOnly,
+    ComputeOnly,
+    OracleOnly,
+    CacheMetadataOnly
+};
+
+const char* benchmark_scenario_name(BenchmarkScenario scenario);
+
 struct EngineConfig {
     std::string shard_path;    // safetensors MoE shard (mapped by WeightMmap)
     std::string oracle_path;   // PyTorch .pt Oracle (read by PtLoader)
@@ -59,6 +71,7 @@ struct EngineConfig {
     bool        verbose     = false;
     bool        profile_stages = false;
     bool        trace_requests = false;
+    BenchmarkScenario scenario = BenchmarkScenario::EndToEnd;
 };
 
 struct EngineStats {
@@ -148,6 +161,9 @@ private:
 
     EngineStats stats_{};
     int current_token_ = -1;
+    uint64_t scenario_requests_ = 0;
+    uint64_t scenario_resident_hits_ = 0;
+    uint64_t scenario_cold_loads_ = 0;
 
     // map a model layer to the shard layer that actually exists (synthetic
     // single-layer shards expose only layer 0).
@@ -160,6 +176,8 @@ private:
     // Stream `expert` from a resolved shard layer into VRAM.  The cache key
     // must describe the source weights, not merely the logical model layer.
     bool stage_expert(int logical_layer, int source_layer, int expert, int priority);
+    bool prepare_profile_scenario();
+    bool preload_all_experts();
 };
 
 } // namespace dee

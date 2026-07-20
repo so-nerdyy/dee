@@ -75,7 +75,7 @@ asset, not an Ornith model checkpoint.
 ```text
 dee_cli --help
 dee_cli --shard PATH --oracle PATH --tokens N --warmup N --topk N --layers N
-        --budget BYTES --cuda --profile-stages
+        --budget BYTES --cuda --profile-stages --profile-scenario MODE
         --profile-json PATH --trace-requests PATH --verbose
 ```
 
@@ -127,6 +127,22 @@ python3 scripts/analyze_request_trace.py \
   benchmark_reports/t4-request-trace.json \
   --output benchmark_reports/t4-working-set.json
 ```
+
+For controlled A-G decomposition, run:
+
+```bash
+./scripts/profile_scenarios.sh
+```
+
+This writes one JSON report for each of `end-to-end`, `full-resident`,
+`resident-bypass`, `transfer-only`, `compute-only`, `oracle-only`, and
+`cache-metadata-only`. Full-resident and resident-bypass preload every physical
+expert before the measured clock and retain the Oracle-driven request sequence.
+The other modes are explicit ablations: disabled compute means their recurrent
+hidden state and later Oracle choices cannot be identical to end-to-end. The
+compute-only mode uses a deterministic expert schedule and does not include
+Oracle time. These modes are diagnostic controls, not alternative throughput
+claims; the default 6 MiB end-to-end regression remains unchanged.
 
 ### What the benchmark means
 

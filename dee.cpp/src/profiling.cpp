@@ -48,6 +48,30 @@ void StageProfiler::configure(bool enabled, bool trace_enabled,
     trace_enabled_ = enabled && trace_enabled;
     expert_blob_bytes_ = expert_blob_bytes;
     oracle_experts_ = oracle_experts;
+    cpu_ms_.fill(0.0);
+    gpu_ms_.fill(0.0);
+    gpu_samples_.fill(0);
+    token_latencies_ms_.clear();
+    layer_wall_ms_ = 0.0;
+    layer_count_ = 0;
+    evictions_ = 0;
+    pinned_blocks_skipped_ = 0;
+    mmap_to_pinned_bytes_ = 0;
+    h2d_bytes_ = 0;
+    h2d_copies_ = 0;
+    cublas_calls_ = 0;
+    kernel_launches_ = 0;
+    stream_waits_ = 0;
+    host_synchronizations_ = 0;
+    duplicate_requests_ = 0;
+    repeated_hits_ = 0;
+    request_index_ = 0;
+    last_request_index_.clear();
+    unique_requested_.clear();
+    unique_loaded_.clear();
+    token_working_sets_.clear();
+    trace_.clear();
+    predictions_.clear();
 }
 
 void StageProfiler::add_cpu(CpuStage stage, TimePoint begin) {
@@ -83,6 +107,9 @@ void StageProfiler::note_request(int token, int logical_layer, int resolved_laye
     if (token >= 0) token_working_sets_[token].insert(key);
 
     const auto previous = last_request_index_.find(key);
+    if (previous != last_request_index_.end() && kind != RequestKind::ColdLoad) {
+        ++repeated_hits_;
+    }
     const int64_t reuse_distance = previous == last_request_index_.end()
         ? -1
         : static_cast<int64_t>(request_index_ - previous->second - 1);
@@ -284,7 +311,7 @@ StageProfile StageProfiler::finish(double total_wall_ms, uint64_t resident_hits,
         ? result.expert_requests - result.unique_experts_requested : 0;
     result.repeated_requests = repeated;
     result.reused_before_eviction_fraction = repeated
-        ? static_cast<double>(resident_hits) / repeated : 0.0;
+        ? static_cast<double>(repeated_hits_) / repeated : 0.0;
 
     double overlap_sum = 0.0;
     uint64_t overlap_pairs = 0;

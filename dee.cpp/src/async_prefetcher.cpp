@@ -107,6 +107,26 @@ long AsyncPrefetcher::prefetch(int layer, int expert, const void* src, size_t nb
         }
         key_to_idx_.erase(static_cast<long>(key_id(layer, expert)));
     }
+    if (cache_.is_resident(layer, expert)) {
+        if (!cache_.ensure(layer, expert, nbytes, priority)) return -1;
+        const auto pin_begin = profiler_ && profiler_->enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
+        if (!cache_.pin(layer, expert)) return -1;
+        if (profiler_ && profiler_->enabled()) profiler_->add_cpu(CpuStage::CacheHitPinning, pin_begin);
+
+        Transfer transfer;
+        transfer.key = ExpertKey{layer, expert};
+        transfer.dst = cache_.data(layer, expert);
+        transfer.src = src;
+        transfer.nbytes = nbytes;
+        transfer.done = true;
+        transfer.id = next_id_++;
+        transfer.cache_pin_held = true;
+        inflight_.push_back(transfer);
+        const long resident_index = static_cast<long>(inflight_.size() - 1);
+        key_to_idx_[request_key] = static_cast<int>(resident_index);
+        record_request(RequestKind::ResidentHit, token, logical_layer, layer, expert, priority);
+        return transfer.id;
+    }
     if (!cache_.ensure(layer, expert, nbytes, priority)) return -1;
     const VramCacheManager::EnsureInfo ensure_info = cache_.last_ensure_info();
     void* dst = cache_.data(layer, expert);
