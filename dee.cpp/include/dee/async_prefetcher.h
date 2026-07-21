@@ -35,6 +35,7 @@ struct Transfer {
     bool      expand_bf16 = false;
     bool      cache_fp16 = false;
     bool      dequantize_int8 = false;
+    bool      dequantize_int4 = false;
     size_t    projection_elements = 0;
     float     quant_scales[3] = {1.0f, 1.0f, 1.0f};
     bool      source_pinned = false;
@@ -83,6 +84,12 @@ public:
                               bool source_pinned = false);
 
     long prefetch_int8_to_f16(int layer, int expert, const int8_t* src,
+                              size_t elements, size_t projection_elements,
+                              const float scales[3], int priority = 0,
+                              int token = -1, int logical_layer = -1,
+                              bool source_pinned = false);
+
+    long prefetch_int4_to_f16(int layer, int expert, const uint8_t* src,
                               size_t elements, size_t projection_elements,
                               const float scales[3], int priority = 0,
                               int token = -1, int logical_layer = -1,
@@ -170,6 +177,7 @@ private:
     long   prefetch_impl(int layer, int expert, const void* src,
                          size_t source_nbytes, size_t destination_nbytes,
                          bool expand_bf16, bool cache_fp16, bool dequantize_int8,
+                         bool dequantize_int4,
                          size_t projection_elements, const float* quant_scales,
                          bool source_pinned,
                          int priority, int token,

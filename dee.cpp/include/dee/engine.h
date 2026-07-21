@@ -68,7 +68,8 @@ const char* device_cache_dtype_name(DeviceCacheDType dtype);
 
 enum class WeightTransferDType {
     Bf16,
-    Int8
+    Int8,
+    Int4
 };
 
 const char* weight_transfer_dtype_name(WeightTransferDType dtype);
@@ -207,6 +208,7 @@ private:
     const float* get_staging(int source_layer, int expert);
     const uint16_t* get_staging_bf16(int source_layer, int expert);
     const QuantizedExpert* get_staging_int8(int source_layer, int expert);
+    const QuantizedExpert* get_staging_int4(int source_layer, int expert);
 
     // Stream `expert` from a resolved shard layer into VRAM.  The cache key
     // must describe the source weights, not merely the logical model layer.

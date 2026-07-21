@@ -44,6 +44,20 @@ __global__ void int8_to_f16_kernel(const int8_t* source, __half* destination,
     destination[index] = __float2half_rn(static_cast<float>(source[index]) * scale);
 }
 
+__global__ void int4_to_f16_kernel(const uint8_t* source, __half* destination,
+                                   size_t elements, size_t projection_elements,
+                                   float gate_scale, float up_scale,
+                                   float down_scale) {
+    const size_t index = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (index >= elements) return;
+    const uint8_t packed = source[index / 2];
+    const uint8_t nibble = index & 1 ? packed >> 4 : packed & 0x0f;
+    const int value = nibble >= 8 ? static_cast<int>(nibble) - 16 : nibble;
+    const float scale = index < projection_elements ? gate_scale
+        : (index < 2 * projection_elements ? up_scale : down_scale);
+    destination[index] = __float2half_rn(static_cast<float>(value) * scale);
+}
+
 bool valid_conversion(const void* source, const void* destination, size_t elements,
                       cudaStream_t stream, const char* name) {
     if (!source || !destination || !stream || elements == 0) {
@@ -156,6 +170,36 @@ bool int8_to_f16_cuda(const int8_t* source, void* destination, size_t elements,
 #ifdef DEE_CUDA_VALIDATE
     return DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(stream),
                                 "cudaStreamSynchronize(INT8-to-FP16 validation)");
+#else
+    return true;
+#endif
+}
+
+bool int4_to_f16_cuda(const uint8_t* source, void* destination, size_t elements,
+                      size_t projection_elements, const float scales[3],
+                      cudaStream_t stream, StageProfiler* profiler) {
+    if (!valid_conversion(source, destination, elements, stream,
+                          "INT4-to-FP16 conversion") || !scales ||
+        projection_elements == 0 || elements != 3 * projection_elements) {
+        std::fprintf(stderr, "[cuda] invalid INT4 projection layout (elements=%zu projection=%zu)\n",
+                     elements, projection_elements);
+        return false;
+    }
+    const unsigned int blocks = conversion_blocks(elements, "INT4-to-FP16 conversion");
+    if (!blocks) return false;
+    const size_t ticket = profiler && profiler->enabled()
+        ? profiler->cuda_begin(GpuStage::WeightConversion, static_cast<void*>(stream))
+        : static_cast<size_t>(-1);
+    int4_to_f16_kernel<<<blocks, kConversionThreads, 0, stream>>>(
+        source, static_cast<__half*>(destination), elements, projection_elements,
+        scales[0], scales[1], scales[2]);
+    if (profiler && profiler->enabled()) profiler->note_kernel_launch();
+    if (!DEE_CUDA_CHECK_LAUNCH("int4_to_f16_kernel launch")) return false;
+    if (profiler && profiler->enabled() &&
+        !profiler->cuda_end(ticket, static_cast<void*>(stream))) return false;
+#ifdef DEE_CUDA_VALIDATE
+    return DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(stream),
+                                "cudaStreamSynchronize(INT4-to-FP16 validation)");
 #else
     return true;
 #endif

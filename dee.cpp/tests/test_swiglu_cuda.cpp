@@ -95,11 +95,38 @@ int main() {
         const float expected = static_cast<float>(int8_source[i]) * int8_scales[i / 2];
         if (__half2float(int8_half[i]) != expected) int8_ok = false;
     }
+    const std::vector<uint8_t> int4_source = {0x2e, 0x3d, 0x4c};
+    uint8_t* d_int4 = nullptr;
+    void* d_int4_half = nullptr;
+    std::vector<__half> int4_half(int8_source.size());
+    bool int4_ok = check(cudaMalloc(reinterpret_cast<void**>(&d_int4), int4_source.size()),
+                         "cudaMalloc(INT4 conversion source)") &&
+        check(cudaMalloc(&d_int4_half, int4_half.size() * sizeof(uint16_t)),
+              "cudaMalloc(INT4 conversion output)") &&
+        check(cudaMemcpyAsync(d_int4, int4_source.data(), int4_source.size(),
+                              cudaMemcpyHostToDevice, conversion_stream),
+              "cudaMemcpyAsync(INT4 conversion source)") &&
+        dee::int4_to_f16_cuda(d_int4, d_int4_half, int4_half.size(), 2,
+                              int8_scales, conversion_stream) &&
+        check(cudaMemcpyAsync(int4_half.data(), d_int4_half,
+                              int4_half.size() * sizeof(__half),
+                              cudaMemcpyDeviceToHost, conversion_stream),
+              "cudaMemcpyAsync(INT4 conversion output)") &&
+        check(cudaStreamSynchronize(conversion_stream),
+              "cudaStreamSynchronize(INT4 conversion)");
+    for (size_t i = 0; int4_ok && i < int4_half.size(); ++i) {
+        const float expected = static_cast<float>(int8_source[i]) * int8_scales[i / 2];
+        if (__half2float(int4_half[i]) != expected) int4_ok = false;
+    }
+    if (d_int4) cudaFree(d_int4);
+    if (d_int4_half) cudaFree(d_int4_half);
     if (d_int8) cudaFree(d_int8);
     if (d_int8_half) cudaFree(d_int8_half);
     if (conversion_stream) cudaStreamDestroy(conversion_stream);
     std::printf("CUDA INT8-to-FP16 comparison: %s\n", int8_ok ? "PASS" : "FAIL");
     if (!int8_ok) return 1;
+    std::printf("CUDA INT4-to-FP16 comparison: %s\n", int4_ok ? "PASS" : "FAIL");
+    if (!int4_ok) return 1;
 
     constexpr int inter = 3;
     constexpr int hidden = 4;
