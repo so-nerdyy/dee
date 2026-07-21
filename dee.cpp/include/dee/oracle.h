@@ -13,6 +13,7 @@
 #include "dee/pt_loader.h"
 #include "dee/profiling.h"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -22,6 +23,13 @@ struct OracleLayerWeights {
     std::vector<float> w0, b0;   // (256, 2048), (256,)
     std::vector<float> w2, b2;   // (256, 256), (256,)
     std::vector<float> w4, b4;   // (256, 256), (256,)
+
+    // VNNI INT8 quantized variants.  q_* are signed INT8 weights stored as
+    // signed bytes (out, in) row-major.  row_scales are per-output-channel
+    // FP32 scales.  row_sums are pre-computed sums of the signed weights.
+    std::vector<int8_t> w0_q, w2_q, w4_q;
+    std::vector<float> w0_s, w2_s, w4_s;
+    std::vector<int32_t> w0_r, w2_q_r, w4_q_r;
 };
 
 class OracleScheduler {
@@ -66,6 +74,21 @@ private:
     std::vector<OracleLayerWeights> layers_;
     std::string err_;
     StageProfiler* profiler_ = nullptr;
+    bool use_vnni_ = false;
+
+    // VNNI INT8 forward used when AVX-512 VNNI is available.
+    void forward_vnni(int layer, const float* hidden, std::vector<float>& logits) const;
+
+    // Quantize one weight matrix (out, in) to signed INT8 per output channel.
+    static void quantize_weights(const std::vector<float>& W, int in, int out,
+                                  std::vector<int8_t>& qout,
+                                  std::vector<float>& scales,
+                                  std::vector<int32_t>& row_sums);
+
+    // Quantize an activation vector to unsigned INT8 (offset by +128).
+    static void quantize_activation(const float* x, int n,
+                                    std::vector<uint8_t>& qout,
+                                    float& scale);
 };
 
 } // namespace dee
