@@ -42,6 +42,36 @@ float dot_product_scalar(const float* weights, const float* input, int count) {
 
 #ifdef DEE_ORACLE_X86_TARGETS
 __attribute__((target("avx2,fma")))
+float dot_product_avx2_fma(const float* weights, const float* input, int count);
+
+__attribute__((target("avx512f,fma")))
+float dot_product_avx512_f32(const float* weights, const float* input, int count) {
+    __m512 sum0 = _mm512_setzero_ps();
+    __m512 sum1 = _mm512_setzero_ps();
+    __m512 sum2 = _mm512_setzero_ps();
+    __m512 sum3 = _mm512_setzero_ps();
+    int index = 0;
+    for (; index + 64 <= count; index += 64) {
+        sum0 = _mm512_fmadd_ps(_mm512_loadu_ps(weights + index),
+                               _mm512_loadu_ps(input + index), sum0);
+        sum1 = _mm512_fmadd_ps(_mm512_loadu_ps(weights + index + 16),
+                               _mm512_loadu_ps(input + index + 16), sum1);
+        sum2 = _mm512_fmadd_ps(_mm512_loadu_ps(weights + index + 32),
+                               _mm512_loadu_ps(input + index + 32), sum2);
+        sum3 = _mm512_fmadd_ps(_mm512_loadu_ps(weights + index + 48),
+                               _mm512_loadu_ps(input + index + 48), sum3);
+    }
+    __m512 total = _mm512_add_ps(_mm512_add_ps(sum0, sum1),
+                                 _mm512_add_ps(sum2, sum3));
+    float result = _mm512_reduce_add_ps(total);
+    // AVX2 tail, then scalar tail (handled by the AVX2 routine).
+    if (index < count) {
+        result += dot_product_avx2_fma(weights + index, input + index, count - index);
+    }
+    return result;
+}
+
+__attribute__((target("avx2,fma")))
 float dot_product_avx2_fma(const float* weights, const float* input, int count) {
     __m256 sum0 = _mm256_setzero_ps();
     __m256 sum1 = _mm256_setzero_ps();
@@ -66,6 +96,9 @@ float dot_product_avx2_fma(const float* weights, const float* input, int count) 
 
 DotProduct select_dot_product() {
 #ifdef DEE_ORACLE_X86_TARGETS
+    if (__builtin_cpu_supports("avx512f") && __builtin_cpu_supports("fma")) {
+        return &dot_product_avx512_f32;
+    }
     if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma")) {
         return &dot_product_avx2_fma;
     }
