@@ -1,38 +1,35 @@
 #!/usr/bin/env python3
-"""Generate a multi-layer MoE shard (W8).
+"""Generate a multi-layer MoE shard (W8) -- numpy-free.
 
 Naming EXACTLY matches dee::TensorResolver::expert_tensor_name:
   model.language_model.layers.{L}.mlp.experts.{E}.{gate_proj|up_proj|down_proj}.weight
 
-dtype label is "BF16" (canonical for dee.cpp's json_min parser).
+dtype token "BF16" matches dee.cpp weight_mmap.cpp's parser.
 
-Per-layer random seeds (`args.seed + 1009*(layer+1)`) produce
-statistically distinct per-layer weight statistics, so the synthetic
-benchmark exercises real cache-eviction pressure across model layers
-instead of aliasing all layers to the same physical expert set.
+Per-layer random seeds (`args.seed + 1009*(layer+1)`) yield statistically
+distinct per-layer weight magnitudes. random.gauss() from stdlib produces
+zero-mean unit-variance Gaussian samples, then *layer_scale matches numpy.
 
-Memory discipline:
-- numpy.random.standard_normal produces temporary Float32 arrays that are
-  freed by `make_bf16_bytes`.
-- BF16 payloads are packed once and added to a list of (key, bytes)
-  tuples; total memory bound is the payload size plus a thin metadata
-  index (~150 bytes per tensor).
-- The shard file is written exactly once after the payload list is
-  complete (header + padding + payloads appended in a single file.write).
+Memory profile:
+- One expert's three random projections are generated, packed to BF16
+  bytes, and appended to a `tensors` list before moving to the next
+  expert. Each Float32 work array is freed after packing.
+- Final file.write is one shot (header_prefix + all payloads).
 """
 
 import argparse
 import hashlib
 import json
 import os
+import random
 import struct
 import sys
 
 
-def f32_to_bf16(x: float) -> int:
-    """Round FP32 to BF16 (truncate to top 16 bits)."""
-    u = struct.unpack("<I", struct.pack("<f", x))[0]
-    return (u >> 16) & 0xFFFF
+def f32_to_bf16_packed(v: float) -> bytes:
+    """Pack one FP32 -> BF16 -> little-endian 16-bit bytes (truncate top)."""
+    u = struct.unpack("<I", struct.pack("<f", v))[0]
+    return struct.pack("<H", (u >> 16) & 0xFFFF)
 
 
 def main():
@@ -50,41 +47,46 @@ def main():
         sys.stderr.write("[gen] --layers --experts --inter --hidden must be positive\n")
         sys.exit(2)
 
-    hidden = args.hidden
-    inter = args.inter
+    inter, hidden = args.inter, args.hidden
     inter_hidden = inter * hidden
-
-    try:
-        import numpy as np
-    except ImportError:
-        sys.exit("[gen] numpy is required (pip install numpy)")
 
     name_for = lambda kind, layer, expert: (
         f"model.language_model.layers.{layer}.mlp.experts.{expert}.{kind}.weight")
 
-    # Pass 1: generate all per-tensor BF16 payloads and accumulate offsets.
-    # Each entry: (key, shape, bf16_bytes)
+    # Build the tensor list. Each entry: (key, shape, bytes, start_offset)
     tensors = []
     cursor = 0
     for layer in range(args.layers):
-        rng = np.random.default_rng(args.seed + 1009 * (layer + 1))
+        rng = random.Random(args.seed + 1009 * (layer + 1))
         layer_scale = args.layer_scale_base + 0.01 * (layer % 17)
         for expert in range(args.experts):
-            # gate: [inter x hidden]
-            w_gate = rng.standard_normal(inter_hidden).astype(np.float32) * layer_scale
-            gate_bytes = b"".join(struct.pack("<H", f32_to_bf16(v)) for v in w_gate)
-            tensors.append((("gate_proj", layer, expert), (inter, hidden), gate_bytes, cursor))
-            cursor += len(gate_bytes)
-            # up:   [inter x hidden] (same shape as gate)
-            w_up = rng.standard_normal(inter_hidden).astype(np.float32) * layer_scale
-            up_bytes = b"".join(struct.pack("<H", f32_to_bf16(v)) for v in w_up)
-            tensors.append((("up_proj", layer, expert), (inter, hidden), up_bytes, cursor))
-            cursor += len(up_bytes)
-            # down: [hidden x inter]
-            w_down = rng.standard_normal(inter_hidden).astype(np.float32) * layer_scale
-            down_bytes = b"".join(struct.pack("<H", f32_to_bf16(v)) for v in w_down)
-            tensors.append((("down_proj", layer, expert), (hidden, inter), down_bytes, cursor))
-            cursor += len(down_bytes)
+            # gate [inter x hidden]
+            buf = bytearray(inter_hidden * 2)
+            for j in range(inter_hidden):
+                v = rng.gauss(0.0, 1.0) * layer_scale
+                packed = f32_to_bf16_packed(v)
+                buf[j * 2:j * 2 + 2] = packed
+            tensors.append((("gate_proj", layer, expert),
+                            (inter, hidden), bytes(buf), cursor))
+            cursor += len(buf)
+            # up [inter x hidden]
+            buf = bytearray(inter_hidden * 2)
+            for j in range(inter_hidden):
+                v = rng.gauss(0.0, 1.0) * layer_scale
+                packed = f32_to_bf16_packed(v)
+                buf[j * 2:j * 2 + 2] = packed
+            tensors.append((("up_proj", layer, expert),
+                            (inter, hidden), bytes(buf), cursor))
+            cursor += len(buf)
+            # down [hidden x inter] (same total element count, different shape)
+            buf = bytearray(inter_hidden * 2)
+            for j in range(inter_hidden):
+                v = rng.gauss(0.0, 1.0) * layer_scale
+                packed = f32_to_bf16_packed(v)
+                buf[j * 2:j * 2 + 2] = packed
+            tensors.append((("down_proj", layer, expert),
+                            (hidden, inter), bytes(buf), cursor))
+            cursor += len(buf)
         if (layer + 1) % max(1, args.layers // 8) == 0:
             sys.stderr.write(f"[gen] prepared layer {layer+1}/{args.layers}\n")
 
@@ -114,11 +116,11 @@ def main():
 
     sha = hashlib.sha256()
     with open(args.output, "wb") as f:
-        header_prefix = struct.pack("<Q", hlen) + header_json.encode("utf-8") + (b" " * pad)
+        header_prefix = struct.pack("<Q", hlen) + header_json.encode("utf-8")
+        if pad:
+            header_prefix += b" " * pad
         f.write(header_prefix)
         sha.update(header_prefix)
-        # Append all payloads; the offset values inside the header point into
-        # this data section starting at offset 0.
         for key, shape, payload, offset in tensors:
             f.write(payload)
             sha.update(payload)
