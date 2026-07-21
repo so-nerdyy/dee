@@ -28,6 +28,7 @@ void usage(const char* argv0) {
         "                       resident-bypass, transfer-only, compute-only,\n"
         "                       oracle-only, or cache-metadata-only\n"
         "  --profile-json P   Write benchmark and stage summary JSON to P\n"
+        "  --profile-timeline P Write common-origin CUDA Chrome trace JSON to P\n"
         "  --trace-requests P Write detailed expert-request trace JSON to P\n"
         "  --verbose          Print additional configuration details\n",
         argv0);
@@ -164,6 +165,27 @@ void print_result(const dee::EngineConfig& cfg, const dee::EngineStats& stats, i
     std::printf("CUDA kernel launches   : %llu\n", static_cast<unsigned long long>(profile.kernel_launches));
     std::printf("stream waits           : %llu\n", static_cast<unsigned long long>(profile.stream_waits));
     std::printf("host synchronizations  : %llu\n", static_cast<unsigned long long>(profile.host_synchronizations));
+    std::printf("host wait attribution  :\n");
+    for (size_t i = 0; i < static_cast<size_t>(dee::HostWaitReason::Count); ++i) {
+        std::printf("  %-20s %10.3f ms  count=%llu\n",
+                    dee::host_wait_reason_name(static_cast<dee::HostWaitReason>(i)),
+                    profile.host_wait_ms[i],
+                    static_cast<unsigned long long>(profile.host_wait_count[i]));
+    }
+    if (profile.gpu_timeline_span_ms > 0.0) {
+        std::printf("GPU timeline span      : %.3f ms\n", profile.gpu_timeline_span_ms);
+        std::printf("copy engine active/util: %.3f ms / %.2f%%\n", profile.copy_engine_active_ms,
+                    profile.copy_engine_utilization * 100.0);
+        std::printf("compute active/util    : %.3f ms / %.2f%%\n", profile.compute_engine_active_ms,
+                    profile.compute_engine_utilization * 100.0);
+        std::printf("copy/compute overlap   : %.3f ms / %.2f%%\n", profile.copy_compute_overlap_ms,
+                    profile.copy_compute_overlap_fraction * 100.0);
+        std::printf("neither engine active  : %.3f ms / %.2f%%\n", profile.gpu_neither_active_ms,
+                    profile.gpu_neither_active_ms * 100.0 / profile.gpu_timeline_span_ms);
+        std::printf("transfer queue avg/max : %.3f / %llu\n",
+                    profile.average_transfer_queue_depth,
+                    static_cast<unsigned long long>(profile.max_transfer_queue_depth));
+    }
     std::printf("timing events allocated: %llu (bounded pool)\n",
                 static_cast<unsigned long long>(profile.timing_events_allocated));
     std::printf("unique requested/loaded: %llu / %llu\n",
@@ -245,6 +267,7 @@ int main(int argc, char** argv) {
     int warmup_tokens = 2;
     std::string profile_json_path;
     std::string trace_json_path;
+    std::string timeline_json_path;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -273,6 +296,11 @@ int main(int argc, char** argv) {
             if (!(value = require_value(i, argc, argv, "--profile-json"))) return 2;
             profile_json_path = value;
             cfg.profile_stages = true;
+        } else if (arg == "--profile-timeline") {
+            if (!(value = require_value(i, argc, argv, "--profile-timeline"))) return 2;
+            timeline_json_path = value;
+            cfg.profile_stages = true;
+            cfg.profile_timeline = true;
         } else if (arg == "--profile-scenario") {
             if (!(value = require_value(i, argc, argv, "--profile-scenario")) ||
                 !parse_scenario(value, cfg.scenario)) return 2;
@@ -296,6 +324,11 @@ int main(int argc, char** argv) {
     }
 #endif
 
+    if (cfg.profile_timeline && !cfg.use_cuda) {
+        std::fprintf(stderr, "[cli] --profile-timeline requires --cuda\n");
+        return 2;
+    }
+
     if (cfg.scenario != dee::BenchmarkScenario::EndToEnd && !cfg.use_cuda) {
         std::fprintf(stderr, "[cli] --profile-scenario %s requires --cuda\n",
                      dee::benchmark_scenario_name(cfg.scenario));
@@ -307,6 +340,7 @@ int main(int argc, char** argv) {
         warmup.num_tokens = warmup_tokens;
         warmup.profile_stages = false;
         warmup.trace_requests = false;
+        warmup.profile_timeline = false;
         dee::Engine warmup_engine;
         if (!warmup_engine.init(warmup) || !warmup_engine.generate()) return 1;
     }
@@ -322,5 +356,7 @@ int main(int argc, char** argv) {
         !write_text_file(profile_json_path, benchmark_json(engine.config(), engine.stats(), warmup_tokens, false))) return 1;
     if (!trace_json_path.empty() &&
         !write_text_file(trace_json_path, benchmark_json(engine.config(), engine.stats(), warmup_tokens, true))) return 1;
+    if (!timeline_json_path.empty() &&
+        !write_text_file(timeline_json_path, dee::cuda_timeline_json(engine.stats().profile))) return 1;
     return engine.stats().hidden_finite ? 0 : 1;
 }

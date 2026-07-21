@@ -40,6 +40,25 @@ enum class GpuStage : size_t {
 
 enum class RequestKind : uint8_t { ResidentHit, InflightHit, ColdLoad };
 
+enum class HostWaitReason : size_t {
+    CacheReadiness,
+    StagingSlot,
+    ComputeBatch,
+    LayerOutput,
+    PrefetchDrain,
+    EngineTeardown,
+    Count
+};
+
+enum class CpuTimelineKind : uint8_t {
+    TransferSubmit,
+    ConsumerWait,
+    StagingSlotWait,
+    ComputeBatchWait,
+    LayerOutputWait,
+    PrefetchDrain
+};
+
 enum class OracleStage : size_t {
     ModelLookup,
     InputFeatures,
@@ -71,6 +90,22 @@ struct RequestTraceRecord {
     int64_t distinct_reuse_distance = -1;
     size_t theoretical_min_cache_bytes = 0;
     int priority = 0;
+};
+
+struct TimelineRecord {
+    bool gpu = false;
+    GpuStage gpu_stage = GpuStage::H2D;
+    CpuTimelineKind cpu_kind = CpuTimelineKind::TransferSubmit;
+    double start_ms = 0.0;
+    double end_ms = 0.0;
+    int lane = 0;  // 0=host, 1=prefetch stream, 2=compute stream
+    int token = -1;
+    int logical_layer = -1;
+    int expert = -1;
+    size_t bytes = 0;
+    uint64_t transfer_id = 0;
+    size_t queue_depth = 0;
+    size_t staging_slot = 0;
 };
 
 struct StageProfile {
@@ -109,6 +144,8 @@ struct StageProfile {
     uint64_t stream_waits = 0;
     uint64_t host_synchronizations = 0;
     uint64_t timing_events_allocated = 0;
+    std::array<double, static_cast<size_t>(HostWaitReason::Count)> host_wait_ms{};
+    std::array<uint64_t, static_cast<size_t>(HostWaitReason::Count)> host_wait_count{};
 
     double average_expert_request_us = 0.0;
     double average_cold_load_us = 0.0;
@@ -122,8 +159,22 @@ struct StageProfile {
     double reused_before_eviction_fraction = 0.0;
     double oracle_adjacent_topk_overlap = 0.0;
     double oracle_random_overlap_expectation = 0.0;
+    double gpu_timeline_span_ms = 0.0;
+    double copy_engine_active_ms = 0.0;
+    double compute_engine_active_ms = 0.0;
+    double copy_compute_overlap_ms = 0.0;
+    double gpu_neither_active_ms = 0.0;
+    double copy_engine_utilization = 0.0;
+    double compute_engine_utilization = 0.0;
+    double copy_compute_overlap_fraction = 0.0;
+    double average_transfer_queue_depth = 0.0;
+    uint64_t max_transfer_queue_depth = 0;
+    std::array<uint64_t, 4> h2d_bucket_copies{};
+    std::array<uint64_t, 4> h2d_bucket_bytes{};
+    std::array<double, 4> h2d_bucket_ms{};
 
     std::vector<RequestTraceRecord> trace;
+    std::vector<TimelineRecord> timeline;
 };
 
 class StageProfiler {
@@ -138,9 +189,10 @@ public:
     StageProfiler& operator=(const StageProfiler&) = delete;
 
     void configure(bool enabled, bool trace_enabled, size_t expert_blob_bytes,
-                   int oracle_experts);
+                   int oracle_experts, bool timeline_enabled = false);
     bool enabled() const { return enabled_; }
     bool trace_enabled() const { return trace_enabled_; }
+    bool timeline_enabled() const { return timeline_enabled_; }
 
     static TimePoint now() { return Clock::now(); }
     void add_cpu(CpuStage stage, TimePoint begin);
@@ -168,8 +220,21 @@ public:
     void note_stream_wait(uint64_t count = 1) { stream_waits_ += count; }
     void note_host_synchronization(uint64_t count = 1) { host_synchronizations_ += count; }
     void note_duplicate_request(uint64_t count = 1) { duplicate_requests_ += count; }
+    void note_host_wait(HostWaitReason reason, TimePoint begin, TimePoint end,
+                        int token = -1,
+                        int logical_layer = -1, int expert = -1,
+                        uint64_t transfer_id = 0, size_t queue_depth = 0,
+                        size_t staging_slot = 0);
+    void note_cpu_timeline(CpuTimelineKind kind, TimePoint begin, int token = -1,
+                           int logical_layer = -1, int expert = -1,
+                           size_t bytes = 0, uint64_t transfer_id = 0,
+                           size_t queue_depth = 0, size_t staging_slot = 0);
 
 #ifdef DEE_CUDA
+    bool begin_cuda_timeline(void* compute_stream, void* transfer_stream);
+    void set_cuda_context(int token, int logical_layer, int expert, size_t bytes = 0,
+                          uint64_t transfer_id = 0, size_t queue_depth = 0,
+                          size_t staging_slot = 0);
     size_t cuda_begin(GpuStage stage, void* stream);
     bool cuda_end(size_t ticket, void* stream);
     bool cuda_collect_ready();
@@ -183,6 +248,7 @@ public:
 private:
     bool enabled_ = false;
     bool trace_enabled_ = false;
+    bool timeline_enabled_ = false;
     size_t expert_blob_bytes_ = 0;
     int oracle_experts_ = 0;
     std::array<double, static_cast<size_t>(CpuStage::Count)> cpu_ms_{};
@@ -207,6 +273,10 @@ private:
     uint64_t host_synchronizations_ = 0;
     uint64_t duplicate_requests_ = 0;
     uint64_t repeated_hits_ = 0;
+    std::array<double, static_cast<size_t>(HostWaitReason::Count)> host_wait_ms_{};
+    std::array<uint64_t, static_cast<size_t>(HostWaitReason::Count)> host_wait_count_{};
+    TimePoint cpu_timeline_origin_{};
+    std::vector<TimelineRecord> timeline_;
 
     uint64_t request_index_ = 0;
     std::unordered_map<uint64_t, uint64_t> last_request_index_;
@@ -222,11 +292,32 @@ private:
         void* begin = nullptr;
         void* end = nullptr;
         bool ended = false;
+        int lane = 0;
+        int token = -1;
+        int logical_layer = -1;
+        int expert = -1;
+        size_t bytes = 0;
+        uint64_t transfer_id = 0;
+        size_t queue_depth = 0;
+        size_t staging_slot = 0;
+    };
+    struct CudaContext {
+        int token = -1;
+        int logical_layer = -1;
+        int expert = -1;
+        size_t bytes = 0;
+        uint64_t transfer_id = 0;
+        size_t queue_depth = 0;
+        size_t staging_slot = 0;
     };
     static constexpr size_t kMaxTimingEvents = 128;
     std::vector<void*> all_cuda_events_;
     std::vector<void*> free_cuda_events_;
     std::vector<PendingCudaSample> pending_cuda_;
+    void* timeline_origin_event_ = nullptr;
+    void* timeline_compute_stream_ = nullptr;
+    void* timeline_transfer_stream_ = nullptr;
+    CudaContext cuda_context_{};
     void* acquire_cuda_event();
     void release_cuda_event(void* event);
 #endif
@@ -236,6 +327,9 @@ const char* cpu_stage_name(CpuStage stage);
 const char* gpu_stage_name(GpuStage stage);
 const char* request_kind_name(RequestKind kind);
 const char* oracle_stage_name(OracleStage stage);
+const char* host_wait_reason_name(HostWaitReason reason);
+const char* cpu_timeline_kind_name(CpuTimelineKind kind);
 std::string stage_profile_json(const StageProfile& profile, bool include_trace);
+std::string cuda_timeline_json(const StageProfile& profile);
 
 }  // namespace dee

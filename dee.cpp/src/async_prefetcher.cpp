@@ -1,6 +1,7 @@
 #include "dee/async_prefetcher.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -50,6 +51,10 @@ long AsyncPrefetcher::find_inflight(int layer, int expert) const {
 }
 
 bool AsyncPrefetcher::release_transfer(Transfer& transfer) {
+    if (transfer.active_counted) {
+        if (active_transfers_ > 0) --active_transfers_;
+        transfer.active_counted = false;
+    }
     if (transfer.cache_pin_held) {
         cache_.unpin(transfer.key.layer, transfer.key.expert);
         transfer.cache_pin_held = false;
@@ -152,6 +157,8 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
         transfer.done = true;
         transfer.id = next_id_++;
         transfer.cache_pin_held = true;
+        transfer.token = token;
+        transfer.logical_layer = logical_layer;
         inflight_.push_back(transfer);
         const long resident_index = static_cast<long>(inflight_.size() - 1);
         key_to_idx_[request_key] = static_cast<int>(resident_index);
@@ -173,6 +180,8 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
     transfer.source_pinned = source_pinned;
     transfer.id = next_id_++;
     transfer.cache_pin_held = true;
+    transfer.token = token;
+    transfer.logical_layer = logical_layer;
     inflight_.push_back(transfer);
     const long index = static_cast<long>(inflight_.size() - 1);
     key_to_idx_[static_cast<long>(key_id(layer, expert))] = static_cast<int>(index);
@@ -213,7 +222,7 @@ bool AsyncPrefetcher::wait(int layer, int expert) {
         release_transfer(transfer);
         return cache_.is_resident(layer, expert);
     }
-    if (use_cuda_) return cuda_wait(index);
+    if (use_cuda_) return cuda_wait(index, HostWaitReason::CacheReadiness);
     const auto wait_begin = profiler_ && profiler_->enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
     drain_until(static_cast<int>(index));
     if (profiler_ && profiler_->enabled()) profiler_->add_cpu(CpuStage::HostWaiting, wait_begin);
@@ -227,7 +236,11 @@ void AsyncPrefetcher::synchronize_all() {
         if (stream_ && !DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(static_cast<cudaStream_t>(stream_)),
                                               "cudaStreamSynchronize(prefetch)")) return;
         if (stream_ && profiler_ && profiler_->enabled()) {
-            profiler_->add_cpu(CpuStage::Synchronization, wait_begin);
+            const auto wait_end = StageProfiler::now();
+            const double wait_ms = std::chrono::duration<double, std::milli>(
+                wait_end - wait_begin).count();
+            profiler_->add_cpu_ms(CpuStage::Synchronization, wait_ms);
+            profiler_->note_host_wait(HostWaitReason::PrefetchDrain, wait_begin, wait_end);
             profiler_->note_host_synchronization();
             profiler_->cuda_collect_ready();
         }
@@ -257,6 +270,7 @@ void AsyncPrefetcher::reset() {
 #endif
     inflight_.clear();
     key_to_idx_.clear();
+    active_transfers_ = 0;
 }
 
 bool AsyncPrefetcher::cuda_init() {
@@ -300,7 +314,7 @@ bool AsyncPrefetcher::cuda_submit(long index) {
         for (long pending_index = 0; pending_index < static_cast<long>(inflight_.size()); ++pending_index) {
             Transfer& pending = inflight_[pending_index];
             if (!pending.done && pending.staging_slot < staging_slots_.size()) {
-                if (!cuda_wait(pending_index)) return false;
+                if (!cuda_wait(pending_index, HostWaitReason::StagingSlot)) return false;
                 break;
             }
         }
@@ -350,6 +364,12 @@ bool AsyncPrefetcher::cuda_submit(long index) {
     if (!DEE_CUDA_CHECK_NAMED(cudaEventCreateWithFlags(&event, cudaEventDisableTiming),
                               "cudaEventCreateWithFlags(prefetch completion)")) return false;
     transfer.event = static_cast<void*>(event);
+    const size_t queue_depth = active_transfers_ + 1;
+    if (profiler_ && profiler_->enabled()) {
+        profiler_->set_cuda_context(transfer.token, transfer.logical_layer,
+                                    transfer.key.expert, transfer.source_nbytes,
+                                    static_cast<uint64_t>(transfer.id), queue_depth, chosen);
+    }
     const size_t h2d_ticket = profiler_ && profiler_->enabled()
         ? profiler_->cuda_begin(GpuStage::H2D, stream_) : static_cast<size_t>(-1);
     void* copy_destination = transfer.expand_bf16 ? slot.device_ptr : transfer.dst;
@@ -366,9 +386,15 @@ bool AsyncPrefetcher::cuda_submit(long index) {
     if (profiler_ && profiler_->enabled()) {
         profiler_->add_cpu(CpuStage::TransferSubmission, submission_begin);
         profiler_->note_h2d_copy(transfer.source_nbytes);
+        profiler_->note_cpu_timeline(CpuTimelineKind::TransferSubmit, submission_begin,
+                                     transfer.token, transfer.logical_layer,
+                                     transfer.key.expert, transfer.source_nbytes,
+                                     static_cast<uint64_t>(transfer.id), queue_depth, chosen);
     }
     stats_.h2d_bytes += transfer.source_nbytes;
     ++stats_.h2d_copies;
+    transfer.active_counted = true;
+    ++active_transfers_;
     return true;
 #else
     (void)index;
@@ -376,7 +402,7 @@ bool AsyncPrefetcher::cuda_submit(long index) {
 #endif
 }
 
-bool AsyncPrefetcher::cuda_wait(long index) {
+bool AsyncPrefetcher::cuda_wait(long index, HostWaitReason reason) {
 #ifdef DEE_CUDA
     if (index < 0 || index >= static_cast<long>(inflight_.size())) return false;
     Transfer& transfer = inflight_[index];
@@ -384,7 +410,14 @@ bool AsyncPrefetcher::cuda_wait(long index) {
     if (transfer.event && !DEE_CUDA_CHECK_NAMED(cudaEventSynchronize(static_cast<cudaEvent_t>(transfer.event)),
                                                  "cudaEventSynchronize(prefetch completion)")) return false;
     if (profiler_ && profiler_->enabled()) {
-        profiler_->add_cpu(CpuStage::HostWaiting, wait_begin);
+        const auto wait_end = StageProfiler::now();
+        const double wait_ms = std::chrono::duration<double, std::milli>(
+            wait_end - wait_begin).count();
+        profiler_->add_cpu_ms(CpuStage::HostWaiting, wait_ms);
+        profiler_->note_host_wait(reason, wait_begin, wait_end, transfer.token,
+                                  transfer.logical_layer, transfer.key.expert,
+                                  static_cast<uint64_t>(transfer.id), active_transfers_,
+                                  transfer.staging_slot);
         profiler_->note_host_synchronization();
     }
     transfer.done = true;
@@ -392,6 +425,7 @@ bool AsyncPrefetcher::cuda_wait(long index) {
     return cache_.is_resident(transfer.key.layer, transfer.key.expert);
 #else
     (void)index;
+    (void)reason;
     return false;
 #endif
 }

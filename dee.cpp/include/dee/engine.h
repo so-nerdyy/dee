@@ -72,6 +72,7 @@ struct EngineConfig {
     bool        verbose     = false;
     bool        profile_stages = false;
     bool        trace_requests = false;
+    bool        profile_timeline = false;
     BenchmarkScenario scenario = BenchmarkScenario::EndToEnd;
 };
 

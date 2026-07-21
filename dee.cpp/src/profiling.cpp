@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 
 #ifdef DEE_CUDA
@@ -29,10 +30,58 @@ double percentile(std::vector<double> values, double fraction) {
     return values[lo] * (1.0 - weight) + values[hi] * weight;
 }
 
+using Interval = std::pair<double, double>;
+
+std::vector<Interval> merge_intervals(std::vector<Interval> intervals) {
+    if (intervals.empty()) return {};
+    std::sort(intervals.begin(), intervals.end());
+    std::vector<Interval> merged;
+    for (const Interval& interval : intervals) {
+        if (interval.second <= interval.first) continue;
+        if (merged.empty() || interval.first > merged.back().second) {
+            merged.push_back(interval);
+        } else {
+            merged.back().second = std::max(merged.back().second, interval.second);
+        }
+    }
+    return merged;
+}
+
+double interval_duration(const std::vector<Interval>& intervals) {
+    double total = 0.0;
+    for (const Interval& interval : intervals) total += interval.second - interval.first;
+    return total;
+}
+
+double intersection_duration(const std::vector<Interval>& a,
+                             const std::vector<Interval>& b) {
+    size_t i = 0, j = 0;
+    double total = 0.0;
+    while (i < a.size() && j < b.size()) {
+        total += std::max(0.0, std::min(a[i].second, b[j].second) -
+                              std::max(a[i].first, b[j].first));
+        if (a[i].second < b[j].second) ++i;
+        else ++j;
+    }
+    return total;
+}
+
+size_t h2d_bucket(size_t bytes) {
+    if (bytes <= 16 * 1024) return 0;
+    if (bytes <= 256 * 1024) return 1;
+    if (bytes <= 1024 * 1024) return 2;
+    return 3;
+}
+
 }  // namespace
 
 StageProfiler::~StageProfiler() {
 #ifdef DEE_CUDA
+    if (timeline_origin_event_) {
+        DEE_CUDA_CHECK_NAMED(cudaEventDestroy(static_cast<cudaEvent_t>(timeline_origin_event_)),
+                             "cudaEventDestroy(timeline origin)");
+        timeline_origin_event_ = nullptr;
+    }
     for (void* event : all_cuda_events_) {
         if (event) {
             DEE_CUDA_CHECK_NAMED(cudaEventDestroy(static_cast<cudaEvent_t>(event)),
@@ -43,9 +92,11 @@ StageProfiler::~StageProfiler() {
 }
 
 void StageProfiler::configure(bool enabled, bool trace_enabled,
-                              size_t expert_blob_bytes, int oracle_experts) {
+                              size_t expert_blob_bytes, int oracle_experts,
+                              bool timeline_enabled) {
     enabled_ = enabled;
     trace_enabled_ = enabled && trace_enabled;
+    timeline_enabled_ = enabled && timeline_enabled;
     expert_blob_bytes_ = expert_blob_bytes;
     oracle_experts_ = oracle_experts;
     cpu_ms_.fill(0.0);
@@ -69,6 +120,10 @@ void StageProfiler::configure(bool enabled, bool trace_enabled,
     host_synchronizations_ = 0;
     duplicate_requests_ = 0;
     repeated_hits_ = 0;
+    host_wait_ms_.fill(0.0);
+    host_wait_count_.fill(0);
+    cpu_timeline_origin_ = Clock::now();
+    timeline_.clear();
     request_index_ = 0;
     last_request_index_.clear();
     unique_requested_.clear();
@@ -76,6 +131,63 @@ void StageProfiler::configure(bool enabled, bool trace_enabled,
     token_working_sets_.clear();
     trace_.clear();
     predictions_.clear();
+}
+
+void StageProfiler::note_cpu_timeline(CpuTimelineKind kind, TimePoint begin,
+                                      int token, int logical_layer, int expert,
+                                      size_t bytes, uint64_t transfer_id,
+                                      size_t queue_depth, size_t staging_slot) {
+    if (!timeline_enabled_) return;
+    const TimePoint end = Clock::now();
+    TimelineRecord record;
+    record.cpu_kind = kind;
+    record.start_ms = std::chrono::duration<double, std::milli>(
+        begin - cpu_timeline_origin_).count();
+    record.end_ms = std::chrono::duration<double, std::milli>(
+        end - cpu_timeline_origin_).count();
+    record.token = token;
+    record.logical_layer = logical_layer;
+    record.expert = expert;
+    record.bytes = bytes;
+    record.transfer_id = transfer_id;
+    record.queue_depth = queue_depth;
+    record.staging_slot = staging_slot;
+    timeline_.push_back(record);
+}
+
+void StageProfiler::note_host_wait(HostWaitReason reason, TimePoint begin, TimePoint end,
+                                   int token, int logical_layer, int expert,
+                                   uint64_t transfer_id, size_t queue_depth,
+                                   size_t staging_slot) {
+    if (!enabled_) return;
+    const double elapsed = std::chrono::duration<double, std::milli>(end - begin).count();
+    host_wait_ms_[static_cast<size_t>(reason)] += elapsed;
+    ++host_wait_count_[static_cast<size_t>(reason)];
+    CpuTimelineKind kind = CpuTimelineKind::ConsumerWait;
+    switch (reason) {
+        case HostWaitReason::CacheReadiness: kind = CpuTimelineKind::ConsumerWait; break;
+        case HostWaitReason::StagingSlot: kind = CpuTimelineKind::StagingSlotWait; break;
+        case HostWaitReason::ComputeBatch: kind = CpuTimelineKind::ComputeBatchWait; break;
+        case HostWaitReason::LayerOutput: kind = CpuTimelineKind::LayerOutputWait; break;
+        case HostWaitReason::PrefetchDrain:
+        case HostWaitReason::EngineTeardown: kind = CpuTimelineKind::PrefetchDrain; break;
+        case HostWaitReason::Count: return;
+    }
+    if (timeline_enabled_) {
+        TimelineRecord record;
+        record.cpu_kind = kind;
+        record.start_ms = std::chrono::duration<double, std::milli>(
+            begin - cpu_timeline_origin_).count();
+        record.end_ms = std::chrono::duration<double, std::milli>(
+            end - cpu_timeline_origin_).count();
+        record.token = token;
+        record.logical_layer = logical_layer;
+        record.expert = expert;
+        record.transfer_id = transfer_id;
+        record.queue_depth = queue_depth;
+        record.staging_slot = staging_slot;
+        timeline_.push_back(record);
+    }
 }
 
 void StageProfiler::add_cpu(CpuStage stage, TimePoint begin) {
@@ -158,6 +270,43 @@ void StageProfiler::note_prediction(int, int, int resolved_layer,
 }
 
 #ifdef DEE_CUDA
+bool StageProfiler::begin_cuda_timeline(void* compute_stream, void* transfer_stream) {
+    if (!timeline_enabled_) return true;
+    if (!compute_stream || !transfer_stream) return false;
+    if (timeline_origin_event_) {
+        if (!DEE_CUDA_CHECK_NAMED(
+                cudaEventDestroy(static_cast<cudaEvent_t>(timeline_origin_event_)),
+                "cudaEventDestroy(previous timeline origin)")) return false;
+        timeline_origin_event_ = nullptr;
+    }
+    cudaEvent_t origin = nullptr;
+    if (!DEE_CUDA_CHECK_NAMED(cudaEventCreate(&origin),
+                              "cudaEventCreate(timeline origin)")) return false;
+    timeline_origin_event_ = static_cast<void*>(origin);
+    timeline_compute_stream_ = compute_stream;
+    timeline_transfer_stream_ = transfer_stream;
+    if (!DEE_CUDA_CHECK_NAMED(
+            cudaEventRecord(origin, static_cast<cudaStream_t>(compute_stream)),
+            "cudaEventRecord(timeline origin)")) return false;
+    // Calibration is outside the measured interval. Both non-blocking streams
+    // subsequently share the same completed timing origin.
+    if (!DEE_CUDA_CHECK_NAMED(cudaEventSynchronize(origin),
+                              "cudaEventSynchronize(timeline calibration)")) return false;
+    if (!DEE_CUDA_CHECK_NAMED(
+            cudaStreamWaitEvent(static_cast<cudaStream_t>(transfer_stream), origin, 0),
+            "cudaStreamWaitEvent(timeline calibration)")) return false;
+    cpu_timeline_origin_ = Clock::now();
+    return true;
+}
+
+void StageProfiler::set_cuda_context(int token, int logical_layer, int expert,
+                                     size_t bytes, uint64_t transfer_id,
+                                     size_t queue_depth, size_t staging_slot) {
+    if (!enabled_) return;
+    cuda_context_ = CudaContext{token, logical_layer, expert, bytes, transfer_id,
+                                queue_depth, staging_slot};
+}
+
 void* StageProfiler::acquire_cuda_event() {
     if (!free_cuda_events_.empty()) {
         void* event = free_cuda_events_.back();
@@ -196,7 +345,20 @@ size_t StageProfiler::cuda_begin(GpuStage stage, void* stream) {
         release_cuda_event(end);
         return static_cast<size_t>(-1);
     }
-    pending_cuda_.push_back(PendingCudaSample{stage, begin, end, false});
+    PendingCudaSample sample;
+    sample.stage = stage;
+    sample.begin = begin;
+    sample.end = end;
+    sample.lane = stream == timeline_transfer_stream_ ? 1 :
+                  (stream == timeline_compute_stream_ ? 2 : 0);
+    sample.token = cuda_context_.token;
+    sample.logical_layer = cuda_context_.logical_layer;
+    sample.expert = cuda_context_.expert;
+    sample.bytes = cuda_context_.bytes;
+    sample.transfer_id = cuda_context_.transfer_id;
+    sample.queue_depth = cuda_context_.queue_depth;
+    sample.staging_slot = cuda_context_.staging_slot;
+    pending_cuda_.push_back(sample);
     return pending_cuda_.size() - 1;
 }
 
@@ -234,6 +396,34 @@ bool StageProfiler::cuda_collect_ready() {
         const size_t stage = static_cast<size_t>(sample.stage);
         gpu_ms_[stage] += elapsed_ms;
         ++gpu_samples_[stage];
+        if (timeline_enabled_ && timeline_origin_event_) {
+            float start_ms = 0.0f;
+            float end_ms = 0.0f;
+            if (!DEE_CUDA_CHECK_NAMED(
+                    cudaEventElapsedTime(&start_ms,
+                        static_cast<cudaEvent_t>(timeline_origin_event_),
+                        static_cast<cudaEvent_t>(sample.begin)),
+                    "cudaEventElapsedTime(timeline start)") ||
+                !DEE_CUDA_CHECK_NAMED(
+                    cudaEventElapsedTime(&end_ms,
+                        static_cast<cudaEvent_t>(timeline_origin_event_),
+                        static_cast<cudaEvent_t>(sample.end)),
+                    "cudaEventElapsedTime(timeline end)")) return false;
+            TimelineRecord record;
+            record.gpu = true;
+            record.gpu_stage = sample.stage;
+            record.start_ms = start_ms;
+            record.end_ms = end_ms;
+            record.lane = sample.lane;
+            record.token = sample.token;
+            record.logical_layer = sample.logical_layer;
+            record.expert = sample.expert;
+            record.bytes = sample.bytes;
+            record.transfer_id = sample.transfer_id;
+            record.queue_depth = sample.queue_depth;
+            record.staging_slot = sample.staging_slot;
+            timeline_.push_back(record);
+        }
         release_cuda_event(sample.begin);
         release_cuda_event(sample.end);
     }
@@ -282,8 +472,11 @@ StageProfile StageProfiler::finish(double total_wall_ms, uint64_t resident_hits,
     result.kernel_launches = kernel_launches_;
     result.stream_waits = stream_waits_;
     result.host_synchronizations = host_synchronizations_;
+    result.host_wait_ms = host_wait_ms_;
+    result.host_wait_count = host_wait_count_;
 #ifdef DEE_CUDA
-    result.timing_events_allocated = all_cuda_events_.size();
+    result.timing_events_allocated = all_cuda_events_.size() +
+        (timeline_origin_event_ ? 1 : 0);
 #endif
     result.average_h2d_copy_bytes = h2d_copies_ ? static_cast<double>(h2d_bytes_) / h2d_copies_ : 0.0;
 
@@ -357,6 +550,55 @@ StageProfile StageProfiler::finish(double total_wall_ms, uint64_t resident_hits,
     result.oracle_random_overlap_expectation = oracle_experts_ > 0
         ? static_cast<double>(observed_topk) / oracle_experts_ : 0.0;
 
+    if (timeline_enabled_) {
+        result.timeline = timeline_;
+        std::vector<Interval> copy_intervals;
+        std::vector<Interval> compute_intervals;
+        double first_gpu = std::numeric_limits<double>::max();
+        double last_gpu = 0.0;
+        double queue_sum = 0.0;
+        uint64_t queue_samples = 0;
+        for (const TimelineRecord& record : timeline_) {
+            if (!record.gpu) continue;
+            first_gpu = std::min(first_gpu, record.start_ms);
+            last_gpu = std::max(last_gpu, record.end_ms);
+            if (record.gpu_stage == GpuStage::H2D) {
+                copy_intervals.emplace_back(record.start_ms, record.end_ms);
+                const size_t bucket = h2d_bucket(record.bytes);
+                ++result.h2d_bucket_copies[bucket];
+                result.h2d_bucket_bytes[bucket] += record.bytes;
+                result.h2d_bucket_ms[bucket] += record.end_ms - record.start_ms;
+                if (record.expert >= 0) {
+                    queue_sum += static_cast<double>(record.queue_depth);
+                    ++queue_samples;
+                    result.max_transfer_queue_depth = std::max<uint64_t>(
+                        result.max_transfer_queue_depth, record.queue_depth);
+                }
+            } else if (record.gpu_stage != GpuStage::StreamWait) {
+                compute_intervals.emplace_back(record.start_ms, record.end_ms);
+            }
+        }
+        copy_intervals = merge_intervals(std::move(copy_intervals));
+        compute_intervals = merge_intervals(std::move(compute_intervals));
+        result.copy_engine_active_ms = interval_duration(copy_intervals);
+        result.compute_engine_active_ms = interval_duration(compute_intervals);
+        result.copy_compute_overlap_ms = intersection_duration(copy_intervals,
+                                                               compute_intervals);
+        if (first_gpu != std::numeric_limits<double>::max() && last_gpu > first_gpu) {
+            result.gpu_timeline_span_ms = last_gpu - first_gpu;
+            result.gpu_neither_active_ms = std::max(
+                0.0, result.gpu_timeline_span_ms - result.copy_engine_active_ms -
+                     result.compute_engine_active_ms + result.copy_compute_overlap_ms);
+            result.copy_engine_utilization = result.copy_engine_active_ms /
+                                             result.gpu_timeline_span_ms;
+            result.compute_engine_utilization = result.compute_engine_active_ms /
+                                                result.gpu_timeline_span_ms;
+            result.copy_compute_overlap_fraction = result.copy_compute_overlap_ms /
+                                                   result.gpu_timeline_span_ms;
+        }
+        result.average_transfer_queue_depth = queue_samples ? queue_sum / queue_samples : 0.0;
+    }
+
     if (trace_enabled_) {
         std::unordered_map<uint64_t, size_t> previous_position;
         for (size_t i = 0; i < trace_.size(); ++i) {
@@ -420,6 +662,26 @@ const char* oracle_stage_name(OracleStage stage) {
     return names[static_cast<size_t>(stage)];
 }
 
+const char* host_wait_reason_name(HostWaitReason reason) {
+    static const char* names[] = {
+        "cache_readiness", "staging_slot", "compute_batch", "layer_output",
+        "prefetch_drain", "engine_teardown"
+    };
+    return names[static_cast<size_t>(reason)];
+}
+
+const char* cpu_timeline_kind_name(CpuTimelineKind kind) {
+    switch (kind) {
+        case CpuTimelineKind::TransferSubmit: return "transfer_submit";
+        case CpuTimelineKind::ConsumerWait: return "consumer_wait";
+        case CpuTimelineKind::StagingSlotWait: return "staging_slot_wait";
+        case CpuTimelineKind::ComputeBatchWait: return "compute_batch_wait";
+        case CpuTimelineKind::LayerOutputWait: return "layer_output_wait";
+        case CpuTimelineKind::PrefetchDrain: return "prefetch_drain";
+    }
+    return "unknown";
+}
+
 std::string stage_profile_json(const StageProfile& profile, bool include_trace) {
     std::ostringstream out;
     out << std::fixed << std::setprecision(6);
@@ -472,6 +734,14 @@ std::string stage_profile_json(const StageProfile& profile, bool include_trace) 
         << ",\"stream_waits\":" << profile.stream_waits
         << ",\"host_synchronizations\":" << profile.host_synchronizations
         << ",\"timing_events_allocated\":" << profile.timing_events_allocated << '}';
+    out << ",\"host_waits\":{";
+    for (size_t i = 0; i < static_cast<size_t>(HostWaitReason::Count); ++i) {
+        if (i) out << ',';
+        out << '\"' << host_wait_reason_name(static_cast<HostWaitReason>(i)) << "\":{"
+            << "\"milliseconds\":" << profile.host_wait_ms[i]
+            << ",\"count\":" << profile.host_wait_count[i] << '}';
+    }
+    out << '}';
     out << ",\"derived\":{\"average_expert_request_us\":" << profile.average_expert_request_us
         << ",\"average_cold_load_us\":" << profile.average_cold_load_us
         << ",\"total_gpu_compute_ms\":" << profile.total_gpu_compute_ms
@@ -482,7 +752,26 @@ std::string stage_profile_json(const StageProfile& profile, bool include_trace) 
         << ",\"repeated_requests\":" << profile.repeated_requests
         << ",\"reused_before_eviction_fraction\":" << profile.reused_before_eviction_fraction
         << ",\"oracle_adjacent_topk_overlap\":" << profile.oracle_adjacent_topk_overlap
-        << ",\"oracle_random_overlap_expectation\":" << profile.oracle_random_overlap_expectation << '}';
+        << ",\"oracle_random_overlap_expectation\":" << profile.oracle_random_overlap_expectation
+        << ",\"gpu_timeline_span_ms\":" << profile.gpu_timeline_span_ms
+        << ",\"copy_engine_active_ms\":" << profile.copy_engine_active_ms
+        << ",\"compute_engine_active_ms\":" << profile.compute_engine_active_ms
+        << ",\"copy_compute_overlap_ms\":" << profile.copy_compute_overlap_ms
+        << ",\"gpu_neither_active_ms\":" << profile.gpu_neither_active_ms
+        << ",\"copy_engine_utilization\":" << profile.copy_engine_utilization
+        << ",\"compute_engine_utilization\":" << profile.compute_engine_utilization
+        << ",\"copy_compute_overlap_fraction\":" << profile.copy_compute_overlap_fraction
+        << ",\"average_transfer_queue_depth\":" << profile.average_transfer_queue_depth
+        << ",\"max_transfer_queue_depth\":" << profile.max_transfer_queue_depth << '}';
+    out << ",\"h2d_size_buckets\":[";
+    static const char* bucket_names[] = {"0-16KiB", "16-256KiB", "256KiB-1MiB", ">1MiB"};
+    for (size_t i = 0; i < 4; ++i) {
+        if (i) out << ',';
+        out << "{\"range\":\"" << bucket_names[i] << "\",\"copies\":"
+            << profile.h2d_bucket_copies[i] << ",\"bytes\":" << profile.h2d_bucket_bytes[i]
+            << ",\"milliseconds\":" << profile.h2d_bucket_ms[i] << '}';
+    }
+    out << ']';
     if (include_trace) {
         out << ",\"trace\":[";
         for (size_t i = 0; i < profile.trace.size(); ++i) {
@@ -505,6 +794,48 @@ std::string stage_profile_json(const StageProfile& profile, bool include_trace) 
         out << ']';
     }
     out << '}';
+    return out.str();
+}
+
+std::string cuda_timeline_json(const StageProfile& profile) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(3);
+    out << "{\"displayTimeUnit\":\"ms\",\"traceEvents\":[";
+    bool first = true;
+    auto emit_metadata = [&](int tid, const char* name) {
+        if (!first) out << ',';
+        first = false;
+        out << "{\"name\":\"thread_name\",\"ph\":\"M\",\"pid\":1,\"tid\":"
+            << tid << ",\"args\":{\"name\":\"" << name << "\"}}";
+    };
+    emit_metadata(0, "host");
+    emit_metadata(1, "prefetch_stream");
+    emit_metadata(2, "compute_stream");
+    for (const TimelineRecord& record : profile.timeline) {
+        if (!first) out << ',';
+        first = false;
+        const char* name = record.gpu ? gpu_stage_name(record.gpu_stage)
+                                      : cpu_timeline_kind_name(record.cpu_kind);
+        out << "{\"name\":\"" << name << "\",\"cat\":\""
+            << (record.gpu ? "cuda" : "host") << "\",\"ph\":\"X\",\"pid\":1,\"tid\":"
+            << record.lane << ",\"ts\":" << record.start_ms * 1000.0
+            << ",\"dur\":" << std::max(0.0, record.end_ms - record.start_ms) * 1000.0
+            << ",\"args\":{\"token\":" << record.token
+            << ",\"logical_layer\":" << record.logical_layer
+            << ",\"expert\":" << record.expert
+            << ",\"bytes\":" << record.bytes
+            << ",\"transfer_id\":" << record.transfer_id
+            << ",\"queue_depth\":" << record.queue_depth
+            << ",\"staging_slot\":" << record.staging_slot << "}}";
+    }
+    out << "],\"summary\":{\"gpu_span_ms\":" << profile.gpu_timeline_span_ms
+        << ",\"copy_active_ms\":" << profile.copy_engine_active_ms
+        << ",\"compute_active_ms\":" << profile.compute_engine_active_ms
+        << ",\"overlap_ms\":" << profile.copy_compute_overlap_ms
+        << ",\"neither_ms\":" << profile.gpu_neither_active_ms
+        << ",\"copy_utilization\":" << profile.copy_engine_utilization
+        << ",\"compute_utilization\":" << profile.compute_engine_utilization
+        << ",\"overlap_fraction\":" << profile.copy_compute_overlap_fraction << "}}";
     return out.str();
 }
 

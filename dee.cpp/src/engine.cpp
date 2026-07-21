@@ -227,7 +227,7 @@ bool Engine::prepare_profile_scenario() {
     scenario_resident_hits_ = 0;
     scenario_cold_loads_ = 0;
     profiler_.configure(cfg_.profile_stages, cfg_.trace_requests,
-                        blob_bytes_, oracle_.num_experts());
+                        blob_bytes_, oracle_.num_experts(), cfg_.profile_timeline);
     cache_.set_profiler(cfg_.profile_stages ? &profiler_ : nullptr);
     prefetcher_.set_profiler(cfg_.profile_stages ? &profiler_ : nullptr);
     oracle_.set_profiler(cfg_.profile_stages ? &profiler_ : nullptr);
@@ -335,7 +335,8 @@ bool Engine::init(const EngineConfig& cfg) {
     }
     int nl = std::min(cfg.num_layers, oracle_.num_layers());
     cfg_.num_layers = nl;
-    profiler_.configure(cfg.profile_stages, cfg.trace_requests, blob_bytes_, oracle_.num_experts());
+    profiler_.configure(cfg.profile_stages, cfg.trace_requests, blob_bytes_,
+                        oracle_.num_experts(), cfg.profile_timeline);
     cache_.set_profiler(cfg.profile_stages ? &profiler_ : nullptr);
     prefetcher_.set_profiler(cfg.profile_stages ? &profiler_ : nullptr);
     oracle_.set_profiler(cfg.profile_stages ? &profiler_ : nullptr);
@@ -424,6 +425,11 @@ bool Engine::init(const EngineConfig& cfg) {
 
 bool Engine::generate() {
     if (!prepare_profile_scenario()) return false;
+#ifdef DEE_CUDA
+    if (cfg_.use_cuda && cfg_.profile_timeline &&
+        !profiler_.begin_cuda_timeline(static_cast<void*>(compute_stream_),
+                                       prefetcher_.cuda_stream())) return false;
+#endif
     auto t0 = std::chrono::steady_clock::now();
 
     // deterministic "prompt" embedding for token 0, layer 0 input
@@ -588,6 +594,10 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
 
     // 1) issue all expert weight H2D copies (async, secondary stream)
     if (cfg_.scenario != BenchmarkScenario::TransferOnly) {
+        if (profiler_.enabled()) {
+            profiler_.set_cuda_context(current_token_, layer, -1,
+                                       static_cast<size_t>(hidden_) * sizeof(float));
+        }
         const size_t input_h2d_ticket = profiler_.enabled()
             ? profiler_.cuda_begin(GpuStage::H2D, static_cast<void*>(compute_stream_)) : static_cast<size_t>(-1);
         if (!DEE_CUDA_CHECK_NAMED(cudaMemcpyAsync(d_h_in_, h_in, (size_t)hidden_ * sizeof(float),
@@ -618,6 +628,9 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
             if (cfg_.scenario == BenchmarkScenario::TransferOnly) continue;
             if (!bypass_cache && !cache_.pin(source_layer, e)) return false;
             const float* d_blob = static_cast<const float*>(cache_.data(source_layer, e));
+            if (profiler_.enabled()) {
+                profiler_.set_cuda_context(current_token_, layer, e);
+            }
             if (!d_blob || !swiglu_expert_cuda(cublas_handle_, d_blob, d_h_in_, d_hbuf_, d_ubuf_,
                                                 d_ybuf_ + (size_t)k * hidden_, inter_, hidden_, compute_stream_,
                                                 profiler_.enabled() ? &profiler_ : nullptr)) {
@@ -635,7 +648,12 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
         const auto sync_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
         if (!DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(compute_stream_), "cudaStreamSynchronize(expert batch)")) return false;
         if (profiler_.enabled()) {
-            profiler_.add_cpu(CpuStage::Synchronization, sync_begin);
+            const auto sync_end = StageProfiler::now();
+            const double sync_ms = std::chrono::duration<double, std::milli>(
+                sync_end - sync_begin).count();
+            profiler_.add_cpu_ms(CpuStage::Synchronization, sync_ms);
+            profiler_.note_host_wait(HostWaitReason::ComputeBatch, sync_begin, sync_end,
+                                     current_token_, layer);
             profiler_.note_host_synchronization();
             if (!profiler_.cuda_collect_ready()) return false;
         }
@@ -647,6 +665,9 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
         std::memcpy(h_out, h_in, static_cast<size_t>(hidden_) * sizeof(float));
         return true;
     }
+    if (profiler_.enabled()) {
+        profiler_.set_cuda_context(current_token_, layer, -1);
+    }
     if (!combine_cuda(d_ybuf_, d_h_out_, K, hidden_, compute_stream_,
                       profiler_.enabled() ? &profiler_ : nullptr) ||
         !DEE_CUDA_CHECK_NAMED(cudaMemcpyAsync(h_out, d_h_out_, (size_t)hidden_ * sizeof(float),
@@ -655,7 +676,13 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
     const auto output_sync_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
     if (!DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(compute_stream_), "cudaStreamSynchronize(layer output)")) return false;
     if (profiler_.enabled()) {
-        profiler_.add_cpu(CpuStage::Synchronization, output_sync_begin);
+        const auto output_sync_end = StageProfiler::now();
+        const double sync_ms = std::chrono::duration<double, std::milli>(
+            output_sync_end - output_sync_begin).count();
+        profiler_.add_cpu_ms(CpuStage::Synchronization, sync_ms);
+        profiler_.note_host_wait(HostWaitReason::LayerOutput, output_sync_begin,
+                                 output_sync_end,
+                                 current_token_, layer);
         profiler_.note_host_synchronization();
         if (!profiler_.cuda_collect_ready()) return false;
     }

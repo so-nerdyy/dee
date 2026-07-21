@@ -40,6 +40,9 @@ struct Transfer {
     long      id       = -1;
     size_t    staging_slot = static_cast<size_t>(-1);
     bool      cache_pin_held = false;
+    bool      active_counted = false;
+    int       token = -1;
+    int       logical_layer = -1;
 };
 
 // ---------------------------------------------------------------------------
@@ -109,6 +112,7 @@ public:
     void set_profiler(StageProfiler* profiler) { profiler_ = profiler; }
 
     bool using_cuda() const { return use_cuda_; }
+    void* cuda_stream() const { return stream_; }
 
 private:
     VramCacheManager& cache_;
@@ -134,6 +138,7 @@ private:
     void* stream_ = nullptr;  // cudaStream_t
     std::vector<PinnedStagingSlot> staging_slots_;
     size_t next_staging_slot_ = 0;
+    size_t active_transfers_ = 0;
 
     long   next_id_ = 0;
     Stats  stats_{};
@@ -148,7 +153,7 @@ private:
     void   drain_until(int idx);   // mock: run copies up to idx (inclusive)
     bool   cuda_init();            // guarded real init
     bool   cuda_submit(long idx);  // guarded real submit + event record
-    bool   cuda_wait(long idx);    // guarded real event sync
+    bool   cuda_wait(long idx, HostWaitReason reason);  // guarded real event sync
     bool   release_transfer(Transfer& transfer);
     void   record_request(RequestKind kind, int token, int logical_layer,
                           int resolved_layer, int expert, int priority,
