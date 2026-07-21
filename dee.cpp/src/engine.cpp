@@ -13,6 +13,10 @@
 #include <limits>
 #include <unordered_set>
 
+#if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
+#include <immintrin.h>
+#endif
+
 #ifdef DEE_CUDA
 #include <cuda_runtime.h>
 #include "dee/cuda_check.h"
@@ -26,6 +30,71 @@ namespace {
 uint64_t staging_key(int layer, int expert) {
     return (static_cast<uint64_t>(static_cast<uint32_t>(layer)) << 32) |
            static_cast<uint32_t>(expert);
+}
+
+float quantize_bf16_projection_scalar(const uint16_t* source, int8_t* destination,
+                                      size_t elements) {
+    float max_abs = 0.0f;
+    for (size_t i = 0; i < elements; ++i) {
+        max_abs = std::max(max_abs, std::fabs(bf16_to_f32(source[i])));
+    }
+    const float scale = max_abs > 0.0f ? max_abs / 127.0f : 1.0f;
+    for (size_t i = 0; i < elements; ++i) {
+        const long value = std::lrint(bf16_to_f32(source[i]) / scale);
+        destination[i] = static_cast<int8_t>(std::max(-127L, std::min(127L, value)));
+    }
+    return scale;
+}
+
+#if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
+__attribute__((target("avx2")))
+float quantize_bf16_projection_avx2(const uint16_t* source, int8_t* destination,
+                                    size_t elements) {
+    const __m256 abs_mask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7fffffff));
+    __m256 maximum = _mm256_setzero_ps();
+    size_t i = 0;
+    for (; i + 8 <= elements; i += 8) {
+        const __m128i packed = _mm_loadu_si128(reinterpret_cast<const __m128i*>(source + i));
+        const __m256 values = _mm256_castsi256_ps(
+            _mm256_slli_epi32(_mm256_cvtepu16_epi32(packed), 16));
+        maximum = _mm256_max_ps(maximum, _mm256_and_ps(values, abs_mask));
+    }
+    alignas(32) float lanes[8];
+    _mm256_store_ps(lanes, maximum);
+    float max_abs = 0.0f;
+    for (float lane : lanes) max_abs = std::max(max_abs, lane);
+    for (; i < elements; ++i) max_abs = std::max(max_abs, std::fabs(bf16_to_f32(source[i])));
+    const float scale = max_abs > 0.0f ? max_abs / 127.0f : 1.0f;
+    const __m256 inverse_scale = _mm256_set1_ps(1.0f / scale);
+    alignas(32) int32_t integers[8];
+    i = 0;
+    for (; i + 8 <= elements; i += 8) {
+        const __m128i packed = _mm_loadu_si128(reinterpret_cast<const __m128i*>(source + i));
+        const __m256 values = _mm256_castsi256_ps(
+            _mm256_slli_epi32(_mm256_cvtepu16_epi32(packed), 16));
+        _mm256_store_si256(reinterpret_cast<__m256i*>(integers),
+                           _mm256_cvtps_epi32(_mm256_mul_ps(values, inverse_scale)));
+        for (size_t lane = 0; lane < 8; ++lane) {
+            destination[i + lane] = static_cast<int8_t>(
+                std::max(-127, std::min(127, integers[lane])));
+        }
+    }
+    for (; i < elements; ++i) {
+        const long value = std::lrint(bf16_to_f32(source[i]) / scale);
+        destination[i] = static_cast<int8_t>(std::max(-127L, std::min(127L, value)));
+    }
+    return scale;
+}
+#endif
+
+float quantize_bf16_projection(const uint16_t* source, int8_t* destination,
+                               size_t elements) {
+#if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
+    if (__builtin_cpu_supports("avx2")) {
+        return quantize_bf16_projection_avx2(source, destination, elements);
+    }
+#endif
+    return quantize_bf16_projection_scalar(source, destination, elements);
 }
 
 }  // namespace
@@ -47,6 +116,14 @@ const char* device_cache_dtype_name(DeviceCacheDType dtype) {
     switch (dtype) {
         case DeviceCacheDType::Fp32: return "fp32";
         case DeviceCacheDType::Fp16: return "fp16";
+    }
+    return "unknown";
+}
+
+const char* weight_transfer_dtype_name(WeightTransferDType dtype) {
+    switch (dtype) {
+        case WeightTransferDType::Bf16: return "bf16";
+        case WeightTransferDType::Int8: return "int8";
     }
     return "unknown";
 }
@@ -174,8 +251,70 @@ const uint16_t* Engine::get_staging_bf16(int source_layer, int expert) {
     return result.first->second.data();
 }
 
+const Engine::QuantizedExpert* Engine::get_staging_int8(int source_layer, int expert) {
+    const auto profile_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
+    const uint64_t key = staging_key(source_layer, expert);
+    auto existing = staging_int8_.find(key);
+    if (existing != staging_int8_.end()) {
+        if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
+        return &existing->second;
+    }
+
+    TensorView views[3] = {
+        resolver_.resolve_expert(source_layer, expert, TensorResolver::GATE_PROJ),
+        resolver_.resolve_expert(source_layer, expert, TensorResolver::UP_PROJ),
+        resolver_.resolve_expert(source_layer, expert, TensorResolver::DOWN_PROJ)};
+    const size_t projection = static_cast<size_t>(inter_) * hidden_;
+    const size_t projection_bytes = projection * sizeof(uint16_t);
+    for (const TensorView& view : views) {
+        if (!view.ok() || view.dtype != DType::BF16 || view.nbytes != projection_bytes) {
+            std::fprintf(stderr, "[engine] expert %d has unsupported INT8 source layout\n", expert);
+            if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
+            return nullptr;
+        }
+    }
+
+    QuantizedExpert quantized;
+#ifdef DEE_CUDA
+    const size_t output_bytes = blob_elems_ * sizeof(int8_t);
+    if (cfg_.use_cuda && pinned_staging_bytes_ + output_bytes <= kPinnedStagingLimit) {
+        if (DEE_CUDA_CHECK_NAMED(cudaHostAlloc(&quantized.pinned, output_bytes, cudaHostAllocDefault),
+                                 "cudaHostAlloc(persistent INT8 expert source)")) {
+            pinned_staging_bytes_ += output_bytes;
+        }
+    }
+#endif
+    if (!quantized.pinned) quantized.host.resize(blob_elems_);
+    auto* destination = quantized.pinned
+        ? static_cast<int8_t*>(quantized.pinned) : quantized.host.data();
+    if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
+    const auto quantize_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
+    for (size_t region = 0; region < 3; ++region) {
+        const auto* source = reinterpret_cast<const uint16_t*>(views[region].data);
+        int8_t* output = destination + region * projection;
+        quantized.scales[region] = quantize_bf16_projection(source, output, projection);
+    }
+    if (profiler_.enabled()) {
+        profiler_.add_cpu(CpuStage::MmapToPinned, quantize_begin);
+        profiler_.note_mmap_copy(blob_elems_ * sizeof(uint16_t));
+    }
+    auto inserted = staging_int8_.emplace(key, std::move(quantized));
+    return &inserted.first->second;
+}
+
 bool Engine::stage_expert(int logical_layer, int source_layer, int expert, int priority) {
     if (cfg_.use_cuda) {
+        if (cfg_.transfer_dtype == WeightTransferDType::Int8) {
+            const QuantizedExpert* quantized = get_staging_int8(source_layer, expert);
+            if (!quantized) return false;
+            const auto* source = quantized->pinned
+                ? static_cast<const int8_t*>(quantized->pinned) : quantized->host.data();
+            return prefetcher_.prefetch_int8_to_f16(
+                       source_layer, expert, source, blob_elems_,
+                       static_cast<size_t>(inter_) * hidden_, quantized->scales,
+                       priority, current_token_, logical_layer,
+                       quantized->pinned != nullptr) >= 0;
+        }
         const uint16_t* blob = get_staging_bf16(source_layer, expert);
         if (!blob) {
             std::fprintf(stderr, "[engine] missing BF16 source weights for expert (%d,%d)\n",
@@ -297,6 +436,11 @@ bool Engine::init(const EngineConfig& cfg) {
     hidden_ = cfg.hidden;
     if (cfg.cache_dtype == DeviceCacheDType::Fp16 && !cfg.use_cuda) {
         std::fprintf(stderr, "[engine] FP16 device cache requires --cuda\n");
+        return false;
+    }
+    if (cfg.transfer_dtype == WeightTransferDType::Int8 &&
+        (!cfg.use_cuda || cfg.cache_dtype != DeviceCacheDType::Fp16)) {
+        std::fprintf(stderr, "[engine] INT8 transfer requires CUDA with an FP16 device cache\n");
         return false;
     }
     if (!prefetcher_.set_ring_size(cfg.prefetch_depth)) {
@@ -759,6 +903,13 @@ Engine::~Engine() {
                                  "cudaFreeHost(persistent BF16 expert source)");
         }
         pinned_staging_bf16_.clear();
+        for (const auto& entry : staging_int8_) {
+            if (entry.second.pinned) {
+                DEE_CUDA_CHECK_NAMED(cudaFreeHost(entry.second.pinned),
+                                     "cudaFreeHost(persistent INT8 expert source)");
+            }
+        }
+        staging_int8_.clear();
         pinned_staging_bytes_ = 0;
         cuda_cleanup();
     }

@@ -66,8 +66,40 @@ int main() {
     if (d_bf16) cudaFree(d_bf16);
     if (d_converted) cudaFree(d_converted);
     if (conversion_stream) cudaStreamDestroy(conversion_stream);
+    conversion_stream = nullptr;
     std::printf("CUDA BF16 expansion comparison: %s\n", conversion_ok ? "PASS" : "FAIL");
     if (!conversion_ok) return 1;
+
+    const std::vector<int8_t> int8_source = {-2, 2, -3, 3, -4, 4};
+    const float int8_scales[3] = {0.5f, 0.25f, 0.125f};
+    int8_t* d_int8 = nullptr;
+    void* d_int8_half = nullptr;
+    std::vector<__half> int8_half(int8_source.size());
+    bool int8_ok = check(cudaStreamCreate(&conversion_stream), "cudaStreamCreate(INT8 conversion)") &&
+        check(cudaMalloc(reinterpret_cast<void**>(&d_int8), int8_source.size()),
+                         "cudaMalloc(INT8 conversion source)") &&
+        check(cudaMalloc(&d_int8_half, int8_source.size() * sizeof(uint16_t)),
+              "cudaMalloc(INT8 conversion output)") &&
+        check(cudaMemcpyAsync(d_int8, int8_source.data(), int8_source.size(),
+                              cudaMemcpyHostToDevice, conversion_stream),
+              "cudaMemcpyAsync(INT8 conversion source)") &&
+        dee::int8_to_f16_cuda(d_int8, d_int8_half, int8_source.size(), 2,
+                              int8_scales, conversion_stream) &&
+        check(cudaMemcpyAsync(int8_half.data(), d_int8_half,
+                              int8_half.size() * sizeof(__half),
+                              cudaMemcpyDeviceToHost, conversion_stream),
+              "cudaMemcpyAsync(INT8 conversion output)") &&
+        check(cudaStreamSynchronize(conversion_stream),
+              "cudaStreamSynchronize(INT8 conversion)");
+    for (size_t i = 0; int8_ok && i < int8_half.size(); ++i) {
+        const float expected = static_cast<float>(int8_source[i]) * int8_scales[i / 2];
+        if (__half2float(int8_half[i]) != expected) int8_ok = false;
+    }
+    if (d_int8) cudaFree(d_int8);
+    if (d_int8_half) cudaFree(d_int8_half);
+    if (conversion_stream) cudaStreamDestroy(conversion_stream);
+    std::printf("CUDA INT8-to-FP16 comparison: %s\n", int8_ok ? "PASS" : "FAIL");
+    if (!int8_ok) return 1;
 
     constexpr int inter = 3;
     constexpr int hidden = 4;

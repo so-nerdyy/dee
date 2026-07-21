@@ -24,6 +24,7 @@ void usage(const char* argv0) {
         "  --budget BYTES     Expert-cache budget (0 = four expert blobs)\n"
         "  --prefetch-depth N Bounded staging/transfer ring depth (default: 64)\n"
         "  --cache-dtype D    Device expert cache: fp16 with --cuda, or fp32 fallback\n"
+        "  --transfer-dtype D Expert transfer: bf16 (default) or experimental int8\n"
         "  --cuda             Use CUDA; requires a DEE_CUDA build and a GPU\n"
         "  --profile-stages   Enable detailed CPU/CUDA stage timing\n"
         "  --profile-scenario M Controlled profile: end-to-end, full-resident,\n"
@@ -94,6 +95,18 @@ bool parse_cache_dtype(const char* text, dee::DeviceCacheDType& out) {
     return true;
 }
 
+bool parse_transfer_dtype(const char* text, dee::WeightTransferDType& out) {
+    if (!text) return false;
+    const std::string value(text);
+    if (value == "bf16") out = dee::WeightTransferDType::Bf16;
+    else if (value == "int8") out = dee::WeightTransferDType::Int8;
+    else {
+        std::fprintf(stderr, "[cli] invalid --transfer-dtype value: %s (expected bf16 or int8)\n", text);
+        return false;
+    }
+    return true;
+}
+
 const char* require_value(int& index, int argc, char** argv, const char* option) {
     if (index + 1 >= argc) {
         std::fprintf(stderr, "[cli] %s requires a value\n", option);
@@ -118,6 +131,7 @@ void print_result(const dee::EngineConfig& cfg, const dee::EngineStats& stats, i
     std::printf("tokens per second      : %.3f\n", stats.tok_per_sec);
     std::printf("configured cache budget: %zu bytes\n", cfg.budget_bytes);
     std::printf("device cache dtype      : %s\n", dee::device_cache_dtype_name(cfg.cache_dtype));
+    std::printf("weight transfer dtype   : %s\n", dee::weight_transfer_dtype_name(cfg.transfer_dtype));
     std::printf("prefetch ring depth     : %zu\n", cfg.prefetch_depth);
     std::printf("peak expert-cache VRAM : %zu bytes\n", stats.peak_vram);
     std::printf("cache hits             : %llu\n", static_cast<unsigned long long>(stats.cache_hits));
@@ -248,6 +262,7 @@ std::string benchmark_json(const dee::EngineConfig& cfg, const dee::EngineStats&
         << ",\"tokens_per_second\":" << stats.tok_per_sec
         << ",\"cache_budget_bytes\":" << cfg.budget_bytes
         << ",\"cache_dtype\":\"" << dee::device_cache_dtype_name(cfg.cache_dtype) << '\"'
+        << ",\"transfer_dtype\":\"" << dee::weight_transfer_dtype_name(cfg.transfer_dtype) << '\"'
         << ",\"peak_cache_bytes\":" << stats.peak_vram
         << ",\"requests\":" << stats.prefetch_issued
         << ",\"resident_hits\":" << stats.resident_hits
@@ -327,6 +342,9 @@ int main(int argc, char** argv) {
             if (!(value = require_value(i, argc, argv, "--cache-dtype")) ||
                 !parse_cache_dtype(value, cfg.cache_dtype)) return 2;
             cache_dtype_explicit = true;
+        } else if (arg == "--transfer-dtype") {
+            if (!(value = require_value(i, argc, argv, "--transfer-dtype")) ||
+                !parse_transfer_dtype(value, cfg.transfer_dtype)) return 2;
         } else if (arg == "--profile-json") {
             if (!(value = require_value(i, argc, argv, "--profile-json"))) return 2;
             profile_json_path = value;
@@ -363,6 +381,11 @@ int main(int argc, char** argv) {
 
     if (cfg.cache_dtype == dee::DeviceCacheDType::Fp16 && !cfg.use_cuda) {
         std::fprintf(stderr, "[cli] --cache-dtype fp16 requires --cuda\n");
+        return 2;
+    }
+    if (cfg.transfer_dtype == dee::WeightTransferDType::Int8 &&
+        (!cfg.use_cuda || cfg.cache_dtype != dee::DeviceCacheDType::Fp16)) {
+        std::fprintf(stderr, "[cli] --transfer-dtype int8 requires --cuda with --cache-dtype fp16\n");
         return 2;
     }
 

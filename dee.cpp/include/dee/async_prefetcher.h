@@ -34,6 +34,9 @@ struct Transfer {
     size_t    source_nbytes = 0;   // bytes copied through pinned memory/H2D
     bool      expand_bf16 = false;
     bool      cache_fp16 = false;
+    bool      dequantize_int8 = false;
+    size_t    projection_elements = 0;
+    float     quant_scales[3] = {1.0f, 1.0f, 1.0f};
     bool      source_pinned = false;
     bool      done     = false;    // mock event "signaled"
     bool      abandoned = false;
@@ -76,6 +79,12 @@ public:
     // Convert packed BF16 source weights into a persistent FP16 cache block.
     long prefetch_bf16_to_f16(int layer, int expert, const uint16_t* src,
                               size_t elements, int priority = 0,
+                              int token = -1, int logical_layer = -1,
+                              bool source_pinned = false);
+
+    long prefetch_int8_to_f16(int layer, int expert, const int8_t* src,
+                              size_t elements, size_t projection_elements,
+                              const float scales[3], int priority = 0,
                               int token = -1, int logical_layer = -1,
                               bool source_pinned = false);
 
@@ -160,7 +169,9 @@ private:
     long   find_inflight(int layer, int expert) const;
     long   prefetch_impl(int layer, int expert, const void* src,
                          size_t source_nbytes, size_t destination_nbytes,
-                         bool expand_bf16, bool cache_fp16, bool source_pinned,
+                         bool expand_bf16, bool cache_fp16, bool dequantize_int8,
+                         size_t projection_elements, const float* quant_scales,
+                         bool source_pinned,
                          int priority, int token,
                          int logical_layer);
     void   drain_until(int idx);   // mock: run copies up to idx (inclusive)

@@ -66,6 +66,13 @@ enum class DeviceCacheDType {
 
 const char* device_cache_dtype_name(DeviceCacheDType dtype);
 
+enum class WeightTransferDType {
+    Bf16,
+    Int8
+};
+
+const char* weight_transfer_dtype_name(WeightTransferDType dtype);
+
 struct EngineConfig {
     std::string shard_path;    // safetensors MoE shard (mapped by WeightMmap)
     std::string oracle_path;   // PyTorch .pt Oracle (read by PtLoader)
@@ -75,6 +82,7 @@ struct EngineConfig {
     size_t      budget_bytes = 0;   // VRAM budget (0 => 4 experts auto)
     size_t      prefetch_depth = 64;// bounded pinned/device staging ring
     DeviceCacheDType cache_dtype = DeviceCacheDType::Fp32;
+    WeightTransferDType transfer_dtype = WeightTransferDType::Bf16;
     bool        use_cuda    = false;// DEE_CUDA path (only if built WITH cuda)
     int         hidden      = 2048; // model hidden dim (checked vs shard)
     int         inter       = 256;  // expert intermediate dim (checked vs shard)
@@ -173,6 +181,12 @@ private:
     std::unordered_map<uint64_t, std::vector<float>> staging_;
     std::unordered_map<uint64_t, std::vector<uint16_t>> staging_bf16_;
     std::unordered_map<uint64_t, void*> pinned_staging_bf16_;
+    struct QuantizedExpert {
+        std::vector<int8_t> host;
+        void* pinned = nullptr;
+        float scales[3] = {1.0f, 1.0f, 1.0f};
+    };
+    std::unordered_map<uint64_t, QuantizedExpert> staging_int8_;
     size_t pinned_staging_bytes_ = 0;
     static constexpr size_t kPinnedStagingLimit = 192ULL * 1024 * 1024;
 
@@ -192,6 +206,7 @@ private:
     // from mmap/upcast).
     const float* get_staging(int source_layer, int expert);
     const uint16_t* get_staging_bf16(int source_layer, int expert);
+    const QuantizedExpert* get_staging_int8(int source_layer, int expert);
 
     // Stream `expert` from a resolved shard layer into VRAM.  The cache key
     // must describe the source weights, not merely the logical model layer.

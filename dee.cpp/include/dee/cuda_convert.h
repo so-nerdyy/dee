@@ -21,6 +21,10 @@ bool bf16_to_f16_cuda(const uint16_t* source, void* destination, size_t elements
 bool f32_to_f16_cuda(const float* source, void* destination, size_t elements,
                      cudaStream_t stream, StageProfiler* profiler = nullptr);
 
+bool int8_to_f16_cuda(const int8_t* source, void* destination, size_t elements,
+                      size_t projection_elements, const float scales[3],
+                      cudaStream_t stream, StageProfiler* profiler = nullptr);
+
 }  // namespace dee
 
 #endif
