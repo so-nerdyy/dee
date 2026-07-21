@@ -434,8 +434,9 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (cfg.transfer_dtype != dee::WeightTransferDType::Bf16 &&
-        (!cfg.use_cuda || cfg.cache_dtype != dee::DeviceCacheDType::Fp16)) {
-        std::fprintf(stderr, "[cli] quantized transfer requires --cuda with --cache-dtype fp16\n");
+        (!cfg.use_cuda || (cfg.cache_dtype != dee::DeviceCacheDType::Fp16 &&
+                           cfg.cache_dtype != dee::DeviceCacheDType::Int8))) {
+        std::fprintf(stderr, "[cli] quantized transfer requires --cuda with --cache-dtype fp16 or int8\n");
         return 2;
     }
 
