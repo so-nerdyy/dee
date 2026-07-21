@@ -11,6 +11,7 @@
 #pragma once
 
 #include "dee/pt_loader.h"
+#include "dee/profiling.h"
 
 #include <string>
 #include <vector>
@@ -46,11 +47,13 @@ public:
     }
 
     const std::string& error() const { return err_; }
+    void set_profiler(StageProfiler* profiler) { profiler_ = profiler; }
 
 private:
     int D_ = 2048, H_ = 256, E_ = 256;
     std::vector<OracleLayerWeights> layers_;
     std::string err_;
+    StageProfiler* profiler_ = nullptr;
 };
 
 } // namespace dee

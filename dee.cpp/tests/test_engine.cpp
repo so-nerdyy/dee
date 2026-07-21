@@ -78,6 +78,10 @@ static void test_engine_e2e() {
     CHECK(s.profile.trace.size() == s.prefetch_issued, "request trace covers every request");
     CHECK(s.profile.layer_count == static_cast<uint64_t>(cfg.num_tokens * cfg.num_layers),
           "layer timing count excludes no measured layers");
+    CHECK(s.profile.oracle_calls == static_cast<uint64_t>(cfg.num_tokens * cfg.num_layers),
+          "Oracle internal profiler counts every measured prediction");
+    CHECK(s.profile.oracle_ms[static_cast<size_t>(dee::OracleStage::Linear0)] > 0.0,
+          "Oracle internal profiler measures first matrix operation");
     CHECK(s.cache_loads > 0, "cache performed loads");
     // with an 8-expert activation and 4-expert budget, eviction MUST occur
     CHECK(s.evictions > 0, "cache evictions occurred (budget < topk*depth pressure)");

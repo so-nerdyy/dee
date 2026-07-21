@@ -198,6 +198,7 @@ bool Engine::prepare_profile_scenario() {
                         blob_bytes_, oracle_.num_experts());
     cache_.set_profiler(cfg_.profile_stages ? &profiler_ : nullptr);
     prefetcher_.set_profiler(cfg_.profile_stages ? &profiler_ : nullptr);
+    oracle_.set_profiler(cfg_.profile_stages ? &profiler_ : nullptr);
     return true;
 }
 
@@ -305,6 +306,7 @@ bool Engine::init(const EngineConfig& cfg) {
     profiler_.configure(cfg.profile_stages, cfg.trace_requests, blob_bytes_, oracle_.num_experts());
     cache_.set_profiler(cfg.profile_stages ? &profiler_ : nullptr);
     prefetcher_.set_profiler(cfg.profile_stages ? &profiler_ : nullptr);
+    oracle_.set_profiler(cfg.profile_stages ? &profiler_ : nullptr);
 
     // VRAM budget. default: 4 experts. The arena backend is cudaMalloc when the
     // CUDA path is active, else a malloc'd host arena (mock backend).

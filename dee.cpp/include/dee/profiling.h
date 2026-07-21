@@ -40,6 +40,23 @@ enum class GpuStage : size_t {
 
 enum class RequestKind : uint8_t { ResidentHit, InflightHit, ColdLoad };
 
+enum class OracleStage : size_t {
+    ModelLookup,
+    InputFeatures,
+    Linear0,
+    Relu0,
+    Linear1,
+    Relu1,
+    Linear2,
+    TopKSort,
+    TopKOutput,
+    Allocation,
+    TensorConversion,
+    Synchronization,
+    InvocationOverhead,
+    Count
+};
+
 struct RequestTraceRecord {
     uint64_t index = 0;
     int token = -1;
@@ -62,6 +79,10 @@ struct StageProfile {
     std::array<double, static_cast<size_t>(CpuStage::Count)> cpu_ms{};
     std::array<double, static_cast<size_t>(GpuStage::Count)> gpu_ms{};
     std::array<uint64_t, static_cast<size_t>(GpuStage::Count)> gpu_samples{};
+    std::array<double, static_cast<size_t>(OracleStage::Count)> oracle_ms{};
+    uint64_t oracle_calls = 0;
+    uint64_t oracle_allocations = 0;
+    uint64_t oracle_allocation_bytes = 0;
 
     double layer_wall_ms = 0.0;
     uint64_t layer_count = 0;
@@ -126,6 +147,12 @@ public:
     void add_cpu_ms(CpuStage stage, double milliseconds);
     void add_layer_latency(TimePoint begin);
     void add_token_latency(TimePoint begin);
+    void add_oracle(OracleStage stage, TimePoint begin);
+    void add_oracle_ms(OracleStage stage, double milliseconds);
+    void note_oracle_call() { if (enabled_) ++oracle_calls_; }
+    void note_oracle_allocation(size_t bytes) {
+        if (enabled_) { ++oracle_allocations_; oracle_allocation_bytes_ += bytes; }
+    }
 
     void note_request(int token, int logical_layer, int resolved_layer, int expert,
                       RequestKind kind, size_t cache_bytes_used, int evicted_layer,
@@ -161,6 +188,10 @@ private:
     std::array<double, static_cast<size_t>(CpuStage::Count)> cpu_ms_{};
     std::array<double, static_cast<size_t>(GpuStage::Count)> gpu_ms_{};
     std::array<uint64_t, static_cast<size_t>(GpuStage::Count)> gpu_samples_{};
+    std::array<double, static_cast<size_t>(OracleStage::Count)> oracle_ms_{};
+    uint64_t oracle_calls_ = 0;
+    uint64_t oracle_allocations_ = 0;
+    uint64_t oracle_allocation_bytes_ = 0;
     std::vector<double> token_latencies_ms_;
     double layer_wall_ms_ = 0.0;
     uint64_t layer_count_ = 0;
@@ -204,6 +235,7 @@ private:
 const char* cpu_stage_name(CpuStage stage);
 const char* gpu_stage_name(GpuStage stage);
 const char* request_kind_name(RequestKind kind);
+const char* oracle_stage_name(OracleStage stage);
 std::string stage_profile_json(const StageProfile& profile, bool include_trace);
 
 }  // namespace dee

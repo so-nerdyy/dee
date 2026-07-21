@@ -129,6 +129,18 @@ void print_result(const dee::EngineConfig& cfg, const dee::EngineStats& stats, i
                     dee::gpu_stage_name(static_cast<dee::GpuStage>(i)), profile.gpu_ms[i], percent,
                     static_cast<unsigned long long>(profile.gpu_samples[i]));
     }
+    std::printf("\nOracle internal timing (%llu calls):\n",
+                static_cast<unsigned long long>(profile.oracle_calls));
+    for (size_t i = 0; i < static_cast<size_t>(dee::OracleStage::Count); ++i) {
+        const double per_call_us = profile.oracle_calls
+            ? profile.oracle_ms[i] * 1000.0 / profile.oracle_calls : 0.0;
+        std::printf("  %-22s %10.3f ms  %8.3f us/call\n",
+                    dee::oracle_stage_name(static_cast<dee::OracleStage>(i)),
+                    profile.oracle_ms[i], per_call_us);
+    }
+    std::printf("  allocations/bytes      %10llu / %llu\n",
+                static_cast<unsigned long long>(profile.oracle_allocations),
+                static_cast<unsigned long long>(profile.oracle_allocation_bytes));
     std::printf("GPU compute total      : %.3f ms (%.2f%% wall)\n", profile.total_gpu_compute_ms,
                 wall_ms > 0.0 ? profile.total_gpu_compute_ms * 100.0 / wall_ms : 0.0);
     std::printf("GPU transfer total     : %.3f ms (%.2f%% wall)\n", profile.total_gpu_transfer_ms,

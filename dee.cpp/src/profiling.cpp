@@ -51,6 +51,10 @@ void StageProfiler::configure(bool enabled, bool trace_enabled,
     cpu_ms_.fill(0.0);
     gpu_ms_.fill(0.0);
     gpu_samples_.fill(0);
+    oracle_ms_.fill(0.0);
+    oracle_calls_ = 0;
+    oracle_allocations_ = 0;
+    oracle_allocation_bytes_ = 0;
     token_latencies_ms_.clear();
     layer_wall_ms_ = 0.0;
     layer_count_ = 0;
@@ -95,6 +99,17 @@ void StageProfiler::add_token_latency(TimePoint begin) {
     if (!enabled_) return;
     token_latencies_ms_.push_back(
         std::chrono::duration<double, std::milli>(Clock::now() - begin).count());
+}
+
+void StageProfiler::add_oracle(OracleStage stage, TimePoint begin) {
+    if (!enabled_) return;
+    add_oracle_ms(stage,
+                  std::chrono::duration<double, std::milli>(Clock::now() - begin).count());
+}
+
+void StageProfiler::add_oracle_ms(OracleStage stage, double milliseconds) {
+    if (!enabled_) return;
+    oracle_ms_[static_cast<size_t>(stage)] += milliseconds;
 }
 
 void StageProfiler::note_request(int token, int logical_layer, int resolved_layer,
@@ -239,6 +254,16 @@ StageProfile StageProfiler::finish(double total_wall_ms, uint64_t resident_hits,
     result.cpu_ms = cpu_ms_;
     result.gpu_ms = gpu_ms_;
     result.gpu_samples = gpu_samples_;
+    result.oracle_ms = oracle_ms_;
+    result.oracle_calls = oracle_calls_;
+    result.oracle_allocations = oracle_allocations_;
+    result.oracle_allocation_bytes = oracle_allocation_bytes_;
+    double classified_oracle_ms = 0.0;
+    for (size_t i = 0; i < static_cast<size_t>(OracleStage::InvocationOverhead); ++i) {
+        classified_oracle_ms += result.oracle_ms[i];
+    }
+    result.oracle_ms[static_cast<size_t>(OracleStage::InvocationOverhead)] =
+        std::max(0.0, result.cpu_ms[static_cast<size_t>(CpuStage::Oracle)] - classified_oracle_ms);
     result.layer_wall_ms = layer_wall_ms_;
     result.layer_count = layer_count_;
     result.expert_requests = resident_hits + inflight_hits + cold_loads;
@@ -386,6 +411,15 @@ const char* request_kind_name(RequestKind kind) {
     return "unknown";
 }
 
+const char* oracle_stage_name(OracleStage stage) {
+    static const char* names[] = {
+        "model_lookup", "input_features", "linear0", "relu0", "linear1",
+        "relu1", "linear2", "topk_sort", "topk_output", "allocation",
+        "tensor_conversion", "synchronization", "invocation_overhead"
+    };
+    return names[static_cast<size_t>(stage)];
+}
+
 std::string stage_profile_json(const StageProfile& profile, bool include_trace) {
     std::ostringstream out;
     out << std::fixed << std::setprecision(6);
@@ -405,6 +439,15 @@ std::string stage_profile_json(const StageProfile& profile, bool include_trace) 
         if (i) out << ',';
         out << '\"' << gpu_stage_name(static_cast<GpuStage>(i)) << "\":" << profile.gpu_samples[i];
     }
+    out << "},\"oracle_internal_ms\":{";
+    for (size_t i = 0; i < static_cast<size_t>(OracleStage::Count); ++i) {
+        if (i) out << ',';
+        out << '\"' << oracle_stage_name(static_cast<OracleStage>(i)) << "\":"
+            << profile.oracle_ms[i];
+    }
+    out << "},\"oracle_operations\":{\"calls\":" << profile.oracle_calls
+        << ",\"allocations\":" << profile.oracle_allocations
+        << ",\"allocation_bytes\":" << profile.oracle_allocation_bytes;
     out << "},\"layer_wall_ms\":" << profile.layer_wall_ms;
     out << ",\"layer_count\":" << profile.layer_count;
     out << ",\"token_latency_ms\":{\"average\":" << profile.token_latency_avg_ms
