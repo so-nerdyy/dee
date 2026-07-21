@@ -228,51 +228,8 @@ void OracleScheduler::predict_twostage(int layer, const float* hidden, int topk,
     std::partial_sort(ranked.begin(), ranked.begin() + num_candidates, ranked.end(),
                       [](const auto& a, const auto& b) { return a.first > b.first; });
 
-    // Stage 2: Full FP32 Oracle only for top candidates
-    std::vector<float> logits;
-    std::vector<float> h1, h2;
-    for (int c = 0; c < num_candidates; ++c) {
-        const int expert = ranked[c].second;
-        const float* w0row = w.w0.data() + static_cast<size_t>(expert) * D_;
-        float score = w.b0.empty() ? 0.f : w.b0[expert];
-        score += dot_product_avx2_fma(w0row, hidden, D_);  // FP32 exact
-
-        // Apply ReLU internally then Linear1+Linear2+ReLU for this candidate only
-        float h = score > 0.f ? score : 0.f;
-
-        // Linear1: compute just this one output element's contribution
-        float h2_val = 0.f;
-        for (int j = 0; j < H_; ++j) {
-            // Actually, this doesn't work for per-expert computation.
-            // The Oracle's Linear1 takes H_ inputs from ALL experts' h1, not just one.
-            // We need to compute the full Linear0 output first, then do Linear1 on the full vector.
-        }
-    }
-
-    // Correct approach: compute full INT8 Linear0, select top candidates,
-    // then compute FP32 Linear0 ONLY for those candidates, but still need
-    // full Linear0 output for the ReLU+Linear1 stage.
-    //
-    // Better approach: compute INT8 Linear0, select candidates, then run
-    // full FP32 Oracle but REUSE INT8 scores for non-candidates in Linear1.
-    // Actually, the simplest exact approach is:
-    // 1. INT8 Linear0 for all experts → h1_approx[256]
-    // 2. FP32 Linear0 ONLY for candidates, use INT8 for non-candidates
-    // 3. This gives hybrid h1[256]
-    // 4. Then full FP32 Linear1+Linear2 on hybrid h1
-    // 5. Then top-K on FP32 logits
-
-    // Simplest correct approach:
-    // 1. INT8 Linear0 for all 256 → fast h1
-    // 2. Select top candidates by fast h1 score
-    // 3. Recompute FP32 Linear0 for just the candidates → exact h1 values
-    // 4. Use FP32 h1 for candidates, INT8 h1 for non-candidates → hybrid h1
-    // 5. Full FP32 Linear1 + Linear2 + sigmoid → final logits
-    // 6. Top-K from final logits
-
-    // This preserves exact routing because:
-    // - Non-candidates have wrong h1, but they won't be selected anyway
-    // - Candidates have exact FP32 h1, ensuring correct top-K selection
+    // Two-stage approach: INT8 Linear0 for fast approximate h1, then
+    // FP32 refinement for top candidates to minimize routing error.
 
     // Step 1: INT8 Linear0 for all experts
     std::vector<float> h1_hybrid(H_);
