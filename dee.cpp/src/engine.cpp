@@ -334,7 +334,13 @@ const Engine::QuantizedExpert* Engine::get_staging_int8(int source_layer, int ex
     const uint64_t key = staging_key(source_layer, expert);
     auto existing = staging_int8_.find(key);
     if (existing != staging_int8_.end()) {
-        if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
+        if (profiler_.enabled()) {
+            const auto resolution_end = StageProfiler::now();
+            profiler_.add_cpu_ms(CpuStage::TensorResolution,
+                std::chrono::duration<double, std::milli>(resolution_end - profile_begin).count());
+            profiler_.note_cpu_timeline_interval(CpuTimelineKind::TensorResolution,
+                profile_begin, resolution_end, current_token_, source_layer, expert);
+        }
         return &existing->second;
     }
 
@@ -365,15 +371,25 @@ const Engine::QuantizedExpert* Engine::get_staging_int8(int source_layer, int ex
     if (!quantized.pinned) quantized.host.resize(blob_elems_);
     auto* destination = quantized.pinned
         ? static_cast<int8_t*>(quantized.pinned) : quantized.host.data();
-    if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
     const auto quantize_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
+    if (profiler_.enabled()) {
+        profiler_.add_cpu_ms(CpuStage::TensorResolution,
+            std::chrono::duration<double, std::milli>(quantize_begin - profile_begin).count());
+        profiler_.note_cpu_timeline_interval(CpuTimelineKind::TensorResolution,
+            profile_begin, quantize_begin, current_token_, source_layer, expert);
+    }
     for (size_t region = 0; region < 3; ++region) {
         const auto* source = reinterpret_cast<const uint16_t*>(views[region].data);
         int8_t* output = destination + region * projection;
         quantized.scales[region] = quantize_bf16_projection(source, output, projection);
     }
     if (profiler_.enabled()) {
-        profiler_.add_cpu(CpuStage::MmapToPinned, quantize_begin);
+        const auto quantize_end = StageProfiler::now();
+        profiler_.add_cpu_ms(CpuStage::MmapToPinned,
+            std::chrono::duration<double, std::milli>(quantize_end - quantize_begin).count());
+        profiler_.note_cpu_timeline_interval(CpuTimelineKind::FirstTouchQuantization,
+            quantize_begin, quantize_end, current_token_, source_layer, expert,
+            blob_elems_ * sizeof(uint16_t));
         profiler_.note_mmap_copy(blob_elems_ * sizeof(uint16_t));
     }
     auto inserted = staging_int8_.emplace(key, std::move(quantized));
@@ -385,7 +401,13 @@ const Engine::QuantizedExpert* Engine::get_staging_int4(int source_layer, int ex
     const uint64_t key = staging_key(source_layer, expert);
     auto existing = staging_int8_.find(key);
     if (existing != staging_int8_.end()) {
-        if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
+        if (profiler_.enabled()) {
+            const auto resolution_end = StageProfiler::now();
+            profiler_.add_cpu_ms(CpuStage::TensorResolution,
+                std::chrono::duration<double, std::milli>(resolution_end - profile_begin).count());
+            profiler_.note_cpu_timeline_interval(CpuTimelineKind::TensorResolution,
+                profile_begin, resolution_end, current_token_, source_layer, expert);
+        }
         return &existing->second;
     }
     TensorView views[3] = {
@@ -415,15 +437,25 @@ const Engine::QuantizedExpert* Engine::get_staging_int4(int source_layer, int ex
     auto* destination = quantized.pinned
         ? static_cast<uint8_t*>(quantized.pinned)
         : reinterpret_cast<uint8_t*>(quantized.host.data());
-    if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
     const auto quantize_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
+    if (profiler_.enabled()) {
+        profiler_.add_cpu_ms(CpuStage::TensorResolution,
+            std::chrono::duration<double, std::milli>(quantize_begin - profile_begin).count());
+        profiler_.note_cpu_timeline_interval(CpuTimelineKind::TensorResolution,
+            profile_begin, quantize_begin, current_token_, source_layer, expert);
+    }
     for (size_t region = 0; region < 3; ++region) {
         const auto* source = reinterpret_cast<const uint16_t*>(views[region].data);
         uint8_t* output = destination + (region * projection) / 2;
         quantized.scales[region] = quantize_bf16_projection_int4(source, output, projection);
     }
     if (profiler_.enabled()) {
-        profiler_.add_cpu(CpuStage::MmapToPinned, quantize_begin);
+        const auto quantize_end = StageProfiler::now();
+        profiler_.add_cpu_ms(CpuStage::MmapToPinned,
+            std::chrono::duration<double, std::milli>(quantize_end - quantize_begin).count());
+        profiler_.note_cpu_timeline_interval(CpuTimelineKind::FirstTouchQuantization,
+            quantize_begin, quantize_end, current_token_, source_layer, expert,
+            blob_elems_ * sizeof(uint16_t));
         profiler_.note_mmap_copy(blob_elems_ * sizeof(uint16_t));
     }
     auto inserted = staging_int8_.emplace(key, std::move(quantized));
@@ -863,6 +895,14 @@ void Engine::cuda_cleanup() {
 // gates each kernel launch on prefetcher.wait() (cudaEventSynchronize of that
 // expert's copy), so the compute stream only blocks when a weight isn't ready.
 bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
+    const auto host_scheduling_begin = profiler_.enabled()
+        ? StageProfiler::now() : StageProfiler::TimePoint{};
+    const auto finish_host_scheduling = [&]() {
+        if (profiler_.enabled()) {
+            profiler_.note_cpu_timeline(CpuTimelineKind::HostScheduling,
+                                        host_scheduling_begin, current_token_, layer);
+        }
+    };
     std::vector<int> experts;
     if (cfg_.scenario == BenchmarkScenario::ComputeOnly) {
         experts.reserve(static_cast<size_t>(cfg_.topk));
@@ -872,16 +912,27 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
     } else {
         const auto oracle_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
         oracle_.predict(layer, h_in, cfg_.topk, experts);
-        if (profiler_.enabled()) profiler_.add_cpu(CpuStage::Oracle, oracle_begin);
+        if (profiler_.enabled()) {
+            const auto oracle_end = StageProfiler::now();
+            profiler_.add_cpu_ms(CpuStage::Oracle,
+                std::chrono::duration<double, std::milli>(oracle_end - oracle_begin).count());
+            profiler_.note_cpu_timeline_interval(CpuTimelineKind::OracleOutput,
+                oracle_begin, oracle_end, current_token_, layer);
+        }
     }
     int K = (int)experts.size();
-    if (K == 0) { for (int i = 0; i < hidden_; ++i) h_out[i] = 0.0f; return true; }
+    if (K == 0) {
+        for (int i = 0; i < hidden_; ++i) h_out[i] = 0.0f;
+        finish_host_scheduling();
+        return true;
+    }
 
     const int source_layer = avail_layer(layer);
     profiler_.note_prediction(current_token_, layer, source_layer, experts);
 
     if (cfg_.scenario == BenchmarkScenario::OracleOnly) {
         std::memcpy(h_out, h_in, static_cast<size_t>(hidden_) * sizeof(float));
+        finish_host_scheduling();
         return true;
     }
 
@@ -911,6 +962,7 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
             for (int expert : pinned) cache_.unpin(source_layer, expert);
         }
         std::memcpy(h_out, h_in, static_cast<size_t>(hidden_) * sizeof(float));
+        finish_host_scheduling();
         return true;
     }
 
@@ -995,6 +1047,7 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
     }
     if (cfg_.scenario == BenchmarkScenario::TransferOnly) {
         std::memcpy(h_out, h_in, static_cast<size_t>(hidden_) * sizeof(float));
+        finish_host_scheduling();
         return true;
     }
     if (profiler_.enabled()) {
@@ -1027,6 +1080,7 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
         float s = 1.0f / (float)rms;
         for (int i = 0; i < hidden_; ++i) h_out[i] *= s;
     }
+    finish_host_scheduling();
     return true;
 }
 

@@ -128,7 +128,13 @@ bool VramCacheManager::ensure(int layer, int expert, size_t nbytes, int priority
     last_ensure_info_ = EnsureInfo{};
     const auto lookup_begin = profiler_ && profiler_->enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
     ExpertBlock* b = find_block(layer, expert);
-    if (profiler_ && profiler_->enabled()) profiler_->add_cpu(CpuStage::CacheLookup, lookup_begin);
+    if (profiler_ && profiler_->enabled()) {
+        const auto lookup_end = StageProfiler::now();
+        profiler_->add_cpu_ms(CpuStage::CacheLookup,
+            std::chrono::duration<double, std::milli>(lookup_end - lookup_begin).count());
+        profiler_->note_cpu_timeline_interval(CpuTimelineKind::CacheLookup,
+            lookup_begin, lookup_end, -1, layer, expert);
+    }
     if (b && b->resident) {
         last_ensure_info_.resident_hit = true;
         b->last_used = ++tick_;
@@ -139,7 +145,13 @@ bool VramCacheManager::ensure(int layer, int expert, size_t nbytes, int priority
     // not resident -> evict to make room, then allocate
     const auto eviction_begin = profiler_ && profiler_->enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
     evict_until_free(nbytes);
-    if (profiler_ && profiler_->enabled()) profiler_->add_cpu(CpuStage::EvictionSelection, eviction_begin);
+    if (profiler_ && profiler_->enabled()) {
+        const auto eviction_end = StageProfiler::now();
+        profiler_->add_cpu_ms(CpuStage::EvictionSelection,
+            std::chrono::duration<double, std::milli>(eviction_end - eviction_begin).count());
+        profiler_->note_cpu_timeline_interval(CpuTimelineKind::EvictionEligibility,
+            eviction_begin, eviction_end, -1, layer, expert);
+    }
     size_t off = arena_.alloc(nbytes);
     if (off == size_t(-1)) {
         // still no room (nbytes > budget). Allocate at bump even if over budget

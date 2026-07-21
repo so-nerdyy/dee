@@ -46,6 +46,8 @@ bool gemm_fp16_row_major(cublasHandle_t handle, const __half* matrix,
     const size_t ticket = profiler && profiler->enabled()
         ? profiler->cuda_begin(stage, static_cast<void*>(stream)) : static_cast<size_t>(-1);
     if (profiler && profiler->enabled()) profiler->note_cublas_call();
+    const auto dispatch_begin = profiler && profiler->timeline_enabled()
+        ? StageProfiler::now() : StageProfiler::TimePoint{};
     const bool ok = DEE_CUBLAS_CHECK_NAMED(
         cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
                      rows, 1, cols, &alpha,
@@ -54,6 +56,9 @@ bool gemm_fp16_row_major(cublasHandle_t handle, const __half* matrix,
                      &beta, output, CUDA_R_32F, rows,
                      CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP),
         "cublasGemmEx(FP16 row-major expert projection)");
+    if (profiler && profiler->timeline_enabled()) {
+        profiler->note_cpu_timeline(CpuTimelineKind::CublasDispatch, dispatch_begin);
+    }
     if (!ok) return false;
     return !profiler || !profiler->enabled() ||
            profiler->cuda_end(ticket, static_cast<void*>(stream));
@@ -69,10 +74,15 @@ bool gemv_row_major(cublasHandle_t handle, const float* matrix, int rows, int co
     const size_t ticket = profiler && profiler->enabled()
         ? profiler->cuda_begin(stage, static_cast<void*>(stream)) : static_cast<size_t>(-1);
     if (profiler && profiler->enabled()) profiler->note_cublas_call();
+    const auto dispatch_begin = profiler && profiler->timeline_enabled()
+        ? StageProfiler::now() : StageProfiler::TimePoint{};
     const bool ok = DEE_CUBLAS_CHECK_NAMED(
         cublasSgemv(handle, CUBLAS_OP_T, cols, rows, &alpha, matrix, cols,
                     input, 1, &beta, output, 1),
         "cublasSgemv(row-major expert projection)");
+    if (profiler && profiler->timeline_enabled()) {
+        profiler->note_cpu_timeline(CpuTimelineKind::CublasDispatch, dispatch_begin);
+    }
     if (!ok) return false;
     return !profiler || !profiler->enabled() || profiler->cuda_end(ticket, static_cast<void*>(stream));
 }

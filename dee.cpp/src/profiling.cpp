@@ -73,6 +73,73 @@ size_t h2d_bucket(size_t bytes) {
     return 3;
 }
 
+std::vector<Interval> complement_intervals(const std::vector<Interval>& busy,
+                                           double begin, double end) {
+    std::vector<Interval> idle;
+    double cursor = begin;
+    for (const Interval& interval : busy) {
+        const double clipped_begin = std::max(begin, interval.first);
+        const double clipped_end = std::min(end, interval.second);
+        if (clipped_end <= begin || clipped_begin >= end) continue;
+        if (clipped_begin > cursor) idle.emplace_back(cursor, clipped_begin);
+        cursor = std::max(cursor, clipped_end);
+    }
+    if (cursor < end) idle.emplace_back(cursor, end);
+    return idle;
+}
+
+bool contains_time(const TimelineRecord& record, double time_ms) {
+    return record.start_ms <= time_ms && time_ms < record.end_ms;
+}
+
+IdleGapCategory idle_category(CpuTimelineKind kind) {
+    switch (kind) {
+        case CpuTimelineKind::OracleOutput: return IdleGapCategory::WaitingOracleOutput;
+        case CpuTimelineKind::FirstTouchQuantization:
+            return IdleGapCategory::WaitingFirstTouchQuantization;
+        case CpuTimelineKind::CacheLookup: return IdleGapCategory::WaitingCacheLookup;
+        case CpuTimelineKind::EvictionEligibility:
+            return IdleGapCategory::WaitingEvictionEligibility;
+        case CpuTimelineKind::ConsumerWait:
+            return IdleGapCategory::WaitingCacheEntryReadiness;
+        case CpuTimelineKind::LayerOutputWait:
+            return IdleGapCategory::WaitingLayerDependency;
+        case CpuTimelineKind::TransferSubmit:
+            return IdleGapCategory::WaitingTransferSubmission;
+        case CpuTimelineKind::CublasDispatch:
+            return IdleGapCategory::WaitingCublasDispatch;
+        case CpuTimelineKind::StagingSlotWait:
+        case CpuTimelineKind::ComputeBatchWait:
+        case CpuTimelineKind::PrefetchDrain:
+            return IdleGapCategory::WaitingStreamEventSynchronization;
+        case CpuTimelineKind::IntentionalNoWork:
+            return IdleGapCategory::IntentionalNoWork;
+        case CpuTimelineKind::HostScheduling:
+        case CpuTimelineKind::TensorResolution:
+            return IdleGapCategory::WaitingHostScheduling;
+    }
+    return IdleGapCategory::Unknown;
+}
+
+int idle_category_priority(IdleGapCategory category) {
+    switch (category) {
+        case IdleGapCategory::WaitingOracleOutput: return 100;
+        case IdleGapCategory::WaitingFirstTouchQuantization: return 95;
+        case IdleGapCategory::WaitingCacheLookup: return 90;
+        case IdleGapCategory::WaitingEvictionEligibility: return 85;
+        case IdleGapCategory::WaitingCacheEntryReadiness: return 80;
+        case IdleGapCategory::WaitingLayerDependency: return 75;
+        case IdleGapCategory::WaitingTransferSubmission: return 70;
+        case IdleGapCategory::WaitingCublasDispatch: return 65;
+        case IdleGapCategory::WaitingStreamEventSynchronization: return 60;
+        case IdleGapCategory::IntentionalNoWork: return 55;
+        case IdleGapCategory::WaitingHostScheduling: return 10;
+        case IdleGapCategory::Unknown: return 0;
+        case IdleGapCategory::Count: return -1;
+    }
+    return -1;
+}
+
 }  // namespace
 
 StageProfiler::~StageProfiler() {
@@ -137,8 +204,19 @@ void StageProfiler::note_cpu_timeline(CpuTimelineKind kind, TimePoint begin,
                                       int token, int logical_layer, int expert,
                                       size_t bytes, uint64_t transfer_id,
                                       size_t queue_depth, size_t staging_slot) {
-    if (!timeline_enabled_) return;
-    const TimePoint end = Clock::now();
+    note_cpu_timeline_interval(kind, begin, Clock::now(), token, logical_layer,
+                               expert, bytes, transfer_id, queue_depth,
+                               staging_slot);
+}
+
+void StageProfiler::note_cpu_timeline_interval(CpuTimelineKind kind,
+                                               TimePoint begin, TimePoint end,
+                                               int token, int logical_layer,
+                                               int expert, size_t bytes,
+                                               uint64_t transfer_id,
+                                               size_t queue_depth,
+                                               size_t staging_slot) {
+    if (!timeline_enabled_ || end <= begin) return;
     TimelineRecord record;
     record.cpu_kind = kind;
     record.start_ms = std::chrono::duration<double, std::milli>(
@@ -173,21 +251,8 @@ void StageProfiler::note_host_wait(HostWaitReason reason, TimePoint begin, TimeP
         case HostWaitReason::EngineTeardown: kind = CpuTimelineKind::PrefetchDrain; break;
         case HostWaitReason::Count: return;
     }
-    if (timeline_enabled_) {
-        TimelineRecord record;
-        record.cpu_kind = kind;
-        record.start_ms = std::chrono::duration<double, std::milli>(
-            begin - cpu_timeline_origin_).count();
-        record.end_ms = std::chrono::duration<double, std::milli>(
-            end - cpu_timeline_origin_).count();
-        record.token = token;
-        record.logical_layer = logical_layer;
-        record.expert = expert;
-        record.transfer_id = transfer_id;
-        record.queue_depth = queue_depth;
-        record.staging_slot = staging_slot;
-        timeline_.push_back(record);
-    }
+    note_cpu_timeline_interval(kind, begin, end, token, logical_layer, expert,
+                               0, transfer_id, queue_depth, staging_slot);
 }
 
 void StageProfiler::add_cpu(CpuStage stage, TimePoint begin) {
@@ -595,6 +660,177 @@ StageProfile StageProfiler::finish(double total_wall_ms, uint64_t resident_hits,
                                                 result.gpu_timeline_span_ms;
             result.copy_compute_overlap_fraction = result.copy_compute_overlap_ms /
                                                    result.gpu_timeline_span_ms;
+
+            std::vector<Interval> all_busy = copy_intervals;
+            all_busy.insert(all_busy.end(), compute_intervals.begin(),
+                            compute_intervals.end());
+            all_busy = merge_intervals(std::move(all_busy));
+            const std::vector<Interval> idle_intervals =
+                complement_intervals(all_busy, first_gpu, last_gpu);
+            std::vector<IdleGapRecord> classified_segments;
+            std::array<std::vector<double>,
+                       static_cast<size_t>(IdleGapCategory::Count)> idle_samples;
+
+            for (const Interval& idle : idle_intervals) {
+                std::vector<double> boundaries{idle.first, idle.second};
+                for (const TimelineRecord& record : timeline_) {
+                    if (record.gpu || record.end_ms <= idle.first ||
+                        record.start_ms >= idle.second) continue;
+                    boundaries.push_back(std::max(idle.first, record.start_ms));
+                    boundaries.push_back(std::min(idle.second, record.end_ms));
+                }
+                std::sort(boundaries.begin(), boundaries.end());
+                boundaries.erase(std::unique(boundaries.begin(), boundaries.end()),
+                                 boundaries.end());
+                for (size_t boundary = 1; boundary < boundaries.size(); ++boundary) {
+                    const double segment_begin = boundaries[boundary - 1];
+                    const double segment_end = boundaries[boundary];
+                    if (segment_end <= segment_begin) continue;
+                    const double midpoint = (segment_begin + segment_end) * 0.5;
+                    IdleGapCategory category = IdleGapCategory::Unknown;
+                    int best_priority = 0;
+                    const TimelineRecord* best_record = nullptr;
+                    for (const TimelineRecord& record : timeline_) {
+                        if (record.gpu || !contains_time(record, midpoint)) continue;
+                        const IdleGapCategory candidate = idle_category(record.cpu_kind);
+                        const int priority = idle_category_priority(candidate);
+                        if (priority > best_priority) {
+                            category = candidate;
+                            best_priority = priority;
+                            best_record = &record;
+                        }
+                    }
+                    IdleGapRecord segment;
+                    segment.start_ms = segment_begin;
+                    segment.end_ms = segment_end;
+                    segment.category = category;
+                    if (best_record) {
+                        segment.token = best_record->token;
+                        segment.logical_layer = best_record->logical_layer;
+                        segment.expert = best_record->expert;
+                        segment.transfer_id = best_record->transfer_id;
+                    }
+                    if (!classified_segments.empty()) {
+                        IdleGapRecord& previous = classified_segments.back();
+                        if (previous.category == segment.category &&
+                            previous.token == segment.token &&
+                            previous.logical_layer == segment.logical_layer &&
+                            previous.expert == segment.expert &&
+                            previous.transfer_id == segment.transfer_id &&
+                            std::fabs(previous.end_ms - segment.start_ms) < 1e-6) {
+                            previous.end_ms = segment.end_ms;
+                            continue;
+                        }
+                    }
+                    classified_segments.push_back(segment);
+                }
+            }
+
+            for (const IdleGapRecord& gap : classified_segments) {
+                const size_t category = static_cast<size_t>(gap.category);
+                const double duration = gap.end_ms - gap.start_ms;
+                result.idle_gap_ms[category] += duration;
+                ++result.idle_gap_count[category];
+                result.idle_gap_max_ms[category] =
+                    std::max(result.idle_gap_max_ms[category], duration);
+                idle_samples[category].push_back(duration);
+            }
+            for (size_t category = 0;
+                 category < static_cast<size_t>(IdleGapCategory::Count);
+                 ++category) {
+                result.idle_gap_avg_ms[category] = result.idle_gap_count[category]
+                    ? result.idle_gap_ms[category] /
+                          static_cast<double>(result.idle_gap_count[category])
+                    : 0.0;
+                result.idle_gap_p95_ms[category] =
+                    percentile(idle_samples[category], 0.95);
+            }
+            const size_t unknown = static_cast<size_t>(IdleGapCategory::Unknown);
+            result.idle_attributed_ms = std::max(
+                0.0, result.gpu_neither_active_ms - result.idle_gap_ms[unknown]);
+            result.idle_attributed_fraction = result.gpu_neither_active_ms > 0.0
+                ? result.idle_attributed_ms / result.gpu_neither_active_ms : 0.0;
+            std::sort(classified_segments.begin(), classified_segments.end(),
+                      [](const IdleGapRecord& lhs, const IdleGapRecord& rhs) {
+                          return lhs.end_ms - lhs.start_ms > rhs.end_ms - rhs.start_ms;
+                      });
+            if (classified_segments.size() > 20) classified_segments.resize(20);
+            result.top_idle_gaps = std::move(classified_segments);
+
+            // Attribute each cache-readiness host wait against the matching
+            // transfer's common-origin GPU records. Residual queued/event time
+            // is classified as the consumer reaching the entry before it was
+            // ready, rather than being silently folded into synchronization.
+            for (const TimelineRecord& wait : timeline_) {
+                if (wait.gpu || wait.cpu_kind != CpuTimelineKind::ConsumerWait ||
+                    wait.end_ms <= wait.start_ms) continue;
+                std::vector<double> boundaries{wait.start_ms, wait.end_ms};
+                const TimelineRecord* matching_h2d = nullptr;
+                const TimelineRecord* matching_conversion = nullptr;
+                const TimelineRecord* matching_submit = nullptr;
+                for (const TimelineRecord& record : timeline_) {
+                    if (record.transfer_id != wait.transfer_id) continue;
+                    if (record.gpu && record.gpu_stage == GpuStage::H2D) {
+                        matching_h2d = &record;
+                    } else if (record.gpu &&
+                               record.gpu_stage == GpuStage::WeightConversion) {
+                        matching_conversion = &record;
+                    } else if (!record.gpu &&
+                               record.cpu_kind == CpuTimelineKind::TransferSubmit) {
+                        matching_submit = &record;
+                    }
+                }
+                if (matching_h2d) {
+                    const double overlap_begin = std::max(wait.start_ms,
+                                                          matching_h2d->start_ms);
+                    const double overlap_end = std::min(wait.end_ms,
+                                                        matching_h2d->end_ms);
+                    if (overlap_end > overlap_begin) {
+                        boundaries.push_back(overlap_begin);
+                        boundaries.push_back(overlap_end);
+                    }
+                }
+                if (matching_conversion) {
+                    const double overlap_begin = std::max(
+                        wait.start_ms, matching_conversion->start_ms);
+                    const double overlap_end = std::min(
+                        wait.end_ms, matching_conversion->end_ms);
+                    if (overlap_end > overlap_begin) {
+                        boundaries.push_back(overlap_begin);
+                        boundaries.push_back(overlap_end);
+                    }
+                }
+                std::sort(boundaries.begin(), boundaries.end());
+                boundaries.erase(std::unique(boundaries.begin(), boundaries.end()),
+                                 boundaries.end());
+                std::array<bool,
+                           static_cast<size_t>(ReadinessWaitCategory::Count)> seen{};
+                for (size_t boundary = 1; boundary < boundaries.size(); ++boundary) {
+                    const double segment_begin = boundaries[boundary - 1];
+                    const double segment_end = boundaries[boundary];
+                    if (segment_end <= segment_begin) continue;
+                    const double midpoint = (segment_begin + segment_end) * 0.5;
+                    ReadinessWaitCategory category =
+                        ReadinessWaitCategory::ConsumerReachedEntryTooEarly;
+                    if (matching_h2d && contains_time(*matching_h2d, midpoint)) {
+                        category = ReadinessWaitCategory::CopyInFlight;
+                    } else if (matching_conversion &&
+                               contains_time(*matching_conversion, midpoint)) {
+                        category = ReadinessWaitCategory::DequantizationInFlight;
+                    } else if (!matching_submit ||
+                               midpoint < matching_submit->end_ms) {
+                        category = ReadinessWaitCategory::CopyNotSubmitted;
+                    }
+                    const size_t index = static_cast<size_t>(category);
+                    result.readiness_wait_ms[index] += segment_end - segment_begin;
+                    seen[index] = true;
+                }
+                for (size_t category = 0;
+                     category < static_cast<size_t>(ReadinessWaitCategory::Count);
+                     ++category) {
+                    if (seen[category]) ++result.readiness_wait_count[category];
+                }
+            }
         }
         result.average_transfer_queue_depth = queue_samples ? queue_sum / queue_samples : 0.0;
     }
@@ -672,14 +908,43 @@ const char* host_wait_reason_name(HostWaitReason reason) {
 
 const char* cpu_timeline_kind_name(CpuTimelineKind kind) {
     switch (kind) {
+        case CpuTimelineKind::HostScheduling: return "host_scheduling";
+        case CpuTimelineKind::OracleOutput: return "oracle_output";
+        case CpuTimelineKind::TensorResolution: return "tensor_resolution";
+        case CpuTimelineKind::CacheLookup: return "cache_lookup";
+        case CpuTimelineKind::EvictionEligibility: return "eviction_eligibility";
+        case CpuTimelineKind::FirstTouchQuantization: return "first_touch_quantization";
         case CpuTimelineKind::TransferSubmit: return "transfer_submit";
+        case CpuTimelineKind::CublasDispatch: return "cublas_dispatch";
         case CpuTimelineKind::ConsumerWait: return "consumer_wait";
         case CpuTimelineKind::StagingSlotWait: return "staging_slot_wait";
         case CpuTimelineKind::ComputeBatchWait: return "compute_batch_wait";
         case CpuTimelineKind::LayerOutputWait: return "layer_output_wait";
         case CpuTimelineKind::PrefetchDrain: return "prefetch_drain";
+        case CpuTimelineKind::IntentionalNoWork: return "intentional_no_work";
     }
     return "unknown";
+}
+
+const char* idle_gap_category_name(IdleGapCategory category) {
+    static const char* names[] = {
+        "waiting_oracle_output", "waiting_host_scheduling",
+        "waiting_first_touch_quantization", "waiting_cache_lookup",
+        "waiting_eviction_eligibility", "waiting_cache_entry_readiness",
+        "waiting_layer_dependency", "waiting_transfer_submission",
+        "waiting_cublas_dispatch", "waiting_stream_event_synchronization",
+        "intentional_no_work", "unknown"
+    };
+    return names[static_cast<size_t>(category)];
+}
+
+const char* readiness_wait_category_name(ReadinessWaitCategory category) {
+    static const char* names[] = {
+        "copy_not_submitted", "copy_in_flight", "dequantization_in_flight",
+        "cache_pin_conflict", "eviction_dependency",
+        "consumer_reached_entry_too_early"
+    };
+    return names[static_cast<size_t>(category)];
 }
 
 std::string stage_profile_json(const StageProfile& profile, bool include_trace) {
@@ -740,6 +1005,42 @@ std::string stage_profile_json(const StageProfile& profile, bool include_trace) 
         out << '\"' << host_wait_reason_name(static_cast<HostWaitReason>(i)) << "\":{"
             << "\"milliseconds\":" << profile.host_wait_ms[i]
             << ",\"count\":" << profile.host_wait_count[i] << '}';
+    }
+    out << '}';
+    out << ",\"idle_gap_attribution\":{\"attributed_ms\":"
+        << profile.idle_attributed_ms
+        << ",\"attributed_fraction\":" << profile.idle_attributed_fraction
+        << ",\"categories\":{";
+    for (size_t i = 0; i < static_cast<size_t>(IdleGapCategory::Count); ++i) {
+        if (i) out << ',';
+        out << '\"' << idle_gap_category_name(static_cast<IdleGapCategory>(i))
+            << "\":{\"milliseconds\":" << profile.idle_gap_ms[i]
+            << ",\"count\":" << profile.idle_gap_count[i]
+            << ",\"average_ms\":" << profile.idle_gap_avg_ms[i]
+            << ",\"p95_ms\":" << profile.idle_gap_p95_ms[i]
+            << ",\"max_ms\":" << profile.idle_gap_max_ms[i] << '}';
+    }
+    out << "},\"top_gaps\":[";
+    for (size_t i = 0; i < profile.top_idle_gaps.size(); ++i) {
+        if (i) out << ',';
+        const IdleGapRecord& gap = profile.top_idle_gaps[i];
+        out << "{\"start_ms\":" << gap.start_ms
+            << ",\"end_ms\":" << gap.end_ms
+            << ",\"duration_ms\":" << gap.end_ms - gap.start_ms
+            << ",\"category\":\"" << idle_gap_category_name(gap.category) << '\"'
+            << ",\"token\":" << gap.token
+            << ",\"logical_layer\":" << gap.logical_layer
+            << ",\"expert\":" << gap.expert
+            << ",\"transfer_id\":" << gap.transfer_id << '}';
+    }
+    out << "]}";
+    out << ",\"cache_readiness_attribution\":{";
+    for (size_t i = 0; i < static_cast<size_t>(ReadinessWaitCategory::Count); ++i) {
+        if (i) out << ',';
+        out << '\"' << readiness_wait_category_name(
+            static_cast<ReadinessWaitCategory>(i)) << "\":{\"milliseconds\":"
+            << profile.readiness_wait_ms[i] << ",\"count\":"
+            << profile.readiness_wait_count[i] << '}';
     }
     out << '}';
     out << ",\"derived\":{\"average_expert_request_us\":" << profile.average_expert_request_us
@@ -811,6 +1112,7 @@ std::string cuda_timeline_json(const StageProfile& profile) {
     emit_metadata(0, "host");
     emit_metadata(1, "prefetch_stream");
     emit_metadata(2, "compute_stream");
+    emit_metadata(3, "top_gpu_idle_gaps");
     for (const TimelineRecord& record : profile.timeline) {
         if (!first) out << ',';
         first = false;
@@ -828,6 +1130,18 @@ std::string cuda_timeline_json(const StageProfile& profile) {
             << ",\"queue_depth\":" << record.queue_depth
             << ",\"staging_slot\":" << record.staging_slot << "}}";
     }
+    for (const IdleGapRecord& gap : profile.top_idle_gaps) {
+        if (!first) out << ',';
+        first = false;
+        out << "{\"name\":\"" << idle_gap_category_name(gap.category)
+            << "\",\"cat\":\"gpu_idle_attribution\",\"ph\":\"X\",\"pid\":1,\"tid\":3"
+            << ",\"ts\":" << gap.start_ms * 1000.0
+            << ",\"dur\":" << (gap.end_ms - gap.start_ms) * 1000.0
+            << ",\"args\":{\"token\":" << gap.token
+            << ",\"logical_layer\":" << gap.logical_layer
+            << ",\"expert\":" << gap.expert
+            << ",\"transfer_id\":" << gap.transfer_id << "}}";
+    }
     out << "],\"summary\":{\"gpu_span_ms\":" << profile.gpu_timeline_span_ms
         << ",\"copy_active_ms\":" << profile.copy_engine_active_ms
         << ",\"compute_active_ms\":" << profile.compute_engine_active_ms
@@ -835,7 +1149,23 @@ std::string cuda_timeline_json(const StageProfile& profile) {
         << ",\"neither_ms\":" << profile.gpu_neither_active_ms
         << ",\"copy_utilization\":" << profile.copy_engine_utilization
         << ",\"compute_utilization\":" << profile.compute_engine_utilization
-        << ",\"overlap_fraction\":" << profile.copy_compute_overlap_fraction << "}}";
+        << ",\"overlap_fraction\":" << profile.copy_compute_overlap_fraction
+        << ",\"idle_attributed_ms\":" << profile.idle_attributed_ms
+        << ",\"idle_attributed_fraction\":" << profile.idle_attributed_fraction
+        << ",\"idle_categories\":{";
+    for (size_t i = 0; i < static_cast<size_t>(IdleGapCategory::Count); ++i) {
+        if (i) out << ',';
+        out << '\"' << idle_gap_category_name(static_cast<IdleGapCategory>(i))
+            << "\":" << profile.idle_gap_ms[i];
+    }
+    out << "},\"cache_readiness_categories\":{";
+    for (size_t i = 0; i < static_cast<size_t>(ReadinessWaitCategory::Count); ++i) {
+        if (i) out << ',';
+        out << '\"' << readiness_wait_category_name(
+            static_cast<ReadinessWaitCategory>(i)) << "\":"
+            << profile.readiness_wait_ms[i];
+    }
+    out << "}}}";
     return out.str();
 }
 

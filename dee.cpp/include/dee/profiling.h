@@ -51,12 +51,46 @@ enum class HostWaitReason : size_t {
 };
 
 enum class CpuTimelineKind : uint8_t {
+    HostScheduling,
+    OracleOutput,
+    TensorResolution,
+    CacheLookup,
+    EvictionEligibility,
+    FirstTouchQuantization,
     TransferSubmit,
+    CublasDispatch,
     ConsumerWait,
     StagingSlotWait,
     ComputeBatchWait,
     LayerOutputWait,
-    PrefetchDrain
+    PrefetchDrain,
+    IntentionalNoWork
+};
+
+enum class IdleGapCategory : size_t {
+    WaitingOracleOutput,
+    WaitingHostScheduling,
+    WaitingFirstTouchQuantization,
+    WaitingCacheLookup,
+    WaitingEvictionEligibility,
+    WaitingCacheEntryReadiness,
+    WaitingLayerDependency,
+    WaitingTransferSubmission,
+    WaitingCublasDispatch,
+    WaitingStreamEventSynchronization,
+    IntentionalNoWork,
+    Unknown,
+    Count
+};
+
+enum class ReadinessWaitCategory : size_t {
+    CopyNotSubmitted,
+    CopyInFlight,
+    DequantizationInFlight,
+    CachePinConflict,
+    EvictionDependency,
+    ConsumerReachedEntryTooEarly,
+    Count
 };
 
 enum class OracleStage : size_t {
@@ -106,6 +140,16 @@ struct TimelineRecord {
     uint64_t transfer_id = 0;
     size_t queue_depth = 0;
     size_t staging_slot = 0;
+};
+
+struct IdleGapRecord {
+    double start_ms = 0.0;
+    double end_ms = 0.0;
+    IdleGapCategory category = IdleGapCategory::Unknown;
+    int token = -1;
+    int logical_layer = -1;
+    int expert = -1;
+    uint64_t transfer_id = 0;
 };
 
 struct StageProfile {
@@ -172,9 +216,19 @@ struct StageProfile {
     std::array<uint64_t, 4> h2d_bucket_copies{};
     std::array<uint64_t, 4> h2d_bucket_bytes{};
     std::array<double, 4> h2d_bucket_ms{};
+    std::array<double, static_cast<size_t>(IdleGapCategory::Count)> idle_gap_ms{};
+    std::array<uint64_t, static_cast<size_t>(IdleGapCategory::Count)> idle_gap_count{};
+    std::array<double, static_cast<size_t>(IdleGapCategory::Count)> idle_gap_avg_ms{};
+    std::array<double, static_cast<size_t>(IdleGapCategory::Count)> idle_gap_p95_ms{};
+    std::array<double, static_cast<size_t>(IdleGapCategory::Count)> idle_gap_max_ms{};
+    double idle_attributed_ms = 0.0;
+    double idle_attributed_fraction = 0.0;
+    std::array<double, static_cast<size_t>(ReadinessWaitCategory::Count)> readiness_wait_ms{};
+    std::array<uint64_t, static_cast<size_t>(ReadinessWaitCategory::Count)> readiness_wait_count{};
 
     std::vector<RequestTraceRecord> trace;
     std::vector<TimelineRecord> timeline;
+    std::vector<IdleGapRecord> top_idle_gaps;
 };
 
 class StageProfiler {
@@ -229,6 +283,12 @@ public:
                            int logical_layer = -1, int expert = -1,
                            size_t bytes = 0, uint64_t transfer_id = 0,
                            size_t queue_depth = 0, size_t staging_slot = 0);
+    void note_cpu_timeline_interval(CpuTimelineKind kind, TimePoint begin, TimePoint end,
+                                    int token = -1, int logical_layer = -1,
+                                    int expert = -1, size_t bytes = 0,
+                                    uint64_t transfer_id = 0,
+                                    size_t queue_depth = 0,
+                                    size_t staging_slot = 0);
 
 #ifdef DEE_CUDA
     bool begin_cuda_timeline(void* compute_stream, void* transfer_stream);
@@ -329,6 +389,8 @@ const char* request_kind_name(RequestKind kind);
 const char* oracle_stage_name(OracleStage stage);
 const char* host_wait_reason_name(HostWaitReason reason);
 const char* cpu_timeline_kind_name(CpuTimelineKind kind);
+const char* idle_gap_category_name(IdleGapCategory category);
+const char* readiness_wait_category_name(ReadinessWaitCategory category);
 std::string stage_profile_json(const StageProfile& profile, bool include_trace);
 std::string cuda_timeline_json(const StageProfile& profile);
 

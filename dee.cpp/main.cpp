@@ -216,6 +216,35 @@ void print_result(const dee::EngineConfig& cfg, const dee::EngineStats& stats, i
         std::printf("transfer queue avg/max : %.3f / %llu\n",
                     profile.average_transfer_queue_depth,
                     static_cast<unsigned long long>(profile.max_transfer_queue_depth));
+        std::printf("idle attributed        : %.3f ms / %.2f%%\n",
+                    profile.idle_attributed_ms,
+                    profile.idle_attributed_fraction * 100.0);
+        std::printf("GPU idle attribution   :\n");
+        for (size_t i = 0; i < static_cast<size_t>(dee::IdleGapCategory::Count); ++i) {
+            std::printf("  %-35s %9.3f ms  count=%llu avg=%7.3f p95=%7.3f max=%7.3f\n",
+                        dee::idle_gap_category_name(static_cast<dee::IdleGapCategory>(i)),
+                        profile.idle_gap_ms[i],
+                        static_cast<unsigned long long>(profile.idle_gap_count[i]),
+                        profile.idle_gap_avg_ms[i], profile.idle_gap_p95_ms[i],
+                        profile.idle_gap_max_ms[i]);
+        }
+        std::printf("cache-readiness breakdown:\n");
+        for (size_t i = 0;
+             i < static_cast<size_t>(dee::ReadinessWaitCategory::Count); ++i) {
+            std::printf("  %-35s %9.3f ms  count=%llu\n",
+                        dee::readiness_wait_category_name(
+                            static_cast<dee::ReadinessWaitCategory>(i)),
+                        profile.readiness_wait_ms[i],
+                        static_cast<unsigned long long>(profile.readiness_wait_count[i]));
+        }
+        std::printf("top GPU idle gaps      :\n");
+        for (const dee::IdleGapRecord& gap : profile.top_idle_gaps) {
+            std::printf("  %9.3f ms  %-35s t=%d l=%d e=%d transfer=%llu\n",
+                        gap.end_ms - gap.start_ms,
+                        dee::idle_gap_category_name(gap.category), gap.token,
+                        gap.logical_layer, gap.expert,
+                        static_cast<unsigned long long>(gap.transfer_id));
+        }
     }
     std::printf("timing events allocated: %llu (bounded pool)\n",
                 static_cast<unsigned long long>(profile.timing_events_allocated));
