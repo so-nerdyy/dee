@@ -964,7 +964,7 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
         }
     } else {
         const auto oracle_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
-        oracle_.predict(layer, h_in, cfg_.topk, experts);
+        oracle_.predict_twostage(layer, h_in, cfg_.topk, 4, experts);
         if (profiler_.enabled()) {
             const auto oracle_end = StageProfiler::now();
             profiler_.add_cpu_ms(CpuStage::Oracle,

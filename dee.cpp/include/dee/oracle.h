@@ -22,6 +22,9 @@ struct OracleLayerWeights {
     std::vector<float> w0, b0;   // (256, 2048), (256,)
     std::vector<float> w2, b2;   // (256, 256), (256,)
     std::vector<float> w4, b4;   // (256, 256), (256,)
+    // INT8-quantized W0 for fast approximate stage-1 scoring
+    std::vector<int8_t> w0_int8;  // (256, 2048) INT8
+    float w0_int8_scale = 1.0f;
 };
 
 class OracleScheduler {
@@ -37,6 +40,12 @@ public:
     // Predict the top-K expert indices for `layer` from `hidden`.
     // Returns them sorted by descending logit. `out` is cleared and filled.
     void predict(int layer, const float* hidden, int topk, std::vector<int>& out) const;
+
+    // Two-stage predict: fast INT8 W0 scores to filter candidates, then
+    // full FP32 Oracle only on top candidates for exact routing.
+    // `stage2_margin`: extra candidates beyond topk to recompute in FP32.
+    void predict_twostage(int layer, const float* hidden, int topk, int stage2_margin,
+                          std::vector<int>& out) const;
 
     // Convenience: predict for the NEXT layer (prefetch target) given the
     // hidden state at the current layer's input.
