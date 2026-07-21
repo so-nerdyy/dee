@@ -620,3 +620,61 @@ the Oracle itself (FP16 oracle or GPU-resident oracle), which would risk the
 10,239/10,240 ordered-match numerical contract that INT8 is being held to.
 Those candidates remained out of scope this campaign and are documented as the
 natural next target. The validated INT8 default is preserved.
+
+## Campaign 2: Oracle acceleration and mixed-INT4 transfer
+
+This campaign branched from `opt/c0.5-oracle-routing-dump`
+(commit `cb30041`), which added opt-in `--oracle-routing-dump` and
+`--profile-request-timings` instrumentation with zero normal-mode overhead.
+The fresh baseline on the T4 was 25.559 tok/s, identical to the previous
+campaign's `dbdb7dd` result.
+
+### Candidate C1: AVX-512F FP32 Oracle (rejected)
+
+Branch `opt/c1-avx512f-oracle` added a runtime-dispatched AVX-512F FP32
+Oracle dot product with an AVX2/scalar fallback. Routing remained exact
+(1280/1280 ordered and top-K set), but the three-run median was 22.991 tok/s
+(-1.22% vs baseline), failing the 2% gate. Logit max absolute error versus the
+AVX2 baseline was 1.0e-3, larger than the FP32-rounding target. The branch was
+preserved but not merged.
+
+### Candidate C3: AVX-512 VNNI INT8 Oracle (rejected)
+
+Branch `opt/c3-vnni-int8-oracle` quantizes Oracle matrices per output channel to
+signed INT8 and uses `_mm512_dpbusd_epi32` with separate activation scales and
+zero-point correction for Linear0/1/2. Routing was exact (1280/1280 ordered and
+top-K set) and final hidden output met the validated INT8 thresholds, but
+three-run throughput did not exceed the baseline. The branch was preserved but
+not merged.
+
+### Candidate C5a: mixed-INT4 expert transfer with groupwise scales and FP16 outliers (rejected)
+
+Branch `opt/c5a-mixed-int4` extends the INT4 transfer path to per-row,
+groupwise INT4 quantization with per-group FP32 scales and full-FP16 outlier
+rows. The host packs each projection into packed INT4 bulk + scales + outlier
+metadata; a CUDA kernel on the prefetch stream reconstructs FP16 weights. CLI
+options `--quant-group-size` and `--quant-outlier-fraction` were added; existing
+INT8/INT4/BF16 paths were unchanged.
+
+Three normal-mode runs with `--transfer-dtype mixed-int4 --cache-dtype fp16
+--quant-group-size 128 --quant-outlier-fraction 0.02` produced 12.570, 13.248,
+and 12.813 tok/s (median 12.813 tok/s). This is **-49.83% versus the 25.559
+tok/s baseline**, far below the 2% acceptance gate. CUDA CTest passed 7/7 and
+output remained finite.
+
+Routing strictness failed the required gate. Compared to the `routing-ref.json`
+baseline:
+- 1247/1280 ordered expert matches
+- 1268/1280 exact top-K set matches
+- max score difference 4.91
+
+The routing deviations and score drift indicate the mixed-INT4 dequantized
+weights do not reproduce the validated INT8/FP16 hidden-state trajectory,
+probably because outlier row selection and groupwise scale handling still differ
+from the reference enough to change expert choice. Per the strict acceptance
+rule (any expert ID change rejects the candidate), C5a is rejected and the
+branch is preserved for reference but not merged.
+
+The poor throughput suggests the mixed-INT4 path is also paying heavy
+runtime costs (dynamic host packing, a more complex dequantization kernel, or
+both). The validated INT8 default remains unchanged.
