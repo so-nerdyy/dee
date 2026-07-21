@@ -2,6 +2,7 @@
 
 #ifdef DEE_CUDA
 
+#include "dee/mixed_int4.h"
 #include "dee/profiling.h"
 
 #include <cstddef>
@@ -28,6 +29,10 @@ bool int8_to_f16_cuda(const int8_t* source, void* destination, size_t elements,
 bool int4_to_f16_cuda(const uint8_t* source, void* destination, size_t elements,
                       size_t projection_elements, const float scales[3],
                       cudaStream_t stream, StageProfiler* profiler = nullptr);
+
+bool mixed_int4_to_f16_cuda(const uint8_t* source, void* destination,
+                            size_t projection_elements, const MixedInt4Args& args,
+                            cudaStream_t stream, StageProfiler* profiler = nullptr);
 
 }  // namespace dee
 

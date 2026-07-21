@@ -69,7 +69,8 @@ const char* device_cache_dtype_name(DeviceCacheDType dtype);
 enum class WeightTransferDType {
     Bf16,
     Int8,
-    Int4
+    Int4,
+    MixedInt4
 };
 
 const char* weight_transfer_dtype_name(WeightTransferDType dtype);
@@ -92,6 +93,8 @@ struct EngineConfig {
     bool        trace_requests = false;
     bool        profile_timeline = false;
     bool        prepack_quantized_source = true;
+    int         quant_group_size = 128;        // group size for mixed-INT4 (0 = disabled)
+    float       quant_outlier_fraction = 0.02f; // fraction of outlier rows per projection
     BenchmarkScenario scenario = BenchmarkScenario::EndToEnd;
     // Opt-in path for the per-call Oracle routing dump (token, layer,
     // ordered experts[K], raw scores[E]) used by compare_benchmark_outputs.py
@@ -235,6 +238,25 @@ private:
         float scales[3] = {1.0f, 1.0f, 1.0f};
     };
     std::unordered_map<uint64_t, QuantizedExpert> staging_int8_;
+
+    // Mixed-INT4 staging: packed INT4 bulk + per-group scales + outlier metadata.
+    struct MixedInt4Expert {
+        std::vector<uint8_t> host;  // complete transferable blob
+        void* pinned = nullptr;
+        size_t blob_bytes = 0;      // bytes transferred for this expert
+        size_t projection_elements = 0;
+        int group_size = 0;
+        int row_width[3] = {};
+        int row_count[3] = {};
+        size_t num_groups[3] = {};
+        size_t bulk_offset[3] = {};
+        size_t scale_offset[3] = {};
+        size_t outlier_row_offset_offset[3] = {};
+        size_t outlier_values_offset[3] = {};
+        size_t outlier_count[3] = {};
+    };
+    std::unordered_map<uint64_t, MixedInt4Expert> staging_mixed_int4_;
+
     size_t pinned_staging_bytes_ = 0;
     static constexpr size_t kPinnedStagingLimit = 192ULL * 1024 * 1024;
 
@@ -262,6 +284,7 @@ private:
     const uint16_t* get_staging_bf16(int source_layer, int expert);
     const QuantizedExpert* get_staging_int8(int source_layer, int expert);
     const QuantizedExpert* get_staging_int4(int source_layer, int expert);
+    const MixedInt4Expert* get_staging_mixed_int4(int source_layer, int expert);
     bool prepack_quantized_sources();
 
     // Stream `expert` from a resolved shard layer into VRAM.  The cache key

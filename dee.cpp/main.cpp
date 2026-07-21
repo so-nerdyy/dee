@@ -24,7 +24,9 @@ void usage(const char* argv0) {
         "  --budget BYTES     Expert-cache budget (0 = four expert blobs)\n"
         "  --prefetch-depth N Bounded staging/transfer ring depth (default: 64)\n"
         "  --cache-dtype D    Device expert cache: fp16 with --cuda, or fp32 fallback\n"
-        "  --transfer-dtype D Expert transfer: int8 CUDA default, bf16, or experimental int4\n"
+        "  --transfer-dtype D Expert transfer: int8 CUDA default, bf16, int4, or mixed-int4\n"
+        "  --quant-group-size N Group size for mixed-int4 (default: 128)\n"
+        "  --quant-outlier-fraction F Fraction of outlier rows per mixed-int4 projection (default: 0.02)\n"
         "  --cuda             Use CUDA; requires a DEE_CUDA build and a GPU\n"
         "  --profile-stages   Enable detailed CPU/CUDA stage timing\n"
         "  --profile-scenario M Controlled profile: end-to-end, full-resident,\n"
@@ -104,8 +106,9 @@ bool parse_transfer_dtype(const char* text, dee::WeightTransferDType& out) {
     if (value == "bf16") out = dee::WeightTransferDType::Bf16;
     else if (value == "int8") out = dee::WeightTransferDType::Int8;
     else if (value == "int4") out = dee::WeightTransferDType::Int4;
+    else if (value == "mixed-int4") out = dee::WeightTransferDType::MixedInt4;
     else {
-        std::fprintf(stderr, "[cli] invalid --transfer-dtype value: %s (expected bf16, int8, or int4)\n", text);
+        std::fprintf(stderr, "[cli] invalid --transfer-dtype value: %s (expected bf16, int8, int4, or mixed-int4)\n", text);
         return false;
     }
     return true;
@@ -395,6 +398,20 @@ int main(int argc, char** argv) {
             if (!(value = require_value(i, argc, argv, "--transfer-dtype")) ||
                 !parse_transfer_dtype(value, cfg.transfer_dtype)) return 2;
             transfer_dtype_explicit = true;
+        } else if (arg == "--quant-group-size") {
+            if (!(value = require_value(i, argc, argv, "--quant-group-size")) ||
+                std::sscanf(value, "%d", &cfg.quant_group_size) != 1 ||
+                cfg.quant_group_size <= 0) {
+                std::fprintf(stderr, "[cli] --quant-group-size requires a positive integer\n");
+                return 2;
+            }
+        } else if (arg == "--quant-outlier-fraction") {
+            if (!(value = require_value(i, argc, argv, "--quant-outlier-fraction")) ||
+                std::sscanf(value, "%f", &cfg.quant_outlier_fraction) != 1 ||
+                cfg.quant_outlier_fraction < 0.0f || cfg.quant_outlier_fraction > 1.0f) {
+                std::fprintf(stderr, "[cli] --quant-outlier-fraction requires a value in [0, 1]\n");
+                return 2;
+            }
         } else if (arg == "--profile-json") {
             if (!(value = require_value(i, argc, argv, "--profile-json"))) return 2;
             profile_json_path = value;

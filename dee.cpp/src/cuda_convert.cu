@@ -205,4 +205,80 @@ bool int4_to_f16_cuda(const uint8_t* source, void* destination, size_t elements,
 #endif
 }
 
+__global__ void mixed_int4_to_f16_kernel(__half* destination, size_t projection_elements,
+                                         MixedInt4Args args) {
+    const size_t index = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const size_t elements = 3 * projection_elements;
+    if (index >= elements) return;
+
+    // Determine which projection this element belongs to.
+    int projection = 0;
+    size_t offset_in_projection = index;
+    if (index >= 2 * projection_elements) {
+        projection = 2;
+        offset_in_projection = index - 2 * projection_elements;
+    } else if (index >= projection_elements) {
+        projection = 1;
+        offset_in_projection = index - projection_elements;
+    }
+
+    const int row_width = args.row_width[projection];
+    const int row_count = args.row_count[projection];
+    if (row_width <= 0 || row_count <= 0) {
+        destination[index] = __float2half_rn(0.0f);
+        return;
+    }
+
+    const int row = static_cast<int>(offset_in_projection / row_width);
+    const int col = static_cast<int>(offset_in_projection % row_width);
+
+    const uint32_t outlier_info = args.outlier_row_offsets[projection][row];
+    if (outlier_info != 0xFFFFFFFFu) {
+        const unsigned int outlier_bits = static_cast<unsigned int>(
+            args.outlier_values[projection][outlier_info + col]) << 16;
+        const float outlier_f32 = __uint_as_float(outlier_bits);
+        destination[index] = __float2half_rn(outlier_f32);
+        return;
+    }
+
+    const int group_size = args.group_size;
+    const int groups_per_row = (row_width + group_size - 1) / group_size;
+    const int group_idx = col / group_size;
+    const float scale = args.group_scales[projection][row * groups_per_row + group_idx];
+
+    const size_t bulk_idx = static_cast<size_t>(row) * row_width + col;
+    const uint8_t packed = args.bulk[projection][bulk_idx / 2];
+    const uint8_t nibble = (bulk_idx & 1) ? (packed >> 4) : (packed & 0x0f);
+    const int value = nibble >= 8 ? static_cast<int>(nibble) - 16 : static_cast<int>(nibble);
+    destination[index] = __float2half_rn(static_cast<float>(value) * scale);
+}
+
+bool mixed_int4_to_f16_cuda(const uint8_t* source, void* destination,
+                            size_t projection_elements, const MixedInt4Args& args,
+                            cudaStream_t stream, StageProfiler* profiler) {
+    if (!destination || !stream || projection_elements == 0 ||
+        args.group_size <= 0) {
+        std::fprintf(stderr, "[cuda] invalid mixed-INT4 arguments\n");
+        return false;
+    }
+    const size_t elements = 3 * projection_elements;
+    const unsigned int blocks = conversion_blocks(elements, "mixed-INT4-to-FP16 conversion");
+    if (!blocks) return false;
+    const size_t ticket = profiler && profiler->enabled()
+        ? profiler->cuda_begin(GpuStage::WeightConversion, static_cast<void*>(stream))
+        : static_cast<size_t>(-1);
+    mixed_int4_to_f16_kernel<<<blocks, kConversionThreads, 0, stream>>>(
+        static_cast<__half*>(destination), projection_elements, args);
+    if (profiler && profiler->enabled()) profiler->note_kernel_launch();
+    if (!DEE_CUDA_CHECK_LAUNCH("mixed_int4_to_f16_kernel launch")) return false;
+    if (profiler && profiler->enabled() &&
+        !profiler->cuda_end(ticket, static_cast<void*>(stream))) return false;
+#ifdef DEE_CUDA_VALIDATE
+    return DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(stream),
+                                "cudaStreamSynchronize(mixed-INT4-to-FP16 validation)");
+#else
+    return true;
+#endif
+}
+
 }  // namespace dee

@@ -202,6 +202,7 @@ const char* weight_transfer_dtype_name(WeightTransferDType dtype) {
         case WeightTransferDType::Bf16: return "bf16";
         case WeightTransferDType::Int8: return "int8";
         case WeightTransferDType::Int4: return "int4";
+        case WeightTransferDType::MixedInt4: return "mixed-int4";
     }
     return "unknown";
 }
@@ -462,6 +463,184 @@ const Engine::QuantizedExpert* Engine::get_staging_int4(int source_layer, int ex
     return &inserted.first->second;
 }
 
+const Engine::MixedInt4Expert* Engine::get_staging_mixed_int4(int source_layer, int expert) {
+    const auto profile_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
+    const uint64_t key = staging_key(source_layer, expert);
+    auto existing = staging_mixed_int4_.find(key);
+    if (existing != staging_mixed_int4_.end()) {
+        if (profiler_.enabled()) {
+            const auto resolution_end = StageProfiler::now();
+            profiler_.add_cpu_ms(CpuStage::TensorResolution,
+                std::chrono::duration<double, std::milli>(resolution_end - profile_begin).count());
+            profiler_.note_cpu_timeline_interval(CpuTimelineKind::TensorResolution,
+                profile_begin, resolution_end, current_token_, source_layer, expert);
+        }
+        return &existing->second;
+    }
+
+    TensorView views[3] = {
+        resolver_.resolve_expert(source_layer, expert, TensorResolver::GATE_PROJ),
+        resolver_.resolve_expert(source_layer, expert, TensorResolver::UP_PROJ),
+        resolver_.resolve_expert(source_layer, expert, TensorResolver::DOWN_PROJ)};
+    const size_t projection = static_cast<size_t>(inter_) * hidden_;
+    const size_t projection_bytes = projection * sizeof(uint16_t);
+    for (const TensorView& view : views) {
+        if (!view.ok() || view.dtype != DType::BF16 || view.nbytes != projection_bytes) {
+            std::fprintf(stderr, "[engine] expert %d has unsupported mixed-INT4 source layout\n", expert);
+            if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
+            return nullptr;
+        }
+    }
+
+    MixedInt4Expert packed;
+    packed.group_size = cfg_.quant_group_size;
+    packed.projection_elements = projection;
+    packed.row_width[0] = hidden_;
+    packed.row_width[1] = hidden_;
+    packed.row_width[2] = inter_;
+    packed.row_count[0] = inter_;
+    packed.row_count[1] = inter_;
+    packed.row_count[2] = hidden_;
+
+    std::vector<float> scales;
+    std::vector<uint32_t> outlier_offsets;
+    std::vector<uint16_t> outlier_values;
+    size_t region_scale_offset[3] = {};
+    size_t region_outlier_offset[3] = {};
+    size_t region_outlier_values_offset[3] = {};
+
+    for (size_t region = 0; region < 3; ++region) {
+        const size_t row_count = static_cast<size_t>(packed.row_count[region]);
+        const size_t row_width = static_cast<size_t>(packed.row_width[region]);
+        const size_t groups_per_row = (row_width + cfg_.quant_group_size - 1) /
+                                       static_cast<size_t>(cfg_.quant_group_size);
+        packed.num_groups[region] = row_count * groups_per_row;
+        packed.bulk_offset[region] = packed.host.size();
+        const size_t bulk_bytes_per_row = (row_width + 1) / 2;
+        const size_t bulk_start = packed.host.size();
+        packed.host.resize(bulk_start + row_count * bulk_bytes_per_row, 0);
+
+        region_scale_offset[region] = scales.size();
+        scales.resize(scales.size() + row_count * groups_per_row, 0.0f);
+        region_outlier_offset[region] = outlier_offsets.size();
+        outlier_offsets.resize(outlier_offsets.size() + row_count, 0xFFFFFFFFu);
+        region_outlier_values_offset[region] = outlier_values.size();
+
+        std::vector<float> row_max(row_count, 0.0f);
+        for (size_t row = 0; row < row_count; ++row) {
+            const uint16_t* r = reinterpret_cast<const uint16_t*>(views[region].data) +
+                                row * row_width;
+            float max_abs = 0.0f;
+            for (size_t i = 0; i < row_width; ++i) {
+                max_abs = std::max(max_abs, std::fabs(bf16_to_f32(r[i])));
+            }
+            row_max[row] = max_abs;
+        }
+        std::vector<float> sorted = row_max;
+        std::sort(sorted.begin(), sorted.end());
+        const float outlier_threshold = cfg_.quant_outlier_fraction >= 1.0f
+            ? sorted.front() - 1.0f
+            : sorted[static_cast<size_t>((1.0f - cfg_.quant_outlier_fraction) *
+                                           (sorted.size() - 1))];
+        for (size_t row = 0; row < row_count; ++row) {
+            const uint16_t* r = reinterpret_cast<const uint16_t*>(views[region].data) +
+                                row * row_width;
+            if (row_max[row] > outlier_threshold) {
+                outlier_offsets[region_outlier_offset[region] + row] =
+                    static_cast<uint32_t>(outlier_values.size() - region_outlier_values_offset[region]);
+                const size_t v_start = outlier_values.size();
+                outlier_values.resize(v_start + row_width);
+                std::memcpy(outlier_values.data() + v_start, r, row_width * sizeof(uint16_t));
+                continue;
+            }
+            for (size_t g = 0; g < groups_per_row; ++g) {
+                const size_t g_start = g * cfg_.quant_group_size;
+                const size_t g_end = std::min(g_start + static_cast<size_t>(cfg_.quant_group_size),
+                                              row_width);
+                float max_abs = 0.0f;
+                for (size_t i = g_start; i < g_end; ++i) {
+                    max_abs = std::max(max_abs, std::fabs(bf16_to_f32(r[i])));
+                }
+                const float scale = max_abs > 0.0f ? max_abs / 7.0f : 1.0f;
+                scales[region_scale_offset[region] + row * groups_per_row + g] = scale;
+                const float inv_scale = 1.0f / scale;
+                for (size_t i = g_start; i < g_end; ++i) {
+                    const long q = std::lrint(bf16_to_f32(r[i]) * inv_scale);
+                    const int nib = static_cast<int>(std::max(-7L, std::min(7L, q))) & 0x0f;
+                    const size_t byte_idx = row * bulk_bytes_per_row + (i / 2);
+                    if ((i & 1) == 0) {
+                        packed.host[bulk_start + byte_idx] = static_cast<uint8_t>(nib);
+                    } else {
+                        packed.host[bulk_start + byte_idx] |= static_cast<uint8_t>(nib << 4);
+                    }
+                }
+            }
+        }
+    }
+
+    // Append scales, outlier offsets, and outlier values to the host blob.
+    const size_t scale_bytes = scales.size() * sizeof(float);
+    const size_t outlier_offset_bytes = outlier_offsets.size() * sizeof(uint32_t);
+    const size_t outlier_values_bytes = outlier_values.size() * sizeof(uint16_t);
+
+    packed.scale_offset[0] = packed.host.size();
+    packed.host.resize(packed.host.size() + scale_bytes);
+    std::memcpy(packed.host.data() + packed.scale_offset[0], scales.data(), scale_bytes);
+
+    packed.outlier_row_offset_offset[0] = packed.host.size();
+    packed.host.resize(packed.host.size() + outlier_offset_bytes);
+    std::memcpy(packed.host.data() + packed.outlier_row_offset_offset[0],
+                 outlier_offsets.data(), outlier_offset_bytes);
+
+    packed.outlier_values_offset[0] = packed.host.size();
+    packed.host.resize(packed.host.size() + outlier_values_bytes);
+    std::memcpy(packed.host.data() + packed.outlier_values_offset[0],
+                 outlier_values.data(), outlier_values_bytes);
+
+    // Compute per-projection offsets into the appended metadata arrays.
+    for (int region = 0; region < 3; ++region) {
+        packed.scale_offset[region] = packed.scale_offset[0] +
+            region_scale_offset[region] * sizeof(float);
+        packed.outlier_row_offset_offset[region] = packed.outlier_row_offset_offset[0] +
+            region_outlier_offset[region] * sizeof(uint32_t);
+        packed.outlier_values_offset[region] = packed.outlier_values_offset[0] +
+            region_outlier_values_offset[region] * sizeof(uint16_t);
+    }
+
+    packed.blob_bytes = packed.host.size();
+    packed.outlier_count[0] = packed.outlier_count[1] = packed.outlier_count[2] = 0;
+    for (size_t i = 0; i < outlier_offsets.size(); ++i) {
+        if (outlier_offsets[i] != 0xFFFFFFFFu) ++packed.outlier_count[0];
+    }
+
+#ifdef DEE_CUDA
+    if (cfg_.use_cuda && pinned_staging_bytes_ + packed.blob_bytes <= kPinnedStagingLimit) {
+        if (DEE_CUDA_CHECK_NAMED(cudaHostAlloc(&packed.pinned, packed.blob_bytes,
+                                               cudaHostAllocDefault),
+                                 "cudaHostAlloc(persistent mixed-INT4 expert source)")) {
+            std::memcpy(packed.pinned, packed.host.data(), packed.blob_bytes);
+            pinned_staging_bytes_ += packed.blob_bytes;
+        }
+    }
+#endif
+    if (!packed.pinned && !packed.host.empty()) {
+        // host vector already holds the blob; pinned allocation failed but
+        // pageable fallback is available.
+    }
+
+    if (profiler_.enabled()) {
+        const auto pack_end = StageProfiler::now();
+        profiler_.add_cpu_ms(CpuStage::MmapToPinned,
+            std::chrono::duration<double, std::milli>(pack_end - profile_begin).count());
+        profiler_.note_cpu_timeline_interval(CpuTimelineKind::FirstTouchQuantization,
+            profile_begin, pack_end, current_token_, source_layer, expert,
+            blob_elems_ * sizeof(uint16_t));
+        profiler_.note_mmap_copy(blob_elems_ * sizeof(uint16_t));
+    }
+    auto inserted = staging_mixed_int4_.emplace(key, std::move(packed));
+    return &inserted.first->second;
+}
+
 bool Engine::prepack_quantized_sources() {
     if (!cfg_.prepack_quantized_source || !cfg_.use_cuda ||
         cfg_.transfer_dtype == WeightTransferDType::Bf16) return true;
@@ -470,8 +649,25 @@ bool Engine::prepack_quantized_sources() {
     for (int layer = 0; layer < cfg_.num_layers; ++layer) {
         source_layers.insert(avail_layer(layer));
     }
-    const size_t bytes_per_expert = cfg_.transfer_dtype == WeightTransferDType::Int4
-        ? (blob_elems_ + 1) / 2 : blob_elems_ * sizeof(int8_t);
+
+    size_t bytes_per_expert = 0;
+    switch (cfg_.transfer_dtype) {
+        case WeightTransferDType::Int4: bytes_per_expert = (blob_elems_ + 1) / 2; break;
+        case WeightTransferDType::Int8: bytes_per_expert = blob_elems_ * sizeof(int8_t); break;
+        case WeightTransferDType::MixedInt4:
+            // Mixed-INT4 size varies per expert; use a conservative upper bound for the
+            // prepack decision: full INT4 bulk + per-group FP32 scales + outlier FP16.
+            bytes_per_expert = (blob_elems_ + 1) / 2 +
+                               3 * ((hidden_ + cfg_.quant_group_size - 1) / cfg_.quant_group_size +
+                                    (inter_ + cfg_.quant_group_size - 1) / cfg_.quant_group_size) *
+                                   sizeof(float) +
+                               blob_elems_ * sizeof(uint16_t);
+            break;
+        default:
+            std::fprintf(stderr, "[engine] unsupported transfer dtype for prepack\n");
+            return false;
+    }
+
     const size_t physical_experts = source_layers.size() *
                                     static_cast<size_t>(oracle_.num_experts());
     if (physical_experts > std::numeric_limits<size_t>::max() / bytes_per_expert) {
@@ -491,9 +687,14 @@ bool Engine::prepack_quantized_sources() {
     const auto begin = std::chrono::steady_clock::now();
     for (int source_layer : source_layers) {
         for (int expert = 0; expert < oracle_.num_experts(); ++expert) {
-            const QuantizedExpert* packed = cfg_.transfer_dtype == WeightTransferDType::Int4
-                ? get_staging_int4(source_layer, expert)
-                : get_staging_int8(source_layer, expert);
+            const void* packed = nullptr;
+            if (cfg_.transfer_dtype == WeightTransferDType::Int4) {
+                packed = get_staging_int4(source_layer, expert);
+            } else if (cfg_.transfer_dtype == WeightTransferDType::Int8) {
+                packed = get_staging_int8(source_layer, expert);
+            } else if (cfg_.transfer_dtype == WeightTransferDType::MixedInt4) {
+                packed = get_staging_mixed_int4(source_layer, expert);
+            }
             if (!packed) {
                 std::fprintf(stderr,
                     "[engine] quantized source prepack failed for layer %d expert %d\n",
@@ -512,6 +713,28 @@ bool Engine::prepack_quantized_sources() {
 
 bool Engine::stage_expert(int logical_layer, int source_layer, int expert, int priority) {
     if (cfg_.use_cuda) {
+        if (cfg_.transfer_dtype == WeightTransferDType::MixedInt4) {
+            const MixedInt4Expert* packed = get_staging_mixed_int4(source_layer, expert);
+            if (!packed) return false;
+            MixedInt4Args args;
+            args.group_size = packed->group_size;
+            args.projection_elements = packed->projection_elements;
+            for (int i = 0; i < 3; ++i) {
+                args.row_width[i] = packed->row_width[i];
+                args.row_count[i] = packed->row_count[i];
+                args.num_groups[i] = packed->num_groups[i];
+                args.bulk_offset[i] = packed->bulk_offset[i];
+                args.scale_offset[i] = packed->scale_offset[i];
+                args.outlier_row_offset_offset[i] = packed->outlier_row_offset_offset[i];
+                args.outlier_values_offset[i] = packed->outlier_values_offset[i];
+            }
+            return prefetcher_.prefetch_mixed_int4_to_f16(
+                       source_layer, expert,
+                       packed->pinned ? static_cast<const uint8_t*>(packed->pinned)
+                                      : packed->host.data(),
+                       packed->blob_bytes, args, priority, current_token_, logical_layer,
+                       packed->pinned != nullptr) >= 0;
+        }
         if (cfg_.transfer_dtype == WeightTransferDType::Int4) {
             const QuantizedExpert* quantized = get_staging_int4(source_layer, expert);
             if (!quantized) return false;
