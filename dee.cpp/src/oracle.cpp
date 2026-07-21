@@ -6,6 +6,12 @@
 #include <cmath>
 #include <cstring>
 
+#if (defined(__x86_64__) || defined(_M_X64) || defined(__i386__)) && \
+    (defined(__GNUC__) || defined(__clang__))
+#include <immintrin.h>
+#define DEE_ORACLE_X86_TARGETS 1
+#endif
+
 namespace dee {
 
 namespace {
@@ -26,18 +32,58 @@ void timed_resize(std::vector<T>& values, size_t size, StageProfiler* profiler) 
     }
 }
 
+using DotProduct = float (*)(const float*, const float*, int);
+
+float dot_product_scalar(const float* weights, const float* input, int count) {
+    float sum = 0.0f;
+    for (int index = 0; index < count; ++index) sum += weights[index] * input[index];
+    return sum;
+}
+
+#ifdef DEE_ORACLE_X86_TARGETS
+__attribute__((target("avx2,fma")))
+float dot_product_avx2_fma(const float* weights, const float* input, int count) {
+    __m256 sum0 = _mm256_setzero_ps();
+    __m256 sum1 = _mm256_setzero_ps();
+    int index = 0;
+    for (; index + 16 <= count; index += 16) {
+        sum0 = _mm256_fmadd_ps(_mm256_loadu_ps(weights + index),
+                               _mm256_loadu_ps(input + index), sum0);
+        sum1 = _mm256_fmadd_ps(_mm256_loadu_ps(weights + index + 8),
+                               _mm256_loadu_ps(input + index + 8), sum1);
+    }
+    __m256 sum = _mm256_add_ps(sum0, sum1);
+    __m128 low = _mm256_castps256_ps128(sum);
+    __m128 high = _mm256_extractf128_ps(sum, 1);
+    __m128 combined = _mm_add_ps(low, high);
+    combined = _mm_hadd_ps(combined, combined);
+    combined = _mm_hadd_ps(combined, combined);
+    float result = _mm_cvtss_f32(combined);
+    for (; index < count; ++index) result += weights[index] * input[index];
+    return result;
+}
+#endif
+
+DotProduct select_dot_product() {
+#ifdef DEE_ORACLE_X86_TARGETS
+    if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma")) {
+        return &dot_product_avx2_fma;
+    }
+#endif
+    return &dot_product_scalar;
+}
+
 // Linear: y = W * x + b,  W is (out, in) row-major.
 static void linear(const std::vector<float>& W, const std::vector<float>& b,
                    const float* x, int in, int out, std::vector<float>& y,
                    OracleStage stage, StageProfiler* profiler) {
     timed_resize(y, static_cast<size_t>(out), profiler);
     const auto begin = oracle_profiling(profiler) ? StageProfiler::now() : StageProfiler::TimePoint{};
+    static const DotProduct dot_product = select_dot_product();
     for (int o = 0; o < out; ++o) {
         const float* wrow = W.data() + (size_t)o * in;
         float acc = b.empty() ? 0.f : b[o];
-        float s = 0.f;
-        for (int j = 0; j < in; ++j) s += wrow[j] * x[j];
-        y[o] = s + acc;
+        y[o] = dot_product(wrow, x, in) + acc;
     }
     if (oracle_profiling(profiler)) profiler->add_oracle(stage, begin);
 }
