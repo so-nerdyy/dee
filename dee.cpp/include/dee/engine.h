@@ -197,6 +197,7 @@ private:
     static constexpr size_t kPinnedStagingLimit = 192ULL * 1024 * 1024;
 
     std::vector<float> hidden_buf_[2];  // double buffer for the loop
+    std::vector<int>   experts_buf_;    // reusable expert index buffer (avoids per-call allocation)
 
     EngineStats stats_{};
     int current_token_ = -1;

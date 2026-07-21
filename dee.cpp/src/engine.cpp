@@ -608,18 +608,18 @@ bool Engine::prepare_profile_scenario() {
 }
 
 void Engine::forward_layer(int layer, const float* h_in, float* h_out) {
-    std::vector<int> experts;
+    experts_buf_.clear();
     const auto oracle_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
-    oracle_.predict(layer, h_in, cfg_.topk, experts);
+    oracle_.predict(layer, h_in, cfg_.topk, experts_buf_);
     if (profiler_.enabled()) profiler_.add_cpu(CpuStage::Oracle, oracle_begin);
 
     // CPU/mock mode processes one expert at a time. This preserves the fixed
     // budget contract even when top-K is larger than the cache capacity.
     std::vector<float> acc(hidden_, 0.0f);
     const int source_layer = avail_layer(layer);
-    profiler_.note_prediction(current_token_, layer, source_layer, experts);
-    for (size_t k = 0; k < experts.size(); ++k) {
-        int e = experts[k];
+    profiler_.note_prediction(current_token_, layer, source_layer, experts_buf_);
+    for (size_t k = 0; k < experts_buf_.size(); ++k) {
+        int e = experts_buf_[k];
         prefetcher_.begin_batch();
         if (!stage_expert(layer, source_layer, e, static_cast<int>(cfg_.topk - k)) || !prefetcher_.wait(source_layer, e)) {
             stats_.fallbacks++;
@@ -637,7 +637,7 @@ void Engine::forward_layer(int layer, const float* h_in, float* h_out) {
     //    The mock has no residual/LN, so without this the recurrent loop
     //    diverges to Inf over 40 layers. RMS-normalizing to 1.0 per layer keeps
     //    the signal bounded and finite while preserving the DEE pipeline logic.
-    float inv = (experts.empty() ? 1.0f : 1.0f / (float)experts.size());
+    float inv = (experts_buf_.empty() ? 1.0f : 1.0f / (float)experts_buf_.size());
     double ss = 0.0;
     for (int i = 0; i < hidden_; ++i) { float v = acc[i] * inv; h_out[i] = v; ss += (double)v * v; }
     double rms = std::sqrt(ss / hidden_);
@@ -956,15 +956,15 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
                                         host_scheduling_begin, current_token_, layer);
         }
     };
-    std::vector<int> experts;
+    experts_buf_.clear();
     if (cfg_.scenario == BenchmarkScenario::ComputeOnly) {
-        experts.reserve(static_cast<size_t>(cfg_.topk));
+        experts_buf_.reserve(static_cast<size_t>(cfg_.topk));
         for (int k = 0; k < cfg_.topk; ++k) {
-            experts.push_back((layer * cfg_.topk + k) % oracle_.num_experts());
+            experts_buf_.push_back((layer * cfg_.topk + k) % oracle_.num_experts());
         }
     } else {
         const auto oracle_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
-        oracle_.predict(layer, h_in, cfg_.topk, experts);
+        oracle_.predict(layer, h_in, cfg_.topk, experts_buf_);
         if (profiler_.enabled()) {
             const auto oracle_end = StageProfiler::now();
             profiler_.add_cpu_ms(CpuStage::Oracle,
@@ -973,7 +973,7 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
                 oracle_begin, oracle_end, current_token_, layer);
         }
     }
-    int K = (int)experts.size();
+    int K = (int)experts_buf_.size();
     if (K == 0) {
         for (int i = 0; i < hidden_; ++i) h_out[i] = 0.0f;
         finish_host_scheduling();
@@ -981,7 +981,7 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
     }
 
     const int source_layer = avail_layer(layer);
-    profiler_.note_prediction(current_token_, layer, source_layer, experts);
+    profiler_.note_prediction(current_token_, layer, source_layer, experts_buf_);
 
     if (cfg_.scenario == BenchmarkScenario::OracleOnly) {
         std::memcpy(h_out, h_in, static_cast<size_t>(hidden_) * sizeof(float));
@@ -996,7 +996,7 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
             std::vector<int> pinned;
             pinned.reserve(static_cast<size_t>(last - first));
             for (int k = first; k < last; ++k) {
-                const int expert = experts[k];
+                const int expert = experts_buf_[k];
                 const bool resident = cache_.is_resident(source_layer, expert);
                 if (!cache_.ensure(source_layer, expert, cache_blob_bytes_, cfg_.topk - k) ||
                     !cache_.pin(source_layer, expert)) return false;
@@ -1049,11 +1049,11 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
         if (!bypass_cache) {
             prefetcher_.begin_batch();
             for (int k = first; k < last; ++k) {
-                if (!stage_expert(layer, source_layer, experts[k], cfg_.topk - k)) return false;
+                if (!stage_expert(layer, source_layer, experts_buf_[k], cfg_.topk - k)) return false;
             }
         }
         for (int k = first; k < last; ++k) {
-            const int e = experts[k];
+            const int e = experts_buf_[k];
             if (!bypass_cache && !prefetcher_.wait(source_layer, e)) return false;
             if (cfg_.scenario == BenchmarkScenario::TransferOnly) continue;
             if (!bypass_cache && !cache_.pin(source_layer, e)) return false;
@@ -1095,7 +1095,7 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
             if (!profiler_.cuda_collect_ready()) return false;
         }
         if (!bypass_cache) {
-            for (int k = first; k < last; ++k) cache_.unpin(source_layer, experts[k]);
+            for (int k = first; k < last; ++k) cache_.unpin(source_layer, experts_buf_[k]);
         }
     }
     if (cfg_.scenario == BenchmarkScenario::TransferOnly) {
