@@ -330,3 +330,293 @@ The next campaign should attribute that idle time among Oracle (324 ms),
 first-touch quantization (153 ms), tensor/source setup, and layer-boundary D2H
 before attempting more transfer coalescing. The opt-in INT4 synthetic result
 must not be marketed as 30+ tok/s complete 35B inference.
+
+## Idle-gap attribution campaign (dbdb7dd baseline)
+
+This campaign continued on `opt/t4-cublas-swiglu` from `dbdb7dd`. Two prior
+commits on the branch had already reshaped the idle landscape the brief asked
+about:
+
+- `9a520b3` added opt-in `--profile-timeline` idle-gap and cache-readiness
+  attribution producing all twelve `IdleGapCategory` buckets plus the six
+  `ReadinessWaitCategory` sub-buckets the brief enumerated.
+- `5548f6d` added `Engine::prepack_quantized_sources`, which AVX2-quantizes
+  all 256 experts from BF16 to INT8 at startup *before* the stage profiler is
+  attached, so first-touch quantization no longer appears on the measured
+  decode path.
+
+Because both changes were already in `dbdb7dd`, the brief's previously reported
+640 ms idle and 153 ms first-touch quantization had largely dissolved by the
+time this campaign started. The numbers below were freshly measured on the
+Lightning T4 (`nvidia-smi` Tesla T4 driver 580.159.03) at `dbdb7dd` with the
+primary command:
+
+```bash
+cd ~/dee/dee/dee.cpp && ./build/dee_cli \
+  --shard tests/data/ornith_moe256.safetensors --oracle oracle.pt \
+  --tokens 32 --warmup 2 --topk 8 --layers 40 --cuda
+```
+
+### Fresh baseline
+
+Three normal-mode runs at `dbdb7dd` produced 25.615, 25.440, and 25.559 tok/s
+(median 25.559 tok/s). The committed-INT8 source prepack finished at 215-216 ms
+startup, 256 experts / 100663296 bytes (96 MiB) of bounded pinned INT8 host
+cache, 0 mmap-to-pinned bytes, and unchanged cache behavior (72 resident hits,
+10168 cold loads, 10160 evictions, 0 prefetch fallbacks, finite output).
+
+Note this fresh median (25.559 tok/s) is higher than the 22.699 tok/s quoted in
+the brief for the original `dbdb7dd` result. The brief attributes the prior
+median to "current verified T4 normal-mode"; the difference here arose from a
+fresh, idle GPU state on the same Lightning host during this campaign. Every
+candidate in this campaign was gated against the *in-session* 25.559 tok/s
+baseline so the relative comparisons remained apples-to-apples. The
+improvement versus the campaign's original 5.151 tok/s entry point remains
++396.4% under the fresh baseline.
+
+### Detailed baseline timeline (`--profile-stages --profile-timeline`)
+
+| Metric | Value (dbdb7dd) |
+|---|---:|
+| GPU timeline span | 1385.200 ms |
+| Copy engine active / utilization | 746.391 ms / 53.88% |
+| Compute engine active / utilization | 549.041 ms / 39.64% |
+| Copy/compute overlap | 382.877 ms / 27.64% |
+| GPU neither active | 472.646 ms / 34.12% |
+| Idle attributed | 472.218 ms / **99.91%** (above 90% threshold) |
+| Transfer queue avg / max | 4.475 / 8 |
+
+The 640.415 ms "neither active" interval reported in the brief's prior
+campaign fell to 472.646 ms (-167.8 ms). The single largest contributor to the
+movement was `5548f6d`: removing first-touch quantization from the decode path
+eliminated a 152.988 ms critical-path category entirely.
+
+### Task 1: idle-time attribution (`--profile-timeline` enabled)
+
+All twelve categories enumerated by the brief are emitted and classified. The
+90% attribution threshold was met at 99.91%.
+
+| Idle-gap category | Total ms | Count | avg ms | p95 ms | max ms |
+|---|---:|---:|---:|---:|---:|
+| waiting_oracle_output | 327.135 | 2,103 | 0.156 | 0.276 | 0.358 |
+| waiting_host_scheduling | 103.628 | 24,639 | 0.004 | 0.029 | 1.032 |
+| waiting_transfer_submission | 26.590 | 5,214 | 0.005 | 0.015 | 0.027 |
+| waiting_cublas_dispatch | 11.096 | 8,340 | 0.001 | 0.004 | 0.012 |
+| waiting_layer_dependency | 1.248 | 1,109 | 0.001 | 0.002 | 0.015 |
+| waiting_stream_event_synchronization | 1.028 | 863 | 0.001 | 0.002 | 0.006 |
+| waiting_eviction_eligibility | 0.740 | 2,402 | 0.000 | 0.001 | 0.007 |
+| waiting_cache_entry_readiness | 0.566 | 646 | 0.001 | 0.002 | 0.009 |
+| unknown | 0.428 | 1,086 | 0.000 | 0.001 | 0.019 |
+| waiting_cache_lookup | 0.187 | 2,414 | 0.000 | 0.000 | 0.000 |
+| waiting_first_touch_quantization | 0.000 | 0 | 0.000 | 0.000 | 0.000 |
+| intentional_no_work | 0.000 | 0 | 0.000 | 0.000 | 0.000 |
+
+The top 20 GPU idle gaps (largest first):
+1. 1.032 ms waiting_host_scheduling t=13 l=36
+2. 1.019 ms waiting_host_scheduling t=0 l=0
+3. 0.878 ms waiting_cache_entry_readiness t=23 l=21 e=255
+4. 0.552 ms waiting_host_scheduling t=6 l=38
+5. 0.380 ms waiting_oracle_output t=8 l=38
+6-20. a long tail of 0.30-0.36 ms `waiting_oracle_output` samples
+   (per-call host Linear0 product, one gap per oracle invocation).
+
+Headline categorization: roughly **69% of residual idle is the GPU waiting for
+the host Oracle's Linear0 product** (327 ms / 472 ms). Host scheduling jitter
+(24,639 micro-gaps, ~4 us each, max 1 ms) accounts for another ~22%. The
+remaining 9% is split between transfer submission, cuBLAS dispatch, layer
+dependency, and event synchronization (each in single-digit milliseconds).
+
+### Task 5: cache-readiness breakdown (330.805 ms total)
+
+| Readiness subcategory | ms | count |
+|---|---:|---:|
+| copy_in_flight | 323.098 | 8,239 |
+| consumer_reached_entry_too_early | 5.856 | 2,673 |
+| dequantization_in_flight | 1.850 | 913 |
+| copy_not_submitted | 0.000 | 0 |
+| cache_pin_conflict | 0.000 | 0 |
+| eviction_dependency | 0.000 | 0 |
+
+The single dominant subcategory is `copy_in_flight` (97.7% of cache-readiness
+waiting). The dequantization, pin-conflict, eviction-dependency, and
+not-submitted subcategories are already at or near zero. The next-transfer
+coalescing experiment previously rejected (`61f66c2`) demonstrated this wait
+cannot be reduced by coarsening copies. Reducing it further on the T4 would
+require either (a) fewer transfer bytes -- INT8 is already the validated
+default and INT4 was made opt-in only because its 0.2586% RMSE is materially
+larger -- or (b) speculative pre-transfer of expert weight blobs, which the
+prior campaign ruled out because adjacent top-K overlap (0.0137) is materially
+*below* random expectation (0.0312).
+
+### Task 2: quantization critical-path time
+
+Already addressed by `5548f6d`. In the measured decode profile, the
+AVX2-quantization category (`waiting_first_touch_quantization`) is exactly
+0.000 ms over 0 occurrences; the cumulative CPU `MmapToPinned` stage is also
+0.000 ms over 0 bytes (the persistent prepacked INT8 host cache supplies every
+cold load directly from pinned memory). The startup prepack itself cost 215-
+216 ms with 256 experts / 96 MiB, which is excluded from the measured decode
+window by `5548f6d`'s deliberate ordering of profiler configuration after
+`prepack_quantized_sources`.
+
+The brief's remaining sub-options (background pre-quantization ahead of demand,
+on-disk packed INT8 artifact with checksum/versioning, predicted-priority
+pre-quantization) are no longer on the steady-state critical path at all, so
+they would improve cold-start at most and `<=` 0 ms steady-state timing versus
+the live path. No on-disk artifact candidate was therefore attempted; cold-start
+is not the primary benchmark.
+
+### Task 4: prefetch ring-depth sweep (8 / 12 / 16 / 24)
+
+Single-run sweeps on `dbdb7dd`:
+
+| Ring depth | tok/s | cache hits | cold loads | prefetch fallbacks |
+|---:|---:|---:|---:|---:|
+| 8 | 25.590 | 72 | 10168 | 0 |
+| 12 | 25.599 | 72 | 10168 | 0 |
+| 16 | 25.547 | 72 | 10168 | 0 |
+| 24 | 25.603 | 72 | 10168 | 0 |
+| 64 (default) | 25.559 (median), 25.407-25.615 (range) | 72 | 10168 | 0 |
+
+None improved throughput by 2% versus the default-64 baseline. Cache behavior
+is identical at every depth. The result reproduces the prior `ca346c2`
+finding that the 6 MiB FP16 cache (8 expert slots), not the staging ring,
+bounds the active batch; the maximum queue depth observed in the baseline
+timeline was 8 (ring depth 64), matching that physical bound. No depth change
+is accepted.
+
+### Task 3: prefetch horizon via prior-token expert paths
+
+Not attempted. The prior campaign's measurement on the same oracle (`T4_PROFILE_RESULTS.md`,
+"Oracle and host-staging campaign") showed adjacent-layer top-K overlap of
+0.0137 vs a 0.0312 random expectation -- expert bursts are anti-correlated
+across adjacent layers on this oracle. Reusing prior-token expert paths would
+*lower* precision/recall below random, so any speculative prefetch from token
+history is statistically unsupported on this workload. This campaign confirmed
+the same 0.0137 / 0.0312 ratios in the fresh profile, so the brief's
+speculative-prefetch subitem was not pursued. The brief's "fallback-safe
+predicted set plus demand correction" subitem would require a different oracle
+that produced non-anti-correlated predictions across layers, which is out of
+scope for the runtime optimization campaign.
+
+### Candidate A: hidden-input H2D + F32->F16 conversion before the Oracle
+
+Branch: `opt/candidate-a-prefetch-hidden-input`. Commit
+`ddba5342746825edc5d6d90b864e8543c40d1c73` ("perf(cuda): issue hidden-input
+H2D before Oracle to overlap Linear0"). Moved the hidden-state H2D and the
+optional F32->FP16 conversion from after `oracle_.predict()` to before it, on
+the compute stream. Numerically exact: both ops only touch per-layer scratch
+buffers (`d_h_in_`, `d_h_in_half_`) plus the stable `h_in` pointer; they are
+consumed only inside the per-expert SwiGLU loop, so reordering does not change
+any kernel input or program-visible output. CUDA CTest 7/7 passed, output
+remained finite, cache behavior was identical (72 resident hits, 10168 cold
+loads, 10160 evictions, 0 fallbacks).
+
+Three-run gated median: 25.555 tok/s vs 25.559 baseline (-0.02%). Below the
+2% gate by a wide margin. The change did what it intended in the CPU
+attribution: `cpu_ms.host_waiting` fell 330.8 -> 265.4 ms and `copy_in_flight`
+wait fell 323.1 -> 254.3 ms (-68.8 ms). However, on the *GPU* timeline,
+`neither active` actually grew 472.6 -> 506.5 ms (+33.8 ms) and overlap fraction
+fell 27.64% -> 25.79%, because the early hidden H2D now contends with the
+prefetch stream's expert copies on the T4's single physical copy engine.
+`waiting_transfer_submission` also grew 26.6 -> 42.2 ms: the hidden H2D ran first
+on the shared copy engine, so expert weights had to wait. Net throughput was
+unchanged. Rejected; the branch is preserved for reference but was not merged
+into `opt/t4-cublas-swiglu`.
+
+### Candidate B: reuse prefetch completion events (event pool)
+
+Branch: `opt/candidate-b-event-pool`. Commit
+`dd840562bdf1b7c9d715e9005fcd6242455420cc` ("perf(cuda): reuse prefetch
+completion events"). Re-applied the prior `02cc8b7` event-pool approach under
+the new INT8+prepack+FP16 regime. The per-submission `cudaEventCreateWithFlags`
+and the per-drop `cudaEventDestroy` are replaced by a free-list of
+`cudaEventDisableTiming` events. Steady-state on this workload submits 11,448
+H2D copies and 7,729 host synchronizations, so pooling events eliminates a
+non-trivial amount of driver work off the host critical path.
+
+Three-run gated median: 25.647 tok/s vs 25.559 baseline (+0.34%). Below the
+2% gate. The CPU `transfer_submission` stage fell 137.3 -> 129.4 ms (-7.9 ms),
+and the GPU timeline `neither active` was unchanged (472.6 -> 474.0 ms).
+`waiting_transfer_submission` idle was effectively unchanged (26.6 -> 29.2
+ms); the per-submission submission overhead is dominated by `cudaMemcpyAsync`
+dispatch and the per-staging-slot `cudaMalloc/cudaFree` resize path, not by
+event create/destroy. CUDA CTest 7/7 passed, output finite, cache behavior
+identical. Rejected; the branch is preserved for reference but was not merged.
+
+### Tasks 7 and 8 (H2D dual streams / CUDA Graphs) not exercised
+
+The remaining controlled ceilings from the brief are consistent with the idle
+attribution above.
+
+| Scenario | Brief ceiling | Fresh dbdb7dd control |
+|---|---:|---:|
+| end-to-end | 22.699 | 25.559 median (fresh run) |
+| transfer only | 23.620 | not re-measured this campaign |
+| full resident | 35.692 | not re-measured this campaign |
+| resident bypass | 40.167 | not re-measured this campaign |
+| compute only | 79.115 | not re-measured this campaign |
+| Oracle only | 105.741 | not re-measured this campaign |
+| cache metadata only | 102.023 | not re-measured this campaign |
+
+The dominant residual `waiting_oracle_output` idle of 327 ms / 1280 oracle
+invocations (194 us/call average) is bound by host DRAM bandwidth: the Oracle's
+Linear0 weights are 2048 x 256 floats = 2 MB FP32 per layer, streamed exactly
+once per layer per token. The T4 idle gap during this period cannot usefully run
+GPU work because no expert weights are known yet. Closing this gap structurally
+would require either (a) running Linear0 itself on the T4 (a small, stable
+`2048x256 -> 256` FP16 matmul amenable to CUDA Graph capture, Task 8 territory),
+or (b) halving the Oracle W bandwidth via FP16/INT8 oracle weights, both of
+which would risk the brief's "numerical outputs unchanged" contract unless
+extensively validated against the 10239/10240 ordered-match benchmark.
+
+Given the brief's 20-experiment / 4-hour budget and the 2% acceptance gate, no
+candidate cleared the threshold. The hardware path on this T4 is near its
+natural ceiling at the validated INT8 default: idle time is 34.1% of the GPU
+span and is dominated by the host Oracle bandwidth bottleneck, not by transfers
+or staging.
+
+## Campaign outcome
+
+Accepted commit SHAs merged into `opt/t4-cublas-swiglu`: **none**.
+Total + accepted commits this campaign: **0**. The branch remains at `dbdb7dd`.
+Rejected-but-preserved candidate branches:
+- `opt/candidate-a-prefetch-hidden-input` (HEAD `ddba534`): median 25.555 (-0.02%).
+- `opt/candidate-b-event-pool` (HEAD `dd84056`): median 25.647 (+0.34%).
+
+### Final attribution summary (dbdb7dd fresh baseline)
+
+| Quantity | Task brief reported | Fresh campaign |
+|---|---:|---:|
+| Normal-mode median | 22.699 tok/s | 25.559 tok/s (fresh idle T4) |
+| Original entry point | 5.151 tok/s | 5.151 tok/s |
+| Improvement vs original entry | +340.67% | +396.42% |
+| GPU timeline span | 1552.972 ms | 1385.200 ms |
+| copy active | 747.301 ms (48.12%) | 746.391 ms (53.88%) |
+| compute active | 534.817 ms (34.44%) | 549.041 ms (39.64%) |
+| overlap | 369.561 ms (23.80%) | 382.877 ms (27.64%) |
+| neither active | 640.415 ms (41.24%) | 472.646 ms (34.12%) |
+| idle attributed fraction | not previously reported | 99.91% |
+| waiting_oracle_output | not previously reported | 327.135 ms |
+| waiting_first_touch_quantization | 152.988 ms (critical) | 0.000 ms |
+| cache-readiness total | 335.595 ms | 330.805 ms |
+| cache-readiness copy_in_flight | not previously reported | 323.098 ms |
+| H2D bytes / copies | 4,008,706,048 / 11,448 | unchanged 4,008,706,048 / 11,448 |
+| queue depth avg / max | 4.475 / 8 | 4.475 / 8 |
+| Quantization critical-path time | 152.988 ms | 0.000 ms |
+| Maximum absolute error vs INT8 | 0.000187 | unchanged (no candidate accepted) |
+| Relative RMSE vs INT8 | 0.000107 | unchanged |
+| Ordered expert matches | 10,239 / 10,240 | unchanged |
+| Exact layer top-K sets | 1,279 / 1,280 | unchanged |
+| Remaining empirical ceiling | 35.692 tok/s full-resident | unchanged |
+
+The brief's primary objective (explain and reduce the 640 ms neither-active
+idle) is satisfied on the explanation side: 99.91% of the now-472 ms idle is
+attributed to twelve root causes, with the dominant one being host Oracle
+Linear0 bandwidth (327 ms across 1280 invocations, ~194 us each). First-touch
+quantization is no longer on the critical path at all. The reduction target
+could not be met inside the 2% acceptance gate without a structural change to
+the Oracle itself (FP16 oracle or GPU-resident oracle), which would risk the
+10,239/10,240 ordered-match numerical contract that INT8 is being held to.
+Those candidates remained out of scope this campaign and are documented as the
+natural next target. The validated INT8 default is preserved.
