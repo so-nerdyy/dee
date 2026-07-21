@@ -288,7 +288,7 @@ void OracleScheduler::predict_gpu(int layer, const float* d_hidden, float* d_scr
 void OracleScheduler::predict_gpu_boundary(int layer, const float* h_in_cpu, float* d_hidden,
                                            float* d_scratch, cublasHandle_t handle, void* stream,
                                            int topk, std::vector<int>& out,
-                                           float epsilon_margin) {
+                                           float epsilon_margin) const {
     if (oracle_profiling(profiler_)) profiler_->note_oracle_call();
     bstats_.gpu_calls++;
 
@@ -364,7 +364,6 @@ void OracleScheduler::predict_gpu_boundary(int layer, const float* h_in_cpu, flo
 
     if (ambiguous) {
         bstats_.cpu_fallback_calls++;
-        bstats_.min_margin_calls++;
         // Full CPU fallback preserves exact ordered top-K vs CPU baseline.
         predict(layer, h_in_cpu, topk, out);
         return;

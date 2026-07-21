@@ -101,7 +101,6 @@ struct EngineConfig {
 struct OracleBoundaryStats {
     size_t gpu_calls = 0;
     size_t cpu_fallback_calls = 0;
-    size_t min_margin_calls = 0;
 };
 
 struct EngineStats {

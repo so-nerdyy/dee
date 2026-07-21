@@ -77,12 +77,11 @@ public:
     struct BoundaryStats {
         size_t gpu_calls = 0;          // total calls evaluated on GPU
         size_t cpu_fallback_calls = 0; // fallback to exact CPU predict
-        size_t min_margin_calls = 0;   // calls that triggered fallback
     };
     void predict_gpu_boundary(int layer, const float* h_in_cpu, float* d_hidden,
                               float* d_scratch, cublasHandle_t handle, void* stream,
                               int topk, std::vector<int>& out,
-                              float epsilon_margin);
+                              float epsilon_margin) const;
     BoundaryStats boundary_stats() const { return bstats_; }
     void reset_boundary_stats() { bstats_ = BoundaryStats{}; }
 #endif
@@ -106,7 +105,7 @@ private:
         float* d_b4 = nullptr;
     };
     std::vector<GpuLayerWeights> gpu_layers_;
-    BoundaryStats bstats_;
+    mutable BoundaryStats bstats_;
 #endif
 };
 

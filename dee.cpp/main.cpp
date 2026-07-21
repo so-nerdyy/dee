@@ -158,10 +158,11 @@ void print_result(const dee::EngineConfig& cfg, const dee::EngineStats& stats, i
     if (cfg.oracle_strict_margin > 0.0f) {
         std::printf("oracle strict margin    : %.6g (CPU fallback for ambiguous calls)\n",
                     cfg.oracle_strict_margin);
-        std::printf("oracle gpu/cpu/fallback : %llu / %llu / %llu (calls)\n",
+        std::printf("oracle gpu/cpu/fallback : %llu / %llu (calls)\n",
                     static_cast<unsigned long long>(stats.oracle_boundary.gpu_calls),
-                    static_cast<unsigned long long>(stats.oracle_boundary.cpu_fallback_calls),
-                    static_cast<unsigned long long>(stats.oracle_boundary.min_margin_calls));
+                    static_cast<unsigned long long>(stats.oracle_boundary.cpu_fallback_calls));
+    } else if (cfg.use_cuda) {
+        std::printf("oracle mode            : raw GPU (legacy; may diverge from CPU routing)\n");
     }
     std::printf("quantized source prepack: %s\n",
                 stats.quantized_prepack_complete ? "complete" : "dynamic/disabled");

@@ -937,7 +937,6 @@ bool Engine::generate() {
         const auto bs = oracle_.boundary_stats();
         stats_.oracle_boundary.gpu_calls = bs.gpu_calls;
         stats_.oracle_boundary.cpu_fallback_calls = bs.cpu_fallback_calls;
-        stats_.oracle_boundary.min_margin_calls = bs.min_margin_calls;
     }
 #endif
     stats_.profile = profiler_.finish(sec * 1000.0, resident_hits, inflight_hits,
