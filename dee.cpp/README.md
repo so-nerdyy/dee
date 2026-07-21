@@ -147,6 +147,13 @@ timed decoding. The CLI reports startup cost, packed expert count, and packed
 bytes separately. Use `--dynamic-quantization` to retain first-touch
 quantization for cold-start/control comparisons.
 
+Compare numerical output and expert routes between two request-trace reports:
+
+```bash
+python3 scripts/compare_benchmark_outputs.py reference.json candidate.json \
+  --max-abs 0 --relative-rmse 0 --require-exact-routes
+```
+
 Summarize working-set and reuse-distance behavior with:
 
 ```bash
