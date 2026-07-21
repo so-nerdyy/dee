@@ -723,6 +723,22 @@ bool Engine::init(const EngineConfig& cfg) {
         fprintf(stderr, "[engine] oracle load failed: %s\n", oracle_.error().c_str());
         return false;
     }
+#ifdef DEE_CUDA
+    if (cfg.use_cuda) {
+        if (oracle_.upload_to_gpu()) {
+            const size_t scratch_elements = static_cast<size_t>(256 + 256);
+            if (DEE_CUDA_CHECK_NAMED(
+                    cudaMalloc(&d_oracle_scratch_, scratch_elements * sizeof(float)),
+                    "cudaMalloc(oracle scratch)")) {
+                gpu_oracle_ready_ = true;
+                if (cfg.verbose) {
+                    std::fprintf(stderr, "[engine] GPU Oracle initialized (%zu layers)\n",
+                                 static_cast<size_t>(oracle_.num_layers()));
+                }
+            }
+        }
+    }
+#endif
     int nl = std::min(cfg.num_layers, oracle_.num_layers());
     cfg_.num_layers = nl;
     // VRAM budget. default: 4 experts. The arena backend is cudaMalloc when the
@@ -939,6 +955,8 @@ void Engine::cuda_cleanup() {
     if (d_ybuf_)  { DEE_CUDA_CHECK_NAMED(cudaFree(d_ybuf_), "cudaFree(d_ybuf)");  d_ybuf_  = nullptr; }
     if (d_h_in_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_h_in_half_), "cudaFree(d_h_in_half)"); d_h_in_half_ = nullptr; }
     if (d_activation_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_activation_half_), "cudaFree(d_activation_half)"); d_activation_half_ = nullptr; }
+    if (d_oracle_scratch_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_oracle_scratch_), "cudaFree(oracle_scratch)"); d_oracle_scratch_ = nullptr; }
+    oracle_.free_gpu();
     if (cublas_handle_) { DEE_CUBLAS_CHECK_NAMED(cublasDestroy(cublas_handle_), "cublasDestroy"); cublas_handle_ = nullptr; }
     if (compute_stream_) { DEE_CUDA_CHECK_NAMED(cudaStreamDestroy(compute_stream_), "cudaStreamDestroy(compute)"); compute_stream_ = nullptr; }
 }
@@ -961,6 +979,15 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
         experts.reserve(static_cast<size_t>(cfg_.topk));
         for (int k = 0; k < cfg_.topk; ++k) {
             experts.push_back((layer * cfg_.topk + k) % oracle_.num_experts());
+        }
+    } else if (gpu_oracle_ready_) {
+        const auto oracle_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
+        oracle_.predict_gpu(layer, d_h_in_, d_oracle_scratch_, cublas_handle_,
+                            static_cast<void*>(compute_stream_), cfg_.topk, experts);
+        if (profiler_.enabled()) {
+            const auto oracle_end = StageProfiler::now();
+            profiler_.add_cpu_ms(CpuStage::Oracle,
+                std::chrono::duration<double, std::milli>(oracle_end - oracle_begin).count());
         }
     } else {
         const auto oracle_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};

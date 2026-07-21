@@ -16,6 +16,10 @@
 #include <string>
 #include <vector>
 
+#ifdef DEE_CUDA
+#include <cublas_v2.h>
+#endif
+
 namespace dee {
 
 struct OracleLayerWeights {
@@ -46,6 +50,24 @@ public:
         predict(L, hidden, topk, out);
     }
 
+#ifdef DEE_CUDA
+    // Upload all layer weights to GPU and keep them resident. Must be called
+    // after load() and before any predict_gpu() calls.
+    bool upload_to_gpu();
+
+    // Free GPU resources.
+    void free_gpu();
+
+    // GPU-accelerated predict: runs all three linears on device via cuBLAS,
+    // D2H the 256 logits, then does sigmoid + top-K on CPU for exact routing.
+    // `d_hidden` is the input on device (length D_). `d_scratch` is a
+    // device buffer of at least H_ + E_ floats for intermediate activations.
+    // Uses `stream` for all GPU work; syncs internally before returning.
+    void predict_gpu(int layer, const float* d_hidden, float* d_scratch,
+                     cublasHandle_t handle, void* stream,
+                     int topk, std::vector<int>& out) const;
+#endif
+
     const std::string& error() const { return err_; }
     void set_profiler(StageProfiler* profiler) { profiler_ = profiler; }
 
@@ -54,6 +76,19 @@ private:
     std::vector<OracleLayerWeights> layers_;
     std::string err_;
     StageProfiler* profiler_ = nullptr;
+
+#ifdef DEE_CUDA
+    struct GpuLayerWeights {
+        float* d_w0 = nullptr;
+        float* d_b0 = nullptr;
+        float* d_w2 = nullptr;
+        float* d_b2 = nullptr;
+        float* d_w4 = nullptr;
+        float* d_b4 = nullptr;
+    };
+    std::vector<GpuLayerWeights> gpu_layers_;
+    float* d_scratch_ = nullptr;  // persistent scratch buffer (H_ + E_ floats)
+#endif
 };
 
 } // namespace dee

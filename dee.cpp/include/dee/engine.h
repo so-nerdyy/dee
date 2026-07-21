@@ -176,6 +176,8 @@ private:
     void* d_h_in_half_ = nullptr; // [hidden] FP16 input for FP16 cache mode
     void* d_activation_half_ = nullptr; // [inter] FP16 SwiGLU activation
     cublasHandle_t cublas_handle_ = nullptr;
+    float* d_oracle_scratch_ = nullptr; // GPU Oracle scratch (H_ + E_ floats)
+    bool gpu_oracle_ready_ = false;
     size_t cuda_total_ = 0, cuda_free_ = 0;  // from cudaMemGetInfo
     void cuda_cleanup();
     bool forward_layer_cuda(int layer, const float* h_in, float* h_out);

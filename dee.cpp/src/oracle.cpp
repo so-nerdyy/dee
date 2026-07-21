@@ -6,6 +6,11 @@
 #include <cmath>
 #include <cstring>
 
+#ifdef DEE_CUDA
+#include "dee/cuda_check.h"
+#include <cuda_runtime.h>
+#endif
+
 #if (defined(__x86_64__) || defined(_M_X64) || defined(__i386__)) && \
     (defined(__GNUC__) || defined(__clang__))
 #include <immintrin.h>
@@ -174,5 +179,123 @@ void OracleScheduler::predict(int layer, const float* hidden, int topk, std::vec
                                  std::max(0.0, output_ms - output_allocation_ms));
     }
 }
+
+#ifdef DEE_CUDA
+
+__global__ void oracle_relu_kernel(float* x, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n && x[i] < 0.0f) x[i] = 0.0f;
+}
+
+bool OracleScheduler::upload_to_gpu() {
+    gpu_layers_.resize(layers_.size());
+    const size_t scratch_bytes = static_cast<size_t>(H_ + E_) * sizeof(float);
+    if (!DEE_CUDA_CHECK_NAMED(cudaMalloc(&d_scratch_, scratch_bytes),
+                              "cudaMalloc(oracle scratch)")) return false;
+
+    for (size_t l = 0; l < layers_.size(); ++l) {
+        const auto& cpu = layers_[l];
+        auto& gpu = gpu_layers_[l];
+
+        auto alloc_and_copy = [](float*& d_ptr, const std::vector<float>& src, const char* name) -> bool {
+            const size_t bytes = src.size() * sizeof(float);
+            if (!DEE_CUDA_CHECK_NAMED(cudaMalloc(&d_ptr, bytes), name)) return false;
+            if (!DEE_CUDA_CHECK_NAMED(cudaMemcpy(d_ptr, src.data(), bytes, cudaMemcpyHostToDevice),
+                                      name)) return false;
+            return true;
+        };
+
+        if (!alloc_and_copy(gpu.d_w0, cpu.w0, "cudaMalloc(W0)") ||
+            !alloc_and_copy(gpu.d_b0, cpu.b0, "cudaMalloc(b0)") ||
+            !alloc_and_copy(gpu.d_w2, cpu.w2, "cudaMalloc(W2)") ||
+            !alloc_and_copy(gpu.d_b2, cpu.b2, "cudaMalloc(b2)") ||
+            !alloc_and_copy(gpu.d_w4, cpu.w4, "cudaMalloc(W4)") ||
+            !alloc_and_copy(gpu.d_b4, cpu.b4, "cudaMalloc(b4)")) {
+            free_gpu();
+            return false;
+        }
+    }
+    return true;
+}
+
+void OracleScheduler::free_gpu() {
+    for (auto& gpu : gpu_layers_) {
+        auto safe_free = [](float*& p) {
+            if (p) { cudaFree(p); p = nullptr; }
+        };
+        safe_free(gpu.d_w0); safe_free(gpu.d_b0);
+        safe_free(gpu.d_w2); safe_free(gpu.d_b2);
+        safe_free(gpu.d_w4); safe_free(gpu.d_b4);
+    }
+    gpu_layers_.clear();
+    if (d_scratch_) { cudaFree(d_scratch_); d_scratch_ = nullptr; }
+}
+
+void OracleScheduler::predict_gpu(int layer, const float* d_hidden, float* d_scratch,
+                                  cublasHandle_t handle, void* stream,
+                                  int topk, std::vector<int>& out) const {
+    if (oracle_profiling(profiler_)) profiler_->note_oracle_call();
+    const auto& gpu = gpu_layers_[layer];
+    cudaStream_t cuda_stream = static_cast<cudaStream_t>(stream);
+
+    // Disable TF32 to match CPU FP32 precision exactly
+    DEE_CUBLAS_CHECK_NAMED(cublasSetMathMode(handle, CUBLAS_DEFAULT_MATH),
+                           "cublasSetMathMode(DEFAULT_MATH)");
+
+    const float alpha = 1.0f, beta = 0.0f;
+    const int D = D_, H = H_, E = E_;
+    float* d_act = d_scratch;
+    float* d_act2 = d_scratch + H;
+
+    // Linear0: W0[256x2048] * hidden[2048] + b0 -> act[256]
+    DEE_CUBLAS_CHECK_NAMED(cublasSgemv(handle, CUBLAS_OP_N, H, D,
+                                       &alpha, gpu.d_w0, H, d_hidden, 1,
+                                       &beta, d_act, 1), "cublasSgemv(W0)");
+    DEE_CUBLAS_CHECK_NAMED(cublasSaxpy(handle, H, &alpha, gpu.d_b0, 1, d_act, 1),
+                           "cublasSaxpy(b0)");
+    oracle_relu_kernel<<<1, 256, 0, cuda_stream>>>(d_act, H);
+    DEE_CUDA_CHECK_LAUNCH("oracle_relu(0)");
+
+    // Linear1: W2[256x256] * act[256] + b2 -> act2[256]
+    DEE_CUBLAS_CHECK_NAMED(cublasSgemv(handle, CUBLAS_OP_N, H, H,
+                                       &alpha, gpu.d_w2, H, d_act, 1,
+                                       &beta, d_act2, 1), "cublasSgemv(W2)");
+    DEE_CUBLAS_CHECK_NAMED(cublasSaxpy(handle, H, &alpha, gpu.d_b2, 1, d_act2, 1),
+                           "cublasSaxpy(b2)");
+    oracle_relu_kernel<<<1, 256, 0, cuda_stream>>>(d_act2, H);
+    DEE_CUDA_CHECK_LAUNCH("oracle_relu(1)");
+
+    // Linear2: W4[256x256] * act2[256] + b4 -> act[256]
+    DEE_CUBLAS_CHECK_NAMED(cublasSgemv(handle, CUBLAS_OP_N, E, H,
+                                       &alpha, gpu.d_w4, E, d_act2, 1,
+                                       &beta, d_act, 1), "cublasSgemv(W4)");
+    DEE_CUBLAS_CHECK_NAMED(cublasSaxpy(handle, E, &alpha, gpu.d_b4, 1, d_act, 1),
+                           "cublasSaxpy(b4)");
+
+    // D2H the 256 logits
+    std::vector<float> logits(E);
+    const auto d2h_begin = oracle_profiling(profiler_) ? StageProfiler::now() : StageProfiler::TimePoint{};
+    if (!DEE_CUDA_CHECK_NAMED(cudaMemcpyAsync(logits.data(), d_act,
+                                              static_cast<size_t>(E) * sizeof(float),
+                                              cudaMemcpyDeviceToHost, cuda_stream),
+                              "cudaMemcpyAsync(oracle logits D2H)")) return;
+    DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(cuda_stream), "cudaStreamSynchronize(oracle)");
+    if (oracle_profiling(profiler_)) {
+        profiler_->add_oracle(OracleStage::Linear0, d2h_begin);  // approximate attribution
+    }
+
+    // CPU sigmoid + top-K (preserves exact routing)
+    for (int i = 0; i < E; ++i) logits[i] = 1.0f / (1.0f + std::exp(-logits[i]));
+
+    std::vector<int> idx(E);
+    for (int i = 0; i < E; ++i) idx[i] = i;
+    std::sort(idx.begin(), idx.end(), [&](int a, int b) { return logits[a] > logits[b]; });
+
+    out.clear();
+    int k = std::min(topk, E);
+    for (int i = 0; i < k; ++i) out.push_back(idx[i]);
+}
+
+#endif
 
 } // namespace dee
