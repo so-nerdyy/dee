@@ -956,6 +956,43 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
                                         host_scheduling_begin, current_token_, layer);
         }
     };
+    // 1) Issue the hidden-input H2D and (FP16 cache only) F32->FP16 conversion
+    //    on the compute stream as early as possible. Both ops only touch
+    //    per-layer scratch (d_h_in_, d_h_in_half_), are produced from `h_in`
+    //    which the caller guarantees is stable for this entire forward_layer
+    //    call, and are consumed only inside the per-expert SwiGLU loop below.
+    //    Issuing them before the CPU Oracle call lets the copy engine keep the
+    //    GPU supplied while the host runs Linear0, removing pure-host idle from
+    //    the critical path without changing any kernel input or ordering.
+    const auto issue_hidden_input_h2d = [&]() -> bool {
+        // Hidden H2D + F32->FP16 conversion are consumed only by the per-expert
+        // SwiGLU kernels. Skip them in scenarios that never run those kernels
+        // (OracleOnly and CacheMetadataOnly short-circuit above the batch loop),
+        // and in TransferOnly whose loop body `continue`s before any compute.
+        if (cfg_.scenario == BenchmarkScenario::TransferOnly ||
+            cfg_.scenario == BenchmarkScenario::OracleOnly ||
+            cfg_.scenario == BenchmarkScenario::CacheMetadataOnly) return true;
+        if (profiler_.enabled()) {
+            profiler_.set_cuda_context(current_token_, layer, -1,
+                                       static_cast<size_t>(hidden_) * sizeof(float));
+        }
+        const size_t input_h2d_ticket = profiler_.enabled()
+            ? profiler_.cuda_begin(GpuStage::H2D, static_cast<void*>(compute_stream_))
+            : static_cast<size_t>(-1);
+        if (!DEE_CUDA_CHECK_NAMED(cudaMemcpyAsync(d_h_in_, h_in, (size_t)hidden_ * sizeof(float),
+                                                  cudaMemcpyHostToDevice, compute_stream_),
+                                  "cudaMemcpyAsync(hidden host to device)")) return false;
+        if (profiler_.enabled()) {
+            if (!profiler_.cuda_end(input_h2d_ticket, static_cast<void*>(compute_stream_))) return false;
+            profiler_.note_h2d_copy(static_cast<size_t>(hidden_) * sizeof(float));
+        }
+        if (cfg_.cache_dtype == DeviceCacheDType::Fp16 &&
+            !f32_to_f16_cuda(d_h_in_, d_h_in_half_, static_cast<size_t>(hidden_),
+                             compute_stream_, nullptr)) return false;
+        return true;
+    };
+    if (!issue_hidden_input_h2d()) return false;
+
     std::vector<int> experts;
     if (cfg_.scenario == BenchmarkScenario::ComputeOnly) {
         experts.reserve(static_cast<size_t>(cfg_.topk));
@@ -1019,25 +1056,11 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
         return true;
     }
 
-    // 1) issue all expert weight H2D copies (async, secondary stream)
-    if (cfg_.scenario != BenchmarkScenario::TransferOnly) {
-        if (profiler_.enabled()) {
-            profiler_.set_cuda_context(current_token_, layer, -1,
-                                       static_cast<size_t>(hidden_) * sizeof(float));
-        }
-        const size_t input_h2d_ticket = profiler_.enabled()
-            ? profiler_.cuda_begin(GpuStage::H2D, static_cast<void*>(compute_stream_)) : static_cast<size_t>(-1);
-        if (!DEE_CUDA_CHECK_NAMED(cudaMemcpyAsync(d_h_in_, h_in, (size_t)hidden_ * sizeof(float),
-                                                  cudaMemcpyHostToDevice, compute_stream_),
-                                  "cudaMemcpyAsync(hidden host to device)")) return false;
-        if (profiler_.enabled()) {
-            if (!profiler_.cuda_end(input_h2d_ticket, static_cast<void*>(compute_stream_))) return false;
-            profiler_.note_h2d_copy(static_cast<size_t>(hidden_) * sizeof(float));
-        }
-        if (cfg_.cache_dtype == DeviceCacheDType::Fp16 &&
-            !f32_to_f16_cuda(d_h_in_, d_h_in_half_, static_cast<size_t>(hidden_),
-                             compute_stream_, nullptr)) return false;
-    }
+    // Hidden-input H2D and F32->FP16 conversion were issued on the compute
+    // stream above, before the Oracle call, to overlap with the host Linear0
+    // product. d_h_in_/d_h_in_half_ are now ready by the time the per-expert
+    // SwiGLU kernels below consume them; the prefetcher_.wait() (or the bypass
+    // path) still serializes each expert's weight copy on the compute stream.
 
     const auto batch_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
     const int batch_size = std::max(1, static_cast<int>(cache_.budget_bytes() / cache_blob_bytes_));
