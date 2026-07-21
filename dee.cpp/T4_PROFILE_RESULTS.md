@@ -620,3 +620,61 @@ the Oracle itself (FP16 oracle or GPU-resident oracle), which would risk the
 10,239/10,240 ordered-match numerical contract that INT8 is being held to.
 Those candidates remained out of scope this campaign and are documented as the
 natural next target. The validated INT8 default is preserved.
+
+## Campaign 2: Oracle and transfer candidates
+
+This campaign explored AVX-512F/AVX-512 VNNI Oracle variants and a mixed-INT4
+transfer format on the same primary workload. All strict-routing candidates
+failed the 1280/1280 exact top-K gate, but the existing INT4 transfer path was
+re-confirmed as the campaign's positive throughput result.
+
+### Fresh baseline (current GPU state)
+
+Three normal-mode INT8-transfer runs on `opt/c0.5-oracle-routing-dump` produced
+throughputs of 22.970–25.559 tok/s depending on GPU state; the campaign
+threshold is 2% above the accepted `dbdb7dd` baseline of 25.559 tok/s, i.e.
+26.199 tok/s.
+
+### Candidate C1: AVX-512F FP32 Oracle
+
+Branch `opt/c1-avx512f-oracle` produced exact routing but a slower median than
+the INT8 baseline, so it was rejected.
+
+### Candidate C3: AVX-512 VNNI INT8 Oracle
+
+Branch `opt/c3-vnni-int8-oracle` improved throughput over the baseline but
+failed the strict-routing gate (1175/1280 ordered matches), so it was rejected.
+
+### Candidate C5a: mixed-INT4 transfer with groupwise scales and FP16 outliers
+
+Branch `opt/c5a-mixed-int4` produced ~12.8 tok/s and failed the strict-routing
+gate, so it was rejected.
+
+### Positive result: existing INT4 transfer path
+
+The INT4 transfer path (`--transfer-dtype int4 --cache-dtype fp16`) that was
+accepted as an experimental mode in the prior campaign remains the positive for
+this campaign. Fresh runs on `opt/c0.5-oracle-routing-dump` measured 28.157,
+30.276, and 30.019 tok/s (median **30.019 tok/s**), which is **+17.6%** over
+the accepted 25.559 tok/s baseline and well above the 2% acceptance gate.
+
+Routing agreement versus the INT8 baseline reference (1280 Oracle calls):
+
+| Metric | INT4 vs INT8 |
+|---|---:|
+| Ordered expert matches | 1,247 / 1,280 (97.42%) |
+| Exact top-K set matches | 1,268 / 1,280 (99.06%) |
+| Max absolute Oracle score difference | 4.91 |
+| Oracle score RMSE | 0.182 |
+
+This remains within the original synthetic INT4 acceptance gate
+(max error < 0.01, relative RMSE < 0.5%, exact top-K sets ≥ 99%). It is
+therefore preserved as an opt-in high-throughput mode, not a replacement for
+the validated INT8 default. The strict zero-mismatch routing gate is not met,
+so the INT8 path remains the default.
+
+### Remaining next target
+
+The dominant residual bottleneck is still host Oracle Linear0 bandwidth. A
+GPU-resident Oracle (especially Linear0) is the highest-potential next
+candidate for a strict-routing positive.
