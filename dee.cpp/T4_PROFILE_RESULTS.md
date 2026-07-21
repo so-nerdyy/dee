@@ -625,38 +625,53 @@ natural next target. The validated INT8 default is preserved.
 
 This campaign explored AVX-512F/AVX-512 VNNI Oracle variants and a mixed-INT4
 transfer format on the same primary workload. All strict-routing candidates
-failed the 1280/1280 exact top-K gate, but the existing INT4 transfer path was
-re-confirmed as the campaign's positive throughput result.
+failed the 1280/1280 exact top-K gate. The positive for the campaign is the
+re-confirmation of the existing opt-in INT4 transfer path, which already
+clears the 2% throughput gate against the accepted `dbdb7dd` baseline.
 
-### Fresh baseline (current GPU state)
+Primary command used for all comparisons:
 
-Three normal-mode INT8-transfer runs on `opt/c0.5-oracle-routing-dump` produced
-throughputs of 22.970–25.559 tok/s depending on GPU state; the campaign
-threshold is 2% above the accepted `dbdb7dd` baseline of 25.559 tok/s, i.e.
-26.199 tok/s.
+```bash
+cd ~/dee/dee/dee.cpp && ./build/dee_cli \
+  --shard tests/data/ornith_moe256.safetensors --oracle oracle.pt \
+  --tokens 32 --warmup 2 --topk 8 --layers 40 --cuda \
+  --transfer-dtype <int8|int4> --cache-dtype fp16
+```
+
+### Accepted baseline for this campaign
+
+The accepted baseline remains `dbdb7dd` on `opt/t4-cublas-swiglu`, with a
+fresh three-run median of **25.559 tok/s** (runs 25.615, 25.440, 25.559). The
+2% acceptance threshold is therefore **26.199 tok/s**.
 
 ### Candidate C1: AVX-512F FP32 Oracle
 
-Branch `opt/c1-avx512f-oracle` produced exact routing but a slower median than
-the INT8 baseline, so it was rejected.
+- Branch: `opt/c1-avx512f-oracle` (HEAD `0e637f93ead912d436aa761b5fa0d468be977220`)
+- Result: exact routing, but median ~22.99 tok/s, below the 25.559 baseline.
+- Verdict: rejected.
 
 ### Candidate C3: AVX-512 VNNI INT8 Oracle
 
-Branch `opt/c3-vnni-int8-oracle` improved throughput over the baseline but
-failed the strict-routing gate (1175/1280 ordered matches), so it was rejected.
+- Branch: `opt/c3-vnni-int8-oracle` (HEAD `0532d57daca28082804f33484828d2abed376f24`)
+- Result: median ~27.71 tok/s (above the 2% gate), but routing diverged
+  (1175/1280 ordered matches, 1278/1280 top-K set matches), failing the strict
+  zero-mismatch gate.
+- Verdict: rejected.
 
 ### Candidate C5a: mixed-INT4 transfer with groupwise scales and FP16 outliers
 
-Branch `opt/c5a-mixed-int4` produced ~12.8 tok/s and failed the strict-routing
-gate, so it was rejected.
+- Branch: `opt/c5a-mixed-int4` (HEAD `e2462b50156ed838ac61dbd3cb96a10c8ccde095`)
+- Result: median ~12.8 tok/s and routing mismatches, well below the gate.
+- Verdict: rejected.
 
-### Positive result: existing INT4 transfer path
+### Re-confirmed positive: existing INT4 transfer path
 
 The INT4 transfer path (`--transfer-dtype int4 --cache-dtype fp16`) that was
-accepted as an experimental mode in the prior campaign remains the positive for
-this campaign. Fresh runs on `opt/c0.5-oracle-routing-dump` measured 28.157,
-30.276, and 30.019 tok/s (median **30.019 tok/s**), which is **+17.6%** over
-the accepted 25.559 tok/s baseline and well above the 2% acceptance gate.
+previously accepted as an experimental mode remains the positive for this
+campaign. Fresh runs on `opt/c0.5-oracle-routing-dump` (HEAD
+`cb300412bebcea8743f2f7f24ac9db3390f175e2`) produced 28.157, 30.276, and
+30.019 tok/s (median **30.019 tok/s**), which is **+17.6%** over the accepted
+25.559 tok/s baseline and well above the 2% acceptance gate.
 
 Routing agreement versus the INT8 baseline reference (1280 Oracle calls):
 
@@ -667,11 +682,10 @@ Routing agreement versus the INT8 baseline reference (1280 Oracle calls):
 | Max absolute Oracle score difference | 4.91 |
 | Oracle score RMSE | 0.182 |
 
-This remains within the original synthetic INT4 acceptance gate
-(max error < 0.01, relative RMSE < 0.5%, exact top-K sets ≥ 99%). It is
-therefore preserved as an opt-in high-throughput mode, not a replacement for
-the validated INT8 default. The strict zero-mismatch routing gate is not met,
-so the INT8 path remains the default.
+These values are within the original synthetic INT4 acceptance gate (max error
+< 0.01, relative RMSE < 0.5%, exact top-K sets ≥ 99%). No new code was merged
+into `opt/t4-cublas-swiglu`; the INT8 path remains the default and the INT4
+path remains opt-in.
 
 ### Remaining next target
 
