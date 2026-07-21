@@ -95,6 +95,13 @@ public:
                               int token = -1, int logical_layer = -1,
                               bool source_pinned = false);
 
+    // Transfer INT8 weights directly to cache without dequantization.
+    // Appends scales to the cache entry for later dequantization.
+    long prefetch_int8_raw(int layer, int expert, const int8_t* src,
+                           size_t elements, const float scales[3],
+                           int priority = 0, int token = -1,
+                           int logical_layer = -1, bool source_pinned = false);
+
     // Delimit one logical expert batch for duplicate-request accounting.
     void begin_batch() { batch_keys_.clear(); }
 

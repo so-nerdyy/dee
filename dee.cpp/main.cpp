@@ -89,8 +89,9 @@ bool parse_cache_dtype(const char* text, dee::DeviceCacheDType& out) {
     const std::string value(text);
     if (value == "fp32") out = dee::DeviceCacheDType::Fp32;
     else if (value == "fp16") out = dee::DeviceCacheDType::Fp16;
+    else if (value == "int8") out = dee::DeviceCacheDType::Int8;
     else {
-        std::fprintf(stderr, "[cli] invalid --cache-dtype value: %s (expected fp32 or fp16)\n", text);
+        std::fprintf(stderr, "[cli] invalid --cache-dtype value: %s (expected fp32, fp16, or int8)\n", text);
         return false;
     }
     return true;

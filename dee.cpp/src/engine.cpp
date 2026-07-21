@@ -193,6 +193,7 @@ const char* device_cache_dtype_name(DeviceCacheDType dtype) {
     switch (dtype) {
         case DeviceCacheDType::Fp32: return "fp32";
         case DeviceCacheDType::Fp16: return "fp16";
+        case DeviceCacheDType::Int8: return "int8";
     }
     return "unknown";
 }
@@ -529,6 +530,12 @@ bool Engine::stage_expert(int logical_layer, int source_layer, int expert, int p
             if (!quantized) return false;
             const auto* source = quantized->pinned
                 ? static_cast<const int8_t*>(quantized->pinned) : quantized->host.data();
+            if (cfg_.cache_dtype == DeviceCacheDType::Int8) {
+                return prefetcher_.prefetch_int8_raw(
+                           source_layer, expert, source, blob_elems_,
+                           quantized->scales, priority, current_token_,
+                           logical_layer, quantized->pinned != nullptr) >= 0;
+            }
             return prefetcher_.prefetch_int8_to_f16(
                        source_layer, expert, source, blob_elems_,
                        static_cast<size_t>(inter_) * hidden_, quantized->scales,
@@ -658,9 +665,19 @@ bool Engine::init(const EngineConfig& cfg) {
         std::fprintf(stderr, "[engine] FP16 device cache requires --cuda\n");
         return false;
     }
+    if (cfg.cache_dtype == DeviceCacheDType::Int8 && !cfg.use_cuda) {
+        std::fprintf(stderr, "[engine] INT8 device cache requires --cuda\n");
+        return false;
+    }
+    if (cfg.cache_dtype == DeviceCacheDType::Int8 &&
+        cfg.transfer_dtype != WeightTransferDType::Int8) {
+        std::fprintf(stderr, "[engine] INT8 device cache requires --transfer-dtype int8\n");
+        return false;
+    }
     if (cfg.transfer_dtype != WeightTransferDType::Bf16 &&
+        cfg.cache_dtype != DeviceCacheDType::Int8 &&
         (!cfg.use_cuda || cfg.cache_dtype != DeviceCacheDType::Fp16)) {
-        std::fprintf(stderr, "[engine] INT8 transfer requires CUDA with an FP16 device cache\n");
+        std::fprintf(stderr, "[engine] quantized transfer requires CUDA with an FP16 device cache\n");
         return false;
     }
     if (!prefetcher_.set_ring_size(cfg.prefetch_depth)) {
@@ -674,7 +691,10 @@ bool Engine::init(const EngineConfig& cfg) {
     blob_elems_ = 3ULL * (size_t)inter_ * hidden_;
     blob_bytes_ = blob_elems_ * sizeof(float);
     cache_blob_bytes_ = cfg.cache_dtype == DeviceCacheDType::Fp16
-        ? blob_elems_ * sizeof(uint16_t) : blob_bytes_;
+        ? blob_elems_ * sizeof(uint16_t)
+        : (cfg.cache_dtype == DeviceCacheDType::Int8
+           ? blob_elems_ * sizeof(int8_t) + 3 * sizeof(float)
+           : blob_bytes_);
 
     if (!std::filesystem::is_regular_file(cfg.shard_path)) {
         std::fprintf(stderr, "[engine] shard does not exist or is not a file: %s\n", cfg.shard_path.c_str());
@@ -701,7 +721,10 @@ bool Engine::init(const EngineConfig& cfg) {
     blob_elems_ = 3ULL * (size_t)inter_ * hidden_;
     blob_bytes_ = blob_elems_ * sizeof(float);
     cache_blob_bytes_ = cfg.cache_dtype == DeviceCacheDType::Fp16
-        ? blob_elems_ * sizeof(uint16_t) : blob_bytes_;
+        ? blob_elems_ * sizeof(uint16_t)
+        : (cfg.cache_dtype == DeviceCacheDType::Int8
+           ? blob_elems_ * sizeof(int8_t) + 3 * sizeof(float)
+           : blob_bytes_);
     if (hidden_ != cfg.hidden) {
         fprintf(stderr, "[engine] shard hidden %d != configured %d\n", hidden_, cfg.hidden);
         return false;
@@ -790,6 +813,10 @@ bool Engine::init(const EngineConfig& cfg) {
             (!d_h_in_half_ || !d_activation_half_)) {
             fprintf(stderr, "[engine] FP16 device work-buffer allocation failed\n");
             return false;
+        }
+        if (cfg_.cache_dtype == DeviceCacheDType::Int8) {
+            if (!DEE_CUDA_CHECK_NAMED(cudaMalloc(&d_expert_fp16_scratch_, blob_elems_ * sizeof(uint16_t)),
+                                      "cudaMalloc(INT8 cache FP16 scratch)")) return false;
         }
         size_t freeB = 0, totalB = 0;
         if (DEE_CUDA_CHECK_NAMED(cudaMemGetInfo(&freeB, &totalB), "cudaMemGetInfo")) {
@@ -939,6 +966,7 @@ void Engine::cuda_cleanup() {
     if (d_ybuf_)  { DEE_CUDA_CHECK_NAMED(cudaFree(d_ybuf_), "cudaFree(d_ybuf)");  d_ybuf_  = nullptr; }
     if (d_h_in_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_h_in_half_), "cudaFree(d_h_in_half)"); d_h_in_half_ = nullptr; }
     if (d_activation_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_activation_half_), "cudaFree(d_activation_half)"); d_activation_half_ = nullptr; }
+    if (d_expert_fp16_scratch_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_expert_fp16_scratch_), "cudaFree(fp16_scratch)"); d_expert_fp16_scratch_ = nullptr; }
     if (cublas_handle_) { DEE_CUBLAS_CHECK_NAMED(cublasDestroy(cublas_handle_), "cublasDestroy"); cublas_handle_ = nullptr; }
     if (compute_stream_) { DEE_CUDA_CHECK_NAMED(cudaStreamDestroy(compute_stream_), "cudaStreamDestroy(compute)"); compute_stream_ = nullptr; }
 }
@@ -1058,15 +1086,25 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
             if (cfg_.scenario == BenchmarkScenario::TransferOnly) continue;
             if (!bypass_cache && !cache_.pin(source_layer, e)) return false;
             const void* d_blob = cache_.data(source_layer, e);
+            const void* d_blob_fp16 = d_blob;
+            if (cfg_.cache_dtype == DeviceCacheDType::Int8 && d_blob) {
+                // Dequantize INT8 cache entry to FP16 scratch buffer
+                const auto* int8_data = static_cast<const int8_t*>(d_blob);
+                const auto* scales = reinterpret_cast<const float*>(int8_data + blob_elems_);
+                if (!int8_to_f16_cuda(int8_data, d_expert_fp16_scratch_, blob_elems_,
+                                      static_cast<size_t>(inter_) * hidden_, scales,
+                                      compute_stream_, profiler_.enabled() ? &profiler_ : nullptr)) return false;
+                d_blob_fp16 = d_expert_fp16_scratch_;
+            }
             if (profiler_.enabled()) {
                 profiler_.set_cuda_context(current_token_, layer, e);
             }
-            const bool swiglu_ok = d_blob && (cfg_.cache_dtype == DeviceCacheDType::Fp16
-                ? swiglu_expert_fp16_cuda(cublas_handle_, d_blob, d_h_in_half_, d_hbuf_, d_ubuf_,
+            const bool swiglu_ok = d_blob_fp16 && (cfg_.cache_dtype != DeviceCacheDType::Fp32
+                ? swiglu_expert_fp16_cuda(cublas_handle_, d_blob_fp16, d_h_in_half_, d_hbuf_, d_ubuf_,
                                            d_activation_half_, d_ybuf_ + (size_t)k * hidden_,
                                            inter_, hidden_, compute_stream_,
                                            profiler_.enabled() ? &profiler_ : nullptr)
-                : swiglu_expert_cuda(cublas_handle_, static_cast<const float*>(d_blob), d_h_in_,
+                : swiglu_expert_cuda(cublas_handle_, static_cast<const float*>(d_blob_fp16), d_h_in_,
                                      d_hbuf_, d_ubuf_, d_ybuf_ + (size_t)k * hidden_,
                                      inter_, hidden_, compute_stream_,
                                      profiler_.enabled() ? &profiler_ : nullptr));

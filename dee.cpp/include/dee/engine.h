@@ -61,7 +61,8 @@ const char* benchmark_scenario_name(BenchmarkScenario scenario);
 
 enum class DeviceCacheDType {
     Fp32,
-    Fp16
+    Fp16,
+    Int8
 };
 
 const char* device_cache_dtype_name(DeviceCacheDType dtype);
@@ -176,6 +177,7 @@ private:
     void* d_h_in_half_ = nullptr; // [hidden] FP16 input for FP16 cache mode
     void* d_activation_half_ = nullptr; // [inter] FP16 SwiGLU activation
     cublasHandle_t cublas_handle_ = nullptr;
+    void* d_expert_fp16_scratch_ = nullptr; // FP16 scratch for INT8 cache dequantization
     size_t cuda_total_ = 0, cuda_free_ = 0;  // from cudaMemGetInfo
     void cuda_cleanup();
     bool forward_layer_cuda(int layer, const float* h_in, float* h_out);

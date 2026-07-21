@@ -155,6 +155,22 @@ long AsyncPrefetcher::prefetch_int4_to_f16(int layer, int expert, const uint8_t*
                          token, logical_layer);
 }
 
+long AsyncPrefetcher::prefetch_int8_raw(int layer, int expert, const int8_t* src,
+                                         size_t elements, const float scales[3],
+                                         int priority, int token,
+                                         int logical_layer, bool source_pinned) {
+    if (!use_cuda_) {
+        std::fprintf(stderr, "AsyncPrefetcher: INT8 raw transfer requires CUDA\n");
+        return -1;
+    }
+    if (!scales || elements == 0) return -1;
+    // Cache entry: INT8 weights + 3 float scales appended
+    const size_t total_bytes = elements * sizeof(int8_t) + 3 * sizeof(float);
+    return prefetch_impl(layer, expert, src, total_bytes, total_bytes,
+                         false, false, false, false, 0, nullptr,
+                         source_pinned, priority, token, logical_layer);
+}
+
 long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
                                     size_t source_nbytes, size_t destination_nbytes,
                                     bool expand_bf16, bool cache_fp16, bool dequantize_int8,
