@@ -131,8 +131,8 @@ const uint16_t* Engine::get_staging_bf16(int source_layer, int expert) {
         return nullptr;
     }
 
-    const size_t source_bytes = blob_elems_ * sizeof(uint16_t);
 #ifdef DEE_CUDA
+    const size_t source_bytes = blob_elems_ * sizeof(uint16_t);
     if (cfg_.use_cuda && pinned_staging_bytes_ + source_bytes <= kPinnedStagingLimit) {
         void* allocation = nullptr;
         if (DEE_CUDA_CHECK_NAMED(cudaHostAlloc(&allocation, source_bytes, cudaHostAllocDefault),

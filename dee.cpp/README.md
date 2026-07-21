@@ -5,10 +5,15 @@ Expert Eviction control path: a safetensors shard is mapped read-only, Oracle
 predictions select experts, a fixed cache manages residency, and CUDA runs a
 small FP32 SwiGLU reference kernel on resident expert weights.
 
-On the CUDA streaming path, BF16 weights remain packed through the bounded
-pinned staging ring and H2D copy, then expand exactly to FP32 on the prefetch
-stream before the cache entry becomes ready. This halves weight-transfer bytes
-without changing the FP32 cache budget or cuBLAS compute layout.
+On the CUDA streaming path, BF16 weights remain packed through H2D and expand
+exactly to FP32 on the prefetch stream before the cache entry becomes ready.
+Frequently reused BF16 source blobs are materialized once in a bounded 192 MiB
+pinned-host cache; shards that exceed that bound fall back to the bounded
+staging ring. The device cache remains FP32, so neither optimization changes
+the configured expert-cache budget or cuBLAS compute layout.
+
+Oracle matrix products use a runtime-dispatched AVX2/FMA dot product on
+supported x86 CPUs and retain a portable scalar fallback.
 
 The supported implementation is deliberately singular:
 
@@ -126,6 +131,10 @@ in the runtime. BF16-to-FP32 device expansion is reported separately from H2D
 and projection time. The trace contains one record per expert request and is
 not enabled by the normal benchmark command.
 
+GPU stage durations are accumulated independently. Because the profiler does
+not impose a common cross-stream timing origin, their sums reveal stage cost
+but do not claim an exact transfer/compute overlap percentage.
+
 Summarize working-set and reuse-distance behavior with:
 
 ```bash
@@ -153,11 +162,13 @@ claims; the default 6 MiB end-to-end regression remains unchanged.
 ### What the benchmark means
 
 This is a synthetic-kernel/control-path benchmark. It validates cache
-residency, bounded pinned BF16 staging, H2D transfers, exact GPU expansion, and
-FP32 cuBLAS SwiGLU correctness. It is **not complete 35B end-to-end model inference**, and the
+residency, bounded pinned BF16 source/staging memory, H2D transfers, exact GPU
+expansion, and FP32 cuBLAS SwiGLU correctness. It is **not complete 35B
+end-to-end model inference**, and the
 reference kernels must not be interpreted as a claim of 30+ tok/s on a
-real 35B model. In particular, copying file-backed/pageable data into a pinned
-staging slot is host work; only the pinned-host-to-device leg is asynchronous.
+real 35B model. In particular, the first copy from file-backed/pageable data
+into pinned memory is host work; only the pinned-host-to-device leg is
+asynchronous.
 
 The measured T4 profiling campaign, controlled A-G decomposition, accepted
 optimization, and rejected experiments are recorded in

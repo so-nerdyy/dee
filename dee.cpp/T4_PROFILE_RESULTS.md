@@ -85,3 +85,115 @@ but produced 6.304, 6.517, and 6.574 tok/s (median 6.517), 0.88% below the
 Earlier rejected experiments retained for context were fused gate/up SGEMM
 (+0.18%), stream-wait/event pooling (-0.96%), and an unsafe source-layer cache
 prototype (-0.23%). None met the 2% acceptance threshold.
+
+## Oracle and host-staging campaign
+
+The follow-up campaign began at `6519ea99a4b27cf14e857e332eefcd7092df41c3`.
+Commit `35948c3390400e19daf99813897aa0f0b3b6118b` added opt-in Oracle-internal
+timing without changing the primary benchmark path. Its normal-mode runs were
+9.604, 9.527, and 9.689 tok/s (median 9.604), 1.13% below the preceding 9.714
+median. Detailed timing identified the first Oracle matrix product as the
+dominant Oracle cost:
+
+| Oracle stage | Baseline ms | Share of 1346 ms Oracle total |
+|---|---:|---:|
+| Linear 0 | 1121.011 | 83.26% |
+| Linear 1 | 101.928 | 7.57% |
+| Linear 2 | 101.031 | 7.51% |
+| Top-K sort | 15.505 | 1.15% |
+| All other classified work | 6.526 | 0.48% |
+
+Model lookup was only 0.079 ms total; tensor conversion and synchronization
+were zero. The Oracle made 1,280 calls and 10,240 small output allocations
+(5,283,840 bytes), so repeated model loading, map lookup, and conversion were
+not the cause. A next-layer prediction cannot be started correctly before the
+current layer's D2H result and normalization produce its input. The benchmark
+also showed only 0.0137 adjacent top-K overlap versus a 0.0312 random
+expectation. Consequently no speculative prediction queue was accepted, and
+Oracle overlap on the critical path remains 0%.
+
+### Accepted: runtime AVX2/FMA Oracle products
+
+Commit `ac1351ca50ca814c7cce6fb675dde7a5ece5f7ba` adds a runtime-dispatched
+AVX2/FMA dot-product implementation with a scalar fallback. It reuses the
+already loaded tensor pointers and preserves the exact Oracle call sequence;
+there is no synthetic-route cache or Oracle bypass.
+
+Normal runs were 13.120, 13.185, and 12.821 tok/s (median 13.120), a 36.61%
+gain over the instrumented 9.604 median and 35.06% over 9.714. CPU CTest passed
+6/6, CUDA CTest passed 7/7, the independent Python top-8 comparison passed,
+and output remained finite. Median detailed Oracle time fell from about
+1346 ms to 455.115 ms: Linear 0 fell to 369.526 ms, Linear 1 to 31.774 ms,
+Linear 2 to 31.172 ms, and Top-K sort measured 17.687 ms.
+
+### Accepted: bounded persistent pinned BF16 sources
+
+Commit `73a94f0d4823328768cdf943e338e246444ac09b` materializes each repeatedly
+requested BF16 expert blob once in pinned host memory and submits subsequent
+fine-grained H2D copies directly from it. The cache is capped at 192 MiB;
+experts beyond the cap use the existing staging ring. The synthetic route used
+230 physical experts and 180,879,360 bytes (172.5 MiB) of this host cache.
+Device traffic, FP32 cache size, request ordering, and H2D call count are
+unchanged.
+
+Normal runs were 14.825, 14.617, and 14.778 tok/s (median 14.778), a 12.64%
+gain over 13.120. This is 52.14% above the campaign's starting 9.714 median
+and 186.90% above the original 5.151 tok/s result. CPU CTest passed 6/6, CUDA
+CTest passed 7/7, output remained finite, and cache accounting remained 10,240
+requests, 3 resident hits, 10,237 cold loads, and 10,233 evictions.
+
+Median detailed results were:
+
+| Stage | Before pinned cache ms | After ms |
+|---|---:|---:|
+| Oracle | 461.101 | 455.742 |
+| Pageable/mmap to pinned | 943.408 | 32.316 |
+| GPU H2D | 1399.249 | 1406.215 |
+| Transfer submission | not isolated in control summary | 133.594 |
+| Host waiting | not isolated in control summary | 1081.187 |
+| BF16 expansion | about 120 | 114.995 |
+| GPU expert compute | 506.700 | 677.246 |
+
+Detailed runs were 13.733, 13.617, and 13.253 tok/s (median 13.617). The
+opt-in profiler therefore costs 7.86% relative to the 14.778 normal median.
+H2D remained 8,061,190,144 bytes in 11,517 copies: 699,938 bytes average,
+786,432 bytes p95, and approximately 5.73 GB/s effective event-time bandwidth.
+The profiler does not establish a common cross-stream origin, so an exact
+transfer/compute overlap percentage is intentionally not claimed. As a
+non-overlap proxy only, 1,081.187 ms of host waiting versus 1,406.215 ms summed
+H2D duration leaves 23.11% of H2D duration not exposed as host waiting; this is
+not equivalent to useful compute overlap.
+
+The final controlled A-G run was:
+
+| Scenario | Wall ms | tok/s |
+|---|---:|---:|
+| End-to-end | 2339.450 | 13.678 |
+| Full resident | 917.372 | 34.882 |
+| Resident bypass | 913.275 | 35.039 |
+| Transfer only | 1975.593 | 16.198 |
+| Compute only | 393.565 | 81.308 |
+| Oracle only | 295.546 | 108.274 |
+| Cache metadata only | 306.379 | 104.446 |
+
+At the normal median wall time (about 2.165 s), the full-resident control gives
+an empirical ceiling of roughly 34.9 tok/s, or 2.36x current throughput, if
+streaming were removed without changing Oracle/compute. H2D is now the largest
+measured device category (about 1.406 s summed event duration), while host
+waiting is the largest CPU critical-path category (about 1.081 s). These are
+the next measured targets; speculative GEMM tuning is not justified by this
+profile.
+
+### Rejected follow-up experiments
+
+The following candidates passed correctness but were reverted and never
+pushed:
+
+| Experiment | Candidate median | Change vs 13.120 | Reason rejected |
+|---|---:|---:|---|
+| One coalesced BF16 transfer per four-expert batch (`61f66c2`) | 9.542 | -27.27% | Removed useful fine-grained copy/DMA overlap |
+| Four-worker OpenMP Oracle rows (`31901fc`) | 8.092 | -38.32% | Contended with the pipeline on the 2-core/4-thread Studio CPU |
+
+An earlier fused gate/up SGEMM (+0.18%) and event-pool/stream-wait path
+(-0.96%) also remain rejected. The campaign therefore retained only changes
+supported by measured bottlenecks and the 2% median gate.
