@@ -164,11 +164,16 @@ long AsyncPrefetcher::prefetch_int8_raw(int layer, int expert, const int8_t* src
         return -1;
     }
     if (!scales || elements == 0) return -1;
-    // Cache entry: INT8 weights + 3 float scales appended
-    const size_t total_bytes = elements * sizeof(int8_t) + 3 * sizeof(float);
-    return prefetch_impl(layer, expert, src, total_bytes, total_bytes,
+    // Cache entry: INT8 weights + 3 float scales appended.
+    // We create a combined buffer on the host first, then H2D.
+    const size_t data_bytes = elements * sizeof(int8_t);
+    const size_t total_bytes = data_bytes + 3 * sizeof(float);
+    std::vector<uint8_t> combined(total_bytes);
+    std::memcpy(combined.data(), src, data_bytes);
+    std::memcpy(combined.data() + data_bytes, scales, 3 * sizeof(float));
+    return prefetch_impl(layer, expert, combined.data(), total_bytes, total_bytes,
                          false, false, false, false, 0, nullptr,
-                         source_pinned, priority, token, logical_layer);
+                         false, priority, token, logical_layer);
 }
 
 long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,

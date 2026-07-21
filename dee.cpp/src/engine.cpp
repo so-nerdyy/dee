@@ -801,7 +801,8 @@ bool Engine::init(const EngineConfig& cfg) {
         d_hbuf_  = dev_alloc((size_t)inter_  * sizeof(float));
         d_ubuf_  = dev_alloc((size_t)inter_  * sizeof(float));
         d_ybuf_  = dev_alloc((size_t)cfg.topk * hidden_ * sizeof(float));
-        if (cfg_.cache_dtype == DeviceCacheDType::Fp16) {
+        if (cfg_.cache_dtype == DeviceCacheDType::Fp16 ||
+            cfg_.cache_dtype == DeviceCacheDType::Int8) {
             d_h_in_half_ = dev_alloc((size_t)hidden_ * sizeof(uint16_t));
             d_activation_half_ = dev_alloc((size_t)inter_ * sizeof(uint16_t));
         }
@@ -809,7 +810,8 @@ bool Engine::init(const EngineConfig& cfg) {
             fprintf(stderr, "[engine] device work-buffer allocation failed\n");
             return false;
         }
-        if (cfg_.cache_dtype == DeviceCacheDType::Fp16 &&
+        if ((cfg_.cache_dtype == DeviceCacheDType::Fp16 ||
+             cfg_.cache_dtype == DeviceCacheDType::Int8) &&
             (!d_h_in_half_ || !d_activation_half_)) {
             fprintf(stderr, "[engine] FP16 device work-buffer allocation failed\n");
             return false;
@@ -1062,13 +1064,16 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
             if (!profiler_.cuda_end(input_h2d_ticket, static_cast<void*>(compute_stream_))) return false;
             profiler_.note_h2d_copy(static_cast<size_t>(hidden_) * sizeof(float));
         }
-        if (cfg_.cache_dtype == DeviceCacheDType::Fp16 &&
+        if ((cfg_.cache_dtype == DeviceCacheDType::Fp16 ||
+             cfg_.cache_dtype == DeviceCacheDType::Int8) &&
             !f32_to_f16_cuda(d_h_in_, d_h_in_half_, static_cast<size_t>(hidden_),
                              compute_stream_, nullptr)) return false;
     }
 
     const auto batch_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
-    const int batch_size = std::max(1, static_cast<int>(cache_.budget_bytes() / cache_blob_bytes_));
+    const int batch_size = cfg_.cache_dtype == DeviceCacheDType::Int8
+        ? 1  // single expert per batch to avoid scratch buffer race
+        : std::max(1, static_cast<int>(cache_.budget_bytes() / cache_blob_bytes_));
     if (profiler_.enabled()) profiler_.add_cpu(CpuStage::BatchConstruction, batch_begin);
     const bool bypass_cache = cfg_.scenario == BenchmarkScenario::ResidentBypass ||
                               cfg_.scenario == BenchmarkScenario::ComputeOnly;
