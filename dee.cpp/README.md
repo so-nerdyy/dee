@@ -5,11 +5,13 @@ Expert Eviction control path: a safetensors shard is mapped read-only, Oracle
 predictions select experts, a fixed cache manages residency, and CUDA runs a
 small mixed-precision SwiGLU reference kernel on resident expert weights.
 
-On the default CUDA streaming path, BF16 weights remain packed through H2D,
-convert to FP16 on the prefetch stream, and stay FP16 in the expert cache.
-cuBLAS reads FP16 weights and activations with FP32 accumulation. Pass
-`--cache-dtype fp32` for the exact BF16-to-FP32 cache and SGEMV fallback.
-Frequently reused BF16 source blobs are materialized once in a bounded 192 MiB
+On the default CUDA streaming path, BF16 weights are quantized once into
+per-projection INT8 pinned sources, transferred as INT8, dequantized to FP16 on
+the prefetch stream, and stay FP16 in the expert cache. cuBLAS reads FP16
+weights and activations with FP32 accumulation. Pass `--transfer-dtype bf16`
+for lossless BF16 transfer, or `--cache-dtype fp32` for the exact
+BF16-to-FP32 cache and SGEMV fallback.
+Frequently reused packed source blobs are materialized once in a bounded 192 MiB
 pinned-host cache; shards that exceed that bound fall back to the bounded
 staging ring. The configured cache remains 6 MiB; FP16 doubles its physical
 expert capacity from four to eight entries.
@@ -87,7 +89,8 @@ asset, not an Ornith model checkpoint.
 ```text
 dee_cli --help
 dee_cli --shard PATH --oracle PATH --tokens N --warmup N --topk N --layers N
-        --budget BYTES --prefetch-depth N --cache-dtype fp16|fp32 --cuda
+        --budget BYTES --prefetch-depth N --cache-dtype fp16|fp32
+        --transfer-dtype int8|bf16|int4 --cuda
         --profile-stages --profile-scenario MODE --profile-json PATH
         --profile-timeline PATH --trace-requests PATH --verbose
 ```
@@ -173,6 +176,11 @@ reference kernels must not be interpreted as a claim of 30+ tok/s on a
 real 35B model. In particular, the first copy from file-backed/pageable data
 into pinned memory is host work; only the pinned-host-to-device leg is
 asynchronous.
+
+INT8 is validated for this deterministic synthetic workload but is not a
+model-quality claim. `--transfer-dtype int4` is opt-in and experimental: it is
+faster here but has a larger measured output error and requires calibration on
+real checkpoints before use in complete inference.
 
 The measured T4 profiling campaign, controlled A-G decomposition, accepted
 optimization, and rejected experiments are recorded in

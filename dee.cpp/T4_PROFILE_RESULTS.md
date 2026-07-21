@@ -273,3 +273,60 @@ the 35.009 tok/s full-resident control, the 16.073 normal median has about a
 2.18x empirical streaming-removal ceiling. The exact timeline shows only
 24.83% copy/compute overlap and 29.42% idle GPU time, leaving overlap scheduling
 and transfer latency as better-supported next targets than GEMM tuning.
+
+### Accepted: INT8 transfer with AVX2 first-touch quantization
+
+Commit `59d4d03907eaebe347aad52105f9986bb98801bd` adds one symmetric scale per
+gate, up, and down projection, runtime-dispatched AVX2 host quantization, INT8
+H2D, and direct INT8-to-FP16 cache dequantization. The cache and compute format
+remain FP16. The initial scalar quantizer cut GPU H2D to 744.164 ms but cost
+786.610 ms on the host and produced only 16.127 tok/s (+0.29%); AVX2 reduced
+quantization to 152.988 ms and exposed the transfer saving.
+
+Final INT8 runs were 22.547, 21.625, and 22.101 tok/s (median 22.101), 37.43%
+above the 16.081 final exact-command FP16 median. H2D fell to 4,008,706,048
+bytes in 11,448 copies (350,166-byte average), 747.299 ms, or about 5.36 GB/s
+of event-time bandwidth. Cache-readiness waiting fell to 335.595 ms. The
+1552.972 ms common-origin timeline measured 747.301 ms copy-active (48.12%),
+534.817 ms compute-active (34.44%), 369.561 ms overlap (23.80%), and 640.415 ms
+with neither engine active (41.24%).
+
+INT8 one-layer validation versus the accepted lossless-transfer FP16 path had
+max absolute error 1.87e-4, relative RMSE 1.07e-4, and cosine similarity
+0.9999999943. The full trace matched 10,239/10,240 ordered requests and
+1,279/1,280 complete layer top-K sets. CPU CTest passed 6/6, CUDA CTest passed
+7/7, and output remained finite. INT8 is therefore the default CUDA transfer;
+`--transfer-dtype bf16` remains the lossless fallback.
+
+INT8 controlled profiles were 35.692 tok/s full-resident, 40.167 resident
+bypass, 23.620 transfer-only, 79.115 compute-only, 105.741 Oracle-only, and
+102.023 cache-metadata-only. Relative to the 35.692 full-resident result, the
+22.101 normal median has an empirical 1.61x remaining streaming-removal ceiling.
+
+### Accepted experimental mode: INT4 transfer
+
+Commit `75d5218ee7385985119f41e86375ba102755e274` adds packed signed INT4 H2D
+and FP16 cache dequantization. It is opt-in (`--transfer-dtype int4`) because
+its numerical error is materially larger than INT8 and has only been calibrated
+against the synthetic regression.
+
+INT4 runs were 30.767, 30.571, and 30.568 tok/s (median 30.571), 38.32% above
+INT8. H2D fell to 2,009,595,904 bytes and 412.953 ms; host cache-readiness wait
+fell to 53.884 ms. The 1217.644 ms timeline measured 412.954 ms copy-active,
+360.602 ms compute-active, 171.260 ms overlap, and 615.347 ms idle.
+
+The synthetic validation gate required max error below 0.01, relative RMSE
+below 0.5%, and at least 99% exact layer top-K sets. INT4 passed with 0.005194
+max error, 0.2586% relative RMSE, cosine 0.9999966553, 10,146/10,240 ordered
+request matches, and 1,269/1,280 exact top-K sets. This is not sufficient to
+claim real-model quality; checkpoint-specific calibration and task evaluation
+remain mandatory. INT4 controlled profiles were 37.822 tok/s full-resident,
+39.285 resident bypass, 31.440 transfer-only, 79.096 compute-only, 109.768
+Oracle-only, and 108.423 cache-metadata-only.
+
+For the default INT8 path, H2D remains the largest measured GPU stage and the
+640 ms common-origin idle interval is now larger than exposed cache waiting.
+The next campaign should attribute that idle time among Oracle (324 ms),
+first-touch quantization (153 ms), tensor/source setup, and layer-boundary D2H
+before attempting more transfer coalescing. The opt-in INT4 synthetic result
+must not be marketed as 30+ tok/s complete 35B inference.

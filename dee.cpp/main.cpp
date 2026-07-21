@@ -24,7 +24,7 @@ void usage(const char* argv0) {
         "  --budget BYTES     Expert-cache budget (0 = four expert blobs)\n"
         "  --prefetch-depth N Bounded staging/transfer ring depth (default: 64)\n"
         "  --cache-dtype D    Device expert cache: fp16 with --cuda, or fp32 fallback\n"
-        "  --transfer-dtype D Expert transfer: bf16, int8, or experimental int4\n"
+        "  --transfer-dtype D Expert transfer: int8 CUDA default, bf16, or experimental int4\n"
         "  --cuda             Use CUDA; requires a DEE_CUDA build and a GPU\n"
         "  --profile-stages   Enable detailed CPU/CUDA stage timing\n"
         "  --profile-scenario M Controlled profile: end-to-end, full-resident,\n"
@@ -310,6 +310,7 @@ int main(int argc, char** argv) {
     std::string trace_json_path;
     std::string timeline_json_path;
     bool cache_dtype_explicit = false;
+    bool transfer_dtype_explicit = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -346,6 +347,7 @@ int main(int argc, char** argv) {
         } else if (arg == "--transfer-dtype") {
             if (!(value = require_value(i, argc, argv, "--transfer-dtype")) ||
                 !parse_transfer_dtype(value, cfg.transfer_dtype)) return 2;
+            transfer_dtype_explicit = true;
         } else if (arg == "--profile-json") {
             if (!(value = require_value(i, argc, argv, "--profile-json"))) return 2;
             profile_json_path = value;
@@ -372,6 +374,7 @@ int main(int argc, char** argv) {
     }
 
     if (cfg.use_cuda && !cache_dtype_explicit) cfg.cache_dtype = dee::DeviceCacheDType::Fp16;
+    if (cfg.use_cuda && !transfer_dtype_explicit) cfg.transfer_dtype = dee::WeightTransferDType::Int8;
 
 #ifndef DEE_CUDA
     if (cfg.use_cuda) {
