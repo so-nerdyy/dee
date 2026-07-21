@@ -8,6 +8,7 @@
 
 #ifdef DEE_CUDA
 #include "dee/cuda_check.h"
+#include "dee/cuda_convert.h"
 #include <cuda_runtime.h>
 #endif
 
@@ -182,12 +183,7 @@ void OracleScheduler::predict(int layer, const float* hidden, int topk, std::vec
 
 #ifdef DEE_CUDA
 
-__global__ void oracle_relu_kernel(float* x, int n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n && x[i] < 0.0f) x[i] = 0.0f;
-}
-
-bool OracleScheduler::upload_to_gpu() {
+void OracleScheduler::predict_gpu
     gpu_layers_.resize(layers_.size());
 
     for (size_t l = 0; l < layers_.size(); ++l) {
@@ -248,8 +244,7 @@ void OracleScheduler::predict_gpu(int layer, const float* d_hidden, float* d_scr
                                        &beta, d_act, 1), "cublasSgemv(W0)");
     DEE_CUBLAS_CHECK_NAMED(cublasSaxpy(handle, H, &alpha, gpu.d_b0, 1, d_act, 1),
                            "cublasSaxpy(b0)");
-    oracle_relu_kernel<<<1, 256, 0, cuda_stream>>>(d_act, H);
-    DEE_CUDA_CHECK_LAUNCH("oracle_relu(0)");
+    oracle_relu_cuda(d_act, H, cuda_stream);
 
     // Row-major W2[256x256]: use CUBLAS_OP_T, lda=256
     DEE_CUBLAS_CHECK_NAMED(cublasSgemv(handle, CUBLAS_OP_T, H, H,
@@ -257,8 +252,7 @@ void OracleScheduler::predict_gpu(int layer, const float* d_hidden, float* d_scr
                                        &beta, d_act2, 1), "cublasSgemv(W2)");
     DEE_CUBLAS_CHECK_NAMED(cublasSaxpy(handle, H, &alpha, gpu.d_b2, 1, d_act2, 1),
                            "cublasSaxpy(b2)");
-    oracle_relu_kernel<<<1, 256, 0, cuda_stream>>>(d_act2, H);
-    DEE_CUDA_CHECK_LAUNCH("oracle_relu(1)");
+    oracle_relu_cuda(d_act2, H, cuda_stream);
 
     // Row-major W4[256x256]: use CUBLAS_OP_T, lda=256
     DEE_CUBLAS_CHECK_NAMED(cublasSgemv(handle, CUBLAS_OP_T, H, H,

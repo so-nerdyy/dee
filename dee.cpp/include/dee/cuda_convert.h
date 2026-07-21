@@ -29,6 +29,9 @@ bool int4_to_f16_cuda(const uint8_t* source, void* destination, size_t elements,
                       size_t projection_elements, const float scales[3],
                       cudaStream_t stream, StageProfiler* profiler = nullptr);
 
+// Small ReLU kernel for GPU Oracle activations (n <= 256).
+void oracle_relu_cuda(float* data, int n, cudaStream_t stream);
+
 }  // namespace dee
 
 #endif

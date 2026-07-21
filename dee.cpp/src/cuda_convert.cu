@@ -205,4 +205,14 @@ bool int4_to_f16_cuda(const uint8_t* source, void* destination, size_t elements,
 #endif
 }
 
+__global__ void oracle_relu_kernel(float* x, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n && x[i] < 0.0f) x[i] = 0.0f;
+}
+
+void oracle_relu_cuda(float* data, int n, cudaStream_t stream) {
+    oracle_relu_kernel<<<1, 256, 0, stream>>>(data, n);
+    DEE_CUDA_CHECK_LAUNCH("oracle_relu_kernel");
+}
+
 }  // namespace dee
