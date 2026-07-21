@@ -105,6 +105,7 @@ private:
         float* d_b4 = nullptr;
     };
     std::vector<GpuLayerWeights> gpu_layers_;
+    // Mutable aggregate counters, not safe under concurrent boundary calls.
     mutable BoundaryStats bstats_;
 #endif
 };
