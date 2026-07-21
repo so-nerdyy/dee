@@ -183,7 +183,7 @@ void OracleScheduler::predict(int layer, const float* hidden, int topk, std::vec
 
 #ifdef DEE_CUDA
 
-void OracleScheduler::predict_gpu
+bool OracleScheduler::upload_to_gpu() {
     gpu_layers_.resize(layers_.size());
 
     for (size_t l = 0; l < layers_.size(); ++l) {
