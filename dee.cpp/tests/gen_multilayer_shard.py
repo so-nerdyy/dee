@@ -1,16 +1,24 @@
 #!/usr/bin/env python3
-"""Generate a streaming multi-layer MoE shard for benchmarking (W8).
+"""Generate a multi-layer MoE shard (W8).
 
 Naming EXACTLY matches dee::TensorResolver::expert_tensor_name:
   model.language_model.layers.{L}.mlp.experts.{E}.{gate_proj|up_proj|down_proj}.weight
 
-Per-layer random seeds make adjacent layers have statistically distinct
-weights so that cache eviction is exercised across layers rather than
-reusing the same physical expert for each model layer.
+dtype label is "BF16" (canonical for dee.cpp's json_min parser).
 
-Generator writes directly to the output file (no full payload buffered
-in RAM), one tensor at a time. Only the tensor name index is kept in
-memory.
+Per-layer random seeds (`args.seed + 1009*(layer+1)`) produce
+statistically distinct per-layer weight statistics, so the synthetic
+benchmark exercises real cache-eviction pressure across model layers
+instead of aliasing all layers to the same physical expert set.
+
+Memory discipline:
+- numpy.random.standard_normal produces temporary Float32 arrays that are
+  freed by `make_bf16_bytes`.
+- BF16 payloads are packed once and added to a list of (key, bytes)
+  tuples; total memory bound is the payload size plus a thin metadata
+  index (~150 bytes per tensor).
+- The shard file is written exactly once after the payload list is
+  complete (header + padding + payloads appended in a single file.write).
 """
 
 import argparse
@@ -27,14 +35,6 @@ def f32_to_bf16(x: float) -> int:
     return (u >> 16) & 0xFFFF
 
 
-def make_bf16_bytes(values):
-    """Pack a float sequence into BF16 little-endian bytes."""
-    return b"".join(struct.pack("<H", f32_to_bf16(v)) for v in values)
-
-
-GEN_VERSION = 1
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True)
@@ -46,81 +46,67 @@ def main():
     parser.add_argument("--layer-scale-base", type=float, default=0.10)
     args = parser.parse_args()
 
-    if args.layers <= 0 or args.experts <= 0:
-        sys.stderr.write("[gen] --layers and --experts must be positive\n")
+    if args.layers <= 0 or args.experts <= 0 or args.inter <= 0 or args.hidden <= 0:
+        sys.stderr.write("[gen] --layers --experts --inter --hidden must be positive\n")
         sys.exit(2)
 
     hidden = args.hidden
     inter = args.inter
-    gate_shape = (inter, hidden)
-    down_shape = (hidden, inter)
+    inter_hidden = inter * hidden
 
     try:
         import numpy as np
     except ImportError:
         sys.exit("[gen] numpy is required (pip install numpy)")
 
-    # Build the tensor index incrementally. Each entry will be filled in
-    # with the absolute file offset AFTER we know how much header padding to
-    # use. Strategy: write a placeholder header first, accumulate offsets
-    # per tensor, then re-write the placeholder with real offsets.
-    tensor_index = []  # list of (name, kind, layer, expert, shape, payload_bytes)
+    name_for = lambda kind, layer, expert: (
+        f"model.language_model.layers.{layer}.mlp.experts.{expert}.{kind}.weight")
 
-    total_tensors = args.layers * args.experts * 3
+    # Pass 1: generate all per-tensor BF16 payloads and accumulate offsets.
+    # Each entry: (key, shape, bf16_bytes)
+    tensors = []
+    cursor = 0
     for layer in range(args.layers):
         rng = np.random.default_rng(args.seed + 1009 * (layer + 1))
         layer_scale = args.layer_scale_base + 0.01 * (layer % 17)
         for expert in range(args.experts):
             # gate: [inter x hidden]
-            w_gate = rng.standard_normal(inter * hidden).astype(np.float32) * layer_scale
-            tensor_index.append(("gate_proj", layer, expert, gate_shape,
-                                 make_bf16_bytes(w_gate)))
-            # up:   [inter x hidden]
-            w_up = rng.standard_normal(inter * hidden).astype(np.float32) * layer_scale
-            tensor_index.append(("up_proj", layer, expert, gate_shape,
-                                 make_bf16_bytes(w_up)))
+            w_gate = rng.standard_normal(inter_hidden).astype(np.float32) * layer_scale
+            gate_bytes = b"".join(struct.pack("<H", f32_to_bf16(v)) for v in w_gate)
+            tensors.append((("gate_proj", layer, expert), (inter, hidden), gate_bytes, cursor))
+            cursor += len(gate_bytes)
+            # up:   [inter x hidden] (same shape as gate)
+            w_up = rng.standard_normal(inter_hidden).astype(np.float32) * layer_scale
+            up_bytes = b"".join(struct.pack("<H", f32_to_bf16(v)) for v in w_up)
+            tensors.append((("up_proj", layer, expert), (inter, hidden), up_bytes, cursor))
+            cursor += len(up_bytes)
             # down: [hidden x inter]
-            w_down = rng.standard_normal(hidden * inter).astype(np.float32) * layer_scale
-            tensor_index.append(("down_proj", layer, expert, down_shape,
-                                 make_bf16_bytes(w_down)))
-        if (layer + 1) % 4 == 0:
+            w_down = rng.standard_normal(inter_hidden).astype(np.float32) * layer_scale
+            down_bytes = b"".join(struct.pack("<H", f32_to_bf16(v)) for v in w_down)
+            tensors.append((("down_proj", layer, expert), (hidden, inter), down_bytes, cursor))
+            cursor += len(down_bytes)
+        if (layer + 1) % max(1, args.layers // 8) == 0:
             sys.stderr.write(f"[gen] prepared layer {layer+1}/{args.layers}\n")
 
-    sys.stderr.write(f"[gen] prepared {total_tensors} tensors, writing file...\\n")
+    payload_bytes = cursor
+    sys.stderr.write(f"[gen] prepared {len(tensors)} tensors, "
+                     f"payload {payload_bytes/1024/1024:.2f} MB\n")
 
-    name_for = lambda kind, layer, expert: (
-        f"model.language_model.layers.{layer}.mlp.experts.{expert}.{kind}.weight")
+    # Build header once with real offsets.
+    header = {
+        name_for(kind, layer, expert): {
+            "dtype": "BF16",
+            "shape": list(shape),
+            "data_offsets": [offset, offset + len(payload)],
+        }
+        for (kind, layer, expert), shape, payload, offset in tensors
+    }
+    header_json = json.dumps(header, separators=(",", ":"))
+    hlen = len(header_json)
+    pad = (8 - (hlen % 8)) % 8
 
-    # Build the header with provisional offsets, then re-emit with real ones.
-    # Replace stdlib json with deterministic serialisation (no whitespace).
-    def build_header(offset_map):
-        return json.dumps(
-            {name_for(kind, L, E): {
-                "dtype": "BF16",
-                "shape": list(shape),
-                "data_offsets": [offset_map[(kind, L, E)], offset_map[(kind, L, E)] + len(payload)]
-             } for kind, L, E, shape, payload in tensor_index},
-            separators=(",", ":"))
-
-    # Pass 1: emit a probe header to measure its length, compute padding, then
-    # commit to the real offsets. The header JSON length is <= 64 bytes per
-    # tensor name token, well bounded by total_tensors * ~96 bytes.
-    probe_offsets = {key: 0 for key in [(k, L, E) for k, L, E, _, _ in tensor_index]}
-    probe_header = build_header(probe_offsets)
-    header_len_nopad = len(probe_header)
-    pad_bytes = (8 - (header_len_nopad % 8)) % 8 if header_len_nopad % 8 else 0
-
-    # The data section starts after the 8-byte LE length prefix and the
-    # padded JSON header.
-    data_start = 8 + header_len_nopad + pad_bytes
-    real_offsets = {}
-    cursor = 0
-    for kind, L, E, shape, payload in tensor_index:
-        real_offsets[(kind, L, E)] = cursor
-        cursor += len(payload)
-
-    real_header = build_header(real_offsets)
-    assert len(real_header) == header_len_nopad, "header length must be stable across passes"
+    data_section_start = 8 + hlen + pad
+    total_file_bytes = data_section_start + payload_bytes
 
     out_dir = os.path.dirname(os.path.abspath(args.output))
     if out_dir and not os.path.isdir(out_dir):
@@ -128,19 +114,19 @@ def main():
 
     sha = hashlib.sha256()
     with open(args.output, "wb") as f:
-        f.write(struct.pack("<Q", header_len_nopad))
-        f.write(real_header.encode("utf-8"))
-        f.write(b" " * pad_bytes)
-        sha.update(f.getvalue() if hasattr(f, "getvalue") else b"")
-        for kind, L, E, shape, payload in tensor_index:
+        header_prefix = struct.pack("<Q", hlen) + header_json.encode("utf-8") + (b" " * pad)
+        f.write(header_prefix)
+        sha.update(header_prefix)
+        # Append all payloads; the offset values inside the header point into
+        # this data section starting at offset 0.
+        for key, shape, payload, offset in tensors:
             f.write(payload)
             sha.update(payload)
 
-    total_bytes = data_start + cursor
     sys.stderr.write(
         f"[gen] wrote {args.output} -- layers={args.layers} experts={args.experts} "
-        f"inter={inter} hidden={hidden} payload={cursor/1024/1024:.2f} MB "
-        f"total={total_bytes/1024/1024:.2f} MB sha256={sha.hexdigest()[:16]}\\n"
+        f"inter={inter} hidden={hidden} total={total_file_bytes/1024/1024:.2f} MB "
+        f"sha256={sha.hexdigest()[:16]}\n"
     )
 
 
