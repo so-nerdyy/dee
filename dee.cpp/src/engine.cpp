@@ -281,6 +281,10 @@ bool Engine::init(const EngineConfig& cfg) {
         return false;
     }
     hidden_ = cfg.hidden;
+    if (!prefetcher_.set_ring_size(cfg.prefetch_depth)) {
+        std::fprintf(stderr, "[engine] invalid or late prefetch depth: %zu\n", cfg.prefetch_depth);
+        return false;
+    }
     // Expert dims are taken from the SHARD (so a mock inter=64 and the real
     // inter=256 are both handled). The Oracle's own MLP width (H=256) is a
     // separate, fixed quantity passed to oracle.load().

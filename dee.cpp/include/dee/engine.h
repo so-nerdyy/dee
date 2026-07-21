@@ -66,6 +66,7 @@ struct EngineConfig {
     int         topk        = 8;    // experts activated per layer (top-K)
     int         num_layers  = 40;   // depth (clamped to oracle.num_layers)
     size_t      budget_bytes = 0;   // VRAM budget (0 => 4 experts auto)
+    size_t      prefetch_depth = 64;// bounded pinned/device staging ring
     bool        use_cuda    = false;// DEE_CUDA path (only if built WITH cuda)
     int         hidden      = 2048; // model hidden dim (checked vs shard)
     int         inter       = 256;  // expert intermediate dim (checked vs shard)

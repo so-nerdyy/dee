@@ -110,6 +110,12 @@ public:
     }
     void reset_stats() { stats_ = Stats{}; batch_keys_.clear(); }
     void set_profiler(StageProfiler* profiler) { profiler_ = profiler; }
+    bool set_ring_size(size_t ring_size) {
+        if (!inflight_.empty() || !staging_slots_.empty() || ring_size == 0) return false;
+        ring_size_ = ring_size;
+        return true;
+    }
+    size_t ring_size() const { return ring_size_; }
 
     bool using_cuda() const { return use_cuda_; }
     void* cuda_stream() const { return stream_; }
@@ -154,6 +160,7 @@ private:
     bool   cuda_init();            // guarded real init
     bool   cuda_submit(long idx);  // guarded real submit + event record
     bool   cuda_wait(long idx, HostWaitReason reason);  // guarded real event sync
+    void   release_staging(Transfer& transfer);
     bool   release_transfer(Transfer& transfer);
     void   record_request(RequestKind kind, int token, int logical_layer,
                           int resolved_layer, int expert, int priority,

@@ -50,18 +50,25 @@ long AsyncPrefetcher::find_inflight(int layer, int expert) const {
     return it == key_to_idx_.end() ? -1 : it->second;
 }
 
-bool AsyncPrefetcher::release_transfer(Transfer& transfer) {
+void AsyncPrefetcher::release_staging(Transfer& transfer) {
     if (transfer.active_counted) {
         if (active_transfers_ > 0) --active_transfers_;
         transfer.active_counted = false;
     }
+#ifdef DEE_CUDA
+    if (transfer.staging_slot < staging_slots_.size()) {
+        staging_slots_[transfer.staging_slot].busy = false;
+        transfer.staging_slot = static_cast<size_t>(-1);
+    }
+#endif
+}
+
+bool AsyncPrefetcher::release_transfer(Transfer& transfer) {
+    release_staging(transfer);
     if (transfer.cache_pin_held) {
         cache_.unpin(transfer.key.layer, transfer.key.expert);
         transfer.cache_pin_held = false;
     }
-#ifdef DEE_CUDA
-    if (transfer.staging_slot < staging_slots_.size()) staging_slots_[transfer.staging_slot].busy = false;
-#endif
     return true;
 }
 
@@ -421,7 +428,15 @@ bool AsyncPrefetcher::cuda_wait(long index, HostWaitReason reason) {
         profiler_->note_host_synchronization();
     }
     transfer.done = true;
-    release_transfer(transfer);
+    if (reason == HostWaitReason::StagingSlot) {
+        // The DMA/conversion no longer owns its staging slot, but the cache
+        // block must remain pinned until wait(layer, expert) hands it to the
+        // compute consumer. Dropping both lifetimes here permits eviction
+        // when ring depth is smaller than the active expert batch.
+        release_staging(transfer);
+    } else {
+        release_transfer(transfer);
+    }
     return cache_.is_resident(transfer.key.layer, transfer.key.expert);
 #else
     (void)index;

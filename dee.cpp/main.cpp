@@ -22,6 +22,7 @@ void usage(const char* argv0) {
         "  --topk N           Experts per layer (default: 8)\n"
         "  --layers N         Decoder layers (default: 40, clamped to oracle)\n"
         "  --budget BYTES     Expert-cache budget (0 = four expert blobs)\n"
+        "  --prefetch-depth N Bounded staging/transfer ring depth (default: 64)\n"
         "  --cuda             Use CUDA; requires a DEE_CUDA build and a GPU\n"
         "  --profile-stages   Enable detailed CPU/CUDA stage timing\n"
         "  --profile-scenario M Controlled profile: end-to-end, full-resident,\n"
@@ -50,13 +51,13 @@ bool parse_positive(const char* text, const char* option, int& out, bool allow_z
     return true;
 }
 
-bool parse_size(const char* text, size_t& out) {
+bool parse_size(const char* text, const char* option, size_t& out) {
     if (!text || !*text) return false;
     char* end = nullptr;
     errno = 0;
     const unsigned long long value = std::strtoull(text, &end, 10);
     if (errno || !end || *end || value > std::numeric_limits<size_t>::max()) {
-        std::fprintf(stderr, "[cli] invalid --budget value: %s\n", text);
+        std::fprintf(stderr, "[cli] invalid %s value: %s\n", option, text);
         return false;
     }
     out = static_cast<size_t>(value);
@@ -103,6 +104,7 @@ void print_result(const dee::EngineConfig& cfg, const dee::EngineStats& stats, i
     std::printf("elapsed measured time  : %.6f s\n", stats.elapsed_sec);
     std::printf("tokens per second      : %.3f\n", stats.tok_per_sec);
     std::printf("configured cache budget: %zu bytes\n", cfg.budget_bytes);
+    std::printf("prefetch ring depth     : %zu\n", cfg.prefetch_depth);
     std::printf("peak expert-cache VRAM : %zu bytes\n", stats.peak_vram);
     std::printf("cache hits             : %llu\n", static_cast<unsigned long long>(stats.cache_hits));
     std::printf("resident hits          : %llu\n", static_cast<unsigned long long>(stats.resident_hits));
@@ -291,7 +293,12 @@ int main(int argc, char** argv) {
         } else if (arg == "--layers") {
             if (!(value = require_value(i, argc, argv, "--layers")) || !parse_positive(value, "--layers", cfg.num_layers)) return 2;
         } else if (arg == "--budget") {
-            if (!(value = require_value(i, argc, argv, "--budget")) || !parse_size(value, cfg.budget_bytes)) return 2;
+            if (!(value = require_value(i, argc, argv, "--budget")) ||
+                !parse_size(value, "--budget", cfg.budget_bytes)) return 2;
+        } else if (arg == "--prefetch-depth") {
+            if (!(value = require_value(i, argc, argv, "--prefetch-depth")) ||
+                !parse_size(value, "--prefetch-depth", cfg.prefetch_depth) ||
+                cfg.prefetch_depth == 0) return 2;
         } else if (arg == "--profile-json") {
             if (!(value = require_value(i, argc, argv, "--profile-json"))) return 2;
             profile_json_path = value;
