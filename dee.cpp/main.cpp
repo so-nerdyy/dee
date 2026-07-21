@@ -34,6 +34,9 @@ void usage(const char* argv0) {
         "  --profile-timeline P Write common-origin CUDA Chrome trace JSON to P\n"
         "  --trace-requests P Write detailed expert-request trace JSON to P\n"
         "  --dynamic-quantization Quantize experts on first use instead of startup prepack\n"
+        "  --oracle-margin F  GPU Oracle boundary-aware strict routing margin threshold\n"
+        "                      (sigmoid logit units; >0 enables CPU fallback for tight margins,\n"
+        "                      0 = raw GPU mode which may diverge from CPU routing)\n"
         "  --verbose          Print additional configuration details\n",
         argv0);
 }
@@ -109,6 +112,23 @@ bool parse_transfer_dtype(const char* text, dee::WeightTransferDType& out) {
     return true;
 }
 
+bool parse_float_nonneg(const char* text, const char* option, float& out) {
+    if (!text || !*text) {
+        std::fprintf(stderr, "[cli] %s requires a float value\n", option);
+        return false;
+    }
+    char* end = nullptr;
+    errno = 0;
+    const float value = std::strtof(text, &end);
+    if (errno || !end || *end || value < 0.0f || !std::isfinite(value)) {
+        std::fprintf(stderr, "[cli] invalid %s value: %s (expected non-negative finite float)\n",
+                     option, text);
+        return false;
+    }
+    out = value;
+    return true;
+}
+
 const char* require_value(int& index, int argc, char** argv, const char* option) {
     if (index + 1 >= argc) {
         std::fprintf(stderr, "[cli] %s requires a value\n", option);
@@ -135,6 +155,14 @@ void print_result(const dee::EngineConfig& cfg, const dee::EngineStats& stats, i
     std::printf("device cache dtype      : %s\n", dee::device_cache_dtype_name(cfg.cache_dtype));
     std::printf("weight transfer dtype   : %s\n", dee::weight_transfer_dtype_name(cfg.transfer_dtype));
     std::printf("prefetch ring depth     : %zu\n", cfg.prefetch_depth);
+    if (cfg.oracle_strict_margin > 0.0f) {
+        std::printf("oracle strict margin    : %.6g (CPU fallback for ambiguous calls)\n",
+                    cfg.oracle_strict_margin);
+        std::printf("oracle gpu/cpu/fallback : %llu / %llu / %llu (calls)\n",
+                    static_cast<unsigned long long>(stats.oracle_boundary.gpu_calls),
+                    static_cast<unsigned long long>(stats.oracle_boundary.cpu_fallback_calls),
+                    static_cast<unsigned long long>(stats.oracle_boundary.min_margin_calls));
+    }
     std::printf("quantized source prepack: %s\n",
                 stats.quantized_prepack_complete ? "complete" : "dynamic/disabled");
     std::printf("prepack startup ms      : %.3f\n", stats.quantized_prepack_ms);
@@ -393,6 +421,9 @@ int main(int argc, char** argv) {
             if (!(value = require_value(i, argc, argv, "--transfer-dtype")) ||
                 !parse_transfer_dtype(value, cfg.transfer_dtype)) return 2;
             transfer_dtype_explicit = true;
+        } else if (arg == "--oracle-margin") {
+            if (!(value = require_value(i, argc, argv, "--oracle-margin")) ||
+                !parse_float_nonneg(value, "--oracle-margin", cfg.oracle_strict_margin)) return 2;
         } else if (arg == "--profile-json") {
             if (!(value = require_value(i, argc, argv, "--profile-json"))) return 2;
             profile_json_path = value;

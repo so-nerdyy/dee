@@ -66,6 +66,25 @@ public:
     void predict_gpu(int layer, const float* d_hidden, float* d_scratch,
                      cublasHandle_t handle, void* stream,
                      int topk, std::vector<int>& out) const;
+
+    // Boundary-aware GPU predict: like predict_gpu() but, after the 256
+    // approximate logits are returned to the host, inspects the Kth vs
+    // (K+1)th gap AND the minimum internal gap between adjacent sorted
+    // top-K logits. When ANY gap is below `epsilon_margin` (in absolute
+    // logit units), the call falls back to the exact CPU predict() on the
+    // same host-side `h_in_cpu` to guarantee ordered, exact top-K routing.
+    // Set `epsilon_margin` to 0 to disable (raw GPU predict; may mismatch).
+    struct BoundaryStats {
+        size_t gpu_calls = 0;          // total calls evaluated on GPU
+        size_t cpu_fallback_calls = 0; // fallback to exact CPU predict
+        size_t min_margin_calls = 0;   // calls that triggered fallback
+    };
+    void predict_gpu_boundary(int layer, const float* h_in_cpu, float* d_hidden,
+                              float* d_scratch, cublasHandle_t handle, void* stream,
+                              int topk, std::vector<int>& out,
+                              float epsilon_margin);
+    BoundaryStats boundary_stats() const { return bstats_; }
+    void reset_boundary_stats() { bstats_ = BoundaryStats{}; }
 #endif
 
     const std::string& error() const { return err_; }
@@ -87,6 +106,7 @@ private:
         float* d_b4 = nullptr;
     };
     std::vector<GpuLayerWeights> gpu_layers_;
+    BoundaryStats bstats_;
 #endif
 };
 

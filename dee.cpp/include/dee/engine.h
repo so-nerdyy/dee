@@ -93,6 +93,15 @@ struct EngineConfig {
     bool        profile_timeline = false;
     bool        prepack_quantized_source = true;
     BenchmarkScenario scenario = BenchmarkScenario::EndToEnd;
+    float       oracle_strict_margin = 0.0f; // <=0=raw GPU; >0=boundary fallback
+};
+
+// Copy of OracleScheduler::BoundaryStats so EngineStats can hold it without
+// pulling in a CUDA-only header dependency on engine consumers.
+struct OracleBoundaryStats {
+    size_t gpu_calls = 0;
+    size_t cpu_fallback_calls = 0;
+    size_t min_margin_calls = 0;
 };
 
 struct EngineStats {
@@ -122,6 +131,7 @@ struct EngineStats {
     uint64_t quantized_prepack_experts = 0;
     size_t quantized_prepack_bytes = 0;
     bool quantized_prepack_complete = false;
+    OracleBoundaryStats oracle_boundary{};
     StageProfile profile{};
 };
 

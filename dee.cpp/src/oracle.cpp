@@ -285,6 +285,96 @@ void OracleScheduler::predict_gpu(int layer, const float* d_hidden, float* d_scr
     for (int i = 0; i < k; ++i) out.push_back(idx[i]);
 }
 
+void OracleScheduler::predict_gpu_boundary(int layer, const float* h_in_cpu, float* d_hidden,
+                                           float* d_scratch, cublasHandle_t handle, void* stream,
+                                           int topk, std::vector<int>& out,
+                                           float epsilon_margin) {
+    if (oracle_profiling(profiler_)) profiler_->note_oracle_call();
+    bstats_.gpu_calls++;
+
+    // epsilon_margin <= 0 means raw GPU mode (legacy behavior, allows mismatches).
+    if (!(epsilon_margin > 0.0f)) {
+        predict_gpu(layer, d_hidden, d_scratch, handle, stream, topk, out);
+        return;
+    }
+
+    const auto& gpu = gpu_layers_[layer];
+    cudaStream_t cuda_stream = static_cast<cudaStream_t>(stream);
+    DEE_CUBLAS_CHECK_NAMED(cublasSetStream(handle, cuda_stream),
+                           "cublasSetStream(oracle boundary)");
+
+    const float alpha = 1.0f, beta = 0.0f;
+    const int D = D_, H = H_, E = E_;
+    float* d_act = d_scratch;
+    float* d_act2 = d_scratch + H;
+
+    // 1) H2D hidden
+    if (!DEE_CUDA_CHECK_NAMED(cudaMemcpyAsync(d_hidden, h_in_cpu,
+                                              static_cast<size_t>(D) * sizeof(float),
+                                              cudaMemcpyHostToDevice, cuda_stream),
+                              "cudaMemcpyAsync(oracle hidden H2D)")) return;
+
+    // 2) Three cuBLAS linears on device
+    DEE_CUBLAS_CHECK_NAMED(cublasSgemv(handle, CUBLAS_OP_T, D, H,
+                                       &alpha, gpu.d_w0, D, d_hidden, 1,
+                                       &beta, d_act, 1), "cublasSgemv(W0)");
+    DEE_CUBLAS_CHECK_NAMED(cublasSaxpy(handle, H, &alpha, gpu.d_b0, 1, d_act, 1),
+                           "cublasSaxpy(b0)");
+    oracle_relu_cuda(d_act, H, cuda_stream);
+
+    DEE_CUBLAS_CHECK_NAMED(cublasSgemv(handle, CUBLAS_OP_T, H, H,
+                                       &alpha, gpu.d_w2, H, d_act, 1,
+                                       &beta, d_act2, 1), "cublasSgemv(W2)");
+    DEE_CUBLAS_CHECK_NAMED(cublasSaxpy(handle, H, &alpha, gpu.d_b2, 1, d_act2, 1),
+                           "cublasSaxpy(b2)");
+    oracle_relu_cuda(d_act2, H, cuda_stream);
+
+    DEE_CUBLAS_CHECK_NAMED(cublasSgemv(handle, CUBLAS_OP_T, H, H,
+                                       &alpha, gpu.d_w4, H, d_act2, 1,
+                                       &beta, d_act, 1), "cublasSgemv(W4)");
+    DEE_CUBLAS_CHECK_NAMED(cublasSaxpy(handle, E, &alpha, gpu.d_b4, 1, d_act, 1),
+                           "cublasSaxpy(b4)");
+
+    // 3) D2H logits
+    std::vector<float> logits(E);
+    if (!DEE_CUDA_CHECK_NAMED(cudaMemcpyAsync(logits.data(), d_act,
+                                              static_cast<size_t>(E) * sizeof(float),
+                                              cudaMemcpyDeviceToHost, cuda_stream),
+                              "cudaMemcpyAsync(oracle logits D2H)")) return;
+    DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(cuda_stream), "cudaStreamSynchronize(oracle boundary)");
+
+    // 4) Sigmoid in place so we operate on the same domain as CPU predict().
+    for (int i = 0; i < E; ++i) logits[i] = 1.0f / (1.0f + std::exp(-logits[i]));
+
+    // 5) Sort by descending sigmoid logit; check internal AND boundary margins.
+    std::vector<int> idx(E);
+    for (int i = 0; i < E; ++i) idx[i] = i;
+    std::sort(idx.begin(), idx.end(), [&](int a, int b) { return logits[a] > logits[b]; });
+
+    bool ambiguous = false;
+    const int K = std::min(topk, E);
+    for (int i = 0; i + 1 < K; ++i) {
+        const float margin = logits[idx[i]] - logits[idx[i + 1]];
+        if (!(margin >= epsilon_margin)) { ambiguous = true; break; }
+    }
+    if (!ambiguous && K < E) {
+        const float margin = logits[idx[K - 1]] - logits[idx[K]];
+        if (!(margin >= epsilon_margin)) ambiguous = true;
+    }
+
+    if (ambiguous) {
+        bstats_.cpu_fallback_calls++;
+        bstats_.min_margin_calls++;
+        // Full CPU fallback preserves exact ordered top-K vs CPU baseline.
+        predict(layer, h_in_cpu, topk, out);
+        return;
+    }
+
+    // GPU logits are decisive for this top-K; trust them.
+    out.clear();
+    for (int i = 0; i < K; ++i) out.push_back(idx[i]);
+}
+
 #endif
 
 } // namespace dee

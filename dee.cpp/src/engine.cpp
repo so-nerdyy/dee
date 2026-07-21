@@ -932,6 +932,14 @@ bool Engine::generate() {
     stats_.inflight_hits = inflight_hits;
     stats_.cold_loads = cold_loads;
     stats_.duplicate_requests = ps.duplicate_requests;
+#ifdef DEE_CUDA
+    {
+        const auto bs = oracle_.boundary_stats();
+        stats_.oracle_boundary.gpu_calls = bs.gpu_calls;
+        stats_.oracle_boundary.cpu_fallback_calls = bs.cpu_fallback_calls;
+        stats_.oracle_boundary.min_margin_calls = bs.min_margin_calls;
+    }
+#endif
     stats_.profile = profiler_.finish(sec * 1000.0, resident_hits, inflight_hits,
                                       cold_loads, ps.duplicate_requests, cs.evictions,
                                       cs.pinned_blocks_skipped);
@@ -982,12 +990,23 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
         }
     } else if (gpu_oracle_ready_) {
         // Hidden must be on device before GPU Oracle runs
-        if (!DEE_CUDA_CHECK_NAMED(cudaMemcpyAsync(d_h_in_, h_in, (size_t)hidden_ * sizeof(float),
-                                                  cudaMemcpyHostToDevice, compute_stream_),
-                                  "cudaMemcpyAsync(hidden for GPU Oracle)")) return false;
         const auto oracle_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
-        oracle_.predict_gpu(layer, d_h_in_, d_oracle_scratch_, cublas_handle_,
-                            static_cast<void*>(compute_stream_), cfg_.topk, experts);
+        if (cfg_.oracle_strict_margin > 0.0f) {
+            // Boundary-aware GPU Oracle with strict CPU fallback for tight margins.
+            // predict_gpu_boundary() does its own H2D of `h_in` and falls back
+            // to the exact CPU predict() when margin < epsilon_margin.
+            oracle_.predict_gpu_boundary(layer, h_in, d_h_in_, d_oracle_scratch_,
+                                         cublas_handle_, static_cast<void*>(compute_stream_),
+                                         cfg_.topk, experts, cfg_.oracle_strict_margin);
+        } else {
+            // Legacy raw GPU predict (no CPU fallback; may yield ULP-level
+            // divergent routing for ~0.3% of calls).
+            if (!DEE_CUDA_CHECK_NAMED(cudaMemcpyAsync(d_h_in_, h_in, (size_t)hidden_ * sizeof(float),
+                                                      cudaMemcpyHostToDevice, compute_stream_),
+                                      "cudaMemcpyAsync(hidden for GPU Oracle)")) return false;
+            oracle_.predict_gpu(layer, d_h_in_, d_oracle_scratch_, cublas_handle_,
+                                static_cast<void*>(compute_stream_), cfg_.topk, experts);
+        }
         if (profiler_.enabled()) {
             const auto oracle_end = StageProfiler::now();
             profiler_.add_cpu_ms(CpuStage::Oracle,
