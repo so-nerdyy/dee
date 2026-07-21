@@ -33,6 +33,7 @@ void usage(const char* argv0) {
         "  --profile-json P   Write benchmark and stage summary JSON to P\n"
         "  --profile-timeline P Write common-origin CUDA Chrome trace JSON to P\n"
         "  --trace-requests P Write detailed expert-request trace JSON to P\n"
+        "  --dynamic-quantization Quantize experts on first use instead of startup prepack\n"
         "  --verbose          Print additional configuration details\n",
         argv0);
 }
@@ -134,6 +135,12 @@ void print_result(const dee::EngineConfig& cfg, const dee::EngineStats& stats, i
     std::printf("device cache dtype      : %s\n", dee::device_cache_dtype_name(cfg.cache_dtype));
     std::printf("weight transfer dtype   : %s\n", dee::weight_transfer_dtype_name(cfg.transfer_dtype));
     std::printf("prefetch ring depth     : %zu\n", cfg.prefetch_depth);
+    std::printf("quantized source prepack: %s\n",
+                stats.quantized_prepack_complete ? "complete" : "dynamic/disabled");
+    std::printf("prepack startup ms      : %.3f\n", stats.quantized_prepack_ms);
+    std::printf("prepack experts/bytes   : %llu / %zu\n",
+                static_cast<unsigned long long>(stats.quantized_prepack_experts),
+                stats.quantized_prepack_bytes);
     std::printf("peak expert-cache VRAM : %zu bytes\n", stats.peak_vram);
     std::printf("cache hits             : %llu\n", static_cast<unsigned long long>(stats.cache_hits));
     std::printf("resident hits          : %llu\n", static_cast<unsigned long long>(stats.resident_hits));
@@ -293,6 +300,11 @@ std::string benchmark_json(const dee::EngineConfig& cfg, const dee::EngineStats&
         << ",\"cache_budget_bytes\":" << cfg.budget_bytes
         << ",\"cache_dtype\":\"" << dee::device_cache_dtype_name(cfg.cache_dtype) << '\"'
         << ",\"transfer_dtype\":\"" << dee::weight_transfer_dtype_name(cfg.transfer_dtype) << '\"'
+        << ",\"quantized_prepack_complete\":"
+        << (stats.quantized_prepack_complete ? "true" : "false")
+        << ",\"quantized_prepack_startup_ms\":" << stats.quantized_prepack_ms
+        << ",\"quantized_prepack_experts\":" << stats.quantized_prepack_experts
+        << ",\"quantized_prepack_bytes\":" << stats.quantized_prepack_bytes
         << ",\"peak_cache_bytes\":" << stats.peak_vram
         << ",\"requests\":" << stats.prefetch_issued
         << ",\"resident_hits\":" << stats.resident_hits
@@ -346,6 +358,10 @@ int main(int argc, char** argv) {
         if (arg == "--help" || arg == "-h") { usage(argv[0]); return 0; }
         if (arg == "--cuda") { cfg.use_cuda = true; continue; }
         if (arg == "--profile-stages") { cfg.profile_stages = true; continue; }
+        if (arg == "--dynamic-quantization") {
+            cfg.prepack_quantized_source = false;
+            continue;
+        }
         if (arg == "--verbose") { cfg.verbose = true; continue; }
         const char* value = nullptr;
         if (arg == "--shard") {

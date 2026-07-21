@@ -462,6 +462,54 @@ const Engine::QuantizedExpert* Engine::get_staging_int4(int source_layer, int ex
     return &inserted.first->second;
 }
 
+bool Engine::prepack_quantized_sources() {
+    if (!cfg_.prepack_quantized_source || !cfg_.use_cuda ||
+        cfg_.transfer_dtype == WeightTransferDType::Bf16) return true;
+
+    std::unordered_set<int> source_layers;
+    for (int layer = 0; layer < cfg_.num_layers; ++layer) {
+        source_layers.insert(avail_layer(layer));
+    }
+    const size_t bytes_per_expert = cfg_.transfer_dtype == WeightTransferDType::Int4
+        ? (blob_elems_ + 1) / 2 : blob_elems_ * sizeof(int8_t);
+    const size_t physical_experts = source_layers.size() *
+                                    static_cast<size_t>(oracle_.num_experts());
+    if (physical_experts > std::numeric_limits<size_t>::max() / bytes_per_expert) {
+        std::fprintf(stderr, "[engine] quantized source prepack size overflow\n");
+        return false;
+    }
+    const size_t total_bytes = physical_experts * bytes_per_expert;
+    if (total_bytes > kPinnedStagingLimit) {
+        if (cfg_.verbose) {
+            std::fprintf(stderr,
+                "[engine] quantized source prepack skipped: %zu bytes exceeds bounded %zu-byte cache\n",
+                total_bytes, kPinnedStagingLimit);
+        }
+        return true;
+    }
+
+    const auto begin = std::chrono::steady_clock::now();
+    for (int source_layer : source_layers) {
+        for (int expert = 0; expert < oracle_.num_experts(); ++expert) {
+            const QuantizedExpert* packed = cfg_.transfer_dtype == WeightTransferDType::Int4
+                ? get_staging_int4(source_layer, expert)
+                : get_staging_int8(source_layer, expert);
+            if (!packed) {
+                std::fprintf(stderr,
+                    "[engine] quantized source prepack failed for layer %d expert %d\n",
+                    source_layer, expert);
+                return false;
+            }
+        }
+    }
+    stats_.quantized_prepack_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - begin).count();
+    stats_.quantized_prepack_experts = physical_experts;
+    stats_.quantized_prepack_bytes = total_bytes;
+    stats_.quantized_prepack_complete = true;
+    return true;
+}
+
 bool Engine::stage_expert(int logical_layer, int source_layer, int expert, int priority) {
     if (cfg_.use_cuda) {
         if (cfg_.transfer_dtype == WeightTransferDType::Int4) {
@@ -677,12 +725,6 @@ bool Engine::init(const EngineConfig& cfg) {
     }
     int nl = std::min(cfg.num_layers, oracle_.num_layers());
     cfg_.num_layers = nl;
-    profiler_.configure(cfg.profile_stages, cfg.trace_requests, cache_blob_bytes_,
-                        oracle_.num_experts(), cfg.profile_timeline);
-    cache_.set_profiler(cfg.profile_stages ? &profiler_ : nullptr);
-    prefetcher_.set_profiler(cfg.profile_stages ? &profiler_ : nullptr);
-    oracle_.set_profiler(cfg.profile_stages ? &profiler_ : nullptr);
-
     // VRAM budget. default: 4 experts. The arena backend is cudaMalloc when the
     // CUDA path is active, else a malloc'd host arena (mock backend).
     size_t budget = cfg.budget_bytes ? cfg.budget_bytes : (4 * blob_bytes_);
@@ -768,6 +810,17 @@ bool Engine::init(const EngineConfig& cfg) {
         fprintf(stderr, "[engine] prefetcher init failed\n");
         return false;
     }
+
+    // This bounded persistent host representation is startup work. Keep it
+    // outside measured decode and reset the stage profiler afterward so cold
+    // construction is reported independently from steady-state throughput.
+    if (!prepack_quantized_sources()) return false;
+
+    profiler_.configure(cfg.profile_stages, cfg.trace_requests, cache_blob_bytes_,
+                        oracle_.num_experts(), cfg.profile_timeline);
+    cache_.set_profiler(cfg.profile_stages ? &profiler_ : nullptr);
+    prefetcher_.set_profiler(cfg.profile_stages ? &profiler_ : nullptr);
+    oracle_.set_profiler(cfg.profile_stages ? &profiler_ : nullptr);
 
     hidden_buf_[0].assign(hidden_, 0.0f);
     hidden_buf_[1].assign(hidden_, 0.0f);

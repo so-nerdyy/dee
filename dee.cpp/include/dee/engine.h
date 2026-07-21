@@ -91,6 +91,7 @@ struct EngineConfig {
     bool        profile_stages = false;
     bool        trace_requests = false;
     bool        profile_timeline = false;
+    bool        prepack_quantized_source = true;
     BenchmarkScenario scenario = BenchmarkScenario::EndToEnd;
 };
 
@@ -117,6 +118,10 @@ struct EngineStats {
     int cuda_compute_major = 0;
     int cuda_compute_minor = 0;
     int cuda_runtime_version = 0;
+    double quantized_prepack_ms = 0.0;
+    uint64_t quantized_prepack_experts = 0;
+    size_t quantized_prepack_bytes = 0;
+    bool quantized_prepack_complete = false;
     StageProfile profile{};
 };
 
@@ -209,6 +214,7 @@ private:
     const uint16_t* get_staging_bf16(int source_layer, int expert);
     const QuantizedExpert* get_staging_int8(int source_layer, int expert);
     const QuantizedExpert* get_staging_int4(int source_layer, int expert);
+    bool prepack_quantized_sources();
 
     // Stream `expert` from a resolved shard layer into VRAM.  The cache key
     // must describe the source weights, not merely the logical model layer.

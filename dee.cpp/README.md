@@ -142,6 +142,11 @@ and exact common-origin copy/compute interval union. The summary reports copy
 and compute utilization, overlap, idle bubbles, transfer queue depth, and
 host-wait reasons. This detailed timeline is intentionally opt-in.
 
+Quantized transfer modes pre-pack a bounded persistent host source cache before
+timed decoding. The CLI reports startup cost, packed expert count, and packed
+bytes separately. Use `--dynamic-quantization` to retain first-touch
+quantization for cold-start/control comparisons.
+
 Summarize working-set and reuse-distance behavior with:
 
 ```bash
