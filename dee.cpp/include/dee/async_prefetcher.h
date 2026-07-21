@@ -168,6 +168,8 @@ private:
     std::vector<PinnedStagingSlot> staging_slots_;
     size_t next_staging_slot_ = 0;
     size_t active_transfers_ = 0;
+    std::vector<void*> completion_events_;
+    std::vector<void*> free_completion_events_;
 
     long   next_id_ = 0;
     Stats  stats_{};
@@ -187,6 +189,8 @@ private:
     bool   cuda_submit(long idx);  // guarded real submit + event record
     bool   cuda_wait(long idx, HostWaitReason reason);  // guarded real event sync
     void   release_staging(Transfer& transfer);
+    void*  acquire_completion_event();
+    void   release_completion_event(Transfer& transfer);
     bool   release_transfer(Transfer& transfer);
     void   record_request(RequestKind kind, int token, int logical_layer,
                           int resolved_layer, int expert, int priority,

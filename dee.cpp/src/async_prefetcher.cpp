@@ -34,6 +34,12 @@ AsyncPrefetcher::~AsyncPrefetcher() {
             DEE_CUDA_CHECK_NAMED(cudaFree(slot.device_ptr), "cudaFree(BF16 device staging slot)");
         }
     }
+    for (void* event : completion_events_) {
+        if (event) {
+            DEE_CUDA_CHECK_NAMED(cudaEventDestroy(static_cast<cudaEvent_t>(event)),
+                                 "cudaEventDestroy(prefetch completion pool)");
+        }
+    }
     if (stream_) DEE_CUDA_CHECK_NAMED(cudaStreamDestroy(static_cast<cudaStream_t>(stream_)),
                                        "cudaStreamDestroy(prefetch)");
 #endif
@@ -61,6 +67,29 @@ void AsyncPrefetcher::release_staging(Transfer& transfer) {
         transfer.staging_slot = static_cast<size_t>(-1);
     }
 #endif
+}
+
+void* AsyncPrefetcher::acquire_completion_event() {
+#ifdef DEE_CUDA
+    if (!free_completion_events_.empty()) {
+        void* event = free_completion_events_.back();
+        free_completion_events_.pop_back();
+        return event;
+    }
+    cudaEvent_t event = nullptr;
+    if (!DEE_CUDA_CHECK_NAMED(cudaEventCreateWithFlags(&event, cudaEventDisableTiming),
+                              "cudaEventCreateWithFlags(prefetch completion pool)")) return nullptr;
+    completion_events_.push_back(static_cast<void*>(event));
+    return static_cast<void*>(event);
+#else
+    return nullptr;
+#endif
+}
+
+void AsyncPrefetcher::release_completion_event(Transfer& transfer) {
+    if (!transfer.event) return;
+    free_completion_events_.push_back(transfer.event);
+    transfer.event = nullptr;
 }
 
 bool AsyncPrefetcher::release_transfer(Transfer& transfer) {
@@ -327,11 +356,7 @@ void AsyncPrefetcher::reset() {
     synchronize_all();
 #ifdef DEE_CUDA
     for (auto& transfer : inflight_) {
-        if (transfer.event) {
-            DEE_CUDA_CHECK_NAMED(cudaEventDestroy(static_cast<cudaEvent_t>(transfer.event)),
-                                 "cudaEventDestroy(prefetch completion)");
-            transfer.event = nullptr;
-        }
+        release_completion_event(transfer);
         release_transfer(transfer);
     }
 #endif
@@ -428,9 +453,8 @@ bool AsyncPrefetcher::cuda_submit(long index) {
     transfer.staging_slot = chosen;
 
     const auto submission_begin = profiler_ && profiler_->enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
-    cudaEvent_t event = nullptr;
-    if (!DEE_CUDA_CHECK_NAMED(cudaEventCreateWithFlags(&event, cudaEventDisableTiming),
-                              "cudaEventCreateWithFlags(prefetch completion)")) return false;
+    cudaEvent_t event = static_cast<cudaEvent_t>(acquire_completion_event());
+    if (!event) return false;
     transfer.event = static_cast<void*>(event);
     const size_t queue_depth = active_transfers_ + 1;
     if (profiler_ && profiler_->enabled()) {
@@ -506,6 +530,7 @@ bool AsyncPrefetcher::cuda_wait(long index, HostWaitReason reason) {
                                   transfer.staging_slot);
         profiler_->note_host_synchronization();
     }
+    release_completion_event(transfer);
     transfer.done = true;
     if (reason == HostWaitReason::StagingSlot) {
         // The DMA/conversion no longer owns its staging slot, but the cache
