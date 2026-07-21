@@ -76,6 +76,12 @@ private:
     StageProfiler* profiler_ = nullptr;
     bool use_vnni_ = false;
 
+    // Reusable VNNI INT8 buffers.  Mutable so the const forward path can reuse
+    // them without allocating on every Oracle call.
+    mutable std::vector<uint8_t> qx0_, qx1_, qx2_;
+    mutable std::vector<float> h1_vnni_, h2_vnni_;
+    mutable std::vector<float> logits_buf_;  // reused by predict()
+
     // VNNI INT8 forward used when AVX-512 VNNI is available.
     void forward_vnni(int layer, const float* hidden, std::vector<float>& logits) const;
 

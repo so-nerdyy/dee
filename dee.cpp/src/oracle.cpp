@@ -41,7 +41,7 @@ float dot_product_scalar(const float* weights, const float* input, int count) {
 }
 
 #ifdef DEE_ORACLE_X86_TARGETS
-__attribute__((target("avx512vnni")))
+__attribute__((target("avx512vnni,avx512f")))
 int32_t dot_product_vnni_int8(const uint8_t* input, const int8_t* weights, int count) {
     __m512i acc = _mm512_setzero_si512();
     int index = 0;
@@ -150,53 +150,62 @@ void OracleScheduler::quantize_activation(const float* x, int n,
 
 void OracleScheduler::forward_vnni(int layer, const float* hidden,
                                    std::vector<float>& logits) const {
+#ifdef DEE_ORACLE_X86_TARGETS
     const OracleLayerWeights& w = layers_[layer];
-    std::vector<float> h1, h2;
+    float sx;
 
     // Linear0: hidden [D] -> h1 [H]
     {
-        std::vector<uint8_t> qx;
-        float sx;
-        quantize_activation(hidden, D_, qx, sx);
-        timed_resize(h1, static_cast<size_t>(H_), profiler_);
+        const auto linear0_begin = oracle_profiling(profiler_) ? StageProfiler::now() : StageProfiler::TimePoint{};
+        quantize_activation(hidden, D_, qx0_, sx);
+        h1_vnni_.resize(H_);
         for (int o = 0; o < H_; ++o) {
-            int32_t raw = dot_product_vnni_int8(qx.data(), w.w0_q.data() + o * D_, D_);
+            int32_t raw = dot_product_vnni_int8(qx0_.data(), w.w0_q.data() + o * D_, D_);
             int32_t signed_dot = raw - 128 * w.w0_r[o];
-            h1[o] = static_cast<float>(signed_dot) * sx * w.w0_s[o] + w.b0[o];
+            h1_vnni_[o] = static_cast<float>(signed_dot) * sx * w.w0_s[o] + w.b0[o];
         }
+        if (oracle_profiling(profiler_)) profiler_->add_oracle(OracleStage::Linear0, linear0_begin);
         const auto relu0_begin = oracle_profiling(profiler_) ? StageProfiler::now() : StageProfiler::TimePoint{};
-        for (auto& v : h1) v = relu(v);
+        for (auto& v : h1_vnni_) v = relu(v);
         if (oracle_profiling(profiler_)) profiler_->add_oracle(OracleStage::Relu0, relu0_begin);
     }
 
     // Linear1: h1 [H] -> h2 [H]
     {
-        std::vector<uint8_t> qx;
-        float sx;
-        quantize_activation(h1.data(), H_, qx, sx);
-        timed_resize(h2, static_cast<size_t>(H_), profiler_);
+        const auto linear1_begin = oracle_profiling(profiler_) ? StageProfiler::now() : StageProfiler::TimePoint{};
+        quantize_activation(h1_vnni_.data(), H_, qx1_, sx);
+        h2_vnni_.resize(H_);
         for (int o = 0; o < H_; ++o) {
-            int32_t raw = dot_product_vnni_int8(qx.data(), w.w2_q.data() + o * H_, H_);
+            int32_t raw = dot_product_vnni_int8(qx1_.data(), w.w2_q.data() + o * H_, H_);
             int32_t signed_dot = raw - 128 * w.w2_q_r[o];
-            h2[o] = static_cast<float>(signed_dot) * sx * w.w2_s[o] + w.b2[o];
+            h2_vnni_[o] = static_cast<float>(signed_dot) * sx * w.w2_s[o] + w.b2[o];
         }
+        if (oracle_profiling(profiler_)) profiler_->add_oracle(OracleStage::Linear1, linear1_begin);
         const auto relu1_begin = oracle_profiling(profiler_) ? StageProfiler::now() : StageProfiler::TimePoint{};
-        for (auto& v : h2) v = relu(v);
+        for (auto& v : h2_vnni_) v = relu(v);
         if (oracle_profiling(profiler_)) profiler_->add_oracle(OracleStage::Relu1, relu1_begin);
     }
 
     // Linear2: h2 [H] -> logits [E]
     {
-        std::vector<uint8_t> qx;
-        float sx;
-        quantize_activation(h2.data(), H_, qx, sx);
+        const auto linear2_begin = oracle_profiling(profiler_) ? StageProfiler::now() : StageProfiler::TimePoint{};
+        quantize_activation(h2_vnni_.data(), H_, qx2_, sx);
         timed_resize(logits, static_cast<size_t>(E_), profiler_);
         for (int o = 0; o < E_; ++o) {
-            int32_t raw = dot_product_vnni_int8(qx.data(), w.w4_q.data() + o * H_, H_);
+            int32_t raw = dot_product_vnni_int8(qx2_.data(), w.w4_q.data() + o * H_, H_);
             int32_t signed_dot = raw - 128 * w.w4_q_r[o];
             logits[o] = static_cast<float>(signed_dot) * sx * w.w4_s[o] + w.b4[o];
         }
+        if (oracle_profiling(profiler_)) profiler_->add_oracle(OracleStage::Linear2, linear2_begin);
     }
+#else
+    (void)layer;
+    (void)hidden;
+    (void)logits;
+    // forward_vnni() is only invoked when use_vnni_ is true, which never
+    // happens on non-x86 builds.  Keep the function defined so the class
+    // layout is identical across platforms.
+#endif
 }
 
 bool OracleScheduler::load(const std::string& oracle_pt_path, int D, int H, int E) {
@@ -225,12 +234,19 @@ bool OracleScheduler::load(const std::string& oracle_pt_path, int D, int H, int 
     }
 
 #ifdef DEE_ORACLE_X86_TARGETS
-    use_vnni_ = __builtin_cpu_supports("avx512vnni");
+    use_vnni_ = __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512vnni");
 #else
     use_vnni_ = false;
 #endif
 
     if (use_vnni_) {
+        // Pre-size reusable buffers once.
+        qx0_.resize(D_);
+        qx1_.resize(H_);
+        qx2_.resize(H_);
+        h1_vnni_.resize(H_);
+        h2_vnni_.resize(H_);
+        logits_buf_.reserve(static_cast<size_t>(E_));
         for (auto& w : layers_) {
             quantize_weights(w.w0, D_, H_, w.w0_q, w.w0_s, w.w0_r);
             quantize_weights(w.w2, H_, H_, w.w2_q, w.w2_s, w.w2_q_r);
@@ -264,8 +280,9 @@ void OracleScheduler::forward(int layer, const float* hidden, std::vector<float>
 
 void OracleScheduler::predict(int layer, const float* hidden, int topk, std::vector<int>& out) const {
     if (oracle_profiling(profiler_)) profiler_->note_oracle_call();
-    std::vector<float> logits;
-    forward(layer, hidden, logits);
+    logits_buf_.clear();
+    forward(layer, hidden, logits_buf_);
+    std::vector<float>& logits = logits_buf_;
     // argsort by descending logit
     std::vector<int> idx;
     timed_resize(idx, static_cast<size_t>(E_), profiler_);

@@ -620,3 +620,84 @@ the Oracle itself (FP16 oracle or GPU-resident oracle), which would risk the
 10,239/10,240 ordered-match numerical contract that INT8 is being held to.
 Those candidates remained out of scope this campaign and are documented as the
 natural next target. The validated INT8 default is preserved.
+
+## Oracle acceleration campaign (5cc5260 baseline)
+
+This campaign continued from `opt/c0.5-oracle-routing-dump` instrumentation on
+`opt/t4-cublas-swiglu` commit `5cc5260`. The primary command remained:
+
+```bash
+cd ~/dee/dee/dee.cpp && ./build/dee_cli \
+  --shard tests/data/ornith_moe256.safetensors --oracle oracle.pt \
+  --tokens 32 --warmup 2 --topk 8 --layers 40 --cuda
+```
+
+### Fresh baseline
+
+Three normal-mode runs at `5cc5260` produced **23.275, 23.275, and 23.236
+tok/s** (median 23.275 tok/s). The 2% acceptance threshold for this campaign
+is therefore **23.742 tok/s**. CUDA CTest passed 7/7 and CPU CTest passed 6/6.
+Instrumentation (`--oracle-routing-dump` and `--profile-request-timings`)
+produced a routing reference of 1,280 token/layer Oracle calls with zero
+measurable overhead when disabled.
+
+### Candidate C1: AVX-512F FP32 Oracle
+
+Branch `opt/c1-avx512f-oracle` implemented a runtime-dispatched AVX-512F dot
+product for the Oracle MLP, with AVX2 and scalar fallbacks and no global
+`-mavx512f` flag.
+
+| Metric | Value |
+|---|---|
+| Commit | `0e637f9` |
+| Runs | 22.964 / 22.991 / 23.014 tok/s |
+| Median | **22.991 tok/s** |
+| Change vs baseline | **-1.22%** |
+| Acceptance threshold | 23.742 tok/s (not met) |
+| Ordered routes | 1,280 / 1,280 exact |
+| Top-K sets | 1,280 / 1,280 exact |
+| Max logit error vs reference | ~1.0e-3 (target ~1e-5 for FP32) |
+| CUDA CTest | 7/7 |
+| CPU CTest | 6/6 |
+| Verdict | **Rejected** |
+
+The AVX-512F path did not overcome the 2-core host bottleneck; wider vectors
+offered no throughput gain. Although routes remained exact, the logit error was
+larger than the FP32-level gate. Branch preserved for reference, not merged.
+
+### Candidate C3: AVX-512 VNNI INT8 Oracle
+
+Branch `opt/c3-vnni-int8-oracle` quantizes each Oracle matrix per output
+channel to signed INT8 and uses `_mm512_dpbusd_epi32` for the three Linear
+layers, with per-activation symmetric INT8 quantization, separate zero-point
+correction, and reusable member buffers to avoid per-call heap allocation.
+
+| Metric | Value |
+|---|---|
+| Commit | `63d4af8` |
+| Runs | 27.459 / 27.325 / 27.976 tok/s |
+| Median | **27.459 tok/s** |
+| Change vs baseline | **+18.0%** |
+| Acceptance threshold | 23.742 tok/s (met on speed) |
+| Ordered routes | **1,175 / 1,280** (not exact) |
+| Top-K sets | **1,278 / 1,280** (not exact) |
+| Max logit error vs reference | 7.433e-01 |
+| CUDA CTest | 7/7 |
+| CPU CTest | 6/6 |
+| Verdict | **Rejected** |
+
+The INT8 scores deviated enough to change 105 of 1,280 ordered routes and 2 of
+1,280 top-K sets, violating the strict routing gate. Speed was substantially
+improved, but the candidate cannot be accepted while routing equivalence is
+required. Branch preserved for reference, not merged.
+
+### Campaign status so far
+
+Accepted commits this campaign: **none**.
+Rejected-but-preserved candidate branches:
+- `opt/c1-avx512f-oracle` (HEAD `0e637f9`): median 22.991 tok/s (-1.22%).
+- `opt/c3-vnni-int8-oracle` (HEAD `63d4af8`): median 27.459 tok/s (+18.0%),
+  rejected on routing equivalence.
+
+The next planned candidate set is the mixed-INT4 expert-transfer sweep
+(C5a/C5b).
