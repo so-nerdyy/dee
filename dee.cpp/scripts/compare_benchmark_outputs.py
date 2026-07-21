@@ -53,7 +53,10 @@ def main() -> int:
     dot = sum(lhs * rhs for lhs, rhs in zip(expected, actual))
     expected_norm = math.sqrt(sum(value * value for value in expected))
     actual_norm = math.sqrt(sum(value * value for value in actual))
-    cosine = dot / (expected_norm * actual_norm) if expected_norm and actual_norm else 0.0
+    if expected_norm and actual_norm:
+        cosine = dot / (expected_norm * actual_norm)
+    else:
+        cosine = 1.0 if expected == actual else 0.0
 
     reference_routes = routes(reference)
     candidate_routes = routes(candidate)
