@@ -664,7 +664,6 @@ bool Engine::prepack_quantized_sources() {
             }
             if ((cfg_.transfer_dtype == WeightTransferDType::MixedInt4B && !mixed_blob) ||
                 (cfg_.transfer_dtype != WeightTransferDType::MixedInt4B && !packed)) {
-            if (!packed) {
                 std::fprintf(stderr,
                     "[engine] quantized source prepack failed for layer %d expert %d\n",
                     source_layer, expert);

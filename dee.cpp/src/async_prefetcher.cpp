@@ -155,7 +155,7 @@ long AsyncPrefetcher::prefetch_int4_to_f16(int layer, int expert, const uint8_t*
         elements > std::numeric_limits<size_t>::max() / sizeof(uint16_t)) return -1;
     return prefetch_impl(layer, expert, src, (elements + 1) / 2,
                          elements * sizeof(uint16_t), false, true, false, true,
-                         false, projection_elements, scales, nullptr, nullptr,
+                         false, projection_elements, scales, nullptr, nullptr, nullptr,
                          source_pinned, priority,
                          token, logical_layer);
 }
@@ -248,6 +248,7 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
         transfer.projection_elements = projection_elements;
         if (quant_scales) std::copy(quant_scales, quant_scales + 3, transfer.quant_scales);
         if (mixed_int4b_int4_scales) std::copy(mixed_int4b_int4_scales, mixed_int4b_int4_scales + 3, transfer.quant_scales);
+        if (mixed_int4b_int8_scales) std::copy(mixed_int4b_int8_scales, mixed_int4b_int8_scales + 3, transfer.int8_scales);
         if (mixed_int4b_masks) std::copy(mixed_int4b_masks, mixed_int4b_masks + 3, transfer.outlier_masks);
         transfer.source_pinned = source_pinned;
         transfer.done = true;
