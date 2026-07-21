@@ -87,7 +87,6 @@ private:
         float* d_b4 = nullptr;
     };
     std::vector<GpuLayerWeights> gpu_layers_;
-    float* d_scratch_ = nullptr;  // persistent scratch buffer (H_ + E_ floats)
 #endif
 };
 

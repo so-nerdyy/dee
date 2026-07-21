@@ -981,6 +981,10 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
             experts.push_back((layer * cfg_.topk + k) % oracle_.num_experts());
         }
     } else if (gpu_oracle_ready_) {
+        // Hidden must be on device before GPU Oracle runs
+        if (!DEE_CUDA_CHECK_NAMED(cudaMemcpyAsync(d_h_in_, h_in, (size_t)hidden_ * sizeof(float),
+                                                  cudaMemcpyHostToDevice, compute_stream_),
+                                  "cudaMemcpyAsync(hidden for GPU Oracle)")) return false;
         const auto oracle_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
         oracle_.predict_gpu(layer, d_h_in_, d_oracle_scratch_, cublas_handle_,
                             static_cast<void*>(compute_stream_), cfg_.topk, experts);

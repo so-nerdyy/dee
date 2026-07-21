@@ -189,9 +189,6 @@ __global__ void oracle_relu_kernel(float* x, int n) {
 
 bool OracleScheduler::upload_to_gpu() {
     gpu_layers_.resize(layers_.size());
-    const size_t scratch_bytes = static_cast<size_t>(H_ + E_) * sizeof(float);
-    if (!DEE_CUDA_CHECK_NAMED(cudaMalloc(&d_scratch_, scratch_bytes),
-                              "cudaMalloc(oracle scratch)")) return false;
 
     for (size_t l = 0; l < layers_.size(); ++l) {
         const auto& cpu = layers_[l];
@@ -228,7 +225,6 @@ void OracleScheduler::free_gpu() {
         safe_free(gpu.d_w4); safe_free(gpu.d_b4);
     }
     gpu_layers_.clear();
-    if (d_scratch_) { cudaFree(d_scratch_); d_scratch_ = nullptr; }
 }
 
 void OracleScheduler::predict_gpu(int layer, const float* d_hidden, float* d_scratch,
@@ -237,27 +233,26 @@ void OracleScheduler::predict_gpu(int layer, const float* d_hidden, float* d_scr
     if (oracle_profiling(profiler_)) profiler_->note_oracle_call();
     const auto& gpu = gpu_layers_[layer];
     cudaStream_t cuda_stream = static_cast<cudaStream_t>(stream);
-
-    // Disable TF32 to match CPU FP32 precision exactly
-    DEE_CUBLAS_CHECK_NAMED(cublasSetMathMode(handle, CUBLAS_DEFAULT_MATH),
-                           "cublasSetMathMode(DEFAULT_MATH)");
+    DEE_CUBLAS_CHECK_NAMED(cublasSetStream(handle, cuda_stream),
+                           "cublasSetStream(oracle)");
 
     const float alpha = 1.0f, beta = 0.0f;
     const int D = D_, H = H_, E = E_;
     float* d_act = d_scratch;
     float* d_act2 = d_scratch + H;
 
-    // Linear0: W0[256x2048] * hidden[2048] + b0 -> act[256]
-    DEE_CUBLAS_CHECK_NAMED(cublasSgemv(handle, CUBLAS_OP_N, H, D,
-                                       &alpha, gpu.d_w0, H, d_hidden, 1,
+    // Row-major W0[256x2048]: use CUBLAS_OP_T with A described as 2048x256 col-major,
+    // lda=2048. y[256] = W0[256x2048] * x[2048]
+    DEE_CUBLAS_CHECK_NAMED(cublasSgemv(handle, CUBLAS_OP_T, D, H,
+                                       &alpha, gpu.d_w0, D, d_hidden, 1,
                                        &beta, d_act, 1), "cublasSgemv(W0)");
     DEE_CUBLAS_CHECK_NAMED(cublasSaxpy(handle, H, &alpha, gpu.d_b0, 1, d_act, 1),
                            "cublasSaxpy(b0)");
     oracle_relu_kernel<<<1, 256, 0, cuda_stream>>>(d_act, H);
     DEE_CUDA_CHECK_LAUNCH("oracle_relu(0)");
 
-    // Linear1: W2[256x256] * act[256] + b2 -> act2[256]
-    DEE_CUBLAS_CHECK_NAMED(cublasSgemv(handle, CUBLAS_OP_N, H, H,
+    // Row-major W2[256x256]: use CUBLAS_OP_T, lda=256
+    DEE_CUBLAS_CHECK_NAMED(cublasSgemv(handle, CUBLAS_OP_T, H, H,
                                        &alpha, gpu.d_w2, H, d_act, 1,
                                        &beta, d_act2, 1), "cublasSgemv(W2)");
     DEE_CUBLAS_CHECK_NAMED(cublasSaxpy(handle, H, &alpha, gpu.d_b2, 1, d_act2, 1),
@@ -265,9 +260,9 @@ void OracleScheduler::predict_gpu(int layer, const float* d_hidden, float* d_scr
     oracle_relu_kernel<<<1, 256, 0, cuda_stream>>>(d_act2, H);
     DEE_CUDA_CHECK_LAUNCH("oracle_relu(1)");
 
-    // Linear2: W4[256x256] * act2[256] + b4 -> act[256]
-    DEE_CUBLAS_CHECK_NAMED(cublasSgemv(handle, CUBLAS_OP_N, E, H,
-                                       &alpha, gpu.d_w4, E, d_act2, 1,
+    // Row-major W4[256x256]: use CUBLAS_OP_T, lda=256
+    DEE_CUBLAS_CHECK_NAMED(cublasSgemv(handle, CUBLAS_OP_T, H, H,
+                                       &alpha, gpu.d_w4, H, d_act2, 1,
                                        &beta, d_act, 1), "cublasSgemv(W4)");
     DEE_CUBLAS_CHECK_NAMED(cublasSaxpy(handle, E, &alpha, gpu.d_b4, 1, d_act, 1),
                            "cublasSaxpy(b4)");
