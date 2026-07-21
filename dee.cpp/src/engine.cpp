@@ -16,6 +16,7 @@
 #ifdef DEE_CUDA
 #include <cuda_runtime.h>
 #include "dee/cuda_check.h"
+#include "dee/cuda_convert.h"
 #include "dee/swiglu_cuda.h"
 #endif
 
@@ -38,6 +39,14 @@ const char* benchmark_scenario_name(BenchmarkScenario scenario) {
         case BenchmarkScenario::ComputeOnly: return "compute-only";
         case BenchmarkScenario::OracleOnly: return "oracle-only";
         case BenchmarkScenario::CacheMetadataOnly: return "cache-metadata-only";
+    }
+    return "unknown";
+}
+
+const char* device_cache_dtype_name(DeviceCacheDType dtype) {
+    switch (dtype) {
+        case DeviceCacheDType::Fp32: return "fp32";
+        case DeviceCacheDType::Fp16: return "fp16";
     }
     return "unknown";
 }
@@ -175,9 +184,14 @@ bool Engine::stage_expert(int logical_layer, int source_layer, int expert, int p
         }
         const bool source_pinned = pinned_staging_bf16_.find(
             staging_key(source_layer, expert)) != pinned_staging_bf16_.end();
-        return prefetcher_.prefetch_bf16_to_f32(
-                   source_layer, expert, blob, blob_elems_, priority,
-                   current_token_, logical_layer, source_pinned) >= 0;
+        const long transfer = cfg_.cache_dtype == DeviceCacheDType::Fp16
+            ? prefetcher_.prefetch_bf16_to_f16(
+                  source_layer, expert, blob, blob_elems_, priority,
+                  current_token_, logical_layer, source_pinned)
+            : prefetcher_.prefetch_bf16_to_f32(
+                  source_layer, expert, blob, blob_elems_, priority,
+                  current_token_, logical_layer, source_pinned);
+        return transfer >= 0;
     }
     const float* blob = get_staging(source_layer, expert);
     if (!blob) {
@@ -227,7 +241,7 @@ bool Engine::prepare_profile_scenario() {
     scenario_resident_hits_ = 0;
     scenario_cold_loads_ = 0;
     profiler_.configure(cfg_.profile_stages, cfg_.trace_requests,
-                        blob_bytes_, oracle_.num_experts(), cfg_.profile_timeline);
+                        cache_blob_bytes_, oracle_.num_experts(), cfg_.profile_timeline);
     cache_.set_profiler(cfg_.profile_stages ? &profiler_ : nullptr);
     prefetcher_.set_profiler(cfg_.profile_stages ? &profiler_ : nullptr);
     oracle_.set_profiler(cfg_.profile_stages ? &profiler_ : nullptr);
@@ -281,6 +295,10 @@ bool Engine::init(const EngineConfig& cfg) {
         return false;
     }
     hidden_ = cfg.hidden;
+    if (cfg.cache_dtype == DeviceCacheDType::Fp16 && !cfg.use_cuda) {
+        std::fprintf(stderr, "[engine] FP16 device cache requires --cuda\n");
+        return false;
+    }
     if (!prefetcher_.set_ring_size(cfg.prefetch_depth)) {
         std::fprintf(stderr, "[engine] invalid or late prefetch depth: %zu\n", cfg.prefetch_depth);
         return false;
@@ -291,6 +309,8 @@ bool Engine::init(const EngineConfig& cfg) {
     inter_  = 256;            // provisional; overwritten below from the shard
     blob_elems_ = 3ULL * (size_t)inter_ * hidden_;
     blob_bytes_ = blob_elems_ * sizeof(float);
+    cache_blob_bytes_ = cfg.cache_dtype == DeviceCacheDType::Fp16
+        ? blob_elems_ * sizeof(uint16_t) : blob_bytes_;
 
     if (!std::filesystem::is_regular_file(cfg.shard_path)) {
         std::fprintf(stderr, "[engine] shard does not exist or is not a file: %s\n", cfg.shard_path.c_str());
@@ -316,6 +336,8 @@ bool Engine::init(const EngineConfig& cfg) {
     hidden_ = (int)gv.shape[1];
     blob_elems_ = 3ULL * (size_t)inter_ * hidden_;
     blob_bytes_ = blob_elems_ * sizeof(float);
+    cache_blob_bytes_ = cfg.cache_dtype == DeviceCacheDType::Fp16
+        ? blob_elems_ * sizeof(uint16_t) : blob_bytes_;
     if (hidden_ != cfg.hidden) {
         fprintf(stderr, "[engine] shard hidden %d != configured %d\n", hidden_, cfg.hidden);
         return false;
@@ -339,7 +361,7 @@ bool Engine::init(const EngineConfig& cfg) {
     }
     int nl = std::min(cfg.num_layers, oracle_.num_layers());
     cfg_.num_layers = nl;
-    profiler_.configure(cfg.profile_stages, cfg.trace_requests, blob_bytes_,
+    profiler_.configure(cfg.profile_stages, cfg.trace_requests, cache_blob_bytes_,
                         oracle_.num_experts(), cfg.profile_timeline);
     cache_.set_profiler(cfg.profile_stages ? &profiler_ : nullptr);
     prefetcher_.set_profiler(cfg.profile_stages ? &profiler_ : nullptr);
@@ -355,11 +377,11 @@ bool Engine::init(const EngineConfig& cfg) {
         std::unordered_set<int> source_layers;
         for (int layer = 0; layer < cfg_.num_layers; ++layer) source_layers.insert(avail_layer(layer));
         const size_t physical_experts = source_layers.size() * static_cast<size_t>(oracle_.num_experts());
-        if (physical_experts > std::numeric_limits<size_t>::max() / blob_bytes_) {
+        if (physical_experts > std::numeric_limits<size_t>::max() / cache_blob_bytes_) {
             std::fprintf(stderr, "[engine] full-resident scenario cache size overflow\n");
             return false;
         }
-        budget = physical_experts * blob_bytes_;
+        budget = physical_experts * cache_blob_bytes_;
     }
     cfg_.budget_bytes = budget;
     Arena::Backend be;
@@ -398,8 +420,17 @@ bool Engine::init(const EngineConfig& cfg) {
         d_hbuf_  = dev_alloc((size_t)inter_  * sizeof(float));
         d_ubuf_  = dev_alloc((size_t)inter_  * sizeof(float));
         d_ybuf_  = dev_alloc((size_t)cfg.topk * hidden_ * sizeof(float));
+        if (cfg_.cache_dtype == DeviceCacheDType::Fp16) {
+            d_h_in_half_ = dev_alloc((size_t)hidden_ * sizeof(uint16_t));
+            d_activation_half_ = dev_alloc((size_t)inter_ * sizeof(uint16_t));
+        }
         if (!d_h_in_ || !d_h_out_ || !d_hbuf_ || !d_ubuf_ || !d_ybuf_) {
             fprintf(stderr, "[engine] device work-buffer allocation failed\n");
+            return false;
+        }
+        if (cfg_.cache_dtype == DeviceCacheDType::Fp16 &&
+            (!d_h_in_half_ || !d_activation_half_)) {
+            fprintf(stderr, "[engine] FP16 device work-buffer allocation failed\n");
             return false;
         }
         size_t freeB = 0, totalB = 0;
@@ -523,6 +554,7 @@ bool Engine::generate() {
     // validate output hidden is finite
     const float* out = hidden_buf_[cur].data();
     stats_.hidden_finite = true;
+    stats_.final_hidden.assign(out, out + hidden_);
     for (int i = 0; i < hidden_; ++i) {
         if (!std::isfinite(out[i])) { stats_.hidden_finite = false; break; }
     }
@@ -536,6 +568,8 @@ void Engine::cuda_cleanup() {
     if (d_hbuf_)  { DEE_CUDA_CHECK_NAMED(cudaFree(d_hbuf_), "cudaFree(d_hbuf)");  d_hbuf_  = nullptr; }
     if (d_ubuf_)  { DEE_CUDA_CHECK_NAMED(cudaFree(d_ubuf_), "cudaFree(d_ubuf)");  d_ubuf_  = nullptr; }
     if (d_ybuf_)  { DEE_CUDA_CHECK_NAMED(cudaFree(d_ybuf_), "cudaFree(d_ybuf)");  d_ybuf_  = nullptr; }
+    if (d_h_in_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_h_in_half_), "cudaFree(d_h_in_half)"); d_h_in_half_ = nullptr; }
+    if (d_activation_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_activation_half_), "cudaFree(d_activation_half)"); d_activation_half_ = nullptr; }
     if (cublas_handle_) { DEE_CUBLAS_CHECK_NAMED(cublasDestroy(cublas_handle_), "cublasDestroy"); cublas_handle_ = nullptr; }
     if (compute_stream_) { DEE_CUDA_CHECK_NAMED(cudaStreamDestroy(compute_stream_), "cudaStreamDestroy(compute)"); compute_stream_ = nullptr; }
 }
@@ -568,7 +602,7 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
     }
 
     if (cfg_.scenario == BenchmarkScenario::CacheMetadataOnly) {
-        const int batch_size = std::max(1, static_cast<int>(cache_.budget_bytes() / blob_bytes_));
+        const int batch_size = std::max(1, static_cast<int>(cache_.budget_bytes() / cache_blob_bytes_));
         for (int first = 0; first < K; first += batch_size) {
             const int last = std::min(K, first + batch_size);
             std::vector<int> pinned;
@@ -576,7 +610,7 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
             for (int k = first; k < last; ++k) {
                 const int expert = experts[k];
                 const bool resident = cache_.is_resident(source_layer, expert);
-                if (!cache_.ensure(source_layer, expert, blob_bytes_, cfg_.topk - k) ||
+                if (!cache_.ensure(source_layer, expert, cache_blob_bytes_, cfg_.topk - k) ||
                     !cache_.pin(source_layer, expert)) return false;
                 pinned.push_back(expert);
                 ++scenario_requests_;
@@ -611,10 +645,13 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
             if (!profiler_.cuda_end(input_h2d_ticket, static_cast<void*>(compute_stream_))) return false;
             profiler_.note_h2d_copy(static_cast<size_t>(hidden_) * sizeof(float));
         }
+        if (cfg_.cache_dtype == DeviceCacheDType::Fp16 &&
+            !f32_to_f16_cuda(d_h_in_, d_h_in_half_, static_cast<size_t>(hidden_),
+                             compute_stream_, nullptr)) return false;
     }
 
     const auto batch_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
-    const int batch_size = std::max(1, static_cast<int>(cache_.budget_bytes() / blob_bytes_));
+    const int batch_size = std::max(1, static_cast<int>(cache_.budget_bytes() / cache_blob_bytes_));
     if (profiler_.enabled()) profiler_.add_cpu(CpuStage::BatchConstruction, batch_begin);
     const bool bypass_cache = cfg_.scenario == BenchmarkScenario::ResidentBypass ||
                               cfg_.scenario == BenchmarkScenario::ComputeOnly;
@@ -631,13 +668,20 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
             if (!bypass_cache && !prefetcher_.wait(source_layer, e)) return false;
             if (cfg_.scenario == BenchmarkScenario::TransferOnly) continue;
             if (!bypass_cache && !cache_.pin(source_layer, e)) return false;
-            const float* d_blob = static_cast<const float*>(cache_.data(source_layer, e));
+            const void* d_blob = cache_.data(source_layer, e);
             if (profiler_.enabled()) {
                 profiler_.set_cuda_context(current_token_, layer, e);
             }
-            if (!d_blob || !swiglu_expert_cuda(cublas_handle_, d_blob, d_h_in_, d_hbuf_, d_ubuf_,
-                                                d_ybuf_ + (size_t)k * hidden_, inter_, hidden_, compute_stream_,
-                                                profiler_.enabled() ? &profiler_ : nullptr)) {
+            const bool swiglu_ok = d_blob && (cfg_.cache_dtype == DeviceCacheDType::Fp16
+                ? swiglu_expert_fp16_cuda(cublas_handle_, d_blob, d_h_in_half_, d_hbuf_, d_ubuf_,
+                                           d_activation_half_, d_ybuf_ + (size_t)k * hidden_,
+                                           inter_, hidden_, compute_stream_,
+                                           profiler_.enabled() ? &profiler_ : nullptr)
+                : swiglu_expert_cuda(cublas_handle_, static_cast<const float*>(d_blob), d_h_in_,
+                                     d_hbuf_, d_ubuf_, d_ybuf_ + (size_t)k * hidden_,
+                                     inter_, hidden_, compute_stream_,
+                                     profiler_.enabled() ? &profiler_ : nullptr));
+            if (!swiglu_ok) {
                 if (!bypass_cache) cache_.unpin(source_layer, e);
                 return false;
             }

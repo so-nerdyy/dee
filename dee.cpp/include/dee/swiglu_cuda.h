@@ -25,6 +25,14 @@ bool swiglu_expert_cuda(cublasHandle_t handle, const float* d_W, const float* d_
                         int inter, int hidden, cudaStream_t stream,
                         StageProfiler* profiler = nullptr);
 
+// FP16 cache path: weights and input/activation remain FP16 while cuBLAS
+// accumulates each projection into FP32 outputs.
+bool swiglu_expert_fp16_cuda(cublasHandle_t handle, const void* d_W,
+                             const void* d_x, float* d_gate, float* d_up,
+                             void* d_activation, float* d_y,
+                             int inter, int hidden, cudaStream_t stream,
+                             StageProfiler* profiler = nullptr);
+
 // Combine K expert outputs (each hidden floats, packed in d_ybuf) -> mean.
 bool combine_cuda(const float* d_ybuf, float* d_out, int K, int hidden,
                   cudaStream_t stream, StageProfiler* profiler = nullptr);

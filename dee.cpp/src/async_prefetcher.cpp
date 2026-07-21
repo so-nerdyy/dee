@@ -90,7 +90,7 @@ void AsyncPrefetcher::record_request(RequestKind kind, int token, int logical_la
 
 long AsyncPrefetcher::prefetch(int layer, int expert, const void* src, size_t nbytes,
                                int priority, int token, int logical_layer) {
-    return prefetch_impl(layer, expert, src, nbytes, nbytes, false,
+    return prefetch_impl(layer, expert, src, nbytes, nbytes, false, false,
                          false, priority, token, logical_layer);
 }
 
@@ -104,13 +104,27 @@ long AsyncPrefetcher::prefetch_bf16_to_f32(int layer, int expert, const uint16_t
     }
     if (elements > std::numeric_limits<size_t>::max() / sizeof(float)) return -1;
     return prefetch_impl(layer, expert, src, elements * sizeof(uint16_t),
-                         elements * sizeof(float), true, source_pinned, priority, token,
+                         elements * sizeof(float), true, false, source_pinned, priority, token,
                          logical_layer);
+}
+
+long AsyncPrefetcher::prefetch_bf16_to_f16(int layer, int expert, const uint16_t* src,
+                                           size_t elements, int priority,
+                                           int token, int logical_layer,
+                                           bool source_pinned) {
+    if (!use_cuda_) {
+        std::fprintf(stderr, "AsyncPrefetcher: BF16-to-FP16 conversion requires CUDA\n");
+        return -1;
+    }
+    if (elements > std::numeric_limits<size_t>::max() / sizeof(uint16_t)) return -1;
+    return prefetch_impl(layer, expert, src, elements * sizeof(uint16_t),
+                         elements * sizeof(uint16_t), true, true, source_pinned,
+                         priority, token, logical_layer);
 }
 
 long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
                                     size_t source_nbytes, size_t destination_nbytes,
-                                    bool expand_bf16, bool source_pinned,
+                                    bool expand_bf16, bool cache_fp16, bool source_pinned,
                                     int priority, int token,
                                     int logical_layer) {
     if (!src || source_nbytes == 0 || destination_nbytes == 0) {
@@ -160,6 +174,7 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
         transfer.nbytes = destination_nbytes;
         transfer.source_nbytes = source_nbytes;
         transfer.expand_bf16 = expand_bf16;
+        transfer.cache_fp16 = cache_fp16;
         transfer.source_pinned = source_pinned;
         transfer.done = true;
         transfer.id = next_id_++;
@@ -184,6 +199,7 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
     transfer.nbytes = destination_nbytes;
     transfer.source_nbytes = source_nbytes;
     transfer.expand_bf16 = expand_bf16;
+    transfer.cache_fp16 = cache_fp16;
     transfer.source_pinned = source_pinned;
     transfer.id = next_id_++;
     transfer.cache_pin_held = true;
@@ -384,10 +400,16 @@ bool AsyncPrefetcher::cuda_submit(long index) {
                                               cudaMemcpyHostToDevice, static_cast<cudaStream_t>(stream_)),
                               "cudaMemcpyAsync(pinned staging to expert cache)")) return false;
     if (profiler_ && profiler_->enabled() && !profiler_->cuda_end(h2d_ticket, stream_)) return false;
-    if (transfer.expand_bf16 &&
-        !bf16_to_f32_cuda(static_cast<const uint16_t*>(slot.device_ptr),
-                          static_cast<float*>(transfer.dst), transfer.nbytes / sizeof(float),
-                          static_cast<cudaStream_t>(stream_), profiler_)) return false;
+    if (transfer.expand_bf16) {
+        const size_t elements = transfer.source_nbytes / sizeof(uint16_t);
+        const bool converted = transfer.cache_fp16
+            ? bf16_to_f16_cuda(static_cast<const uint16_t*>(slot.device_ptr), transfer.dst,
+                               elements, static_cast<cudaStream_t>(stream_), profiler_)
+            : bf16_to_f32_cuda(static_cast<const uint16_t*>(slot.device_ptr),
+                               static_cast<float*>(transfer.dst), elements,
+                               static_cast<cudaStream_t>(stream_), profiler_);
+        if (!converted) return false;
+    }
     if (!DEE_CUDA_CHECK_NAMED(cudaEventRecord(event, static_cast<cudaStream_t>(stream_)),
                               "cudaEventRecord(prefetch completion)")) return false;
     if (profiler_ && profiler_->enabled()) {

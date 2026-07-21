@@ -59,6 +59,13 @@ enum class BenchmarkScenario {
 
 const char* benchmark_scenario_name(BenchmarkScenario scenario);
 
+enum class DeviceCacheDType {
+    Fp32,
+    Fp16
+};
+
+const char* device_cache_dtype_name(DeviceCacheDType dtype);
+
 struct EngineConfig {
     std::string shard_path;    // safetensors MoE shard (mapped by WeightMmap)
     std::string oracle_path;   // PyTorch .pt Oracle (read by PtLoader)
@@ -67,6 +74,7 @@ struct EngineConfig {
     int         num_layers  = 40;   // depth (clamped to oracle.num_layers)
     size_t      budget_bytes = 0;   // VRAM budget (0 => 4 experts auto)
     size_t      prefetch_depth = 64;// bounded pinned/device staging ring
+    DeviceCacheDType cache_dtype = DeviceCacheDType::Fp32;
     bool        use_cuda    = false;// DEE_CUDA path (only if built WITH cuda)
     int         hidden      = 2048; // model hidden dim (checked vs shard)
     int         inter       = 256;  // expert intermediate dim (checked vs shard)
@@ -93,6 +101,7 @@ struct EngineStats {
     uint64_t cold_loads = 0;
     uint64_t duplicate_requests = 0;
     bool   hidden_finite = true;   // output hidden all-finite at the end
+    std::vector<float> final_hidden; // final normalized hidden for validation
     size_t cuda_total    = 0;       // GPU memory total (cudaMemGetInfo), 0 if N/A
     size_t cuda_free     = 0;       // GPU memory free  (cudaMemGetInfo), 0 if N/A
     std::string cuda_device_name;
@@ -139,7 +148,8 @@ private:
     int    hidden_ = 2048;
     int    inter_  = 256;
     size_t blob_elems_ = 0;   // floats per expert blob (gate|up|down)
-    size_t blob_bytes_ = 0;   // bytes per expert blob
+    size_t blob_bytes_ = 0;   // FP32 bytes per expert blob (budget baseline)
+    size_t cache_blob_bytes_ = 0; // bytes per expert in selected device format
 
 #ifdef DEE_CUDA
     // GPU working set (allocated in init when use_cuda)
@@ -149,6 +159,8 @@ private:
     float* d_hbuf_   = nullptr;   // [inter]  scratch for swiglu phase 1
     float* d_ubuf_   = nullptr;   // [inter]  up-projection scratch
     float* d_ybuf_   = nullptr;   // [topk * hidden] per-expert outputs
+    void* d_h_in_half_ = nullptr; // [hidden] FP16 input for FP16 cache mode
+    void* d_activation_half_ = nullptr; // [inter] FP16 SwiGLU activation
     cublasHandle_t cublas_handle_ = nullptr;
     size_t cuda_total_ = 0, cuda_free_ = 0;  // from cudaMemGetInfo
     void cuda_cleanup();

@@ -15,6 +15,12 @@ namespace dee {
 bool bf16_to_f32_cuda(const uint16_t* source, float* destination, size_t elements,
                       cudaStream_t stream, StageProfiler* profiler = nullptr);
 
+bool bf16_to_f16_cuda(const uint16_t* source, void* destination, size_t elements,
+                      cudaStream_t stream, StageProfiler* profiler = nullptr);
+
+bool f32_to_f16_cuda(const float* source, void* destination, size_t elements,
+                     cudaStream_t stream, StageProfiler* profiler = nullptr);
+
 }  // namespace dee
 
 #endif

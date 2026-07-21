@@ -23,6 +23,7 @@ void usage(const char* argv0) {
         "  --layers N         Decoder layers (default: 40, clamped to oracle)\n"
         "  --budget BYTES     Expert-cache budget (0 = four expert blobs)\n"
         "  --prefetch-depth N Bounded staging/transfer ring depth (default: 64)\n"
+        "  --cache-dtype D    Device expert cache: fp32 (default) or fp16\n"
         "  --cuda             Use CUDA; requires a DEE_CUDA build and a GPU\n"
         "  --profile-stages   Enable detailed CPU/CUDA stage timing\n"
         "  --profile-scenario M Controlled profile: end-to-end, full-resident,\n"
@@ -81,6 +82,18 @@ bool parse_scenario(const char* text, dee::BenchmarkScenario& out) {
     return true;
 }
 
+bool parse_cache_dtype(const char* text, dee::DeviceCacheDType& out) {
+    if (!text) return false;
+    const std::string value(text);
+    if (value == "fp32") out = dee::DeviceCacheDType::Fp32;
+    else if (value == "fp16") out = dee::DeviceCacheDType::Fp16;
+    else {
+        std::fprintf(stderr, "[cli] invalid --cache-dtype value: %s (expected fp32 or fp16)\n", text);
+        return false;
+    }
+    return true;
+}
+
 const char* require_value(int& index, int argc, char** argv, const char* option) {
     if (index + 1 >= argc) {
         std::fprintf(stderr, "[cli] %s requires a value\n", option);
@@ -104,6 +117,7 @@ void print_result(const dee::EngineConfig& cfg, const dee::EngineStats& stats, i
     std::printf("elapsed measured time  : %.6f s\n", stats.elapsed_sec);
     std::printf("tokens per second      : %.3f\n", stats.tok_per_sec);
     std::printf("configured cache budget: %zu bytes\n", cfg.budget_bytes);
+    std::printf("device cache dtype      : %s\n", dee::device_cache_dtype_name(cfg.cache_dtype));
     std::printf("prefetch ring depth     : %zu\n", cfg.prefetch_depth);
     std::printf("peak expert-cache VRAM : %zu bytes\n", stats.peak_vram);
     std::printf("cache hits             : %llu\n", static_cast<unsigned long long>(stats.cache_hits));
@@ -233,6 +247,7 @@ std::string benchmark_json(const dee::EngineConfig& cfg, const dee::EngineStats&
         << ",\"elapsed_seconds\":" << stats.elapsed_sec
         << ",\"tokens_per_second\":" << stats.tok_per_sec
         << ",\"cache_budget_bytes\":" << cfg.budget_bytes
+        << ",\"cache_dtype\":\"" << dee::device_cache_dtype_name(cfg.cache_dtype) << '\"'
         << ",\"peak_cache_bytes\":" << stats.peak_vram
         << ",\"requests\":" << stats.prefetch_issued
         << ",\"resident_hits\":" << stats.resident_hits
@@ -242,6 +257,14 @@ std::string benchmark_json(const dee::EngineConfig& cfg, const dee::EngineStats&
         << ",\"evictions\":" << stats.evictions
         << ",\"prefetch_fallbacks\":" << stats.prefetch_fallbacks
         << ",\"output_finite\":" << (stats.hidden_finite ? "true" : "false") << '}';
+    if (include_trace) {
+        out << ",\"final_hidden\":[";
+        for (size_t i = 0; i < stats.final_hidden.size(); ++i) {
+            if (i) out << ',';
+            out << stats.final_hidden[i];
+        }
+        out << ']';
+    }
     out << ",\"profile\":" << dee::stage_profile_json(stats.profile, include_trace) << '}';
     return out.str();
 }
@@ -299,6 +322,9 @@ int main(int argc, char** argv) {
             if (!(value = require_value(i, argc, argv, "--prefetch-depth")) ||
                 !parse_size(value, "--prefetch-depth", cfg.prefetch_depth) ||
                 cfg.prefetch_depth == 0) return 2;
+        } else if (arg == "--cache-dtype") {
+            if (!(value = require_value(i, argc, argv, "--cache-dtype")) ||
+                !parse_cache_dtype(value, cfg.cache_dtype)) return 2;
         } else if (arg == "--profile-json") {
             if (!(value = require_value(i, argc, argv, "--profile-json"))) return 2;
             profile_json_path = value;
@@ -330,6 +356,11 @@ int main(int argc, char** argv) {
         return 2;
     }
 #endif
+
+    if (cfg.cache_dtype == dee::DeviceCacheDType::Fp16 && !cfg.use_cuda) {
+        std::fprintf(stderr, "[cli] --cache-dtype fp16 requires --cuda\n");
+        return 2;
+    }
 
     if (cfg.profile_timeline && !cfg.use_cuda) {
         std::fprintf(stderr, "[cli] --profile-timeline requires --cuda\n");
