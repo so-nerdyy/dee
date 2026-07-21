@@ -17,9 +17,9 @@
 //     emit(hidden)
 //
 // CPU mode bundles gate|up|down into an F32 host blob. CUDA keeps a BF16 host
-// blob through pinned staging and H2D, then expands it into one F32 cache block
-// on the prefetch stream. The forward pass slices the projections from that
-// block. SwiGLU is plain C++
+// blob through pinned staging and H2D, then converts it into the configured
+// FP16 or FP32 cache block on the prefetch stream. The forward pass slices the
+// projections from that block. SwiGLU is plain C++
 // (row-major matmuls); the CUDA/ggml path slots in later behind the same API.
 //
 // On a box without a GPU (this WSL build, DEE_CUDA=OFF) the cache + prefetcher

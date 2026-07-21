@@ -3,14 +3,16 @@
 `dee.cpp` is a correctness-first C++17/CUDA implementation of the Dynamic
 Expert Eviction control path: a safetensors shard is mapped read-only, Oracle
 predictions select experts, a fixed cache manages residency, and CUDA runs a
-small FP32 SwiGLU reference kernel on resident expert weights.
+small mixed-precision SwiGLU reference kernel on resident expert weights.
 
-On the CUDA streaming path, BF16 weights remain packed through H2D and expand
-exactly to FP32 on the prefetch stream before the cache entry becomes ready.
+On the default CUDA streaming path, BF16 weights remain packed through H2D,
+convert to FP16 on the prefetch stream, and stay FP16 in the expert cache.
+cuBLAS reads FP16 weights and activations with FP32 accumulation. Pass
+`--cache-dtype fp32` for the exact BF16-to-FP32 cache and SGEMV fallback.
 Frequently reused BF16 source blobs are materialized once in a bounded 192 MiB
 pinned-host cache; shards that exceed that bound fall back to the bounded
-staging ring. The device cache remains FP32, so neither optimization changes
-the configured expert-cache budget or cuBLAS compute layout.
+staging ring. The configured cache remains 6 MiB; FP16 doubles its physical
+expert capacity from four to eight entries.
 
 Oracle matrix products use a runtime-dispatched AVX2/FMA dot product on
 supported x86 CPUs and retain a portable scalar fallback.
@@ -85,8 +87,9 @@ asset, not an Ornith model checkpoint.
 ```text
 dee_cli --help
 dee_cli --shard PATH --oracle PATH --tokens N --warmup N --topk N --layers N
-        --budget BYTES --cuda --profile-stages --profile-scenario MODE
-        --profile-json PATH --trace-requests PATH --verbose
+        --budget BYTES --prefetch-depth N --cache-dtype fp16|fp32 --cuda
+        --profile-stages --profile-scenario MODE --profile-json PATH
+        --profile-timeline PATH --trace-requests PATH --verbose
 ```
 
 Defaults are `tests/data/ornith_moe256.safetensors` and `oracle.pt`, relative to
@@ -127,13 +130,14 @@ The stage profile reports CPU wall-clock spans, CUDA-event device durations,
 operation counts, token latency percentiles, request classification, transfer
 volume, and working-set/reuse statistics. CUDA timing uses a bounded reusable
 event pool and collects samples only at synchronization points already present
-in the runtime. BF16-to-FP32 device expansion is reported separately from H2D
-and projection time. The trace contains one record per expert request and is
-not enabled by the normal benchmark command.
+in the runtime. BF16 cache conversion is reported separately from H2D and
+projection time. The request trace also includes the final hidden vector for
+FP32/FP16 validation and is not enabled by the normal benchmark command.
 
-GPU stage durations are accumulated independently. Because the profiler does
-not impose a common cross-stream timing origin, their sums reveal stage cost
-but do not claim an exact transfer/compute overlap percentage.
+Add `--profile-timeline benchmark_reports/t4-timeline.json` for a Chrome trace
+and exact common-origin copy/compute interval union. The summary reports copy
+and compute utilization, overlap, idle bubbles, transfer queue depth, and
+host-wait reasons. This detailed timeline is intentionally opt-in.
 
 Summarize working-set and reuse-distance behavior with:
 
@@ -162,8 +166,8 @@ claims; the default 6 MiB end-to-end regression remains unchanged.
 ### What the benchmark means
 
 This is a synthetic-kernel/control-path benchmark. It validates cache
-residency, bounded pinned BF16 source/staging memory, H2D transfers, exact GPU
-expansion, and FP32 cuBLAS SwiGLU correctness. It is **not complete 35B
+residency, bounded pinned BF16 source/staging memory, H2D transfers, GPU cache
+conversion, and FP32/FP16 cuBLAS SwiGLU correctness. It is **not complete 35B
 end-to-end model inference**, and the
 reference kernels must not be interpreted as a claim of 30+ tok/s on a
 real 35B model. In particular, the first copy from file-backed/pageable data

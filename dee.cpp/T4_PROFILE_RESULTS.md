@@ -197,3 +197,79 @@ pushed:
 An earlier fused gate/up SGEMM (+0.18%) and event-pool/stream-wait path
 (-0.96%) also remain rejected. The campaign therefore retained only changes
 supported by measured bottlenecks and the 2% median gate.
+
+## Cross-stream transfer campaign
+
+The next campaign began from `07a239d08dc70d96f2335831e1d246426f640e1c`.
+Its fresh FP32 normal-mode baseline was 14.703 tok/s (14.703, 14.469, 14.727).
+
+Commit `6e74d40d6398adf721a17a91e26a29e8296831d7` added an opt-in,
+common-origin CUDA timeline and Chrome trace. A representative FP32 run
+measured a 2365.098 ms GPU span: copy active for 1404.933 ms (59.40%), compute
+active for 786.513 ms (33.25%), copy/compute overlap for 574.627 ms (24.30%),
+and neither active for 748.279 ms (31.64%). Cache-readiness waits accounted for
+1099.724 ms; staging-slot waits were zero. This identified fine-grained H2D
+readiness, rather than ring exhaustion, as the exposed critical path.
+
+Commit `ca346c2ae19af0bea9338dcfd97b9222e6ab00e1` made ring depth configurable
+and fixed cache-pin lifetime when a shallow ring completes DMA before compute.
+Depths 2, 4, 8, and 16 produced medians of 14.534, 14.734, 14.499, and 14.724
+tok/s. None improved performance by 2%; the default remains 64. The queue still
+peaked at four because the 6 MiB FP32 cache, not the staging ring, bounded the
+active batch. A persistent completion-event-pool experiment (`02cc8b7`) passed
+all tests but measured 14.657 tok/s (-0.31%) and was rejected.
+
+The existing pinned source cache already packs gate, up, and down into one
+contiguous BF16 expert blob and submits one weight H2D copy per cold expert.
+The 11,517 total copies are 10,237 expert copies plus 1,280 hidden-input copies,
+so a second per-expert packing format was not pursued. The previously rejected
+four-expert coarse transfer remains invalid because it destroys useful overlap.
+
+### Accepted: FP16 device cache and direct mixed-precision compute
+
+Commit `bce363501a9661f0560d1059244ce0ec10047a87` adds a configurable FP16
+device cache. BF16 source weights convert directly to FP16 on the prefetch
+stream; they are never expanded to FP32 before cache readiness. Gate, up, and
+down projections use FP16 cuBLAS GEMM with FP32 accumulation, and the fused
+SiLU/multiply kernel writes the FP16 down-projection activation. The exact FP32
+cache/SGEMV path remains available with `--cache-dtype fp32`. The 6 MiB byte
+budget is unchanged and now holds eight instead of four expert entries.
+
+Final explicit-FP16 normal runs were 16.073, 14.909, and 16.161 tok/s (median
+16.073), 9.32% above the fresh 14.703 baseline. Cache behavior improved to
+10,240 requests, 72 resident hits, 10,168 cold loads, 10,160 evictions, and
+zero prefetch fallbacks. CPU CTest passed 6/6 and CUDA CTest passed 7/7.
+
+Numerical validation used both a deterministic CPU-vs-CUDA SwiGLU test and an
+end-to-end trace comparison. A non-degenerate one-layer output had max absolute
+error 1.04e-4, relative RMSE 6.62e-5, and cosine similarity 0.9999999978.
+Across the primary 32-token workload, 10,237/10,240 ordered expert requests and
+1,279/1,280 complete layer top-K sets matched FP32; mean top-K Jaccard was
+0.999826. Output remained finite.
+
+The detailed FP16 timeline measured a 2217.347 ms GPU span, 1396.546 ms copy
+active (62.98%), 719.002 ms compute active (32.43%), 550.511 ms overlap
+(24.83%), and 652.310 ms with neither engine active (29.42%). Average/max
+transfer queue depth increased from 2.5/4 to 4.475/8. Cache-readiness waiting
+fell from 1068.747 to 957.718 ms, while compute-batch synchronization fell from
+15.753 to 7.444 ms. H2D traffic fell slightly to 8,006,926,336 bytes in 11,448
+copies because 69 additional resident hits avoided transfers; weight-copy size
+remains 786,432 bytes.
+
+The updated profiled controls are:
+
+| Scenario | tok/s | Key observation |
+|---|---:|---|
+| End-to-end | 14.414 | Detailed event/timeline mode |
+| Full resident | 35.009 | Streaming removed |
+| Resident bypass | 38.344 | Cache metadata bypassed |
+| Transfer only | 16.285 | H2D/cache path remains close to end-to-end |
+| Compute only | 79.612 | Compute is not the primary ceiling |
+| Oracle only | 107.158 | Oracle no longer dominates |
+| Cache metadata only | 105.259 | Metadata remains negligible |
+
+The remaining largest bottleneck is still expert H2D/cache readiness. Against
+the 35.009 tok/s full-resident control, the 16.073 normal median has about a
+2.18x empirical streaming-removal ceiling. The exact timeline shows only
+24.83% copy/compute overlap and 29.42% idle GPU time, leaving overlap scheduling
+and transfer latency as better-supported next targets than GEMM tuning.
