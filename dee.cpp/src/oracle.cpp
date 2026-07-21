@@ -92,6 +92,7 @@ static inline float relu(float v) { return v > 0.f ? v : 0.f; }
 
 // INT8 dot product for fast approximate Linear0 scoring.
 // Uses AVX2 to compute dot(int8_weights, float_input) with scale compensation.
+__attribute__((target("avx2,fma")))
 float dot_product_int8_f32_avx2(const int8_t* i8w, const float* x, int count, float wscale) {
     __m256 sum0 = _mm256_setzero_ps();
     __m256 sum1 = _mm256_setzero_ps();
