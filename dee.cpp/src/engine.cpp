@@ -105,6 +105,11 @@ const float* Engine::get_staging(int source_layer, int expert) {
 const uint16_t* Engine::get_staging_bf16(int source_layer, int expert) {
     const auto profile_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
     const uint64_t key = staging_key(source_layer, expert);
+    auto pinned = pinned_staging_bf16_.find(key);
+    if (pinned != pinned_staging_bf16_.end()) {
+        if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
+        return static_cast<const uint16_t*>(pinned->second);
+    }
     auto it = staging_bf16_.find(key);
     if (it != staging_bf16_.end()) {
         if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
@@ -126,6 +131,31 @@ const uint16_t* Engine::get_staging_bf16(int source_layer, int expert) {
         return nullptr;
     }
 
+    const size_t source_bytes = blob_elems_ * sizeof(uint16_t);
+#ifdef DEE_CUDA
+    if (cfg_.use_cuda && pinned_staging_bytes_ + source_bytes <= kPinnedStagingLimit) {
+        void* allocation = nullptr;
+        if (DEE_CUDA_CHECK_NAMED(cudaHostAlloc(&allocation, source_bytes, cudaHostAllocDefault),
+                                 "cudaHostAlloc(persistent BF16 expert source)")) {
+            // Tensor lookup/allocation and host copying are distinct profile categories.
+            if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
+            const auto copy_begin = profiler_.enabled()
+                ? StageProfiler::now() : StageProfiler::TimePoint{};
+            auto* destination = static_cast<uint16_t*>(allocation);
+            std::memcpy(destination, gv.data, projection_bytes);
+            std::memcpy(destination + projection, uv.data, projection_bytes);
+            std::memcpy(destination + 2 * projection, dv.data, projection_bytes);
+            if (profiler_.enabled()) {
+                profiler_.add_cpu(CpuStage::MmapToPinned, copy_begin);
+                profiler_.note_mmap_copy(source_bytes);
+            }
+            pinned_staging_bf16_.emplace(key, allocation);
+            pinned_staging_bytes_ += source_bytes;
+            return destination;
+        }
+    }
+#endif
+
     std::vector<uint16_t> blob(blob_elems_);
     std::memcpy(blob.data(), gv.data, projection_bytes);
     std::memcpy(blob.data() + projection, uv.data, projection_bytes);
@@ -143,9 +173,11 @@ bool Engine::stage_expert(int logical_layer, int source_layer, int expert, int p
                          source_layer, expert);
             return false;
         }
+        const bool source_pinned = pinned_staging_bf16_.find(
+            staging_key(source_layer, expert)) != pinned_staging_bf16_.end();
         return prefetcher_.prefetch_bf16_to_f32(
                    source_layer, expert, blob, blob_elems_, priority,
-                   current_token_, logical_layer) >= 0;
+                   current_token_, logical_layer, source_pinned) >= 0;
     }
     const float* blob = get_staging(source_layer, expert);
     if (!blob) {
@@ -647,6 +679,12 @@ Engine::~Engine() {
                                  "cudaStreamSynchronize(engine teardown)");
         }
         if (profiler_.enabled()) profiler_.cuda_collect_ready();
+        for (const auto& entry : pinned_staging_bf16_) {
+            DEE_CUDA_CHECK_NAMED(cudaFreeHost(entry.second),
+                                 "cudaFreeHost(persistent BF16 expert source)");
+        }
+        pinned_staging_bf16_.clear();
+        pinned_staging_bytes_ = 0;
         cuda_cleanup();
     }
 }

@@ -79,25 +79,27 @@ void AsyncPrefetcher::record_request(RequestKind kind, int token, int logical_la
 long AsyncPrefetcher::prefetch(int layer, int expert, const void* src, size_t nbytes,
                                int priority, int token, int logical_layer) {
     return prefetch_impl(layer, expert, src, nbytes, nbytes, false,
-                         priority, token, logical_layer);
+                         false, priority, token, logical_layer);
 }
 
 long AsyncPrefetcher::prefetch_bf16_to_f32(int layer, int expert, const uint16_t* src,
                                            size_t elements, int priority,
-                                           int token, int logical_layer) {
+                                           int token, int logical_layer,
+                                           bool source_pinned) {
     if (!use_cuda_) {
         std::fprintf(stderr, "AsyncPrefetcher: BF16 device expansion requires CUDA\n");
         return -1;
     }
     if (elements > std::numeric_limits<size_t>::max() / sizeof(float)) return -1;
     return prefetch_impl(layer, expert, src, elements * sizeof(uint16_t),
-                         elements * sizeof(float), true, priority, token,
+                         elements * sizeof(float), true, source_pinned, priority, token,
                          logical_layer);
 }
 
 long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
                                     size_t source_nbytes, size_t destination_nbytes,
-                                    bool expand_bf16, int priority, int token,
+                                    bool expand_bf16, bool source_pinned,
+                                    int priority, int token,
                                     int logical_layer) {
     if (!src || source_nbytes == 0 || destination_nbytes == 0) {
         std::fprintf(stderr, "AsyncPrefetcher: invalid source for expert (%d,%d)\n", layer, expert);
@@ -146,6 +148,7 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
         transfer.nbytes = destination_nbytes;
         transfer.source_nbytes = source_nbytes;
         transfer.expand_bf16 = expand_bf16;
+        transfer.source_pinned = source_pinned;
         transfer.done = true;
         transfer.id = next_id_++;
         transfer.cache_pin_held = true;
@@ -167,6 +170,7 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
     transfer.nbytes = destination_nbytes;
     transfer.source_nbytes = source_nbytes;
     transfer.expand_bf16 = expand_bf16;
+    transfer.source_pinned = source_pinned;
     transfer.id = next_id_++;
     transfer.cache_pin_held = true;
     inflight_.push_back(transfer);
@@ -276,7 +280,8 @@ bool AsyncPrefetcher::cuda_submit(long index) {
     size_t chosen = static_cast<size_t>(-1);
     for (size_t attempt = 0; attempt < staging_slots_.size(); ++attempt) {
         const size_t slot = (next_staging_slot_ + attempt) % staging_slots_.size();
-        if (!staging_slots_[slot].busy && staging_slots_[slot].bytes >= transfer.source_nbytes) {
+        if (!staging_slots_[slot].busy &&
+            (transfer.source_pinned || staging_slots_[slot].bytes >= transfer.source_nbytes)) {
             chosen = slot;
             break;
         }
@@ -284,7 +289,8 @@ bool AsyncPrefetcher::cuda_submit(long index) {
     if (chosen == static_cast<size_t>(-1) && staging_slots_.size() < ring_size_) {
         PinnedStagingSlot slot;
         slot.bytes = transfer.source_nbytes;
-        if (!DEE_CUDA_CHECK_NAMED(cudaMallocHost(&slot.ptr, slot.bytes), "cudaMallocHost(pinned staging slot)")) return false;
+        if (!DEE_CUDA_CHECK_NAMED(cudaMallocHost(&slot.ptr, slot.bytes),
+                                  "cudaMallocHost(pinned staging slot)")) return false;
         staging_slots_.push_back(slot);
         chosen = staging_slots_.size() - 1;
     }
@@ -300,7 +306,11 @@ bool AsyncPrefetcher::cuda_submit(long index) {
         }
         for (size_t attempt = 0; attempt < staging_slots_.size(); ++attempt) {
             const size_t slot = (next_staging_slot_ + attempt) % staging_slots_.size();
-            if (!staging_slots_[slot].busy && staging_slots_[slot].bytes >= transfer.source_nbytes) { chosen = slot; break; }
+            if (!staging_slots_[slot].busy &&
+                (transfer.source_pinned || staging_slots_[slot].bytes >= transfer.source_nbytes)) {
+                chosen = slot;
+                break;
+            }
         }
     }
     if (chosen == static_cast<size_t>(-1)) {
@@ -319,13 +329,18 @@ bool AsyncPrefetcher::cuda_submit(long index) {
                                   "cudaMalloc(BF16 device staging slot)")) return false;
         slot.device_bytes = transfer.source_nbytes;
     }
-    const auto copy_begin = profiler_ && profiler_->enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
-    std::memcpy(slot.ptr, transfer.src, transfer.source_nbytes);  // mmap/pageable -> pinned is CPU work
-    if (profiler_ && profiler_->enabled()) {
-        profiler_->add_cpu(CpuStage::MmapToPinned, copy_begin);
-        profiler_->note_mmap_copy(transfer.source_nbytes);
+    const void* h2d_source = transfer.src;
+    if (!transfer.source_pinned) {
+        const auto copy_begin = profiler_ && profiler_->enabled()
+            ? StageProfiler::now() : StageProfiler::TimePoint{};
+        std::memcpy(slot.ptr, transfer.src, transfer.source_nbytes);
+        h2d_source = slot.ptr;
+        if (profiler_ && profiler_->enabled()) {
+            profiler_->add_cpu(CpuStage::MmapToPinned, copy_begin);
+            profiler_->note_mmap_copy(transfer.source_nbytes);
+        }
+        stats_.mmap_to_pinned_bytes += transfer.source_nbytes;
     }
-    stats_.mmap_to_pinned_bytes += transfer.source_nbytes;
     slot.busy = true;
     next_staging_slot_ = (chosen + 1) % staging_slots_.size();
     transfer.staging_slot = chosen;
@@ -338,7 +353,7 @@ bool AsyncPrefetcher::cuda_submit(long index) {
     const size_t h2d_ticket = profiler_ && profiler_->enabled()
         ? profiler_->cuda_begin(GpuStage::H2D, stream_) : static_cast<size_t>(-1);
     void* copy_destination = transfer.expand_bf16 ? slot.device_ptr : transfer.dst;
-    if (!DEE_CUDA_CHECK_NAMED(cudaMemcpyAsync(copy_destination, slot.ptr, transfer.source_nbytes,
+    if (!DEE_CUDA_CHECK_NAMED(cudaMemcpyAsync(copy_destination, h2d_source, transfer.source_nbytes,
                                               cudaMemcpyHostToDevice, static_cast<cudaStream_t>(stream_)),
                               "cudaMemcpyAsync(pinned staging to expert cache)")) return false;
     if (profiler_ && profiler_->enabled() && !profiler_->cuda_end(h2d_ticket, stream_)) return false;

@@ -33,6 +33,7 @@ struct Transfer {
     size_t    nbytes   = 0;        // destination/cache bytes
     size_t    source_nbytes = 0;   // bytes copied through pinned memory/H2D
     bool      expand_bf16 = false;
+    bool      source_pinned = false;
     bool      done     = false;    // mock event "signaled"
     bool      abandoned = false;
     void*     event    = nullptr;  // cudaEvent_t* (DEE_CUDA path only)
@@ -65,7 +66,8 @@ public:
     // the FP32 cache block on the prefetch stream before signaling readiness.
     long prefetch_bf16_to_f32(int layer, int expert, const uint16_t* src,
                               size_t elements, int priority = 0,
-                              int token = -1, int logical_layer = -1);
+                              int token = -1, int logical_layer = -1,
+                              bool source_pinned = false);
 
     // Delimit one logical expert batch for duplicate-request accounting.
     void begin_batch() { batch_keys_.clear(); }
@@ -140,7 +142,8 @@ private:
     long   find_inflight(int layer, int expert) const;
     long   prefetch_impl(int layer, int expert, const void* src,
                          size_t source_nbytes, size_t destination_nbytes,
-                         bool expand_bf16, int priority, int token,
+                         bool expand_bf16, bool source_pinned,
+                         int priority, int token,
                          int logical_layer);
     void   drain_until(int idx);   // mock: run copies up to idx (inclusive)
     bool   cuda_init();            // guarded real init

@@ -158,6 +158,9 @@ private:
     // model layer to source layer 0; real multi-layer shards stay distinct.
     std::unordered_map<uint64_t, std::vector<float>> staging_;
     std::unordered_map<uint64_t, std::vector<uint16_t>> staging_bf16_;
+    std::unordered_map<uint64_t, void*> pinned_staging_bf16_;
+    size_t pinned_staging_bytes_ = 0;
+    static constexpr size_t kPinnedStagingLimit = 192ULL * 1024 * 1024;
 
     std::vector<float> hidden_buf_[2];  // double buffer for the loop
 
