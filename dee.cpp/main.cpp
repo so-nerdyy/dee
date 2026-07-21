@@ -33,6 +33,8 @@ void usage(const char* argv0) {
         "  --profile-json P   Write benchmark and stage summary JSON to P\n"
         "  --profile-timeline P Write common-origin CUDA Chrome trace JSON to P\n"
         "  --trace-requests P Write detailed expert-request trace JSON to P\n"
+        "  --oracle-routing-dump P  Write per-call Oracle routing JSON to P\n"
+        "  --profile-request-timings P Write per-request latency JSON to P\n"
         "  --dynamic-quantization Quantize experts on first use instead of startup prepack\n"
         "  --verbose          Print additional configuration details\n",
         argv0);
@@ -411,6 +413,12 @@ int main(int argc, char** argv) {
             trace_json_path = value;
             cfg.profile_stages = true;
             cfg.trace_requests = true;
+        } else if (arg == "--oracle-routing-dump") {
+            if (!(value = require_value(i, argc, argv, "--oracle-routing-dump"))) return 2;
+            cfg.oracle_routing_dump_path = value;
+        } else if (arg == "--profile-request-timings") {
+            if (!(value = require_value(i, argc, argv, "--profile-request-timings"))) return 2;
+            cfg.profile_request_timings_path = value;
         } else {
             std::fprintf(stderr, "[cli] unknown option: %s\n", arg.c_str());
             usage(argv[0]);

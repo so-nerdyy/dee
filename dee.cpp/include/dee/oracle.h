@@ -38,6 +38,18 @@ public:
     // Returns them sorted by descending logit. `out` is cleared and filled.
     void predict(int layer, const float* hidden, int topk, std::vector<int>& out) const;
 
+    // Predict the top-K expert indices for `layer` from `hidden`, also writing
+    // the raw Oracle logits (length E_) into `logits_out`. `out` is cleared
+    // filled with the top-K expert indices in descending logits order;
+    // `logits_out` is cleared and resized to E_ exactly. The logits are the
+    // raw scores the Oracle would sort to derive the top-K, so candidates may
+    // compare them bit-for-bit against the validated baseline for per-request
+    // exact-match routing validation. Behaviour is identical to predict();
+    // this overload only exposes the intermediate scores.
+    void predict_and_score(int layer, const float* hidden, int topk,
+                            std::vector<int>& out,
+                            std::vector<float>& logits_out) const;
+
     // Convenience: predict for the NEXT layer (prefetch target) given the
     // hidden state at the current layer's input.
     void predict_next(int current_layer, const float* hidden, int topk, std::vector<int>& out) const {

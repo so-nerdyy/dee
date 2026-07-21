@@ -175,4 +175,45 @@ void OracleScheduler::predict(int layer, const float* hidden, int topk, std::vec
     }
 }
 
+void OracleScheduler::predict_and_score(int layer, const float* hidden, int topk,
+                                        std::vector<int>& out,
+                                        std::vector<float>& logits_out) const {
+    // Identical to predict() but exposes the intermediate logits. Callers use
+    // this when they need the raw scores for routing-exactness comparison.
+    if (oracle_profiling(profiler_)) profiler_->note_oracle_call();
+    forward(layer, hidden, logits_out);
+    std::vector<int> idx;
+    timed_resize(idx, static_cast<size_t>(E_), profiler_);
+    const auto index_begin = oracle_profiling(profiler_) ? StageProfiler::now() : StageProfiler::TimePoint{};
+    for (int i = 0; i < E_; ++i) idx[i] = i;
+    if (oracle_profiling(profiler_)) profiler_->add_oracle(OracleStage::TopKOutput, index_begin);
+    const auto sort_begin = oracle_profiling(profiler_) ? StageProfiler::now() : StageProfiler::TimePoint{};
+    std::sort(idx.begin(), idx.end(), [&](int a, int b) { return logits_out[a] > logits_out[b]; });
+    if (oracle_profiling(profiler_)) profiler_->add_oracle(OracleStage::TopKSort, sort_begin);
+    out.clear();
+    int k = std::min(topk, E_);
+    double output_allocation_ms = 0.0;
+    const auto output_begin = oracle_profiling(profiler_) ? StageProfiler::now() : StageProfiler::TimePoint{};
+    for (int i = 0; i < k; ++i) {
+        if (out.size() == out.capacity() && oracle_profiling(profiler_)) {
+            const size_t old_capacity = out.capacity();
+            const auto allocation_begin = StageProfiler::now();
+            out.push_back(idx[i]);
+            const double allocation_ms = std::chrono::duration<double, std::milli>(
+                StageProfiler::now() - allocation_begin).count();
+            output_allocation_ms += allocation_ms;
+            profiler_->add_oracle_ms(OracleStage::Allocation, allocation_ms);
+            profiler_->note_oracle_allocation((out.capacity() - old_capacity) * sizeof(int));
+        } else {
+            out.push_back(idx[i]);
+        }
+    }
+    if (oracle_profiling(profiler_)) {
+        const double output_ms = std::chrono::duration<double, std::milli>(
+            StageProfiler::now() - output_begin).count();
+        profiler_->add_oracle_ms(OracleStage::TopKOutput,
+                                 std::max(0.0, output_ms - output_allocation_ms));
+    }
+}
+
 } // namespace dee

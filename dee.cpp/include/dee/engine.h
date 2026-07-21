@@ -93,6 +93,42 @@ struct EngineConfig {
     bool        profile_timeline = false;
     bool        prepack_quantized_source = true;
     BenchmarkScenario scenario = BenchmarkScenario::EndToEnd;
+    // Opt-in path for the per-call Oracle routing dump (token, layer,
+    // ordered experts[K], raw scores[E]) used by compare_benchmark_outputs.py
+    // to enforce exact per-request routing equivalence between campaign
+    // candidates and a reference run. Zero overhead when unset.
+    std::string oracle_routing_dump_path;
+    // Opt-in path for the six-timestamp per-request latency trace
+    // (predict_ready / transfer_submit / h2d_start / h2d_end /
+    // consumer_arrival / compute_start, all relative to the GPU timeline
+    // origin event when timeline_enabled, else -1.0). Used to attribute
+    // cache-readiness waits by cause. Zero overhead when unset.
+    std::string profile_request_timings_path;
+};
+
+struct RoutingDumpRecord {
+    int token = -1;
+    int layer = -1;
+    int source_layer = -1;
+    std::vector<int> experts;
+    std::vector<float> scores;
+};
+
+struct RequestTimingRecord {
+    int request_id = -1;
+    int token = -1;
+    int layer = -1;
+    int source_layer = -1;
+    int expert = -1;
+    double predict_ready_ms = -1.0;
+    double transfer_submit_ms = -1.0;
+    double h2d_start_ms = -1.0;
+    double h2d_end_ms = -1.0;
+    double consumer_arrival_ms = -1.0;
+    double compute_start_ms = -1.0;
+    int evicted_layer = -1;
+    int evicted_expert = -1;
+    std::string classification;
 };
 
 struct EngineStats {
@@ -143,6 +179,12 @@ public:
     // Expose for tests: the naive (no DEE) SwiGLU kernel on a pre-staged blob.
     static void swiglu(const float* blob, const float* x,
                        int inter, int hidden, float* acc);
+
+    // Write buffered routing-dump / request-timing JSON files after generate().
+    // These are no-ops if the corresponding config path is empty. Return false
+    // only if a path was set and the write failed.
+    bool write_oracle_routing_dump() const;
+    bool write_request_timings() const;
 
     int hidden_dim() const { return hidden_; }
     int inter_dim()  const { return inter_; }
@@ -197,6 +239,12 @@ private:
     static constexpr size_t kPinnedStagingLimit = 192ULL * 1024 * 1024;
 
     std::vector<float> hidden_buf_[2];  // double buffer for the loop
+
+    // Opt-in trace buffers. Empty and zero-cost unless the corresponding
+    // config path is set at init time.
+    std::vector<RoutingDumpRecord> routing_dump_records_;
+    std::vector<RequestTimingRecord> request_timing_records_;
+    int next_request_id_ = 0;
 
     EngineStats stats_{};
     int current_token_ = -1;

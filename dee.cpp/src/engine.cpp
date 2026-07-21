@@ -609,8 +609,14 @@ bool Engine::prepare_profile_scenario() {
 
 void Engine::forward_layer(int layer, const float* h_in, float* h_out) {
     std::vector<int> experts;
+    std::vector<float> oracle_logits;
+    const bool dump_routing = !cfg_.oracle_routing_dump_path.empty();
     const auto oracle_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
-    oracle_.predict(layer, h_in, cfg_.topk, experts);
+    if (dump_routing) {
+        oracle_.predict_and_score(layer, h_in, cfg_.topk, experts, oracle_logits);
+    } else {
+        oracle_.predict(layer, h_in, cfg_.topk, experts);
+    }
     if (profiler_.enabled()) profiler_.add_cpu(CpuStage::Oracle, oracle_begin);
 
     // CPU/mock mode processes one expert at a time. This preserves the fixed
@@ -618,8 +624,37 @@ void Engine::forward_layer(int layer, const float* h_in, float* h_out) {
     std::vector<float> acc(hidden_, 0.0f);
     const int source_layer = avail_layer(layer);
     profiler_.note_prediction(current_token_, layer, source_layer, experts);
+    if (dump_routing) {
+        RoutingDumpRecord rec;
+        rec.token = current_token_;
+        rec.layer = layer;
+        rec.source_layer = source_layer;
+        rec.experts = experts;
+        rec.scores = std::move(oracle_logits);
+        routing_dump_records_.push_back(std::move(rec));
+    }
+    const bool dump_timings = !cfg_.profile_request_timings_path.empty();
+    std::unordered_set<uint64_t> batch_keys_seen;
     for (size_t k = 0; k < experts.size(); ++k) {
         int e = experts[k];
+        if (dump_timings) {
+            RequestTimingRecord rec;
+            rec.request_id = next_request_id_++;
+            rec.token = current_token_;
+            rec.layer = layer;
+            rec.source_layer = source_layer;
+            rec.expert = e;
+            const uint64_t key = staging_key(source_layer, e);
+            if (batch_keys_seen.count(key)) {
+                rec.classification = "duplicate";
+            } else if (cache_.is_resident(source_layer, e)) {
+                rec.classification = "resident";
+            } else {
+                rec.classification = "cold";
+            }
+            batch_keys_seen.insert(key);
+            request_timing_records_.push_back(std::move(rec));
+        }
         prefetcher_.begin_batch();
         if (!stage_expert(layer, source_layer, e, static_cast<int>(cfg_.topk - k)) || !prefetcher_.wait(source_layer, e)) {
             stats_.fallbacks++;
@@ -920,6 +955,9 @@ bool Engine::generate() {
                                       cold_loads, ps.duplicate_requests, cs.evictions,
                                       cs.pinned_blocks_skipped);
 
+    if (!write_oracle_routing_dump()) return false;
+    if (!write_request_timings()) return false;
+
     // validate output hidden is finite
     const float* out = hidden_buf_[cur].data();
     stats_.hidden_finite = true;
@@ -957,6 +995,9 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
         }
     };
     std::vector<int> experts;
+    std::vector<float> oracle_logits;
+    const bool dump_routing = !cfg_.oracle_routing_dump_path.empty();
+    const bool dump_timings = !cfg_.profile_request_timings_path.empty();
     if (cfg_.scenario == BenchmarkScenario::ComputeOnly) {
         experts.reserve(static_cast<size_t>(cfg_.topk));
         for (int k = 0; k < cfg_.topk; ++k) {
@@ -964,7 +1005,11 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
         }
     } else {
         const auto oracle_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
-        oracle_.predict(layer, h_in, cfg_.topk, experts);
+        if (dump_routing) {
+            oracle_.predict_and_score(layer, h_in, cfg_.topk, experts, oracle_logits);
+        } else {
+            oracle_.predict(layer, h_in, cfg_.topk, experts);
+        }
         if (profiler_.enabled()) {
             const auto oracle_end = StageProfiler::now();
             profiler_.add_cpu_ms(CpuStage::Oracle,
@@ -982,6 +1027,16 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
 
     const int source_layer = avail_layer(layer);
     profiler_.note_prediction(current_token_, layer, source_layer, experts);
+    if (dump_routing) {
+        RoutingDumpRecord rec;
+        rec.token = current_token_;
+        rec.layer = layer;
+        rec.source_layer = source_layer;
+        rec.experts = experts;
+        rec.scores = std::move(oracle_logits);
+        routing_dump_records_.push_back(std::move(rec));
+    }
+    std::unordered_set<uint64_t> batch_keys_seen;
 
     if (cfg_.scenario == BenchmarkScenario::OracleOnly) {
         std::memcpy(h_out, h_in, static_cast<size_t>(hidden_) * sizeof(float));
@@ -1054,6 +1109,24 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
         }
         for (int k = first; k < last; ++k) {
             const int e = experts[k];
+            if (dump_timings) {
+                RequestTimingRecord rec;
+                rec.request_id = next_request_id_++;
+                rec.token = current_token_;
+                rec.layer = layer;
+                rec.source_layer = source_layer;
+                rec.expert = e;
+                const uint64_t key = staging_key(source_layer, e);
+                if (batch_keys_seen.count(key)) {
+                    rec.classification = "duplicate";
+                } else if (cache_.is_resident(source_layer, e)) {
+                    rec.classification = "resident";
+                } else {
+                    rec.classification = "cold";
+                }
+                batch_keys_seen.insert(key);
+                request_timing_records_.push_back(std::move(rec));
+            }
             if (!bypass_cache && !prefetcher_.wait(source_layer, e)) return false;
             if (cfg_.scenario == BenchmarkScenario::TransferOnly) continue;
             if (!bypass_cache && !cache_.pin(source_layer, e)) return false;
@@ -1164,5 +1237,73 @@ Engine::~Engine() {
 #else
 Engine::~Engine() = default;
 #endif
+
+bool Engine::write_oracle_routing_dump() const {
+    if (cfg_.oracle_routing_dump_path.empty()) return true;
+    std::ofstream out(cfg_.oracle_routing_dump_path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        std::fprintf(stderr, "[engine] cannot open routing dump: %s\n",
+                     cfg_.oracle_routing_dump_path.c_str());
+        return false;
+    }
+    out << "{\"routing\":[";
+    for (size_t i = 0; i < routing_dump_records_.size(); ++i) {
+        const auto& rec = routing_dump_records_[i];
+        if (i) out << ",";
+        out << "{\"token\":" << rec.token << ",\"layer\":" << rec.layer
+            << ",\"source_layer\":" << rec.source_layer << ",\"experts\":[";
+        for (size_t j = 0; j < rec.experts.size(); ++j) {
+            if (j) out << ",";
+            out << rec.experts[j];
+        }
+        out << "],\"scores\":[";
+        for (size_t j = 0; j < rec.scores.size(); ++j) {
+            if (j) out << ",";
+            out << rec.scores[j];
+        }
+        out << "]}";
+    }
+    out << "]}\n";
+    if (!out) {
+        std::fprintf(stderr, "[engine] failed to write routing dump: %s\n",
+                     cfg_.oracle_routing_dump_path.c_str());
+        return false;
+    }
+    return true;
+}
+
+bool Engine::write_request_timings() const {
+    if (cfg_.profile_request_timings_path.empty()) return true;
+    std::ofstream out(cfg_.profile_request_timings_path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        std::fprintf(stderr, "[engine] cannot open request timings: %s\n",
+                     cfg_.profile_request_timings_path.c_str());
+        return false;
+    }
+    out << "{\"requests\":[";
+    for (size_t i = 0; i < request_timing_records_.size(); ++i) {
+        const auto& rec = request_timing_records_[i];
+        if (i) out << ",";
+        out << "{\"request_id\":" << rec.request_id << ",\"token\":" << rec.token
+            << ",\"layer\":" << rec.layer << ",\"source_layer\":" << rec.source_layer
+            << ",\"expert\":" << rec.expert
+            << ",\"predict_ready_ms\":" << rec.predict_ready_ms
+            << ",\"transfer_submit_ms\":" << rec.transfer_submit_ms
+            << ",\"h2d_start_ms\":" << rec.h2d_start_ms
+            << ",\"h2d_end_ms\":" << rec.h2d_end_ms
+            << ",\"consumer_arrival_ms\":" << rec.consumer_arrival_ms
+            << ",\"compute_start_ms\":" << rec.compute_start_ms
+            << ",\"evicted_layer\":" << rec.evicted_layer
+            << ",\"evicted_expert\":" << rec.evicted_expert
+            << ",\"classification\":\"" << rec.classification << "\"}";
+    }
+    out << "]}\n";
+    if (!out) {
+        std::fprintf(stderr, "[engine] failed to write request timings: %s\n",
+                     cfg_.profile_request_timings_path.c_str());
+        return false;
+    }
+    return true;
+}
 
 } // namespace dee
