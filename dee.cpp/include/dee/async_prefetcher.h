@@ -36,8 +36,11 @@ struct Transfer {
     bool      cache_fp16 = false;
     bool      dequantize_int8 = false;
     bool      dequantize_int4 = false;
+    bool      dequantize_mixed_int4b = false;
     size_t    projection_elements = 0;
     float     quant_scales[3] = {1.0f, 1.0f, 1.0f};
+    float     int8_scales[3] = {1.0f, 1.0f, 1.0f};
+    uint64_t  outlier_masks[3] = {0, 0, 0};
     bool      source_pinned = false;
     bool      done     = false;    // mock event "signaled"
     bool      abandoned = false;
@@ -94,6 +97,16 @@ public:
                               const float scales[3], int priority = 0,
                               int token = -1, int logical_layer = -1,
                               bool source_pinned = false);
+
+    long prefetch_mixed_int4b_to_f16(int layer, int expert, const uint8_t* src,
+                                     size_t source_nbytes, size_t elements,
+                                     size_t projection_elements,
+                                     const float int4_scales[3],
+                                     const float int8_scales[3],
+                                     const uint64_t outlier_masks[3],
+                                     int priority = 0,
+                                     int token = -1, int logical_layer = -1,
+                                     bool source_pinned = false);
 
     // Delimit one logical expert batch for duplicate-request accounting.
     void begin_batch() { batch_keys_.clear(); }
@@ -177,8 +190,11 @@ private:
     long   prefetch_impl(int layer, int expert, const void* src,
                          size_t source_nbytes, size_t destination_nbytes,
                          bool expand_bf16, bool cache_fp16, bool dequantize_int8,
-                         bool dequantize_int4,
+                         bool dequantize_int4, bool dequantize_mixed_int4b,
                          size_t projection_elements, const float* quant_scales,
+                         const float* mixed_int4b_int4_scales,
+                         const float* mixed_int4b_int8_scales,
+                         const uint64_t* mixed_int4b_masks,
                          bool source_pinned,
                          int priority, int token,
                          int logical_layer);

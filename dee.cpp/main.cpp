@@ -24,7 +24,7 @@ void usage(const char* argv0) {
         "  --budget BYTES     Expert-cache budget (0 = four expert blobs)\n"
         "  --prefetch-depth N Bounded staging/transfer ring depth (default: 64)\n"
         "  --cache-dtype D    Device expert cache: fp16 with --cuda, or fp32 fallback\n"
-        "  --transfer-dtype D Expert transfer: int8 CUDA default, bf16, or experimental int4\n"
+        "  --transfer-dtype D Expert transfer: int8 CUDA default, bf16, experimental int4, or mixed-int4b\n"
         "  --cuda             Use CUDA; requires a DEE_CUDA build and a GPU\n"
         "  --profile-stages   Enable detailed CPU/CUDA stage timing\n"
         "  --profile-scenario M Controlled profile: end-to-end, full-resident,\n"
@@ -102,8 +102,9 @@ bool parse_transfer_dtype(const char* text, dee::WeightTransferDType& out) {
     if (value == "bf16") out = dee::WeightTransferDType::Bf16;
     else if (value == "int8") out = dee::WeightTransferDType::Int8;
     else if (value == "int4") out = dee::WeightTransferDType::Int4;
+    else if (value == "mixed-int4b") out = dee::WeightTransferDType::MixedInt4B;
     else {
-        std::fprintf(stderr, "[cli] invalid --transfer-dtype value: %s (expected bf16, int8, or int4)\n", text);
+        std::fprintf(stderr, "[cli] invalid --transfer-dtype value: %s (expected bf16, int8, int4, or mixed-int4b)\n", text);
         return false;
     }
     return true;
@@ -433,6 +434,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (cfg.transfer_dtype != dee::WeightTransferDType::Bf16 &&
+        cfg.transfer_dtype != dee::WeightTransferDType::MixedInt4B &&
         (!cfg.use_cuda || cfg.cache_dtype != dee::DeviceCacheDType::Fp16)) {
         std::fprintf(stderr, "[cli] quantized transfer requires --cuda with --cache-dtype fp16\n");
         return 2;

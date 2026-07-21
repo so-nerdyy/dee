@@ -174,6 +174,72 @@ float quantize_bf16_projection_int4(const uint16_t* source, uint8_t* destination
     return quantize_bf16_projection_int4_scalar(source, destination, elements);
 }
 
+// MixedInt4B: INT4 bulk + INT8 outlier chunks.
+// Chunk size is 2048 elements (64 chunks per projection).
+// Returns false on allocation failure, true on success.
+static constexpr size_t kMixedInt4BChunkElements = 2048;
+static constexpr size_t kMixedInt4BChunksPerProjection = 64;
+static constexpr size_t kMixedInt4BProjectionElements = kMixedInt4BChunkElements * kMixedInt4BChunksPerProjection;
+static constexpr size_t kMixedInt4BHeaderBytes = 36;  // 3 float int8_scales + 3 uint64_t masks
+
+bool pack_mixed_int4b_projection(const uint16_t* source, float& int4_scale,
+                                 float& int8_scale, uint64_t& outlier_mask,
+                                 uint8_t* bulk_dst, uint8_t* int8_dst,
+                                 size_t projection_elements, float outlier_threshold) {
+    const size_t num_chunks = projection_elements / kMixedInt4BChunkElements;
+
+    // Step 1: quantize bulk to INT4 and capture the actual scale used
+    const float actual_int4_scale = quantize_bf16_projection_int4(source, bulk_dst, projection_elements);
+    int4_scale = actual_int4_scale;
+
+    // Step 2: identify outlier chunks by reconstruction error
+    outlier_mask = 0;
+    float int8_max_abs = 0.0f;
+
+    for (size_t chunk = 0; chunk < num_chunks; ++chunk) {
+        float max_error = 0.0f;
+        const size_t base = chunk * kMixedInt4BChunkElements;
+        for (size_t i = 0; i < kMixedInt4BChunkElements; ++i) {
+            const size_t idx = base + i;
+            const float original = bf16_to_f32(source[idx]);
+            // Reconstruct INT4 value using the ACTUAL scale used for quantization
+            const uint8_t packed = bulk_dst[idx / 2];
+            const uint8_t nibble = (idx & 1) ? (packed >> 4) : (packed & 0x0f);
+            const int value = nibble >= 8 ? static_cast<int>(nibble) - 16 : nibble;
+            const float reconstructed = static_cast<float>(value) * actual_int4_scale;
+            const float error = std::fabs(original - reconstructed);
+            if (error > max_error) max_error = error;
+        }
+        if (max_error > outlier_threshold) {
+            outlier_mask |= (1ULL << chunk);
+            // Track max abs for INT8 scale
+            for (size_t i = 0; i < kMixedInt4BChunkElements; ++i) {
+                const size_t idx = base + i;
+                int8_max_abs = std::max(int8_max_abs, std::fabs(bf16_to_f32(source[idx])));
+            }
+        }
+    }
+
+    // Step 3: quantize outlier chunks to INT8 and copy to int8_dst
+    if (outlier_mask) {
+        int8_scale = int8_max_abs > 0.0f ? int8_max_abs / 127.0f : 1.0f;
+        size_t int8_offset = 0;
+        for (size_t chunk = 0; chunk < num_chunks; ++chunk) {
+            if (!(outlier_mask & (1ULL << chunk))) continue;
+            const size_t base = chunk * kMixedInt4BChunkElements;
+            for (size_t i = 0; i < kMixedInt4BChunkElements; ++i) {
+                const size_t idx = base + i;
+                const long value = std::lrint(bf16_to_f32(source[idx]) / int8_scale);
+                int8_dst[int8_offset++] = static_cast<int8_t>(
+                    std::max(-127L, std::min(127L, value)));
+            }
+        }
+    } else {
+        int8_scale = 1.0f;
+    }
+    return true;
+}
+
 }  // namespace
 
 const char* benchmark_scenario_name(BenchmarkScenario scenario) {
@@ -202,6 +268,7 @@ const char* weight_transfer_dtype_name(WeightTransferDType dtype) {
         case WeightTransferDType::Bf16: return "bf16";
         case WeightTransferDType::Int8: return "int8";
         case WeightTransferDType::Int4: return "int4";
+        case WeightTransferDType::MixedInt4B: return "mixed-int4b";
     }
     return "unknown";
 }
@@ -462,6 +529,98 @@ const Engine::QuantizedExpert* Engine::get_staging_int4(int source_layer, int ex
     return &inserted.first->second;
 }
 
+const Engine::MixedInt4BBlob* Engine::get_staging_mixed_int4b(int source_layer, int expert) {
+    const auto profile_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
+    const uint64_t key = staging_key(source_layer, expert);
+    auto existing = staging_mixed_int4b_.find(key);
+    if (existing != staging_mixed_int4b_.end()) {
+        if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
+        return &existing->second;
+    }
+    TensorView views[3] = {
+        resolver_.resolve_expert(source_layer, expert, TensorResolver::GATE_PROJ),
+        resolver_.resolve_expert(source_layer, expert, TensorResolver::UP_PROJ),
+        resolver_.resolve_expert(source_layer, expert, TensorResolver::DOWN_PROJ)};
+    const size_t projection = static_cast<size_t>(inter_) * hidden_;
+    const size_t projection_bytes = projection * sizeof(uint16_t);
+    for (const TensorView& view : views) {
+        if (!view.ok() || view.dtype != DType::BF16 || view.nbytes != projection_bytes) {
+            std::fprintf(stderr, "[engine] expert %d has unsupported mixed-int4b source layout\n", expert);
+            if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
+            return nullptr;
+        }
+    }
+    if (projection != kMixedInt4BProjectionElements) {
+        std::fprintf(stderr, "[engine] projection size %zu != expected %zu for mixed-int4b\n",
+                     projection, kMixedInt4BProjectionElements);
+        if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
+        return nullptr;
+    }
+    MixedInt4BBlob blob;
+    const size_t bulk_bytes = (blob_elems_ + 1) / 2;
+    const size_t num_outlier_chunks = kMixedInt4BChunksPerProjection * 3;
+    const size_t max_int8_bytes = num_outlier_chunks * kMixedInt4BChunkElements;
+    const size_t total_size = kMixedInt4BHeaderBytes + bulk_bytes + max_int8_bytes;
+#ifdef DEE_CUDA
+    if (cfg_.use_cuda && pinned_staging_bytes_ + total_size <= kPinnedStagingLimit) {
+        if (DEE_CUDA_CHECK_NAMED(cudaHostAlloc(&blob.pinned, total_size, cudaHostAllocDefault),
+                                 "cudaHostAlloc(persistent mixed-int4b expert source)")) {
+            pinned_staging_bytes_ += total_size;
+        }
+    }
+#endif
+    if (!blob.pinned) blob.host.resize(total_size);
+    auto* dst = blob.pinned ? static_cast<uint8_t*>(blob.pinned) : blob.host.data();
+    const auto quantize_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
+    if (profiler_.enabled()) {
+        profiler_.add_cpu_ms(CpuStage::TensorResolution,
+            std::chrono::duration<double, std::milli>(quantize_begin - profile_begin).count());
+    }
+    float outlier_thresholds[3];
+    for (size_t region = 0; region < 3; ++region) {
+        const auto* source = reinterpret_cast<const uint16_t*>(views[region].data);
+        float max_abs = 0.0f;
+        for (size_t i = 0; i < projection; ++i) {
+            max_abs = std::max(max_abs, std::fabs(bf16_to_f32(source[i])));
+        }
+        blob.int4_scales[region] = max_abs > 0.0f ? max_abs / 7.0f : 1.0f;
+        outlier_thresholds[region] = blob.int4_scales[region] * 2.0f;
+    }
+    uint8_t* bulk_dst = dst + kMixedInt4BHeaderBytes;
+    uint8_t* int8_dst = bulk_dst + bulk_bytes;
+    for (size_t region = 0; region < 3; ++region) {
+        const auto* source = reinterpret_cast<const uint16_t*>(views[region].data);
+        uint8_t* proj_bulk = bulk_dst + region * (projection / 2);
+        size_t int8_offset = 0;
+        for (size_t r = 0; r < region; ++r) {
+            int8_offset += static_cast<size_t>(__builtin_popcountll(blob.outlier_masks[r]))
+                           * kMixedInt4BChunkElements;
+        }
+        pack_mixed_int4b_projection(source, blob.int4_scales[region],
+                                    blob.int8_scales[region], blob.outlier_masks[region],
+                                    proj_bulk, int8_dst + int8_offset,
+                                    projection, outlier_thresholds[region]);
+    }
+    size_t actual_int8_bytes = 0;
+    for (size_t region = 0; region < 3; ++region) {
+        actual_int8_bytes += static_cast<size_t>(__builtin_popcountll(blob.outlier_masks[region]))
+                             * kMixedInt4BChunkElements;
+    }
+    blob.total_bytes = kMixedInt4BHeaderBytes + bulk_bytes + actual_int8_bytes;
+    float* header = reinterpret_cast<float*>(dst);
+    for (size_t region = 0; region < 3; ++region) header[region] = blob.int8_scales[region];
+    uint64_t* masks = reinterpret_cast<uint64_t*>(dst + 12);
+    for (size_t region = 0; region < 3; ++region) masks[region] = blob.outlier_masks[region];
+    if (profiler_.enabled()) {
+        const auto quantize_end = StageProfiler::now();
+        profiler_.add_cpu_ms(CpuStage::MmapToPinned,
+            std::chrono::duration<double, std::milli>(quantize_end - quantize_begin).count());
+        profiler_.note_mmap_copy(blob_elems_ * sizeof(uint16_t));
+    }
+    auto inserted = staging_mixed_int4b_.emplace(key, std::move(blob));
+    return &inserted.first->second;
+}
+
 bool Engine::prepack_quantized_sources() {
     if (!cfg_.prepack_quantized_source || !cfg_.use_cuda ||
         cfg_.transfer_dtype == WeightTransferDType::Bf16) return true;
@@ -471,7 +630,10 @@ bool Engine::prepack_quantized_sources() {
         source_layers.insert(avail_layer(layer));
     }
     const size_t bytes_per_expert = cfg_.transfer_dtype == WeightTransferDType::Int4
-        ? (blob_elems_ + 1) / 2 : blob_elems_ * sizeof(int8_t);
+        ? (blob_elems_ + 1) / 2
+        : (cfg_.transfer_dtype == WeightTransferDType::MixedInt4B
+           ? (blob_elems_ + 1) / 2 * 2
+           : blob_elems_ * sizeof(int8_t));
     const size_t physical_experts = source_layers.size() *
                                     static_cast<size_t>(oracle_.num_experts());
     if (physical_experts > std::numeric_limits<size_t>::max() / bytes_per_expert) {
@@ -491,9 +653,17 @@ bool Engine::prepack_quantized_sources() {
     const auto begin = std::chrono::steady_clock::now();
     for (int source_layer : source_layers) {
         for (int expert = 0; expert < oracle_.num_experts(); ++expert) {
-            const QuantizedExpert* packed = cfg_.transfer_dtype == WeightTransferDType::Int4
-                ? get_staging_int4(source_layer, expert)
-                : get_staging_int8(source_layer, expert);
+            const QuantizedExpert* packed = nullptr;
+            const MixedInt4BBlob* mixed_blob = nullptr;
+            if (cfg_.transfer_dtype == WeightTransferDType::Int4) {
+                packed = get_staging_int4(source_layer, expert);
+            } else if (cfg_.transfer_dtype == WeightTransferDType::MixedInt4B) {
+                mixed_blob = get_staging_mixed_int4b(source_layer, expert);
+            } else {
+                packed = get_staging_int8(source_layer, expert);
+            }
+            if ((cfg_.transfer_dtype == WeightTransferDType::MixedInt4B && !mixed_blob) ||
+                (cfg_.transfer_dtype != WeightTransferDType::MixedInt4B && !packed)) {
             if (!packed) {
                 std::fprintf(stderr,
                     "[engine] quantized source prepack failed for layer %d expert %d\n",
@@ -523,6 +693,19 @@ bool Engine::stage_expert(int logical_layer, int source_layer, int expert, int p
                        static_cast<size_t>(inter_) * hidden_, quantized->scales,
                        priority, current_token_, logical_layer,
                        quantized->pinned != nullptr) >= 0;
+        }
+        if (cfg_.transfer_dtype == WeightTransferDType::MixedInt4B) {
+            const MixedInt4BBlob* blob = get_staging_mixed_int4b(source_layer, expert);
+            if (!blob) return false;
+            const auto* source = blob->pinned
+                ? static_cast<const uint8_t*>(blob->pinned)
+                : blob->host.data();
+            return prefetcher_.prefetch_mixed_int4b_to_f16(
+                       source_layer, expert, source, blob->total_bytes,
+                       blob_elems_, static_cast<size_t>(inter_) * hidden_,
+                       blob->int4_scales, blob->int8_scales, blob->outlier_masks,
+                       priority, current_token_, logical_layer,
+                       blob->pinned != nullptr) >= 0;
         }
         if (cfg_.transfer_dtype == WeightTransferDType::Int8) {
             const QuantizedExpert* quantized = get_staging_int8(source_layer, expert);
@@ -660,7 +843,7 @@ bool Engine::init(const EngineConfig& cfg) {
     }
     if (cfg.transfer_dtype != WeightTransferDType::Bf16 &&
         (!cfg.use_cuda || cfg.cache_dtype != DeviceCacheDType::Fp16)) {
-        std::fprintf(stderr, "[engine] INT8 transfer requires CUDA with an FP16 device cache\n");
+        std::fprintf(stderr, "[engine] quantized transfer requires CUDA with an FP16 device cache\n");
         return false;
     }
     if (!prefetcher_.set_ring_size(cfg.prefetch_depth)) {
@@ -1157,6 +1340,13 @@ Engine::~Engine() {
             }
         }
         staging_int8_.clear();
+        for (const auto& entry : staging_mixed_int4b_) {
+            if (entry.second.pinned) {
+                DEE_CUDA_CHECK_NAMED(cudaFreeHost(entry.second.pinned),
+                                     "cudaFreeHost(persistent mixed-int4b expert source)");
+            }
+        }
+        staging_mixed_int4b_.clear();
         pinned_staging_bytes_ = 0;
         cuda_cleanup();
     }

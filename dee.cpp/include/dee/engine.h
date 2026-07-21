@@ -69,7 +69,8 @@ const char* device_cache_dtype_name(DeviceCacheDType dtype);
 enum class WeightTransferDType {
     Bf16,
     Int8,
-    Int4
+    Int4,
+    MixedInt4B
 };
 
 const char* weight_transfer_dtype_name(WeightTransferDType dtype);
@@ -193,6 +194,18 @@ private:
         float scales[3] = {1.0f, 1.0f, 1.0f};
     };
     std::unordered_map<uint64_t, QuantizedExpert> staging_int8_;
+
+    // MixedInt4B: INT4 bulk + INT8 outlier rows with per-projection scales
+    // and uint64_t bitmasks for outlier chunk identification.
+    struct MixedInt4BBlob {
+        std::vector<uint8_t> host;
+        void* pinned = nullptr;
+        float int4_scales[3] = {1.0f, 1.0f, 1.0f};
+        float int8_scales[3] = {1.0f, 1.0f, 1.0f};
+        uint64_t outlier_masks[3] = {0, 0, 0};
+        size_t total_bytes = 0;
+    };
+    std::unordered_map<uint64_t, MixedInt4BBlob> staging_mixed_int4b_;
     size_t pinned_staging_bytes_ = 0;
     static constexpr size_t kPinnedStagingLimit = 192ULL * 1024 * 1024;
 
@@ -214,6 +227,7 @@ private:
     const uint16_t* get_staging_bf16(int source_layer, int expert);
     const QuantizedExpert* get_staging_int8(int source_layer, int expert);
     const QuantizedExpert* get_staging_int4(int source_layer, int expert);
+    const MixedInt4BBlob* get_staging_mixed_int4b(int source_layer, int expert);
     bool prepack_quantized_sources();
 
     // Stream `expert` from a resolved shard layer into VRAM.  The cache key

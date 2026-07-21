@@ -29,6 +29,12 @@ bool int4_to_f16_cuda(const uint8_t* source, void* destination, size_t elements,
                       size_t projection_elements, const float scales[3],
                       cudaStream_t stream, StageProfiler* profiler = nullptr);
 
+bool mixed_int4b_to_f16_cuda(const uint8_t* source, void* destination,
+                             size_t total_elements, size_t projection_elements,
+                             const float int4_scales[3], const float int8_scales[3],
+                             const uint64_t outlier_masks[3],
+                             cudaStream_t stream, StageProfiler* profiler = nullptr);
+
 }  // namespace dee
 
 #endif
