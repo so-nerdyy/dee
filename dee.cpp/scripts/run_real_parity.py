@@ -73,6 +73,16 @@ def _ensure_pydee_in_path() -> None:
     sys.path.insert(0, str(REPO_ROOT))
 
 
+def _force_cpu_only() -> None:
+    """Force CPU-only mode for HF + dee.cpp during tier-1 parity.
+
+    Even with pydee_cfg.use_cuda=False, HF transformers may bind to CUDA at
+    import time. Hide CUDA devices before any HF/dee import is performed.
+    """
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
+    os.environ.setdefault("PYDEE_FORCE_CPU", "1")
+
+
 def _json(o):
     return json.dumps(o, indent=2, ensure_ascii=False)
 
@@ -96,8 +106,15 @@ def load_hf_model_tokens(tier: str = "shard0_1layer") -> tuple:
             del cfg.vision_config
         except Exception:
             pass
+    # Propagate num_hidden_layers amputation to text_config (Qwen3_5 hybrid
+    # reads the decoder count from text_config, not the root config).
     if tier == "shard0_1layer":
         cfg.num_hidden_layers = 1
+        if hasattr(cfg, "text_config") and cfg.text_config is not None:
+            try:
+                cfg.text_config.num_hidden_layers = 1
+            except Exception:
+                pass
     tok = AutoTokenizer.from_pretrained(str(ORNITH_META), trust_remote_code=True)
 
     with no_init_weights():
@@ -119,10 +136,35 @@ def load_hf_model_tokens(tier: str = "shard0_1layer") -> tuple:
             k: v for k, v in state.items()
             if (".layers." not in k) or (".layers.0." in k)
         }
+
+    # Conditionally strip the leading "model.language_model." prefix from shard
+    # keys so they match the model's expected layout. Use STRUCTURAL detection
+    # (presence of the language_model wrapper) rather than a class-name substring,
+    # which would miss e.g. Qwen3_5ForCausalLM.
+    _is_conditional_gen = (
+        hasattr(model, "model")
+        and hasattr(model.model, "language_model")
+    )
+    if not _is_conditional_gen:
+        # Text-only model (e.g., Qwen3_5TextForCausalLM or Qwen3_5ForCausalLM):
+        # expected key prefix is "model.embed_tokens.weight" not
+        # "model.language_model.embed_tokens.weight".
+        _LAN = "model.language_model."
+        state = {
+            (k[len(_LAN):] if k.startswith(_LAN) else k): v for k, v in state.items()
+        }
+    print(
+        f"[load] model class: {type(model).__name__}  "
+        f"conditional_gen={_is_conditional_gen}"
+    )
     # strict=False: missing keys (rotary buffers, mtp head, etc.) get defaults
+    # + unexpected keys (e.g., MTP head tensors from shard 1) ignored.
     missing, unexpected = model.load_state_dict(state, strict=False)
-    print(f"[load] missing={len(missing)} keys (e.g. {missing[:3]}); "
-          f"unexpected={len(unexpected)} keys (e.g. {unexpected[:3]})")
+    print(
+        f"[load] load_state_dict: missing={len(missing)} "
+        f"(e.g. {missing[:3]}), "
+        f"unexpected={len(unexpected)} (e.g. {unexpected[:3]})"
+    )
 
     device = "cuda" if torch.cuda.is_available() and CFG_USE_CUDA_DEFAULT() else "cpu"
     model = model.to(device).eval()
@@ -274,6 +316,18 @@ def main() -> int:
     args = p.parse_args()
 
     _ensure_pydee_in_path()
+    _force_cpu_only()
+
+    # Belt-and-suspenders: if HF rebuilt text_config during from_config,
+    # re-pin num_hidden_layers=1 on the resolved instance.
+    if tier == "shard0_1layer" and cfg.num_hidden_layers == 1:
+        try:
+            if hasattr(model, "config") and hasattr(model.config, "text_config"):
+                tc = model.config.text_config
+                if tc is not None and getattr(tc, "num_hidden_layers", None) != 1:
+                    tc.num_hidden_layers = 1
+        except Exception:
+            pass
 
     print("[run] loading model + tokenizer...")
     model, tok, cfg, device = load_hf_model_tokens(tier=args.tier)

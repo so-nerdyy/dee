@@ -181,7 +181,19 @@ def _patch_layer_mlp(model, layer_idx: int, engine, top_k: int) -> None:
 
 
 def _get_layers_container(model):
-    """Discover the decoder layer list regardless of model class."""
+    """Discover the decoder layer list regardless of model class.
+
+    Resolution order:
+      1. model.model.language_model.layers  (Qwen3_5 hybrid w/ vision wrapper)
+      2. model.model.layers                  (standard CausalLM)
+      3. model.layers                         (bare decoder stack)
+    """
+    # Qwen3_5 hybrid (model_type=qwen3_5_moe_text): text decoder is nested
+    # under model.language_model.
+    if (hasattr(model, "model")
+            and hasattr(model.model, "language_model")
+            and hasattr(model.model.language_model, "layers")):
+        return model.model.language_model.layers
     # Standard HF CausalLM / ConditionalGeneration: model.model.layers
     if hasattr(model, "model") and hasattr(model.model, "layers"):
         return model.model.layers
