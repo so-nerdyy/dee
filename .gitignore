@@ -19,4 +19,7 @@ cmake-build-*/
 .ruff_cache/
 
 # Local-only remote benchmark evidence.
-benchmark_reports/
+# Allow JSONL ledger files (real_generation_ledger.jsonl) for handoff; ignore
+# everything else under benchmark_reports/ (binaries, model dumps, etc.).
+benchmark_reports/*
+!benchmark_reports/*.jsonl

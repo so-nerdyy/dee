@@ -24,26 +24,34 @@ Workflow:
   8. Append ledger record with PASS/FAIL + numerics + parsed engine stats
      + commit/branch/transformers metadata.
 
+Flags:
+    --probe-only      Skip engine.init + moe_forward_experts; exit after the
+                      resolved-key/shape/dtype stage. Recommended FIRST run on
+                      next SSH-up; catches shard path / safetensors / tensor
+                      layout issues in ~30-60s pure CPU.
+
 Usage:
-    python3 scripts/load_shard_swiglu_parity.py
+    python3 scripts/load_shard_swiglu_parity.py --probe-only
+    python3 scripts/load_shard_swiglu_parity.py --expert 0 --seed 42
     python3 scripts/load_shard_swiglu_parity.py --expert 7 --seed 1234
 
-Expected pass criteria:
-    max_abs_err < 1e-4     (CPU SwiGLU FP32 path; tolerate vector-intrinsic drift)
-    cosine_sim  > 0.99999  (matches HF reference direction)
+Expected full pass criteria (FP32 CPU SwiGLU):
+    max_abs_err < 1e-4
+    cosine_sim  > 0.99999
 
-This script is the bypass-HF tier-0.5 path. If pydee.so is not yet compiled,
-build first:
+If pydee.so is not yet compiled, build first:
     cmake --build build --parallel 4
     python3 pydee/setup.py build_ext --inplace
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import importlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -53,17 +61,27 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+DEE_CPP_ROOT = Path(__file__).resolve().parents[1]
+REPO_GIT_ROOT = DEE_CPP_ROOT.parent
 ORNITH_SHARD_0 = Path(
     os.environ.get(
         "ORNITH_SHARD_0",
         "/tmp/ornith_min/model-00001-of-00016.safetensors",
     )
 )
-LEDGER = REPO_ROOT / "benchmark_reports" / "real_generation_ledger.jsonl"
-DEE_BUILD_DIR = Path(os.environ.get("DEE_BUILD_DIR", str(REPO_ROOT / "build")))
-PYDEE_DIR = REPO_ROOT / "pydee"
+LEDGER = DEE_CPP_ROOT / "benchmark_reports" / "real_generation_ledger.jsonl"
+DEE_BUILD_DIR = Path(os.environ.get("DEE_BUILD_DIR", str(DEE_CPP_ROOT / "build")))
+PYDEE_DIR = DEE_CPP_ROOT / "pydee"
 MODEL_TAG = "deepreinforce-ai/Ornith-1.0-35B"
+
+# Optional deps: psutil for RAM preflight; signal.SIGALRM is Unix-only.
+try:
+    import psutil  # type: ignore
+    HAS_PSUTIL = True
+except Exception:
+    HAS_PSUTIL = False
+
+_HAS_ALARM = hasattr(signal, "SIGALRM")
 
 
 def _now_iso() -> str:
@@ -79,17 +97,58 @@ def _append_ledger(record: dict) -> None:
 
 
 def _ensure_pydee_in_path() -> None:
-    sys.path.insert(0, str(REPO_ROOT))
-    sys.path.insert(0, str(PYDEE_DIR))
+    # The module file lives at dee.cpp/scripts/, so parent is dee.cpp/ and
+    # grandparent is the project root that contains stdlib-site-packages.
+    sys.path.insert(0, str(REPO_GIT_ROOT))
+    sys.path.insert(0, str(DEE_CPP_ROOT))
 
 
-def _git_meta() -> dict:
-    """Safe git commit/branch capture. Falls back to None on failure."""
+@contextlib.contextmanager
+def _watchdog(seconds: int, label: str):
+    """Signal-based timeout (SIGALRM). No-op on Windows / non-Unix.
+
+    Use to bound C++ engine.init / moe_forward_experts so a malformed shard
+    cannot stall the run indefinitely.
+    """
+    if not _HAS_ALARM:
+        # Windows or other non-Unix. Best-effort: just yield.
+        yield
+        return
+    def _h(signum, frame):
+        raise TimeoutError(f"{label} exceeded {seconds}s wall-budget")
+    old_h = signal.signal(signal.SIGALRM, _h)
+    signal.alarm(int(seconds))
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_h)
+
+
+def _git_meta() -> tuple[dict, bool]:
+    """Safe git commit/branch capture from REPO_GIT_ROOT.
+
+    Returns (meta, git_root_valid). git_root_valid=False means we ran from
+    outside a git repo and downstream tooling should treat commit=None as
+    'no git context' rather than 'unset'.
+    """
     out = {"commit": None, "branch": None}
+    git_root_valid = False
+    # Test if REPO_GIT_ROOT is actually inside a git repo.
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=str(REPO_GIT_ROOT), capture_output=True, text=True, timeout=5,
+        )
+        git_root_valid = (r.returncode == 0)
+    except Exception:
+        pass
+    if not git_root_valid:
+        return out, False
     try:
         r = subprocess.run(
             ["git", "rev-parse", "HEAD"],
-            cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=5,
+            cwd=str(REPO_GIT_ROOT), capture_output=True, text=True, timeout=5,
         )
         if r.returncode == 0:
             out["commit"] = r.stdout.strip()
@@ -98,13 +157,13 @@ def _git_meta() -> dict:
     try:
         r = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=5,
+            cwd=str(REPO_GIT_ROOT), capture_output=True, text=True, timeout=5,
         )
         if r.returncode == 0:
             out["branch"] = r.stdout.strip()
     except Exception:
         pass
-    return out
+    return out, True
 
 
 def _safe_transformers_version() -> str | None:
@@ -112,6 +171,25 @@ def _safe_transformers_version() -> str | None:
         return importlib.import_module("transformers").__version__
     except Exception:
         return None
+
+
+def _ram_preflight(required_gib: float = 5.5) -> dict:
+    """Returns a dict with 'ok' bool, 'free_gib' float (or None), 'note'.
+
+    Used to detect worst-case OOM-on-safetensors-load.
+    """
+    if not HAS_PSUTIL:
+        return {"ok": True, "free_gib": None, "note": "psutil not installed; cannot preflight"}
+    vm = psutil.virtual_memory()
+    free = vm.available / (1024 ** 3)
+    return {
+        "ok": bool(free >= required_gib),
+        "free_gib": float(round(free, 2)),
+        "note": "ok" if free >= required_gib else (
+            f"free RAM {free:.1f} GiB < required {required_gib:.1f} GiB for "
+            f"4.32-GiB shard + fp32 cast"
+        ),
+    }
 
 
 def _probe_keys(state: dict) -> dict:
@@ -131,17 +209,9 @@ def _probe_keys(state: dict) -> dict:
 def _resolve_expert_keys(
     state: dict, layer: int, expert: int
 ) -> dict | None:
-    """Return {gate: key, up: key, down: key} or None if nothing matches.
-
-    Order of resolution:
-      1. Stacked: model.layers.{L}.mlp.experts.{gate,up,down}_proj.weight
-      2. Stacked with wrappers: model.model.layers.{L}.mlp.experts.* etc
-      3. Individual ModuleList:
-         model.layers.{L}.mlp.experts.{N}.{g,u,d}_proj.weight
-    """
+    """Return {gate: key, up: key, down: key} or None if nothing matches."""
     layer_seg = f"layers.{layer}."
     expert_module_seg = ".mlp.experts."
-    # Stacked format candidates.
     for prefix in (
         f"model.{layer_seg}{expert_module_seg}",
         f"model.model.{layer_seg}{expert_module_seg}",
@@ -153,7 +223,6 @@ def _resolve_expert_keys(
         dk = prefix + "down_proj.weight"
         if all(k in state for k in (gk, uk, dk)):
             return {"format": "stacked", "gate": gk, "up": uk, "down": dk}
-    # Individual expert ModuleList candidates.
     for prefix in (
         f"model.{layer_seg}{expert_module_seg}{expert}.",
         f"model.model.{layer_seg}{expert_module_seg}{expert}.",
@@ -209,12 +278,20 @@ def _torch_reference(W_g: torch.Tensor,
 
 
 def _finite_check(name: str, arr: np.ndarray) -> str | None:
-    """Return None if all finite, else a diagnostic string."""
     if not np.isfinite(arr).all():
         n_nan = int(np.isnan(arr).sum())
         n_inf = int(np.isinf(arr).sum())
         return f"{name}: not finite (NaN={n_nan}, Inf={n_inf})"
     return None
+
+
+def _parse_engine_stats(engine) -> dict:
+    raw = engine.last_stats_json()
+    try:
+        return json.loads(raw)
+    except Exception as exc:
+        sys.stderr.write(f"[tier-0.5] WARN: engine.last_stats_json not parseable: {exc}\n")
+        return {"_raw": raw, "_parse_error": str(exc)}
 
 
 def main() -> int:
@@ -225,15 +302,24 @@ def main() -> int:
     p.add_argument("--layer",  type=int, default=0)
     p.add_argument("--seed",   type=int, default=42)
     p.add_argument("--topn-elements", type=int, default=8)
+    p.add_argument(
+        "--probe-only", action="store_true",
+        help="Skip engine.init + moe_forward_experts; exit after safetensors "
+             "+ key-resolve + shape-check stage. Use as the FIRST run on next "
+             "SSH-up.",
+    )
     args = p.parse_args()
 
     _ensure_pydee_in_path()
 
-    git_meta = _git_meta()
+    git_meta, git_root_valid = _git_meta()
     transformers_ver = _safe_transformers_version()
+    ram_pre = _ram_preflight()
     ts = _now_iso()
     print(f"[tier-0.5] ts={ts}  branch={git_meta['branch']}  "
           f"commit={git_meta['commit']}  transformers={transformers_ver}")
+    print(f"[tier-0.5] git_root_valid={git_root_valid}  "
+          f"ram_free_gib={ram_pre['free_gib']}  alarm_available={_HAS_ALARM}")
 
     print(f"[tier-0.5] shard path: {ORNITH_SHARD_0}")
     if not ORNITH_SHARD_0.exists():
@@ -242,6 +328,9 @@ def main() -> int:
             f"Download via `huggingface_hub.hf_hub_download("
             f"'{MODEL_TAG}', 'model-00001-of-00016.safetensors')`."
         )
+
+    if not ram_pre["ok"]:
+        print(f"[tier-0.5] HARD-WARN: {ram_pre['note']}; load may OOM.")
 
     print("[tier-0.5] loading safetensors...")
     from safetensors.torch import load_file
@@ -274,12 +363,15 @@ def main() -> int:
             "timestamp": ts,
             "commit": git_meta["commit"],
             "branch": git_meta["branch"],
+            "git_root_valid": git_root_valid,
             "transformers": transformers_ver,
             "model_revision": MODEL_TAG,
+            "probe_only": bool(args.probe_only),
             "result": "FAIL: no expert format resolved",
             "probe": probe,
             "layer": args.layer,
             "expert": args.expert,
+            "next_command": _resume_command(),
         })
         return 2
 
@@ -303,8 +395,10 @@ def main() -> int:
             "timestamp": ts,
             "commit": git_meta["commit"],
             "branch": git_meta["branch"],
+            "git_root_valid": git_root_valid,
             "transformers": transformers_ver,
             "model_revision": MODEL_TAG,
+            "probe_only": bool(args.probe_only),
             "result": "FAIL: unexpected weight shapes",
             "shapes": {
                 "W_g": list(W_g.shape), "W_u": list(W_u.shape),
@@ -312,17 +406,51 @@ def main() -> int:
             },
             "dtype_orig": dtype_orig,
             "layout": layout,
+            "next_command": _resume_command(),
         })
         return 3
 
-    # Torch reference.
+    # Probe-only: exit BEFORE building pydee engine. Used as a cheap first
+    # check on next SSH-up before committing dispatch budget to a full forward.
+    if args.probe_only:
+        torch.manual_seed(args.seed)
+        x = torch.randn(H, dtype=torch.float32)
+        ref = _torch_reference(W_g, W_u, W_d, x)
+        ref_np = ref.cpu().numpy().astype(np.float32)
+        ref_max = float(np.max(np.abs(ref_np)))
+        print(f"[tier-0.5][probe-only] torch reference computed OK; "
+              f"|ref|_max={ref_max:.4e}")
+        _append_ledger({
+            "id": f"TIER0.5-PROBE-OK-{ts}",
+            "stage": "tier0.5.probe_only",
+            "timestamp": ts,
+            "commit": git_meta["commit"],
+            "branch": git_meta["branch"],
+            "git_root_valid": git_root_valid,
+            "transformers": transformers_ver,
+            "model_revision": MODEL_TAG,
+            "result": "PROBE_OK",
+            "pass": True,
+            "probe": probe,
+            "layer": args.layer,
+            "expert": args.expert,
+            "hidden": H,
+            "inter": I,
+            "layout": layout,
+            "dtype_orig": dtype_orig,
+            "shard_path": str(ORNITH_SHARD_0),
+            "shard_size_bytes": ORNITH_SHARD_0.stat().st_size,
+            "next_command": _resume_command(probe_only=False),
+        })
+        return 0
+
+    # Full path: torch reference, engine.init, moe_forward_experts.
     torch.manual_seed(args.seed)
     x = torch.randn(H, dtype=torch.float32)
     ref = _torch_reference(W_g, W_u, W_d, x)
     ref_np = ref.cpu().numpy().astype(np.float32)
     print(f"[tier-0.5] ref (first 6) = {ref_np[:6].tolist()}")
 
-    # pydee Engine init.
     import pydee
     if pydee.Engine is None:
         print(
@@ -336,10 +464,12 @@ def main() -> int:
             "timestamp": ts,
             "commit": git_meta["commit"],
             "branch": git_meta["branch"],
+            "git_root_valid": git_root_valid,
             "transformers": transformers_ver,
             "model_revision": MODEL_TAG,
             "result": "FAIL: pydee.so not importable",
             "shard_path": str(ORNITH_SHARD_0),
+            "next_command": _resume_command(recover_step="rebuild_pydee"),
         })
         return 4
 
@@ -358,7 +488,26 @@ def main() -> int:
     engine = pydee.Engine()
     print("[tier-0.5] calling engine.init(cfg)...")
     t0 = time.time()
-    if not engine.init(cfg):
+    init_ok = False
+    try:
+        with _watchdog(120, "engine.init"):
+            init_ok = engine.init(cfg)
+    except TimeoutError as exc:
+        print(f"[tier-0.5] FAIL: {exc}")
+        _append_ledger({
+            "id": f"TIER0.5-SWIGLU-INIT-TIMEOUT-{ts}",
+            "stage": "tier0.5",
+            "timestamp": ts,
+            "commit": git_meta["commit"],
+            "branch": git_meta["branch"],
+            "transformers": transformers_ver,
+            "model_revision": MODEL_TAG,
+            "result": f"FAIL: {exc}",
+            "shard_path": str(ORNITH_SHARD_0),
+            "next_command": _resume_command(recover_step="rebuild_pydee"),
+        })
+        return 9
+    if not init_ok:
         print("[tier-0.5] FAIL: engine.init returned False")
         _append_ledger({
             "id": f"TIER0.5-SWIGLU-INIT-FAIL-{ts}",
@@ -366,6 +515,7 @@ def main() -> int:
             "timestamp": ts,
             "commit": git_meta["commit"],
             "branch": git_meta["branch"],
+            "git_root_valid": git_root_valid,
             "transformers": transformers_ver,
             "model_revision": MODEL_TAG,
             "result": "FAIL: engine.init returned False",
@@ -374,6 +524,7 @@ def main() -> int:
                 "num_experts": 256, "num_layers": 40,
                 "hidden": H, "inter": I,
             },
+            "next_command": _resume_command(recover_step="rebuild_pydee"),
         })
         return 5
     init_ms = (time.time() - t0) * 1000.0
@@ -386,13 +537,30 @@ def main() -> int:
               f"H={engine_hidden} I={engine_inter}, expected H={H} I={I}")
         return 6
 
-    # Cold-load + SwiGLU forward via pydee.
     x_np = x.cpu().numpy().astype(np.float32)
     out_np = np.zeros(H, dtype=np.float32)
     print(f"[tier-0.5] calling moe_forward_experts(layer={args.layer}, "
           f"experts=[{args.expert}])...")
     t0 = time.time()
-    ok = engine.moe_forward_experts(args.layer, x_np, out_np, [int(args.expert)])
+    ok = False
+    try:
+        with _watchdog(60, "engine.moe_forward_experts"):
+            ok = engine.moe_forward_experts(args.layer, x_np, out_np, [int(args.expert)])
+    except TimeoutError as exc:
+        print(f"[tier-0.5] FAIL: {exc}")
+        _append_ledger({
+            "id": f"TIER0.5-SWIGLU-FWD-TIMEOUT-{ts}",
+            "stage": "tier0.5",
+            "timestamp": ts,
+            "commit": git_meta["commit"],
+            "branch": git_meta["branch"],
+            "transformers": transformers_ver,
+            "model_revision": MODEL_TAG,
+            "result": f"FAIL: {exc}",
+            "init_ms": init_ms,
+            "next_command": _resume_command(recover_step="rebuild_pydee"),
+        })
+        return 10
     fwd_ms = (time.time() - t0) * 1000.0
     print(f"[tier-0.5] moe_forward_experts returned {ok} in {fwd_ms:.1f} ms")
     if not ok:
@@ -402,15 +570,16 @@ def main() -> int:
             "timestamp": ts,
             "commit": git_meta["commit"],
             "branch": git_meta["branch"],
+            "git_root_valid": git_root_valid,
             "transformers": transformers_ver,
             "model_revision": MODEL_TAG,
             "result": "FAIL: moe_forward_experts returned False",
             "init_ms": init_ms,
             "fwd_ms": fwd_ms,
+            "next_command": _resume_command(),
         })
         return 7
 
-    # Pre-metric guards (reviewer B).
     bad = []
     for nm, arr in (("ref", ref_np), ("dee", out_np)):
         msg = _finite_check(nm, arr)
@@ -435,10 +604,10 @@ def main() -> int:
             "dee_max_abs": dee_max,
             "init_ms": init_ms,
             "fwd_ms": fwd_ms,
+            "next_command": _resume_command(),
         })
         return 8
 
-    # Numeric comparison.
     elem_err = np.abs(ref_np - out_np)
     abs_err = float(elem_err.max())
     rel_rmse = float(np.sqrt(np.mean(elem_err ** 2)) /
@@ -456,19 +625,13 @@ def main() -> int:
     PASS = (abs_err < 1.0e-4) and (cos > 0.99999)
     print(f"[tier-0.5] PASS = {PASS}  (gate: max_abs_err < 1e-4 && cosine > 0.99999)")
 
-    # Parse engine stats (reviewer D).
-    engine_stats_dict: dict = {}
-    try:
-        engine_stats_dict = json.loads(engine.last_stats_json())
-    except Exception:
-        engine_stats_dict = {"_raw": engine.last_stats_json()}
-
     _append_ledger({
         "id": f"TIER0.5-SWIGLU-{ts}",
         "stage": "tier0.5",
         "timestamp": ts,
         "commit": git_meta["commit"],
         "branch": git_meta["branch"],
+        "git_root_valid": git_root_valid,
         "transformers": transformers_ver,
         "model_revision": MODEL_TAG,
         "shard_path": str(ORNITH_SHARD_0),
@@ -495,9 +658,41 @@ def main() -> int:
         "dee_first6": out_np[:6].tolist(),
         "pass": bool(PASS),
         "result": "PASS" if PASS else "FAIL",
-        "engine_stats": engine_stats_dict,
+        "engine_stats": _parse_engine_stats(engine),
+        "next_command": _resume_command(),
     })
     return 0 if PASS else 1
+
+
+def _resume_command(
+    recover_step: str | None = None,
+    probe_only: bool = False,
+) -> str:
+    """Return the deterministic one-shot command to re-run from the right
+    starting point. Embeds in every ledger record so tomorrow's resume
+    agent has a determinate path. Uses '$(git rev-parse --show-toplevel)'
+    so the resume self-locates the checkout regardless of where on the
+    VM filesystem the tree lives — survives VM reincarnation under a
+    different mount path."""
+    base = (
+        'cd "$(git rev-parse --show-toplevel)" && '
+        "git fetch origin opt/real-model-t1 && "
+        "git checkout opt/real-model-t1 && "
+        "git pull origin opt/real-model-t1 && "
+    )
+    if recover_step == "rebuild_pydee":
+        base += (
+            "cmake --build build --parallel 4 && "
+            "python3 -m pip install --user --break-system-packages pybind11 && "
+            "python3 pydee/setup.py build_ext --inplace && "
+        )
+    if probe_only:
+        return base + (
+            "python3 scripts/load_shard_swiglu_parity.py --probe-only"
+        )
+    return base + (
+        "python3 scripts/load_shard_swiglu_parity.py --expert 0 --seed 42"
+    )
 
 
 if __name__ == "__main__":

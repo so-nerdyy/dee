@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """run_real_parity.py — Tier-1 first-real-model parity test for dee.cpp.
 
+TIER-1 ONLY: this script is the Hugging Face forward pipeline. It is currently
+BLOCKED on transformers adding `qwen3_5_moe_text` modeling code (no 4.x stable
+release ships it; no Qwen3.5 modeling files on HF hub). Tier-0.5 is the
+component-level fallback that bypasses HF entirely; it lives at
+`scripts/load_shard_swiglu_parity.py` and tests dee.cpp's SwiGLU kernel
+against real Ornith safetensors weights.
+
 End-to-end driver that:
 
   1. Loads Ornith-1.0-35B (deepreinforce-ai/Ornith-1.0-35B) tokenizer + config
@@ -73,7 +80,9 @@ def _ensure_pydee_in_path() -> None:
     sys.path.insert(0, str(REPO_ROOT))
 
 
-def _force_cpu_only() -> None:
+# Tier-1-only CPU helper. Tier-0.5 does NOT call this. Scope-renamed from
+# `_force_cpu_only` for clarity; gated to tier-1 by name.
+def _force_cpu_for_tier1() -> None:
     """Force CPU-only mode for HF + dee.cpp during tier-1 parity.
 
     Even with pydee_cfg.use_cuda=False, HF transformers may bind to CUDA at
@@ -175,19 +184,31 @@ def load_hf_model_tokens(tier: str = "shard0_1layer") -> tuple:
 
     # Post-load structural check: amputation must have left exactly one decoder
     # layer. Handles both Qwen3_5 hybrid (3-deep) and Qwen3_5TextForCausalLM
-    # (2-deep) layouts.
-    if hasattr(model, "model"):
-        if hasattr(model.model, "language_model"):
-            _layers_mod = model.model.language_model.layers
-        elif hasattr(model.model, "layers"):
-            _layers_mod = model.model.layers
-        else:
-            _layers_mod = None
-        if _layers_mod is not None and len(_layers_mod) != 1:
-            raise RuntimeError(
-                f"[load] tier-1 amputation failed: "
-                f"len(_layers_mod)={len(_layers_mod)}, expected 1"
-            )
+    # (2-deep) layouts. If neither branch matches, raise — never silently skip.
+    if not hasattr(model, "model"):
+        raise RuntimeError(
+            f"[load] tier-1 amputation verifier: model has no `.model` attr "
+            f"(type={type(model).__name__}); unknown structure"
+        )
+    if hasattr(model.model, "language_model"):
+        _layers_mod = getattr(model.model.language_model, "layers", None)
+        _where = "model.model.language_model.layers"
+    elif hasattr(model.model, "layers"):
+        _layers_mod = model.model.layers
+        _where = "model.model.layers"
+    else:
+        raise RuntimeError(
+            f"[load] tier-1 amputation verifier: unknown model structure "
+            f"(type={type(model).__name__}); neither .language_model nor "
+            f".layers found"
+        )
+    if _layers_mod is None:
+        raise RuntimeError(f"[load] tier-1 amputation verifier: {_where} is None")
+    if len(_layers_mod) != 1:
+        raise RuntimeError(
+            f"[load] tier-1 amputation failed: "
+            f"len({_where})={len(_layers_mod)}, expected 1"
+        )
 
     return model, tok, cfg, device
 
@@ -335,8 +356,10 @@ def main() -> int:
     p.add_argument("--topk", type=int, default=8)
     args = p.parse_args()
 
+    # Side-effects (sys.path mutation, CUDA_VISIBLE_DEVICES override) only run
+    # for direct invocation, not for `from scripts import run_real_parity`.
     _ensure_pydee_in_path()
-    _force_cpu_only()
+    _force_cpu_for_tier1()
 
     print("[run] loading model + tokenizer...")
     model, tok, cfg, device = load_hf_model_tokens(tier=args.tier)
@@ -392,3 +415,13 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+else:
+    # Imported (not run directly). Make side-effects explicit and inert.
+    raise RuntimeError(
+        "scripts/run_real_parity.py is the TIER-1 driver and must be "
+        "executed via `python3 scripts/run_real_parity.py`. Direct "
+        "import runs the top-level `import torch` (which side-effects "
+        "on CUDA detection) without main()'s CUDA-suppression. "
+        "If importing is needed, refactor side-effects into functions "
+        "called from inside main()."
+    )
