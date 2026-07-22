@@ -87,6 +87,7 @@ struct EngineConfig {
     bool        use_cuda    = false;// DEE_CUDA path (only if built WITH cuda)
     int         hidden      = 2048; // model hidden dim (checked vs shard)
     int         inter       = 256;  // expert intermediate dim (checked vs shard)
+    int         num_experts = 0;    // total routed experts per layer (real-model mode); 0=fallback
     bool        verbose     = false;
     bool        profile_stages = false;
     bool        trace_requests = false;
@@ -152,6 +153,18 @@ public:
     // Expose for tests: the naive (no DEE) SwiGLU kernel on a pre-staged blob.
     static void swiglu(const float* blob, const float* x,
                        int inter, int hidden, float* acc);
+
+    // Real-model integration: caller provides hidden + per-expert chosen
+    // indices (from the model's own router). Engine runs SwiGLU for each
+    // requested expert and writes per-expert outputs to `experts_out`
+    // (length = experts.size() * hidden_, contiguous, expert k in slot
+    // [k*hidden_, (k+1)*hidden_)). Caller combines externally
+    // (typically: sum(expert_out[k] * routing_weight[k])).
+    // Does NOT use the dee.cpp Oracle (python HF model owns the router).
+    // Optional MoE combine is intentionally left out: HF reference is the
+    // arbiter for the per-token agreement check.
+    bool moe_forward_experts(int layer, const float* h_in, float* experts_out,
+                             const std::vector<int>& experts);
 
     int hidden_dim() const { return hidden_; }
     int inter_dim()  const { return inter_; }

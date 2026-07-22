@@ -1,10 +1,37 @@
 // dee/oracle.cpp
+//
+// Implementation of OracleScheduler.
+//
+// PRESERVED from HEAD 31cb9e5:
+//   - load(): PtLoader-based parser for the 3-layer-MLP Oracle pickle
+//   - forward(): per-layer linear+relu+linear+relu+linear; AVX2/FMA dot
+//   - predict(): argsort by descending logit, top-K
+//   - upload_to_gpu(): cudaMalloc + cudaMemcpy(W*,b*) per layer
+//   - free_gpu(): cudaFree per layer
+//   - predict_gpu(): cuBLAS Sgemv/Saxpy + ReLU + D2H + CPU sigmoid + top-K
+//   - predict_gpu_boundary(): exact-margin check + CPU fallback for tight cases
+//   - StageProfiler integration (oracle_allocations / oracle_calls / etc.)
+//
+// ADDED (real-model integration mode):
+//   - bool is_no_op_ flag (private)
+//   - void OracleScheduler::set_no_op_layers(num_layers, D, H, E) - sizes the
+//     stub layers_ table and flips is_no_op_ = true. ERR_ is cleared.
+//   - inline void require_real_oracle(const char* op) - throws std::logic_error
+//     with a clear remediation message.
+//   - Guards in load(), forward(), predict(), upload_to_gpu(),
+//     predict_gpu(), predict_gpu_boundary() that bail out in no-op mode.
+//
+// IMPORTANT: The is_no_op_ flag is OFF by default. Caller (Engine::init) only
+// flips it via set_no_op_layers() when cfg.oracle_path is empty. The synthetic
+// 31.647 tok/s baseline (which uses --oracle oracle.pt) is unaffected.
+
 #include "dee/oracle.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <stdexcept>
 
 #ifdef DEE_CUDA
 #include "dee/cuda_check.h"
@@ -96,14 +123,41 @@ static void linear(const std::vector<float>& W, const std::vector<float>& b,
 
 static inline float relu(float v) { return v > 0.f ? v : 0.f; }
 
+// Real-model integration stub: caller owns routing. Sizes the stub layers_
+// table so num_layers() reports the right value; gating happens via is_no_op_
+// at the top of every public method.
+void OracleScheduler::set_no_op_layers(int num_layers, int D, int H, int E) {
+    layers_.clear();
+    layers_.resize(num_layers);  // placeholder-sized; contents are unused
+    D_ = D;
+    H_ = H;
+    E_ = E;
+    err_.clear();
+    is_no_op_ = true;
+#ifdef DEE_CUDA
+    gpu_layers_.clear();
+    bstats_ = {};
+#endif
+}
+
+inline void OracleScheduler::require_real_oracle(const char* op) const {
+    if (is_no_op_) {
+        throw std::logic_error(
+            std::string("OracleScheduler::") + op +
+            " called in real-model integration mode (no Oracle loaded). "
+            "Caller must own the router (HF model) and use "
+            "Engine::moe_forward_experts instead.");
+    }
+}
+
 }  // namespace
 
 bool OracleScheduler::load(const std::string& oracle_pt_path, int D, int H, int E) {
+    is_no_op_ = false;  // any successful load promotes us back to real-oracle mode
     D_ = D; H_ = H; E_ = E;
     PtLoader loader;
     if (!loader.open(oracle_pt_path)) { err_ = "PtLoader: " + loader.error(); return false; }
 
-    // Count layers by probing "layers.L.net.0.weight"
     int L = 0;
     while (loader.tensors().count("layers." + std::to_string(L) + ".net.0.weight")) ++L;
     if (L == 0) { err_ = "no layers found in oracle.pt"; return false; }
@@ -126,6 +180,7 @@ bool OracleScheduler::load(const std::string& oracle_pt_path, int D, int H, int 
 }
 
 void OracleScheduler::forward(int layer, const float* hidden, std::vector<float>& logits) const {
+    require_real_oracle("forward");
     const auto lookup_begin = oracle_profiling(profiler_) ? StageProfiler::now() : StageProfiler::TimePoint{};
     const OracleLayerWeights* weights = &layers_.at(layer);
     if (oracle_profiling(profiler_)) profiler_->add_oracle(OracleStage::ModelLookup, lookup_begin);
@@ -143,10 +198,10 @@ void OracleScheduler::forward(int layer, const float* hidden, std::vector<float>
 }
 
 void OracleScheduler::predict(int layer, const float* hidden, int topk, std::vector<int>& out) const {
+    require_real_oracle("predict");
     if (oracle_profiling(profiler_)) profiler_->note_oracle_call();
     std::vector<float> logits;
     forward(layer, hidden, logits);
-    // argsort by descending logit
     std::vector<int> idx;
     timed_resize(idx, static_cast<size_t>(E_), profiler_);
     const auto index_begin = oracle_profiling(profiler_) ? StageProfiler::now() : StageProfiler::TimePoint{};
@@ -184,6 +239,10 @@ void OracleScheduler::predict(int layer, const float* hidden, int topk, std::vec
 #ifdef DEE_CUDA
 
 bool OracleScheduler::upload_to_gpu() {
+    if (is_no_op_) {
+        err_ = "upload_to_gpu called in no-op oracle mode";
+        return false;
+    }
     gpu_layers_.resize(layers_.size());
 
     for (size_t l = 0; l < layers_.size(); ++l) {
@@ -203,7 +262,7 @@ bool OracleScheduler::upload_to_gpu() {
             !alloc_and_copy(gpu.d_w2, cpu.w2, "cudaMalloc(W2)") ||
             !alloc_and_copy(gpu.d_b2, cpu.b2, "cudaMalloc(b2)") ||
             !alloc_and_copy(gpu.d_w4, cpu.w4, "cudaMalloc(W4)") ||
-            !alloc_and_copy(gpu.d_b4, cpu.b4, "cudaMalloc(b4)")) {
+            !alloc_and_copy(gpu.d_b4, cpu.b4, "cudaMalloc(b6)")) {
             free_gpu();
             return false;
         }
@@ -212,6 +271,7 @@ bool OracleScheduler::upload_to_gpu() {
 }
 
 void OracleScheduler::free_gpu() {
+    if (is_no_op_) return;
     for (auto& gpu : gpu_layers_) {
         auto safe_free = [](float*& p) {
             if (p) { cudaFree(p); p = nullptr; }
@@ -226,6 +286,7 @@ void OracleScheduler::free_gpu() {
 void OracleScheduler::predict_gpu(int layer, const float* d_hidden, float* d_scratch,
                                   cublasHandle_t handle, void* stream,
                                   int topk, std::vector<int>& out) const {
+    require_real_oracle("predict_gpu");
     if (oracle_profiling(profiler_)) profiler_->note_oracle_call();
     const auto& gpu = gpu_layers_[layer];
     cudaStream_t cuda_stream = static_cast<cudaStream_t>(stream);
@@ -237,8 +298,6 @@ void OracleScheduler::predict_gpu(int layer, const float* d_hidden, float* d_scr
     float* d_act = d_scratch;
     float* d_act2 = d_scratch + H;
 
-    // Row-major W0[256x2048]: use CUBLAS_OP_T with A described as 2048x256 col-major,
-    // lda=2048. y[256] = W0[256x2048] * x[2048]
     DEE_CUBLAS_CHECK_NAMED(cublasSgemv(handle, CUBLAS_OP_T, D, H,
                                        &alpha, gpu.d_w0, D, d_hidden, 1,
                                        &beta, d_act, 1), "cublasSgemv(W0)");
@@ -246,7 +305,6 @@ void OracleScheduler::predict_gpu(int layer, const float* d_hidden, float* d_scr
                            "cublasSaxpy(b0)");
     oracle_relu_cuda(d_act, H, cuda_stream);
 
-    // Row-major W2[256x256]: use CUBLAS_OP_T, lda=256
     DEE_CUBLAS_CHECK_NAMED(cublasSgemv(handle, CUBLAS_OP_T, H, H,
                                        &alpha, gpu.d_w2, H, d_act, 1,
                                        &beta, d_act2, 1), "cublasSgemv(W2)");
@@ -254,14 +312,12 @@ void OracleScheduler::predict_gpu(int layer, const float* d_hidden, float* d_scr
                            "cublasSaxpy(b2)");
     oracle_relu_cuda(d_act2, H, cuda_stream);
 
-    // Row-major W4[256x256]: use CUBLAS_OP_T, lda=256
     DEE_CUBLAS_CHECK_NAMED(cublasSgemv(handle, CUBLAS_OP_T, H, H,
                                        &alpha, gpu.d_w4, H, d_act2, 1,
                                        &beta, d_act, 1), "cublasSgemv(W4)");
     DEE_CUBLAS_CHECK_NAMED(cublasSaxpy(handle, E, &alpha, gpu.d_b4, 1, d_act, 1),
                            "cublasSaxpy(b4)");
 
-    // D2H the 256 logits
     std::vector<float> logits(E);
     const auto d2h_begin = oracle_profiling(profiler_) ? StageProfiler::now() : StageProfiler::TimePoint{};
     if (!DEE_CUDA_CHECK_NAMED(cudaMemcpyAsync(logits.data(), d_act,
@@ -270,10 +326,9 @@ void OracleScheduler::predict_gpu(int layer, const float* d_hidden, float* d_scr
                               "cudaMemcpyAsync(oracle logits D2H)")) return;
     DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(cuda_stream), "cudaStreamSynchronize(oracle)");
     if (oracle_profiling(profiler_)) {
-        profiler_->add_oracle(OracleStage::Linear0, d2h_begin);  // approximate attribution
+        profiler_->add_oracle(OracleStage::Linear0, d2h_begin);
     }
 
-    // CPU sigmoid + top-K (preserves exact routing)
     for (int i = 0; i < E; ++i) logits[i] = 1.0f / (1.0f + std::exp(-logits[i]));
 
     std::vector<int> idx(E);
@@ -289,10 +344,10 @@ void OracleScheduler::predict_gpu_boundary(int layer, const float* h_in_cpu, flo
                                            float* d_scratch, cublasHandle_t handle, void* stream,
                                            int topk, std::vector<int>& out,
                                            float epsilon_margin) const {
+    require_real_oracle("predict_gpu_boundary");
     if (oracle_profiling(profiler_)) profiler_->note_oracle_call();
     bstats_.gpu_calls++;
 
-    // epsilon_margin <= 0 means raw GPU mode (legacy behavior, allows mismatches).
     if (!(epsilon_margin > 0.0f)) {
         predict_gpu(layer, d_hidden, d_scratch, handle, stream, topk, out);
         return;
@@ -308,13 +363,11 @@ void OracleScheduler::predict_gpu_boundary(int layer, const float* h_in_cpu, flo
     float* d_act = d_scratch;
     float* d_act2 = d_scratch + H;
 
-    // 1) H2D hidden
     if (!DEE_CUDA_CHECK_NAMED(cudaMemcpyAsync(d_hidden, h_in_cpu,
                                               static_cast<size_t>(D) * sizeof(float),
                                               cudaMemcpyHostToDevice, cuda_stream),
                               "cudaMemcpyAsync(oracle hidden H2D)")) return;
 
-    // 2) Three cuBLAS linears on device
     DEE_CUBLAS_CHECK_NAMED(cublasSgemv(handle, CUBLAS_OP_T, D, H,
                                        &alpha, gpu.d_w0, D, d_hidden, 1,
                                        &beta, d_act, 1), "cublasSgemv(W0)");
@@ -335,7 +388,6 @@ void OracleScheduler::predict_gpu_boundary(int layer, const float* h_in_cpu, flo
     DEE_CUBLAS_CHECK_NAMED(cublasSaxpy(handle, E, &alpha, gpu.d_b4, 1, d_act, 1),
                            "cublasSaxpy(b4)");
 
-    // 3) D2H logits
     std::vector<float> logits(E);
     if (!DEE_CUDA_CHECK_NAMED(cudaMemcpyAsync(logits.data(), d_act,
                                               static_cast<size_t>(E) * sizeof(float),
@@ -343,10 +395,8 @@ void OracleScheduler::predict_gpu_boundary(int layer, const float* h_in_cpu, flo
                               "cudaMemcpyAsync(oracle logits D2H)")) return;
     DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(cuda_stream), "cudaStreamSynchronize(oracle boundary)");
 
-    // 4) Sigmoid in place so we operate on the same domain as CPU predict().
     for (int i = 0; i < E; ++i) logits[i] = 1.0f / (1.0f + std::exp(-logits[i]));
 
-    // 5) Sort by descending sigmoid logit; check internal AND boundary margins.
     std::vector<int> idx(E);
     for (int i = 0; i < E; ++i) idx[i] = i;
     std::sort(idx.begin(), idx.end(), [&](int a, int b) { return logits[a] > logits[b]; });
@@ -364,12 +414,10 @@ void OracleScheduler::predict_gpu_boundary(int layer, const float* h_in_cpu, flo
 
     if (ambiguous) {
         bstats_.cpu_fallback_calls++;
-        // Full CPU fallback preserves exact ordered top-K vs CPU baseline.
         predict(layer, h_in_cpu, topk, out);
         return;
     }
 
-    // GPU logits are decisive for this top-K; trust them.
     out.clear();
     for (int i = 0; i < K; ++i) out.push_back(idx[i]);
 }

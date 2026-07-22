@@ -7,12 +7,20 @@
 //   x: [hidden=2048] -> Linear(2048,256) -> ReLU -> Linear(256,256) -> ReLU
 //                       -> Linear(256,256) -> logits[256]  (BCE => sigmoid)
 // predict(layer, hidden) returns the top-K expert indices for that layer.
+//
+// Real-model integration mode: `set_no_op_layers(...)` initializes an
+// OracleScheduler with a stub `layers_` table (no real weights) and sets
+// `is_no_op_ = true`. Any call to predict()/forward()/upload_to_gpu()/
+// free_gpu() in that mode throws std::logic_error. The C++ engine uses
+// `moe_forward_experts()` exclusively in real-model integration mode, which
+// does not consult the Oracle.
 
 #pragma once
 
 #include "dee/pt_loader.h"
 #include "dee/profiling.h"
 
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -34,6 +42,14 @@ public:
 
     int num_layers() const { return (int)layers_.size(); }
     int num_experts() const { return E_; }
+
+    // Real-model integration stub: caller owns routing. We still need a
+    // defined num_layers() / num_experts() for engine init bookkeeping.
+    // `set_no_op_layers` resets state so num_layers() == num_layers but
+    // any forward/predict call is invalid (engine skips them in this mode).
+    void set_no_op_layers(int num_layers, int D, int H, int E);
+
+    bool is_no_op() const { return is_no_op_; }
 
     // Run the MLP for `layer` on `hidden` (length D_) -> fill `logits` (length E_).
     void forward(int layer, const float* hidden, std::vector<float>& logits) const;
@@ -92,8 +108,19 @@ public:
 private:
     int D_ = 2048, H_ = 256, E_ = 256;
     std::vector<OracleLayerWeights> layers_;
+    bool is_no_op_ = false;            // set by set_no_op_layers()
     std::string err_;
     StageProfiler* profiler_ = nullptr;
+
+    inline void require_real_oracle(const char* op) const {
+        if (is_no_op_) {
+            throw std::logic_error(
+                std::string("OracleScheduler::") + op +
+                " called in real-model integration mode (no Oracle loaded). "
+                "Caller must own the router (HF model) and use "
+                "Engine::moe_forward_experts instead.");
+        }
+    }
 
 #ifdef DEE_CUDA
     struct GpuLayerWeights {

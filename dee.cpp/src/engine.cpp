@@ -228,6 +228,35 @@ void Engine::swiglu(const float* blob, const float* x,
     }
 }
 
+// Real-model integration: caller-owned routing + combine. Engine runs SwiGLU
+// per requested expert and writes per-expert FP32 outputs to a contiguous
+// buffer. The Python adapter (pydee.adapter) is responsible for the standard
+// gate-weighted sum combine so HF reference parity is preserved.
+bool Engine::moe_forward_experts(int layer, const float* h_in, float* experts_out,
+                                  const std::vector<int>& experts) {
+    if (experts.empty() || experts_out == nullptr || h_in == nullptr) return false;
+    const int K = (int)experts.size();
+    if ((size_t)K * (size_t)hidden_ > std::numeric_limits<size_t>::max() / sizeof(float)) return false;
+    std::memset(experts_out, 0, (size_t)K * (size_t)hidden_ * sizeof(float));
+    const int source_layer = avail_layer(layer);
+    std::vector<float> per_expert(hidden_, 0.0f);
+    for (int k = 0; k < K; ++k) {
+        const int e = experts[k];
+        const float* blob = get_staging(source_layer, e);
+        if (!blob) {
+            std::fprintf(stderr, "[engine] moe_forward_experts: missing expert weights for layer=%d expert=%d\n",
+                         layer, e);
+            return false;
+        }
+        std::memset(per_expert.data(), 0, (size_t)hidden_ * sizeof(float));
+        swiglu(blob, h_in, inter_, hidden_, per_expert.data());
+        std::memcpy(experts_out + (size_t)k * (size_t)hidden_, per_expert.data(),
+                    (size_t)hidden_ * sizeof(float));
+        cache_.touch(source_layer, e);
+    }
+    return true;
+}
+
 int Engine::avail_layer(int layer) const {
     // synthetic single-layer shard exposes only layer 0; map everything to it.
     // (Real multi-layer shards return `layer` directly.)
@@ -653,6 +682,8 @@ bool Engine::init(const EngineConfig& cfg) {
         std::fprintf(stderr, "[engine] tokens, topk, layers, and hidden must be positive\n");
         return false;
     }
+    if (cfg.inter <= 0) cfg.inter = 256;
+    if (cfg.num_experts <= 0) cfg.num_experts = 256;
     hidden_ = cfg.hidden;
     if (cfg.cache_dtype == DeviceCacheDType::Fp16 && !cfg.use_cuda) {
         std::fprintf(stderr, "[engine] FP16 device cache requires --cuda\n");
@@ -707,21 +738,34 @@ bool Engine::init(const EngineConfig& cfg) {
         return false;
     }
 
-    std::ifstream oracle_file(cfg.oracle_path, std::ios::binary);
-    if (!oracle_file) {
-        std::fprintf(stderr, "[engine] oracle does not exist or is unreadable: %s\n", cfg.oracle_path.c_str());
-        return false;
-    }
-    char oracle_prefix[64]{};
-    oracle_file.read(oracle_prefix, sizeof(oracle_prefix) - 1);
-    if (std::string(oracle_prefix).find("version https://git-lfs.github.com/spec/v1") != std::string::npos) {
-        std::fprintf(stderr, "[engine] oracle is an unresolved Git LFS pointer: %s\n"
-                             "[engine] run: git lfs pull\n", cfg.oracle_path.c_str());
-        return false;
-    }
-    if (!oracle_.load(cfg.oracle_path, hidden_, 256, 256)) {
-        fprintf(stderr, "[engine] oracle load failed: %s\n", oracle_.error().c_str());
-        return false;
+    if (!cfg.oracle_path.empty()) {
+        std::ifstream oracle_file(cfg.oracle_path, std::ios::binary);
+        if (!oracle_file) {
+            std::fprintf(stderr, "[engine] oracle does not exist or is unreadable: %s\n", cfg.oracle_path.c_str());
+            return false;
+        }
+        char oracle_prefix[64]{};
+        oracle_file.read(oracle_prefix, sizeof(oracle_prefix) - 1);
+        if (std::string(oracle_prefix).find("version https://git-lfs.github.com/spec/v1") != std::string::npos) {
+            std::fprintf(stderr, "[engine] oracle is an unresolved Git LFS pointer: %s\n"
+                                 "[engine] run: git lfs pull\n", cfg.oracle_path.c_str());
+            return false;
+        }
+        if (!oracle_.load(cfg.oracle_path, hidden_, 256, 256)) {
+            fprintf(stderr, "[engine] oracle load failed: %s\n", oracle_.error().c_str());
+            return false;
+        }
+    } else {
+        // Real-model integration mode: caller owns routing. Provide the
+        // OracleScheduler with a no-op layer table so engine init bookkeeping
+        // (num_layers, num_experts) still has correct values. forward_layer()
+        // is NOT callable in this mode; routes come from the Python adapter.
+        oracle_.set_no_op_layers(cfg.num_layers, cfg.hidden, 256, cfg.num_experts);
+        if (cfg.verbose) {
+            std::fprintf(stderr,
+                "[engine] real-model integration mode: oracle_path empty; routes come from Python (router=HF, %d experts/layer, %d layers)\n",
+                cfg.num_experts, cfg.num_layers);
+        }
     }
 #ifdef DEE_CUDA
     if (cfg.use_cuda) {
@@ -741,6 +785,7 @@ bool Engine::init(const EngineConfig& cfg) {
 #endif
     int nl = std::min(cfg.num_layers, oracle_.num_layers());
     cfg_.num_layers = nl;
+    oracle_.set_no_op_layers(nl, cfg.hidden, 256, cfg.num_experts);
     // VRAM budget. default: 4 experts. The arena backend is cudaMalloc when the
     // CUDA path is active, else a malloc'd host arena (mock backend).
     size_t budget = cfg.budget_bytes ? cfg.budget_bytes : (4 * blob_bytes_);
