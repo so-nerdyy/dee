@@ -15,6 +15,8 @@
 #   - Output: pydee.cpython-*.so alongside pydee/__init__.py.
 
 import os
+import re
+import shutil
 import sys
 
 try:
@@ -59,13 +61,38 @@ DEE_INCLUDES = [
 
 DEE_LIBS = [STATIC_LIB]
 
+
+def cmake_cache_value(name):
+    cache = os.path.join(BUILD_DIR, "CMakeCache.txt")
+    if not os.path.isfile(cache):
+        return None
+    with open(cache, "r", encoding="utf-8", errors="replace") as stream:
+        match = re.search(r"^" + re.escape(name) + r"(?::[^=]+)?=(.*)$",
+                          stream.read(), flags=re.MULTILINE)
+    return match.group(1).strip() if match else None
+
+
+cuda_enabled = (cmake_cache_value("DEE_CUDA") or "").upper() in {"ON", "TRUE", "1"}
+library_dirs = [os.path.dirname(STATIC_LIB)]
+libraries = ["dee_core", "z", "stdc++"]
+if cuda_enabled:
+    cuda_root = cmake_cache_value("CUDAToolkit_ROOT")
+    if not cuda_root:
+        nvcc = shutil.which("nvcc")
+        cuda_root = os.path.dirname(os.path.dirname(os.path.realpath(nvcc))) if nvcc else "/usr/local/cuda"
+    for candidate in (os.path.join(cuda_root, "lib64"),
+                      os.path.join(cuda_root, "targets", "x86_64-linux", "lib")):
+        if os.path.isdir(candidate) and candidate not in library_dirs:
+            library_dirs.append(candidate)
+    libraries.extend(["cudart", "cublas"])
+
 ext_modules = [
     Pybind11Extension(
         "pydee.pydee_core",
         [SRC_PYDEE],
         include_dirs=DEE_INCLUDES,
-        library_dirs=[os.path.dirname(STATIC_LIB)],
-        libraries=["dee_core", "z", "stdc++"],
+        library_dirs=library_dirs,
+        libraries=libraries,
         extra_compile_args=["-std=c++17", "-O3"],
     )
 ]

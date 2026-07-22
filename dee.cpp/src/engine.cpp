@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <numeric>
 #include <unordered_set>
 
 #if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
@@ -236,9 +237,74 @@ bool Engine::moe_forward_experts(int layer, const float* h_in, float* experts_ou
                                   const std::vector<int>& experts) {
     if (experts.empty() || experts_out == nullptr || h_in == nullptr) return false;
     const int K = (int)experts.size();
+    if (K > cfg_.topk) {
+        std::fprintf(stderr, "[engine] requested %d experts, configured topk is %d\n", K, cfg_.topk);
+        return false;
+    }
+    for (int expert : experts) {
+        if (expert < 0 || expert >= cfg_.num_experts) {
+            std::fprintf(stderr, "[engine] expert index %d is outside [0,%d)\n",
+                         expert, cfg_.num_experts);
+            return false;
+        }
+    }
     if ((size_t)K * (size_t)hidden_ > std::numeric_limits<size_t>::max() / sizeof(float)) return false;
     std::memset(experts_out, 0, (size_t)K * (size_t)hidden_ * sizeof(float));
     const int source_layer = avail_layer(layer);
+#ifdef DEE_CUDA
+    if (cfg_.use_cuda) {
+        if (!DEE_CUDA_CHECK_NAMED(cudaSetDevice(cfg_.device_id), "cudaSetDevice(external MoE)")) return false;
+        if (!DEE_CUDA_CHECK_NAMED(
+                cudaMemcpyAsync(d_h_in_, h_in, (size_t)hidden_ * sizeof(float),
+                                cudaMemcpyHostToDevice, compute_stream_),
+                "cudaMemcpyAsync(external hidden host to device)")) return false;
+        if (cfg_.cache_dtype == DeviceCacheDType::Fp16 &&
+            !f32_to_f16_cuda(d_h_in_, d_h_in_half_, static_cast<size_t>(hidden_),
+                             compute_stream_, nullptr)) return false;
+
+        const int batch_size = std::max(
+            1, static_cast<int>(cache_.budget_bytes() / cache_blob_bytes_));
+        for (int first = 0; first < K; first += batch_size) {
+            const int last = std::min(K, first + batch_size);
+            prefetcher_.begin_batch();
+            for (int k = first; k < last; ++k) {
+                if (!stage_expert(layer, source_layer, experts[k], K - k)) return false;
+            }
+            std::vector<int> pinned;
+            pinned.reserve(static_cast<size_t>(last - first));
+            for (int k = first; k < last; ++k) {
+                const int expert = experts[k];
+                if (!prefetcher_.wait(source_layer, expert) ||
+                    !cache_.pin(source_layer, expert)) return false;
+                pinned.push_back(expert);
+                const void* d_blob = cache_.data(source_layer, expert);
+                const bool ok = d_blob && (cfg_.cache_dtype == DeviceCacheDType::Fp16
+                    ? swiglu_expert_fp16_cuda(
+                          cublas_handle_, d_blob, d_h_in_half_, d_hbuf_, d_ubuf_,
+                          d_activation_half_, d_ybuf_ + (size_t)k * hidden_,
+                          inter_, hidden_, compute_stream_, nullptr)
+                    : swiglu_expert_cuda(
+                          cublas_handle_, static_cast<const float*>(d_blob), d_h_in_,
+                          d_hbuf_, d_ubuf_, d_ybuf_ + (size_t)k * hidden_,
+                          inter_, hidden_, compute_stream_, nullptr));
+                if (!ok) return false;
+            }
+            if (!DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(compute_stream_),
+                                      "cudaStreamSynchronize(external expert batch)")) return false;
+            for (int expert : pinned) cache_.unpin(source_layer, expert);
+        }
+        if (!DEE_CUDA_CHECK_NAMED(
+                cudaMemcpyAsync(experts_out, d_ybuf_,
+                                (size_t)K * (size_t)hidden_ * sizeof(float),
+                                cudaMemcpyDeviceToHost, compute_stream_),
+                "cudaMemcpyAsync(external expert output device to host)") ||
+            !DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(compute_stream_),
+                                  "cudaStreamSynchronize(external expert output)")) return false;
+        release_transient_bf16_sources();
+        stats_.peak_vram = std::max(stats_.peak_vram, cache_.used_bytes());
+        return true;
+    }
+#endif
     std::vector<float> per_expert(hidden_, 0.0f);
     for (int k = 0; k < K; ++k) {
         const int e = experts[k];
@@ -257,11 +323,128 @@ bool Engine::moe_forward_experts(int layer, const float* h_in, float* experts_ou
     return true;
 }
 
+EngineStats Engine::runtime_stats() const {
+    EngineStats result = stats_;
+    const auto& cs = cache_.stats();
+    const auto& ps = prefetcher_.stats();
+    result.cache_hits = cs.hits;
+    result.cache_loads = cs.loads;
+    result.evictions = cs.evictions;
+    result.fallbacks = cs.fallbacks;
+    result.prefetch_issued = ps.requests;
+    result.prefetch_fallbacks = ps.fallbacks;
+    result.resident_hits = ps.resident_hits;
+    result.inflight_hits = ps.inflight_hits;
+    result.cold_loads = ps.cold_loads;
+    result.duplicate_requests = ps.duplicate_requests;
+    result.h2d_bytes = ps.h2d_bytes;
+    result.h2d_copies = ps.h2d_copies;
+    result.current_vram = cache_.used_bytes();
+    result.resident_experts = cache_.resident_count();
+    result.peak_vram = std::max(result.peak_vram, result.current_vram);
+    return result;
+}
+
+bool Engine::reset_runtime_cache() {
+#ifdef DEE_CUDA
+    if (cfg_.use_cuda) {
+        if (!DEE_CUDA_CHECK_NAMED(cudaSetDevice(cfg_.device_id),
+                                  "cudaSetDevice(reset runtime cache)")) return false;
+        prefetcher_.synchronize_all();
+        if (compute_stream_ &&
+            !DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(compute_stream_),
+                                  "cudaStreamSynchronize(reset runtime cache)")) return false;
+    }
+#endif
+    prefetcher_.reset();
+    cache_.clear();
+    cache_.reset_stats();
+    prefetcher_.reset_stats();
+    stats_.peak_vram = 0;
+    stats_.current_vram = 0;
+    stats_.resident_experts = 0;
+    return true;
+}
+
+const float* Engine::get_router_weights(int source_layer) {
+    auto found = router_weights_.find(source_layer);
+    if (found != router_weights_.end()) return found->second.data();
+    const std::string name = "model.language_model.layers." +
+        std::to_string(source_layer) + ".mlp.gate.weight";
+    const TensorView view = resolver_.resolve_tensor(name);
+    if (!view.ok() || view.shape.size() != 2 ||
+        view.shape[0] != cfg_.num_experts || view.shape[1] != hidden_) {
+        std::fprintf(stderr, "[engine] router tensor missing or has wrong shape: %s\n",
+                     name.c_str());
+        return nullptr;
+    }
+    const size_t elements = static_cast<size_t>(cfg_.num_experts) * hidden_;
+    std::vector<float> weights(elements);
+    if (view.dtype == DType::BF16 && view.nbytes == elements * sizeof(uint16_t)) {
+        const auto* src = reinterpret_cast<const uint16_t*>(view.data);
+        for (size_t i = 0; i < elements; ++i) weights[i] = bf16_to_f32(src[i]);
+    } else if (view.dtype == DType::F16 && view.nbytes == elements * sizeof(uint16_t)) {
+        const auto* src = reinterpret_cast<const uint16_t*>(view.data);
+        for (size_t i = 0; i < elements; ++i) weights[i] = f16_to_f32(src[i]);
+    } else if (view.dtype == DType::F32 && view.nbytes == elements * sizeof(float)) {
+        std::memcpy(weights.data(), view.data, view.nbytes);
+    } else {
+        std::fprintf(stderr, "[engine] router tensor has unsupported dtype/size: %s\n",
+                     name.c_str());
+        return nullptr;
+    }
+    auto inserted = router_weights_.emplace(source_layer, std::move(weights));
+    return inserted.first->second.data();
+}
+
+bool Engine::route_topk(int layer, const float* h_in, float* router_logits,
+                        float* routing_weights, int* experts) {
+    if (!h_in || !router_logits || !routing_weights || !experts ||
+        cfg_.topk <= 0 || cfg_.topk > cfg_.num_experts) return false;
+    const int source_layer = avail_layer(layer);
+    const float* weights = get_router_weights(source_layer);
+    if (!weights) return false;
+    float maximum = -std::numeric_limits<float>::infinity();
+    for (int expert = 0; expert < cfg_.num_experts; ++expert) {
+        const float* row = weights + static_cast<size_t>(expert) * hidden_;
+        float logit = 0.0f;
+        for (int h = 0; h < hidden_; ++h) logit += row[h] * h_in[h];
+        router_logits[expert] = logit;
+        maximum = std::max(maximum, logit);
+    }
+    std::vector<float> probabilities(static_cast<size_t>(cfg_.num_experts));
+    double denominator = 0.0;
+    for (int expert = 0; expert < cfg_.num_experts; ++expert) {
+        probabilities[expert] = std::exp(router_logits[expert] - maximum);
+        denominator += probabilities[expert];
+    }
+    if (!(denominator > 0.0) || !std::isfinite(denominator)) return false;
+    const float inv_denominator = static_cast<float>(1.0 / denominator);
+    for (float& probability : probabilities) probability *= inv_denominator;
+
+    std::vector<int> order(static_cast<size_t>(cfg_.num_experts));
+    std::iota(order.begin(), order.end(), 0);
+    std::partial_sort(order.begin(), order.begin() + cfg_.topk, order.end(),
+        [&](int lhs, int rhs) {
+            if (probabilities[lhs] != probabilities[rhs])
+                return probabilities[lhs] > probabilities[rhs];
+            return lhs < rhs;
+        });
+    float selected_sum = 0.0f;
+    for (int k = 0; k < cfg_.topk; ++k) selected_sum += probabilities[order[k]];
+    if (!(selected_sum > 0.0f)) return false;
+    for (int k = 0; k < cfg_.topk; ++k) {
+        experts[k] = order[k];
+        routing_weights[k] = probabilities[order[k]] / selected_sum;
+    }
+    return true;
+}
+
 int Engine::avail_layer(int layer) const {
     // synthetic single-layer shard exposes only layer 0; map everything to it.
     // (Real multi-layer shards return `layer` directly.)
     TensorView requested = resolver_.resolve_expert(layer, 0, TensorResolver::GATE_PROJ);
-    return requested.ok() ? layer : 0;
+    return requested.ok() ? layer : cfg_.base_layer;
 }
 
 const float* Engine::get_staging(int source_layer, int expert) {
@@ -590,6 +773,25 @@ bool Engine::stage_expert(int logical_layer, int source_layer, int expert, int p
                                 current_token_, logical_layer) >= 0;
 }
 
+void Engine::release_transient_bf16_sources() {
+#ifdef DEE_CUDA
+    size_t released_pinned = 0;
+    for (const auto& entry : pinned_staging_bf16_) {
+        if (entry.second) {
+            DEE_CUDA_CHECK_NAMED(cudaFreeHost(entry.second),
+                                 "cudaFreeHost(transient BF16 expert source)");
+            released_pinned += blob_elems_ * sizeof(uint16_t);
+        }
+    }
+    pinned_staging_bf16_.clear();
+    pinned_staging_bytes_ = released_pinned > pinned_staging_bytes_
+        ? 0 : pinned_staging_bytes_ - released_pinned;
+#endif
+    // GPU cache blocks retain the converted expert. On an eviction the source
+    // is reconstructed directly from mmap, bounding host memory per call.
+    staging_bf16_.clear();
+}
+
 bool Engine::preload_all_experts() {
     std::unordered_set<int> source_layers;
     for (int layer = 0; layer < cfg_.num_layers; ++layer) source_layers.insert(avail_layer(layer));
@@ -678,7 +880,8 @@ void Engine::forward_layer(int layer, const float* h_in, float* h_out) {
 
 bool Engine::init(const EngineConfig& cfg) {
     cfg_ = cfg;
-    if (cfg.num_tokens <= 0 || cfg.topk <= 0 || cfg.num_layers <= 0 || cfg.hidden <= 0) {
+    if (cfg.num_tokens <= 0 || cfg.topk <= 0 || cfg.num_layers <= 0 ||
+        cfg.hidden <= 0 || cfg.base_layer < 0 || cfg.device_id < 0) {
         std::fprintf(stderr, "[engine] tokens, topk, layers, and hidden must be positive\n");
         return false;
     }
@@ -707,18 +910,42 @@ bool Engine::init(const EngineConfig& cfg) {
     cache_blob_bytes_ = cfg.cache_dtype == DeviceCacheDType::Fp16
         ? blob_elems_ * sizeof(uint16_t) : blob_bytes_;
 
-    if (!std::filesystem::is_regular_file(cfg.shard_path)) {
-        std::fprintf(stderr, "[engine] shard does not exist or is not a file: %s\n", cfg.shard_path.c_str());
+    std::vector<std::string> shard_paths;
+    if (!cfg.shard_path.empty()) shard_paths.push_back(cfg.shard_path);
+    for (const std::string& path : cfg.shard_paths) {
+        if (std::find(shard_paths.begin(), shard_paths.end(), path) == shard_paths.end())
+            shard_paths.push_back(path);
+    }
+    if (shard_paths.empty()) {
+        std::fprintf(stderr, "[engine] at least one shard path is required\n");
         return false;
     }
-    if (!mmap_.open(cfg.shard_path)) {
-        fprintf(stderr, "[engine] cannot open shard %s\n", cfg.shard_path.c_str());
+    for (const std::string& path : shard_paths) {
+        if (!std::filesystem::is_regular_file(path)) {
+            std::fprintf(stderr, "[engine] shard does not exist or is not a file: %s\n",
+                         path.c_str());
+            return false;
+        }
+    }
+    cfg_.shard_path = shard_paths.front();
+    cfg_.shard_paths = shard_paths;
+    if (!mmap_.open(shard_paths.front())) {
+        fprintf(stderr, "[engine] cannot open shard %s\n", shard_paths.front().c_str());
         return false;
     }
     resolver_.register_shard(&mmap_);
+    for (size_t i = 1; i < shard_paths.size(); ++i) {
+        auto mapping = std::make_unique<WeightMmap>();
+        if (!mapping->open(shard_paths[i])) {
+            std::fprintf(stderr, "[engine] cannot open shard %s\n", shard_paths[i].c_str());
+            return false;
+        }
+        resolver_.register_shard(mapping.get());
+        extra_mmaps_.push_back(std::move(mapping));
+    }
 
     // verify expert dims against the shard; derive inter_/hidden_ from it
-    TensorView gv = resolver_.resolve_expert(avail_layer(0), 0, TensorResolver::GATE_PROJ);
+    TensorView gv = resolver_.resolve_expert(cfg_.base_layer, 0, TensorResolver::GATE_PROJ);
     if (!gv.ok()) {
         fprintf(stderr, "[engine] cannot resolve expert 0 gate_proj in shard\n");
         return false;
@@ -768,6 +995,7 @@ bool Engine::init(const EngineConfig& cfg) {
     }
 #ifdef DEE_CUDA
     if (cfg.use_cuda) {
+        if (!DEE_CUDA_CHECK_NAMED(cudaSetDevice(cfg_.device_id), "cudaSetDevice(engine init)")) return false;
         if (oracle_.upload_to_gpu()) {
             const size_t scratch_elements = static_cast<size_t>(256 + 256);
             if (DEE_CUDA_CHECK_NAMED(
@@ -823,6 +1051,7 @@ bool Engine::init(const EngineConfig& cfg) {
 
 #ifdef DEE_CUDA
     if (cfg.use_cuda) {
+        if (!DEE_CUDA_CHECK_NAMED(cudaSetDevice(cfg_.device_id), "cudaSetDevice(engine buffers)")) return false;
         int device = -1;
         if (!DEE_CUDA_CHECK_NAMED(cudaGetDevice(&device), "cudaGetDevice")) return false;
         cudaDeviceProp prop{};

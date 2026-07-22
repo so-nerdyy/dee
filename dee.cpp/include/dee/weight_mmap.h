@@ -106,6 +106,9 @@ public:
     // Returns the gate_proj view (caller may also fetch up_proj separately).
     TensorView resolve_expert(int layer, int expert, Kind kind) const;
 
+    // Resolve any exact checkpoint tensor name across the registered shards.
+    TensorView resolve_tensor(const std::string& tensor_name) const;
+
     // Build the canonical tensor name for the Ornith/Qwen3.5-MoE architecture.
     static std::string expert_tensor_name(int layer, int expert, Kind kind);
 

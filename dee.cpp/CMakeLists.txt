@@ -52,7 +52,9 @@ if(DEE_CUDA)
         target_compile_definitions(dee_core PUBLIC DEE_CUDA_VALIDATE=1)
     endif()
     target_link_libraries(dee_core PUBLIC CUDA::cudart CUDA::cublas)
-    set_target_properties(dee_core PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    set_target_properties(dee_core PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 endif()
 
 if(DEE_BUILD_GGML)
@@ -78,9 +80,13 @@ if(DEE_BUILD_TESTS)
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/layer0_shard.safetensors
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/gen_moe_shard.py
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/ornith_moe256.safetensors
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/gen_split_router_shards.py
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/split-router
         BYPRODUCTS
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/layer0_shard.safetensors
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/ornith_moe256.safetensors
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/split-router/split-a.safetensors
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/split-router/split-b.safetensors
         COMMENT "Generating deterministic safetensors test shards")
     set(DEE_TEST_SOURCES
         tests/test_smoke.cpp
@@ -89,6 +95,7 @@ if(DEE_BUILD_TESTS)
         tests/test_async_prefetcher.cpp
         tests/test_oracle.cpp
         tests/test_engine.cpp)
+    list(APPEND DEE_TEST_SOURCES tests/test_real_router.cpp)
     if(DEE_CUDA)
         list(APPEND DEE_TEST_SOURCES tests/test_swiglu_cuda.cpp)
     endif()
@@ -100,6 +107,10 @@ if(DEE_BUILD_TESTS)
         add_test(NAME ${test_name} COMMAND ${test_name})
         set_tests_properties(${test_name} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
+    add_test(
+        NAME test_ornith_support
+        COMMAND ${Python3_EXECUTABLE} -m unittest tests/test_ornith_support.py)
+    set_tests_properties(test_ornith_support PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
 add_custom_target(lightning_t4_benchmark

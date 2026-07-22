@@ -48,10 +48,14 @@ PYBIND11_MODULE(pydee_core, m) {
     py::class_<dee::EngineConfig>(m, "EngineConfig")
         .def(py::init<>())
         .def_readwrite("shard_path", &dee::EngineConfig::shard_path)
+        .def_readwrite("shard_paths", &dee::EngineConfig::shard_paths)
         .def_readwrite("oracle_path", &dee::EngineConfig::oracle_path)
+        .def_readwrite("num_tokens", &dee::EngineConfig::num_tokens)
         .def_readwrite("topk", &dee::EngineConfig::topk)
         .def_readwrite("num_layers", &dee::EngineConfig::num_layers)
         .def_readwrite("num_experts", &dee::EngineConfig::num_experts)
+        .def_readwrite("base_layer", &dee::EngineConfig::base_layer)
+        .def_readwrite("device_id", &dee::EngineConfig::device_id)
         .def_readwrite("budget_bytes", &dee::EngineConfig::budget_bytes)
         .def_readwrite("cache_dtype", &dee::EngineConfig::cache_dtype)
         .def_readwrite("transfer_dtype", &dee::EngineConfig::transfer_dtype)
@@ -67,6 +71,32 @@ PYBIND11_MODULE(pydee_core, m) {
         .def("init", &dee::Engine::init, py::arg("cfg"))
         .def("hidden_dim", &dee::Engine::hidden_dim)
         .def("inter_dim", &dee::Engine::inter_dim)
+        .def("reset_runtime_cache", &dee::Engine::reset_runtime_cache,
+             "Evict all streamed experts and reset live cache/transfer counters.")
+        .def("route_topk", [](
+                dee::Engine& self,
+                int layer,
+                py::array_t<float, py::array::c_style | py::array::forcecast> h_in) {
+            auto in_buf = h_in.request();
+            const size_t H = static_cast<size_t>(self.hidden_dim());
+            const dee::EngineConfig& cfg = self.config();
+            if (in_buf.size != H) {
+                throw std::runtime_error("h_in size does not match hidden_dim");
+            }
+            py::array_t<float> logits(static_cast<size_t>(cfg.num_experts));
+            py::array_t<float> weights(static_cast<size_t>(cfg.topk));
+            py::array_t<int> experts(static_cast<size_t>(cfg.topk));
+            bool ok = false;
+            {
+                py::gil_scoped_release release;
+                ok = self.route_topk(
+                    layer, static_cast<float*>(in_buf.ptr), logits.mutable_data(),
+                    weights.mutable_data(), experts.mutable_data());
+            }
+            if (!ok) throw std::runtime_error("dee.cpp route_topk failed (see stderr)");
+            return py::make_tuple(logits, weights, experts);
+        }, py::arg("layer"), py::arg("h_in"),
+           "Run the real checkpoint router and return (logits, topk_weights, expert_ids).")
         .def("moe_forward_experts", [](
                 dee::Engine& self,
                 int layer,
@@ -87,11 +117,16 @@ PYBIND11_MODULE(pydee_core, m) {
                     ") != " + std::to_string(experts.size()) + " * hidden_dim (" +
                     std::to_string(H) + ")");
             }
-            return self.moe_forward_experts(
-                layer,
-                static_cast<float*>(in_buf.ptr),
-                static_cast<float*>(out_buf.ptr),
-                experts);
+            bool ok = false;
+            {
+                py::gil_scoped_release release;
+                ok = self.moe_forward_experts(
+                    layer,
+                    static_cast<float*>(in_buf.ptr),
+                    static_cast<float*>(out_buf.ptr),
+                    experts);
+            }
+            return ok;
         }, py::arg("layer"), py::arg("h_in"), py::arg("experts_out"),
            py::arg("experts"),
            R"pbdoc(
@@ -101,16 +136,23 @@ PYBIND11_MODULE(pydee_core, m) {
             )pbdoc")
         .def("last_stats_json", [](const dee::Engine& self) -> std::string {
             std::ostringstream ss;
-            const dee::EngineStats& s = self.stats();
+            const dee::EngineStats s = self.runtime_stats();
             ss << "{"
                << "\"tokens\":" << s.tokens
                << ",\"elapsed_sec\":" << s.elapsed_sec
                << ",\"tok_per_sec\":" << s.tok_per_sec
                << ",\"cache_hits\":" << s.cache_hits
+               << ",\"cache_loads\":" << s.cache_loads
                << ",\"cold_loads\":" << s.cold_loads
+               << ",\"resident_hits\":" << s.resident_hits
+               << ",\"inflight_hits\":" << s.inflight_hits
                << ",\"evictions\":" << s.evictions
+               << ",\"h2d_bytes\":" << s.h2d_bytes
+               << ",\"h2d_copies\":" << s.h2d_copies
                << ",\"hidden_finite\":" << (s.hidden_finite ? "true" : "false")
                << ",\"peak_vram\":" << s.peak_vram
+               << ",\"current_vram\":" << s.current_vram
+               << ",\"resident_experts\":" << s.resident_experts
                << "}";
             return ss.str();
         });

@@ -36,6 +36,7 @@
 #include "dee/weight_mmap.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -76,6 +77,7 @@ const char* weight_transfer_dtype_name(WeightTransferDType dtype);
 
 struct EngineConfig {
     std::string shard_path;    // safetensors MoE shard (mapped by WeightMmap)
+    std::vector<std::string> shard_paths; // all shards needed by this layer
     std::string oracle_path;   // PyTorch .pt Oracle (read by PtLoader)
     int         num_tokens  = 32;   // autoregressive steps to run
     int         topk        = 8;    // experts activated per layer (top-K)
@@ -88,6 +90,8 @@ struct EngineConfig {
     int         hidden      = 2048; // model hidden dim (checked vs shard)
     int         inter       = 256;  // expert intermediate dim (checked vs shard)
     int         num_experts = 0;    // total routed experts per layer (real-model mode); 0=fallback
+    int         base_layer  = 0;    // real layer represented by a layer-local engine
+    int         device_id   = 0;    // CUDA device that owns this engine/cache
     bool        verbose     = false;
     bool        profile_stages = false;
     bool        trace_requests = false;
@@ -119,6 +123,10 @@ struct EngineStats {
     uint64_t inflight_hits = 0;
     uint64_t cold_loads = 0;
     uint64_t duplicate_requests = 0;
+    uint64_t h2d_bytes = 0;
+    uint64_t h2d_copies = 0;
+    size_t current_vram = 0;
+    size_t resident_experts = 0;
     bool   hidden_finite = true;   // output hidden all-finite at the end
     std::vector<float> final_hidden; // final normalized hidden for validation
     size_t cuda_total    = 0;       // GPU memory total (cudaMemGetInfo), 0 if N/A
@@ -145,6 +153,8 @@ public:
     bool generate();
 
     const EngineStats& stats() const { return stats_; }
+    EngineStats runtime_stats() const;
+    bool reset_runtime_cache();
 
     // Expose for tests: run a single layer's MoE on caller-provided hidden,
     // write the new hidden to `h_out` (length hidden_).
@@ -166,6 +176,11 @@ public:
     bool moe_forward_experts(int layer, const float* h_in, float* experts_out,
                              const std::vector<int>& experts);
 
+    // Genuine checkpoint router: logits = W_router * hidden, fp32 softmax,
+    // ordered top-K, followed by top-K probability renormalization.
+    bool route_topk(int layer, const float* h_in, float* router_logits,
+                    float* routing_weights, int* experts);
+
     int hidden_dim() const { return hidden_; }
     int inter_dim()  const { return inter_; }
 
@@ -175,6 +190,7 @@ private:
     EngineConfig cfg_;
 
     WeightMmap     mmap_;
+    std::vector<std::unique_ptr<WeightMmap>> extra_mmaps_;
     TensorResolver resolver_;
     OracleScheduler oracle_;
     VramCacheManager cache_;
@@ -211,6 +227,7 @@ private:
     std::unordered_map<uint64_t, std::vector<float>> staging_;
     std::unordered_map<uint64_t, std::vector<uint16_t>> staging_bf16_;
     std::unordered_map<uint64_t, void*> pinned_staging_bf16_;
+    std::unordered_map<int, std::vector<float>> router_weights_;
     struct QuantizedExpert {
         std::vector<int8_t> host;
         void* pinned = nullptr;
@@ -243,6 +260,8 @@ private:
     // Stream `expert` from a resolved shard layer into VRAM.  The cache key
     // must describe the source weights, not merely the logical model layer.
     bool stage_expert(int logical_layer, int source_layer, int expert, int priority);
+    const float* get_router_weights(int source_layer);
+    void release_transient_bf16_sources();
     bool prepare_profile_scenario();
     bool preload_all_experts();
 };

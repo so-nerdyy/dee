@@ -227,7 +227,10 @@ void TensorResolver::register_shard(WeightMmap* mmap) {
 }
 
 TensorView TensorResolver::resolve_expert(int layer, int expert, Kind kind) const {
-    std::string name = expert_tensor_name(layer, expert, kind);
+    return resolve_tensor(expert_tensor_name(layer, expert, kind));
+}
+
+TensorView TensorResolver::resolve_tensor(const std::string& name) const {
     for (auto* sh : shards_) {
         TensorView v = sh->lookup(name);
         if (v.ok()) return v;
