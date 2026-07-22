@@ -109,7 +109,7 @@ if(DEE_BUILD_TESTS)
     endforeach()
     add_test(
         NAME test_ornith_support
-        COMMAND ${Python3_EXECUTABLE} -m unittest tests/test_ornith_support.py)
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ornith_support.py)
     set_tests_properties(test_ornith_support PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 

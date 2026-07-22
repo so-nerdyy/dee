@@ -1,8 +1,11 @@
 import json
 import struct
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.ornith_support import (
     advance_decode_state,
@@ -100,4 +103,3 @@ class OrnithSupportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
