@@ -670,12 +670,22 @@ def _resume_command(
 ) -> str:
     """Return the deterministic one-shot command to re-run from the right
     starting point. Embeds in every ledger record so tomorrow's resume
-    agent has a determinate path. Uses '$(git rev-parse --show-toplevel)'
-    so the resume self-locates the checkout regardless of where on the
-    VM filesystem the tree lives — survives VM reincarnation under a
-    different mount path."""
-    base = (
-        'cd "$(git rev-parse --show-toplevel)" && '
+    agent has a determinate path.
+
+    The leading auto-resolve lines descend one directory deep only if a
+    sibling 'dee.cpp/' containing CMakeLists.txt is present. This survives
+    both layouts:
+      - git root IS dee.cpp/  (current VM): 'cd "$DEE_CPP_DIR"' lands in dee.cpp/
+      - git root is OUTER dynamic_expert_eviction/: auto-resolve descends into
+        the inner dee.cpp/ subdirectory.
+    """
+    auto_resolve = (
+        'DEE_CPP_DIR="$(git rev-parse --show-toplevel)"; '
+        '[ -f "$DEE_CPP_DIR/dee.cpp/CMakeLists.txt" ] && '
+        'DEE_CPP_DIR="$DEE_CPP_DIR/dee.cpp"; '
+    )
+    base = auto_resolve + (
+        'cd "$DEE_CPP_DIR" && '
         "git fetch origin opt/real-model-t1 && "
         "git checkout opt/real-model-t1 && "
         "git pull origin opt/real-model-t1 && "

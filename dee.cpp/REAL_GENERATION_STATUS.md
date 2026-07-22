@@ -70,7 +70,9 @@ ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     s_01ky0cg3593rmmtssaaeadzkjx@ssh.lightning.ai \
     'set +e
      export PATH="$HOME/.local/bin:$HOME/miniconda3/bin:/usr/bin:/usr/local/bin:$PATH"
-     cd "$(git rev-parse --show-toplevel)"
+     DEE_CPP_DIR="$(git rev-parse --show-toplevel)"
+     [ -f "$DEE_CPP_DIR/dee.cpp/CMakeLists.txt" ] && DEE_CPP_DIR="$DEE_CPP_DIR/dee.cpp"
+     cd "$DEE_CPP_DIR"
      git fetch origin opt/real-model-t1
      git checkout opt/real-model-t1
      git pull origin opt/real-model-t1
