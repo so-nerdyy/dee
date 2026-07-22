@@ -57,6 +57,23 @@ int main() {
           batch_experts[2] == 1 && batch_experts[3] == 2,
           "native batch router keeps token-local expert order");
 
+    float batch_outputs[16]{};
+    CHECK(engine.moe_forward_batch(5, hidden_batch, 2, batch_experts, 2,
+                                   batch_outputs),
+          "native batched MoE executes on CPU fallback");
+    float individual_outputs[16]{};
+    CHECK(engine.moe_forward_experts(5, hidden_batch, individual_outputs,
+                                     std::vector<int>{2, 1}) &&
+          engine.moe_forward_experts(5, hidden_batch + 4, individual_outputs + 8,
+                                     std::vector<int>{1, 2}),
+          "individual expert calls provide batch reference");
+    bool batch_outputs_match = true;
+    for (int i = 0; i < 16; ++i) {
+        if (std::fabs(batch_outputs[i] - individual_outputs[i]) > 1e-6f)
+            batch_outputs_match = false;
+    }
+    CHECK(batch_outputs_match, "CPU batched MoE preserves token/rank output layout");
+
     float output[4]{};
     CHECK(engine.moe_forward_experts(5, hidden, output, std::vector<int>{2}),
           "expert located only in second shard executes");

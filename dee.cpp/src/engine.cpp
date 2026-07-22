@@ -323,6 +323,187 @@ bool Engine::moe_forward_experts(int layer, const float* h_in, float* experts_ou
     return true;
 }
 
+bool Engine::moe_forward_batch(int layer, const float* h_in, int tokens,
+                               const int* expert_ids, int topk,
+                               float* experts_out) {
+    if (!h_in || !expert_ids || !experts_out || tokens <= 0 || topk <= 0 ||
+        topk > cfg_.topk) return false;
+    const size_t selections = static_cast<size_t>(tokens) * topk;
+    if (selections > std::numeric_limits<size_t>::max() /
+                         (static_cast<size_t>(hidden_) * sizeof(float))) return false;
+    std::memset(experts_out, 0, selections * static_cast<size_t>(hidden_) * sizeof(float));
+    for (size_t i = 0; i < selections; ++i) {
+        if (expert_ids[i] < 0 || expert_ids[i] >= cfg_.num_experts) {
+            std::fprintf(stderr, "[engine] batched expert index %d is outside [0,%d)\n",
+                         expert_ids[i], cfg_.num_experts);
+            return false;
+        }
+    }
+
+#ifdef DEE_CUDA
+    if (cfg_.use_cuda && cfg_.cache_dtype == DeviceCacheDType::Fp16) {
+        if (!DEE_CUDA_CHECK_NAMED(cudaSetDevice(cfg_.device_id),
+                                  "cudaSetDevice(external batched MoE)")) return false;
+        std::vector<std::vector<size_t>> groups(static_cast<size_t>(cfg_.num_experts));
+        size_t max_group_tokens = 0;
+        // Match torch.where(expert_mask[expert]) traversal: top-k rank first,
+        // then token index. The resulting batch shape is exactly the eager
+        // Transformers F.linear shape for this expert.
+        for (int expert = 0; expert < cfg_.num_experts; ++expert) {
+            auto& positions = groups[static_cast<size_t>(expert)];
+            for (int rank = 0; rank < topk; ++rank) {
+                for (int token = 0; token < tokens; ++token) {
+                    const size_t position = static_cast<size_t>(token) * topk + rank;
+                    if (expert_ids[position] == expert) positions.push_back(position);
+                }
+            }
+            max_group_tokens = std::max(max_group_tokens, positions.size());
+        }
+        if (max_group_tokens == 0) return false;
+        if (moe_batch_capacity_tokens_ < max_group_tokens) {
+            if (d_moe_batch_input_) {
+                if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_input_),
+                                          "cudaFree(MoE batch input)")) return false;
+                d_moe_batch_input_ = nullptr;
+            }
+            if (d_moe_batch_input_half_) {
+                if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_input_half_),
+                                          "cudaFree(MoE batch FP16 input)")) return false;
+                d_moe_batch_input_half_ = nullptr;
+            }
+            if (d_moe_batch_gate_half_) {
+                if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_gate_half_),
+                                          "cudaFree(MoE batch gate)")) return false;
+                d_moe_batch_gate_half_ = nullptr;
+            }
+            if (d_moe_batch_up_half_) {
+                if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_up_half_),
+                                          "cudaFree(MoE batch up)")) return false;
+                d_moe_batch_up_half_ = nullptr;
+            }
+            if (d_moe_batch_activation_half_) {
+                if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_activation_half_),
+                                          "cudaFree(MoE batch activation)")) return false;
+                d_moe_batch_activation_half_ = nullptr;
+            }
+            if (d_moe_batch_output_half_) {
+                if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_output_half_),
+                                          "cudaFree(MoE batch output)")) return false;
+                d_moe_batch_output_half_ = nullptr;
+            }
+            const size_t input_elements = max_group_tokens * static_cast<size_t>(hidden_);
+            const size_t inter_elements = max_group_tokens * static_cast<size_t>(inter_);
+            if (!DEE_CUDA_CHECK_NAMED(
+                    cudaMalloc(reinterpret_cast<void**>(&d_moe_batch_input_),
+                               input_elements * sizeof(float)),
+                    "cudaMalloc(MoE batch input)") ||
+                !DEE_CUDA_CHECK_NAMED(
+                    cudaMalloc(&d_moe_batch_input_half_, input_elements * sizeof(uint16_t)),
+                    "cudaMalloc(MoE batch FP16 input)") ||
+                !DEE_CUDA_CHECK_NAMED(
+                    cudaMalloc(&d_moe_batch_gate_half_, inter_elements * sizeof(uint16_t)),
+                    "cudaMalloc(MoE batch gate)") ||
+                !DEE_CUDA_CHECK_NAMED(
+                    cudaMalloc(&d_moe_batch_up_half_, inter_elements * sizeof(uint16_t)),
+                    "cudaMalloc(MoE batch up)") ||
+                !DEE_CUDA_CHECK_NAMED(
+                    cudaMalloc(&d_moe_batch_activation_half_,
+                               inter_elements * sizeof(uint16_t)),
+                    "cudaMalloc(MoE batch activation)") ||
+                !DEE_CUDA_CHECK_NAMED(
+                    cudaMalloc(&d_moe_batch_output_half_,
+                               input_elements * sizeof(uint16_t)),
+                    "cudaMalloc(MoE batch output)")) return false;
+            moe_batch_capacity_tokens_ = max_group_tokens;
+        }
+
+        std::vector<int> active_experts;
+        for (int expert = 0; expert < cfg_.num_experts; ++expert) {
+            if (!groups[static_cast<size_t>(expert)].empty()) active_experts.push_back(expert);
+        }
+        std::vector<float> host_input(max_group_tokens * static_cast<size_t>(hidden_));
+        std::vector<uint16_t> host_output(max_group_tokens * static_cast<size_t>(hidden_));
+        const int source_layer = avail_layer(layer);
+        const int cache_batch = std::max(
+            1, static_cast<int>(cache_.budget_bytes() / cache_blob_bytes_));
+        for (size_t first = 0; first < active_experts.size();
+             first += static_cast<size_t>(cache_batch)) {
+            const size_t last = std::min(
+                active_experts.size(), first + static_cast<size_t>(cache_batch));
+            prefetcher_.begin_batch();
+            for (size_t i = first; i < last; ++i) {
+                if (!stage_expert(layer, source_layer, active_experts[i],
+                                  static_cast<int>(active_experts.size() - i))) return false;
+            }
+            for (size_t i = first; i < last; ++i) {
+                const int expert = active_experts[i];
+                const auto& positions = groups[static_cast<size_t>(expert)];
+                const size_t group_tokens = positions.size();
+                const size_t input_elements = group_tokens * static_cast<size_t>(hidden_);
+                for (size_t row = 0; row < group_tokens; ++row) {
+                    const size_t token = positions[row] / static_cast<size_t>(topk);
+                    std::memcpy(host_input.data() + row * static_cast<size_t>(hidden_),
+                                h_in + token * static_cast<size_t>(hidden_),
+                                static_cast<size_t>(hidden_) * sizeof(float));
+                }
+                if (!DEE_CUDA_CHECK_NAMED(
+                        cudaMemcpyAsync(d_moe_batch_input_, host_input.data(),
+                                        input_elements * sizeof(float),
+                                        cudaMemcpyHostToDevice, compute_stream_),
+                        "cudaMemcpyAsync(MoE batch input)") ||
+                    !f32_to_f16_cuda(d_moe_batch_input_, d_moe_batch_input_half_,
+                                     input_elements, compute_stream_, nullptr) ||
+                    !prefetcher_.wait(source_layer, expert) ||
+                    !cache_.pin(source_layer, expert)) return false;
+                const void* d_blob = cache_.data(source_layer, expert);
+                const bool computed = d_blob && swiglu_expert_batch_fp16_cuda(
+                    cublas_handle_, d_blob, d_moe_batch_input_half_,
+                    d_moe_batch_gate_half_, d_moe_batch_up_half_,
+                    d_moe_batch_activation_half_, d_moe_batch_output_half_,
+                    static_cast<int>(group_tokens), inter_, hidden_, compute_stream_, nullptr);
+                if (!computed ||
+                    !DEE_CUDA_CHECK_NAMED(
+                        cudaMemcpyAsync(host_output.data(), d_moe_batch_output_half_,
+                                        input_elements * sizeof(uint16_t),
+                                        cudaMemcpyDeviceToHost, compute_stream_),
+                        "cudaMemcpyAsync(MoE batch output)") ||
+                    !DEE_CUDA_CHECK_NAMED(
+                        cudaStreamSynchronize(compute_stream_),
+                        "cudaStreamSynchronize(MoE batch output)")) {
+                    cache_.unpin(source_layer, expert);
+                    return false;
+                }
+                cache_.unpin(source_layer, expert);
+                for (size_t row = 0; row < group_tokens; ++row) {
+                    float* destination = experts_out +
+                        positions[row] * static_cast<size_t>(hidden_);
+                    const uint16_t* source = host_output.data() +
+                        row * static_cast<size_t>(hidden_);
+                    for (int h = 0; h < hidden_; ++h) {
+                        destination[h] = f16_to_f32(source[h]);
+                    }
+                }
+            }
+        }
+        release_transient_bf16_sources();
+        stats_.peak_vram = std::max(stats_.peak_vram, cache_.used_bytes());
+        return true;
+    }
+#endif
+
+    for (int token = 0; token < tokens; ++token) {
+        std::vector<int> row(static_cast<size_t>(topk));
+        for (int rank = 0; rank < topk; ++rank) {
+            row[static_cast<size_t>(rank)] =
+                expert_ids[static_cast<size_t>(token) * topk + rank];
+        }
+        if (!moe_forward_experts(
+                layer, h_in + static_cast<size_t>(token) * hidden_,
+                experts_out + static_cast<size_t>(token) * topk * hidden_, row)) return false;
+    }
+    return true;
+}
+
 EngineStats Engine::runtime_stats() const {
     EngineStats result = stats_;
     const auto& cs = cache_.stats();
@@ -1370,6 +1551,13 @@ void Engine::cuda_cleanup() {
     if (d_router_logits_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_router_logits_half_), "cudaFree(router FP16 logits)"); d_router_logits_half_ = nullptr; }
     router_capacity_tokens_ = 0;
     router_weight_layer_ = -1;
+    if (d_moe_batch_input_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_input_), "cudaFree(MoE batch input)"); d_moe_batch_input_ = nullptr; }
+    if (d_moe_batch_input_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_input_half_), "cudaFree(MoE batch FP16 input)"); d_moe_batch_input_half_ = nullptr; }
+    if (d_moe_batch_gate_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_gate_half_), "cudaFree(MoE batch gate)"); d_moe_batch_gate_half_ = nullptr; }
+    if (d_moe_batch_up_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_up_half_), "cudaFree(MoE batch up)"); d_moe_batch_up_half_ = nullptr; }
+    if (d_moe_batch_activation_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_activation_half_), "cudaFree(MoE batch activation)"); d_moe_batch_activation_half_ = nullptr; }
+    if (d_moe_batch_output_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_output_half_), "cudaFree(MoE batch output)"); d_moe_batch_output_half_ = nullptr; }
+    moe_batch_capacity_tokens_ = 0;
     if (d_oracle_scratch_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_oracle_scratch_), "cudaFree(oracle_scratch)"); d_oracle_scratch_ = nullptr; }
     oracle_.free_gpu();
     if (cublas_handle_) { DEE_CUBLAS_CHECK_NAMED(cublasDestroy(cublas_handle_), "cublasDestroy"); cublas_handle_ = nullptr; }

@@ -162,6 +162,39 @@ PYBIND11_MODULE(pydee_core, m) {
                 FP32 outputs to `experts_out` (layout: [K, hidden_dim], contiguous).
                 Caller handles the gate-weighted sum combine (matching HF reference).
             )pbdoc")
+        .def("moe_forward_batch", [](
+                dee::Engine& self,
+                int layer,
+                py::array_t<float, py::array::c_style | py::array::forcecast> h_in,
+                py::array_t<int, py::array::c_style | py::array::forcecast> expert_ids) {
+            auto in_buf = h_in.request();
+            auto ids_buf = expert_ids.request();
+            if (in_buf.ndim != 2 || in_buf.shape[1] != self.hidden_dim()) {
+                throw std::runtime_error("h_in must have shape [tokens, hidden_dim]");
+            }
+            if (ids_buf.ndim != 2 || ids_buf.shape[0] != in_buf.shape[0]) {
+                throw std::runtime_error("expert_ids must have shape [tokens, topk]");
+            }
+            const py::ssize_t tokens = in_buf.shape[0];
+            const py::ssize_t topk = ids_buf.shape[1];
+            if (topk != self.config().topk) {
+                throw std::runtime_error("expert_ids topk does not match EngineConfig.topk");
+            }
+            py::array_t<float> output({
+                tokens, topk, static_cast<py::ssize_t>(self.hidden_dim())
+            });
+            bool ok = false;
+            {
+                py::gil_scoped_release release;
+                ok = self.moe_forward_batch(
+                    layer, static_cast<float*>(in_buf.ptr), static_cast<int>(tokens),
+                    static_cast<int*>(ids_buf.ptr), static_cast<int>(topk),
+                    output.mutable_data());
+            }
+            if (!ok) throw std::runtime_error("dee.cpp batched MoE failed (see stderr)");
+            return output;
+        }, py::arg("layer"), py::arg("h_in"), py::arg("expert_ids"),
+           "Run token batches grouped by expert with eager-compatible CUDA GEMM shapes.")
         .def("last_stats_json", [](const dee::Engine& self) -> std::string {
             std::ostringstream ss;
             const dee::EngineStats s = self.runtime_stats();

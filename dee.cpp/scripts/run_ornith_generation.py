@@ -45,7 +45,7 @@ from scripts.ornith_support import (  # noqa: E402
 )
 
 
-TRACE_LAYERS = {0, 19, 20, 39}
+TRACE_LAYERS = set(range(40))
 TOLERANCES = {
     "embedding_output": (0.0, 0.0),
     "router_logits": (2.0e-2, 2.0e-2),
@@ -347,41 +347,32 @@ class HybridExperts:
         import torch
 
         output = torch.zeros_like(hidden_states)
-        raw_trace = None
-        if self.context.collector is not None and self.layer in TRACE_LAYERS:
-            raw_trace = torch.empty(
-                hidden_states.shape[0], top_k_index.shape[1], hidden_states.shape[1],
-                dtype=hidden_states.dtype, device=hidden_states.device,
+        expert_ids = top_k_index.detach().cpu().numpy().astype(np.int32)
+        expert_outputs = self.engine.moe_forward_batch(
+            self.layer,
+            hidden_states.detach().float().cpu().numpy(),
+            expert_ids,
+        )
+        raw = torch.from_numpy(np.asarray(expert_outputs)).to(
+            hidden_states.device, dtype=hidden_states.dtype
+        )
+        if tuple(raw.shape) != (
+            hidden_states.shape[0], top_k_index.shape[1], hidden_states.shape[1]
+        ):
+            raise RuntimeError(
+                f"dee.cpp batched expert output shape mismatch at layer {self.layer}: "
+                f"{tuple(raw.shape)}"
             )
         for token in range(hidden_states.shape[0]):
-            expert_ids = top_k_index[token].detach().cpu().numpy().astype(np.int64)
-            expert_outputs = np.empty(
-                (expert_ids.size, hidden_states.shape[1]), dtype=np.float32
-            )
-            ok = self.engine.moe_forward_experts(
-                self.layer,
-                hidden_states[token].detach().float().cpu().numpy(),
-                expert_outputs,
-                expert_ids.tolist(),
-            )
-            if not ok:
-                raise RuntimeError(
-                    f"dee.cpp expert execution failed layer={self.layer} token={token}"
-                )
-            raw = torch.from_numpy(expert_outputs).to(
-                hidden_states.device, dtype=hidden_states.dtype
-            )
-            if raw_trace is not None:
-                raw_trace[token] = raw
             # Official eager implementation accumulates contributions in
             # ascending expert id order, not router top-k order.
             accumulator = torch.zeros_like(hidden_states[token])
-            for position in np.argsort(expert_ids, kind="stable").tolist():
-                accumulator.add_(raw[position] * top_k_weights[token, position])
+            for position in np.argsort(expert_ids[token], kind="stable").tolist():
+                accumulator.add_(raw[token, position] * top_k_weights[token, position])
             output[token] = accumulator
-        if raw_trace is not None:
+        if self.context.collector is not None and self.layer in TRACE_LAYERS:
             self.context.collector.add(
-                "selected_expert_outputs", f"layer={self.layer}", raw_trace
+                "selected_expert_outputs", f"layer={self.layer}", raw
             )
         return output
 

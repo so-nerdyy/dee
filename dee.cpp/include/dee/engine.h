@@ -175,6 +175,8 @@ public:
     // arbiter for the per-token agreement check.
     bool moe_forward_experts(int layer, const float* h_in, float* experts_out,
                              const std::vector<int>& experts);
+    bool moe_forward_batch(int layer, const float* h_in, int tokens,
+                           const int* expert_ids, int topk, float* experts_out);
 
     // Genuine checkpoint router: logits = W_router * hidden using the active
     // runtime dtype (FP16 CUDA for Ornith), then FP32 softmax, ordered top-K,
@@ -223,6 +225,13 @@ private:
     void* d_router_logits_half_ = nullptr;  // [router_capacity_tokens, num_experts]
     size_t router_capacity_tokens_ = 0;
     int router_weight_layer_ = -1;
+    float* d_moe_batch_input_ = nullptr;       // [moe_batch_capacity_tokens, hidden]
+    void* d_moe_batch_input_half_ = nullptr;   // [moe_batch_capacity_tokens, hidden]
+    void* d_moe_batch_gate_half_ = nullptr;    // [moe_batch_capacity_tokens, inter]
+    void* d_moe_batch_up_half_ = nullptr;      // [moe_batch_capacity_tokens, inter]
+    void* d_moe_batch_activation_half_ = nullptr; // [moe_batch_capacity_tokens, inter]
+    void* d_moe_batch_output_half_ = nullptr;  // [moe_batch_capacity_tokens, hidden]
+    size_t moe_batch_capacity_tokens_ = 0;
     cublasHandle_t cublas_handle_ = nullptr;
     float* d_oracle_scratch_ = nullptr; // GPU Oracle scratch (H_ + E_ floats)
     bool gpu_oracle_ready_ = false;

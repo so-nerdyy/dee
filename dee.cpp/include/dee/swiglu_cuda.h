@@ -33,6 +33,15 @@ bool swiglu_expert_fp16_cuda(cublasHandle_t handle, const void* d_W,
                              int inter, int hidden, cudaStream_t stream,
                              StageProfiler* profiler = nullptr);
 
+// Batched equivalent of the eager Transformers expert path. Every projection
+// consumes [tokens, features] FP16 rows and produces FP16 rows so GEMM shape
+// and rounding match torch.nn.functional.linear during prompt prefill.
+bool swiglu_expert_batch_fp16_cuda(
+    cublasHandle_t handle, const void* d_W, const void* d_x,
+    void* d_gate, void* d_up, void* d_activation, void* d_y,
+    int tokens, int inter, int hidden, cudaStream_t stream,
+    StageProfiler* profiler = nullptr);
+
 // Match torch.nn.functional.linear for an FP16 [tokens, hidden] input and
 // FP16 [experts, hidden] router matrix. Output is row-major [tokens, experts].
 bool router_logits_fp16_cuda(cublasHandle_t handle, const void* d_weights,
