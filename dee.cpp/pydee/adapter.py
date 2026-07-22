@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import contextlib
 import math
+import os
 from typing import List, Optional
 
 import numpy as np
@@ -51,24 +52,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class _SilentDeeEngine:
-    """Wrap a pydee.Engine with buffer-aware forward to avoid .cpu()/numpy churn."""
-
-    def __init__(self, engine, hidden: int, top_k: int):
-        self.engine = engine
-        self.hidden = int(hidden)
-        self.top_k = int(top_k)
-        self._scratch = np.empty((top_k, hidden), dtype=np.float32)
-
-    def moe_forward(self, layer_idx: int, hidden_2d_fp32: np.ndarray) -> np.ndarray:
-        if hidden_2d_fp32.shape != (self.hidden,):
-            raise ValueError(
-                f"hidden_2d shape {hidden_2d_fp32.shape} != (hidden_dim={self.hidden},)"
-            )
-        # Reuse scratch buffer to avoid per-call allocation.
-        self._scratch.fill(0.0)
-        # caller fills in top_k_indices later via call_with_experts
-        return self._scratch
+# _SilentDeeEngine removed: dead code path. pydee.Engine now drives
+# moe_forward_experts directly, and the adapter allocates its own scratch.
 
 
 class DeeMoeAdapter(nn.Module):
@@ -109,8 +94,12 @@ class DeeMoeAdapter(nn.Module):
         # Qwen3_3_5 uses softmax (NOT sigmoid). Don't apply normalization twice.
         routing_weights = F.softmax(logits, dim=-1, dtype=torch.float32)
         topk_w, topk_idx = torch.topk(routing_weights, k=self.top_k, dim=-1)
-        # Renormalize across the K slots the way HF does (none for MoE topk).
-        # Some Qwen3 variants use sigmoid on `topk_w`. Keep softmax-only here.
+        # Match HF Qwen3-MoE top-K renormalization (controlled by
+        # `norm_topk_prob` in the Qwen3-MoE config; default is True and Ornith is
+        # built on the same convention). Disable with env DEE_DISABLE_TOPK_RENORM=1
+        # for models whose block doesn't renormalize.
+        if os.environ.get("DEE_DISABLE_TOPK_RENORM") != "1":
+            topk_w = topk_w / topk_w.sum(dim=-1, keepdim=True).clamp_min(1e-9)
 
         B, S, _ = hidden_states.shape
         H = hidden_states.shape[-1]
@@ -154,9 +143,9 @@ class DeeMoeAdapter(nn.Module):
                                 per_exp.append(self._experts[e](x))
                             else:  # pragma: no cover
                                 per_exp.append(torch.zeros_like(x))
-                        stacked = torch.cat(per_exp, dim=0)
+                        stacked = torch.cat(per_exp, dim=0).reshape(self.top_k, H).to(torch.float32)
                     else:
-                        stacked = torch.zeros((self.top_k, 1, H), dtype=torch.float32)
+                        stacked = torch.zeros((self.top_k, H), dtype=torch.float32)
                 else:
                     stacked = torch.from_numpy(
                         out_np.reshape(self.top_k, H)

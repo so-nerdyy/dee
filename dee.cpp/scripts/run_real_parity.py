@@ -142,12 +142,39 @@ def init_dee_engine(cfg, top_k: int) -> "pydee.Engine":
     pydee_cfg = pydee.EngineConfig()
     pydee_cfg.shard_path = str(ORNITH_SHARD_0)
     pydee_cfg.oracle_path = ""                 # real-model integration mode
-    pydee_cfg.num_experts = cfg.num_local_experts
+    # Ornith's nesting: cfg.text_config holds hidden_size / moe_intermediate_size /
+    # num_experts / num_hidden_layers for the text sub-model. Resolve safely.
+    _src = cfg.text_config if hasattr(cfg, "text_config") else cfg
+    pydee_cfg.num_experts = getattr(
+        _src, "num_local_experts", getattr(_src, "num_experts", 256)
+    )
     pydee_cfg.topk = top_k
-    pydee_cfg.num_layers = cfg.num_hidden_layers
-    pydee_cfg.hidden = cfg.hidden_size
-    pydee_cfg.inter = cfg.moe_intermediate_size if hasattr(cfg, "moe_intermediate_size") else cfg.intermediate_size
+    pydee_cfg.num_layers = getattr(_src, "num_hidden_layers", 1)
+    pydee_cfg.hidden = getattr(_src, "hidden_size", 2048)
+    pydee_cfg.inter = getattr(
+        _src, "moe_intermediate_size", getattr(_src, "intermediate_size", 256)
+    )
     pydee_cfg.use_cuda = False  # tier-1 CPU parity; switch on T4 later
+    print(
+        f"[run] pydee cfg: hidden={pydee_cfg.hidden} inter={pydee_cfg.inter} "
+        f"num_experts={pydee_cfg.num_experts} topk={pydee_cfg.topk} "
+        f"num_layers={pydee_cfg.num_layers} use_cuda={pydee_cfg.use_cuda}"
+    )
+    # Fail-fast assertions on Orbit's known fixed-shape config.
+    assert pydee_cfg.inter == 512, (
+        f"pydee_cfg.inter={pydee_cfg.inter}, expected 512 (Ornith moe_intermediate_size)"
+    )
+    assert pydee_cfg.num_experts == 256, (
+        f"pydee_cfg.num_experts={pydee_cfg.num_experts}, expected 256"
+    )
+    assert pydee_cfg.hidden == 2048, (
+        f"pydee_cfg.hidden={pydee_cfg.hidden}, expected 2048"
+    )
+    assert pydee_cfg.topk == 8, f"pydee_cfg.topk={pydee_cfg.topk}, expected 8"
+    assert pydee_cfg.use_cuda == False, "tier-1 must run CPU-only"
+    assert cfg.num_hidden_layers == 1, (
+        f"cfg.num_hidden_layers={cfg.num_hidden_layers}, expected 1 (tier-1 amputation)"
+    )
     pydee_cfg.transfer_dtype = pydee.WeightTransferDType.Bf16
     pydee_cfg.cache_dtype = pydee.DeviceCacheDType.Fp32
     pydee_cfg.verbose = False
