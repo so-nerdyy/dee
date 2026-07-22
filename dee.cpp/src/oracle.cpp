@@ -123,6 +123,8 @@ static void linear(const std::vector<float>& W, const std::vector<float>& b,
 
 static inline float relu(float v) { return v > 0.f ? v : 0.f; }
 
+}  // namespace
+
 // Real-model integration stub: caller owns routing. Sizes the stub layers_
 // table so num_layers() reports the right value; gating happens via is_no_op_
 // at the top of every public method.
@@ -139,18 +141,6 @@ void OracleScheduler::set_no_op_layers(int num_layers, int D, int H, int E) {
     bstats_ = {};
 #endif
 }
-
-inline void OracleScheduler::require_real_oracle(const char* op) const {
-    if (is_no_op_) {
-        throw std::logic_error(
-            std::string("OracleScheduler::") + op +
-            " called in real-model integration mode (no Oracle loaded). "
-            "Caller must own the router (HF model) and use "
-            "Engine::moe_forward_experts instead.");
-    }
-}
-
-}  // namespace
 
 bool OracleScheduler::load(const std::string& oracle_pt_path, int D, int H, int E) {
     is_no_op_ = false;  // any successful load promotes us back to real-oracle mode

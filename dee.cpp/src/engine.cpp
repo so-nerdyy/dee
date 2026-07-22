@@ -682,9 +682,9 @@ bool Engine::init(const EngineConfig& cfg) {
         std::fprintf(stderr, "[engine] tokens, topk, layers, and hidden must be positive\n");
         return false;
     }
-    if (cfg.inter <= 0) cfg.inter = 256;
-    if (cfg.num_experts <= 0) cfg.num_experts = 256;
-    hidden_ = cfg.hidden;
+    if (cfg_.inter <= 0) cfg_.inter = 256;
+    if (cfg_.num_experts <= 0) cfg_.num_experts = 256;
+    hidden_ = cfg_.hidden;
     if (cfg.cache_dtype == DeviceCacheDType::Fp16 && !cfg.use_cuda) {
         std::fprintf(stderr, "[engine] FP16 device cache requires --cuda\n");
         return false;
@@ -737,7 +737,6 @@ bool Engine::init(const EngineConfig& cfg) {
         fprintf(stderr, "[engine] shard hidden %d != configured %d\n", hidden_, cfg.hidden);
         return false;
     }
-
     if (!cfg.oracle_path.empty()) {
         std::ifstream oracle_file(cfg.oracle_path, std::ios::binary);
         if (!oracle_file) {
@@ -760,11 +759,11 @@ bool Engine::init(const EngineConfig& cfg) {
         // OracleScheduler with a no-op layer table so engine init bookkeeping
         // (num_layers, num_experts) still has correct values. forward_layer()
         // is NOT callable in this mode; routes come from the Python adapter.
-        oracle_.set_no_op_layers(cfg.num_layers, cfg.hidden, 256, cfg.num_experts);
+        oracle_.set_no_op_layers(cfg_.num_layers, cfg_.hidden, 256, cfg_.num_experts);
         if (cfg.verbose) {
             std::fprintf(stderr,
                 "[engine] real-model integration mode: oracle_path empty; routes come from Python (router=HF, %d experts/layer, %d layers)\n",
-                cfg.num_experts, cfg.num_layers);
+                cfg_.num_experts, cfg_.num_layers);
         }
     }
 #ifdef DEE_CUDA
@@ -785,7 +784,6 @@ bool Engine::init(const EngineConfig& cfg) {
 #endif
     int nl = std::min(cfg.num_layers, oracle_.num_layers());
     cfg_.num_layers = nl;
-    oracle_.set_no_op_layers(nl, cfg.hidden, 256, cfg.num_experts);
     // VRAM budget. default: 4 experts. The arena backend is cudaMalloc when the
     // CUDA path is active, else a malloc'd host arena (mock backend).
     size_t budget = cfg.budget_bytes ? cfg.budget_bytes : (4 * blob_bytes_);

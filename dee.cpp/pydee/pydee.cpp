@@ -33,7 +33,7 @@
 
 namespace py = pybind11;
 
-PYBIND11_MODULE(pydee, m) {
+PYBIND11_MODULE(pydee_core, m) {
     m.doc() = "pydee: Python binding for dee.cpp MoE expert execution "
               "(real-model integration mode; caller owns routing + combine).";
 

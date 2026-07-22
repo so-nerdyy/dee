@@ -36,6 +36,7 @@ set(DEE_CORE_SOURCES
     src/engine.cpp)
 
 add_library(dee_core STATIC ${DEE_CORE_SOURCES})
+set_target_properties(dee_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(dee_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_options(dee_core PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>

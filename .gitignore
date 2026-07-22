@@ -23,3 +23,4 @@ cmake-build-*/
 # everything else under benchmark_reports/ (binaries, model dumps, etc.).
 benchmark_reports/*
 !benchmark_reports/*.jsonl
+!benchmark_reports/ornith-layer0-parity-*.json

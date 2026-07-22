@@ -61,7 +61,7 @@ DEE_LIBS = [STATIC_LIB]
 
 ext_modules = [
     Pybind11Extension(
-        "pydee",
+        "pydee.pydee_core",
         [SRC_PYDEE],
         include_dirs=DEE_INCLUDES,
         library_dirs=[os.path.dirname(STATIC_LIB)],
