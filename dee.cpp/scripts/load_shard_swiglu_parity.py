@@ -680,9 +680,12 @@ def _resume_command(
         the inner dee.cpp/ subdirectory.
     """
     auto_resolve = (
-        'DEE_CPP_DIR="$(git rev-parse --show-toplevel)"; '
-        '[ -f "$DEE_CPP_DIR/dee.cpp/CMakeLists.txt" ] && '
+        "set -e; "
+        'DEE_CPP_DIR="$(git rev-parse --show-toplevel 2>/dev/null)" '
+        '|| { echo "dee.cpp resume: not in a git repo" >&2; exit 1; }; '
+        'if [ -f "$DEE_CPP_DIR/dee.cpp/CMakeLists.txt" ]; then '
         'DEE_CPP_DIR="$DEE_CPP_DIR/dee.cpp"; '
+        'fi; '
     )
     base = auto_resolve + (
         'cd "$DEE_CPP_DIR" && '
