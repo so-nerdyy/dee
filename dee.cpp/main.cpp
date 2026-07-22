@@ -25,6 +25,8 @@ void usage(const char* argv0) {
         "  --prefetch-depth N Bounded staging/transfer ring depth (default: 64)\n"
         "  --cache-dtype D    Device expert cache: fp16 with --cuda, or fp32 fallback\n"
         "  --transfer-dtype D Expert transfer: int8 CUDA default, bf16, or experimental int4\n"
+        "  --hidden N         Model hidden dim (default: 2048, must match shard)\n"
+        "  --inter N          Expert intermediate dim (default: 256, must match shard)\n"
         "  --cuda             Use CUDA; requires a DEE_CUDA build and a GPU\n"
         "  --profile-stages   Enable detailed CPU/CUDA stage timing\n"
         "  --profile-scenario M Controlled profile: end-to-end, full-resident,\n"
@@ -422,6 +424,12 @@ int main(int argc, char** argv) {
             if (!(value = require_value(i, argc, argv, "--transfer-dtype")) ||
                 !parse_transfer_dtype(value, cfg.transfer_dtype)) return 2;
             transfer_dtype_explicit = true;
+        } else if (arg == "--hidden") {
+            if (!(value = require_value(i, argc, argv, "--hidden")) ||
+                !parse_positive(value, "--hidden", cfg.hidden)) return 2;
+        } else if (arg == "--inter") {
+            if (!(value = require_value(i, argc, argv, "--inter")) ||
+                !parse_positive(value, "--inter", cfg.inter)) return 2;
         } else if (arg == "--oracle-margin") {
             if (!(value = require_value(i, argc, argv, "--oracle-margin")) ||
                 !parse_float_nonneg(value, "--oracle-margin", cfg.oracle_strict_margin)) return 2;
