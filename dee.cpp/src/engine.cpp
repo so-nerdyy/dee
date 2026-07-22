@@ -1486,4 +1486,8 @@ Engine::~Engine() {
 Engine::~Engine() = default;
 #endif
 
+size_t engine_abi_size() {
+    return sizeof(Engine);
+}
+
 } // namespace dee

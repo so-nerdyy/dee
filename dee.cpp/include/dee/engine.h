@@ -266,4 +266,9 @@ private:
     bool preload_all_experts();
 };
 
+// Compiled-library ABI sentinel used by separately built bindings.  Engine's
+// layout changes when DEE_CUDA is enabled, so compare this with sizeof(Engine)
+// before constructing an instance across that boundary.
+size_t engine_abi_size();
+
 } // namespace dee

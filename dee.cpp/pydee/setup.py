@@ -90,6 +90,10 @@ ext_modules = [
     Pybind11Extension(
         "pydee.pydee_core",
         [SRC_PYDEE],
+        # Engine has CUDA-only data members behind DEE_CUDA.  The binding and
+        # the static library must therefore use the same definition or pybind
+        # allocates an undersized Engine object and Engine::init corrupts it.
+        define_macros=[("DEE_CUDA", "1")] if cuda_enabled else [],
         include_dirs=DEE_INCLUDES,
         library_dirs=library_dirs,
         libraries=libraries,

@@ -34,6 +34,10 @@
 namespace py = pybind11;
 
 PYBIND11_MODULE(pydee_core, m) {
+    if (sizeof(dee::Engine) != dee::engine_abi_size()) {
+        throw py::import_error(
+            "pydee/dee_core Engine ABI mismatch: rebuild both with the same DEE_CUDA setting");
+    }
     m.doc() = "pydee: Python binding for dee.cpp MoE expert execution "
               "(real-model integration mode; caller owns routing + combine).";
 
