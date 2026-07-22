@@ -1,5 +1,5 @@
 {
-  "id": "nivind/dee-ornith-milestone2-dualt4",
+  "id": "nivind/dee-cpp-ornith-milestone-2-dual-t4-proof",
   "title": "dee.cpp Ornith Milestone 2 Dual T4 Proof",
   "code_file": "ornith_milestone2.ipynb",
   "language": "python",
@@ -8,6 +8,7 @@
   "enable_gpu": true,
   "enable_internet": true,
   "accelerator": "NvidiaTeslaT4",
+  "machine_shape": "NvidiaTeslaT4",
   "gpu_class": "dualT4",
   "dataset_sources": [
     "nivind/ornith-1-0-35b"
