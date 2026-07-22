@@ -230,7 +230,7 @@ private:
     void* d_moe_batch_gate_half_ = nullptr;    // [moe_batch_capacity_tokens, inter]
     void* d_moe_batch_up_half_ = nullptr;      // [moe_batch_capacity_tokens, inter]
     void* d_moe_batch_activation_half_ = nullptr; // [moe_batch_capacity_tokens, inter]
-    void* d_moe_batch_output_half_ = nullptr;  // [moe_batch_capacity_tokens, hidden]
+    float* d_moe_batch_output_ = nullptr;      // [moe_batch_capacity_tokens, hidden]
     size_t moe_batch_capacity_tokens_ = 0;
     cublasHandle_t cublas_handle_ = nullptr;
     float* d_oracle_scratch_ = nullptr; // GPU Oracle scratch (H_ + E_ floats)

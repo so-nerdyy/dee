@@ -697,13 +697,18 @@ def compare_trace(reference: TraceCollector, candidate: TraceCollector):
         )
         comparison["operation_count"] = len(ref_records)
         comparison["first_failing_operation"] = None
-        if not comparison["passed"]:
-            for (label, ref), (_, got) in zip(ref_records, got_records):
-                local = numeric_comparison(ref, got, atol, rtol)
-                if not local["passed"]:
-                    comparison["first_failing_operation"] = label
-                    comparison["first_failing_index"] = local.get("first_failing_index")
-                    break
+        comparison["operation_summaries"] = []
+        for (label, ref), (_, got) in zip(ref_records, got_records):
+            local = numeric_comparison(ref, got, atol, rtol)
+            comparison["operation_summaries"].append({
+                "operation": label,
+                "maximum_absolute_error": local.get("maximum_absolute_error"),
+                "mean_absolute_error": local.get("mean_absolute_error"),
+                "passed": local["passed"],
+            })
+            if comparison["first_failing_operation"] is None and not local["passed"]:
+                comparison["first_failing_operation"] = label
+                comparison["first_failing_index"] = local.get("first_failing_index")
         report[category] = comparison
     report["all_categories_passed"] = all(item.get("passed", False) for item in report.values())
     return report

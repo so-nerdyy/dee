@@ -52,6 +52,15 @@ int main() {
     }
     CHECK(close, "batched CUDA output preserves token/rank layout and FP16 math");
 
+    float single_batch[8]{};
+    CHECK(engine.moe_forward_batch(5, hidden, 1, expert_ids, 2, single_batch),
+          "single-row batched CUDA path executes");
+    bool single_exact = true;
+    for (int i = 0; i < 8; ++i) {
+        if (std::fabs(single_batch[i] - individual[i]) > 1e-6f) single_exact = false;
+    }
+    CHECK(single_exact, "single-row batched output is exact to the proven expert path");
+
     if (failures) std::printf("### %d FAILED ###\n", failures);
     else std::printf("ALL PASS\n");
     return failures ? 1 : 0;

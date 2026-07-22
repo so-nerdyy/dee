@@ -38,7 +38,7 @@ bool swiglu_expert_fp16_cuda(cublasHandle_t handle, const void* d_W,
 // and rounding match torch.nn.functional.linear during prompt prefill.
 bool swiglu_expert_batch_fp16_cuda(
     cublasHandle_t handle, const void* d_W, const void* d_x,
-    void* d_gate, void* d_up, void* d_activation, void* d_y,
+    void* d_gate, void* d_up, void* d_activation, float* d_y,
     int tokens, int inter, int hidden, cudaStream_t stream,
     StageProfiler* profiler = nullptr);
 
