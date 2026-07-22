@@ -1,0 +1,19 @@
+{
+  "id": "nivind/dee-ornith-milestone2-dualt4",
+  "title": "dee.cpp Ornith Milestone 2 Dual T4 Proof",
+  "code_file": "ornith_milestone2.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "accelerator": "NvidiaTeslaT4",
+  "gpu_class": "dualT4",
+  "dataset_sources": [
+    "nivind/ornith-1-0-35b"
+  ],
+  "machine_spec": {
+    "container_size": "medium",
+    "gpu_class": "dualT4"
+  }
+}
