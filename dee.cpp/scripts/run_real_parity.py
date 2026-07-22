@@ -77,10 +77,14 @@ def _force_cpu_only() -> None:
     """Force CPU-only mode for HF + dee.cpp during tier-1 parity.
 
     Even with pydee_cfg.use_cuda=False, HF transformers may bind to CUDA at
-    import time. Hide CUDA devices before any HF/dee import is performed.
+    import time. Use unconditional assignment (not setdefault) so that any
+    pre-existing CUDA binding is overridden for tier-1 CPU parity runs.
     """
-    os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
-    os.environ.setdefault("PYDEE_FORCE_CPU", "1")
+    _prev_cuda = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    if _prev_cuda:
+        print(f"[force-cpu] WARNING: overriding CUDA_VISIBLE_DEVICES={_prev_cuda!r} -> ''")
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    os.environ["PYDEE_FORCE_CPU"] = "1"
 
 
 def _json(o):
@@ -168,6 +172,22 @@ def load_hf_model_tokens(tier: str = "shard0_1layer") -> tuple:
 
     device = "cuda" if torch.cuda.is_available() and CFG_USE_CUDA_DEFAULT() else "cpu"
     model = model.to(device).eval()
+
+    # Post-load structural check: amputation must have left exactly one decoder
+    # layer. Handles both Qwen3_5 hybrid (3-deep) and Qwen3_5TextForCausalLM
+    # (2-deep) layouts.
+    if hasattr(model, "model"):
+        if hasattr(model.model, "language_model"):
+            _layers_mod = model.model.language_model.layers
+        elif hasattr(model.model, "layers"):
+            _layers_mod = model.model.layers
+        else:
+            _layers_mod = None
+        if _layers_mod is not None and len(_layers_mod) != 1:
+            raise RuntimeError(
+                f"[load] tier-1 amputation failed: "
+                f"len(_layers_mod)={len(_layers_mod)}, expected 1"
+            )
 
     return model, tok, cfg, device
 
@@ -317,17 +337,6 @@ def main() -> int:
 
     _ensure_pydee_in_path()
     _force_cpu_only()
-
-    # Belt-and-suspenders: if HF rebuilt text_config during from_config,
-    # re-pin num_hidden_layers=1 on the resolved instance.
-    if tier == "shard0_1layer" and cfg.num_hidden_layers == 1:
-        try:
-            if hasattr(model, "config") and hasattr(model.config, "text_config"):
-                tc = model.config.text_config
-                if tc is not None and getattr(tc, "num_hidden_layers", None) != 1:
-                    tc.num_hidden_layers = 1
-        except Exception:
-            pass
 
     print("[run] loading model + tokenizer...")
     model, tok, cfg, device = load_hf_model_tokens(tier=args.tier)
