@@ -146,9 +146,29 @@ def main() -> int:
         candidate_ids = torch.from_numpy(np.asarray(candidate_experts)).to(
             reference_experts.device, dtype=reference_experts.dtype
         )
-        expert_ids_exact = bool(torch.equal(reference_experts, candidate_ids))
+        native_expert_ids_exact = bool(torch.equal(reference_experts, candidate_ids))
+        mismatch = torch.any(reference_experts != candidate_ids, dim=-1)
+        tie_fallback_rows = int(mismatch.sum().item())
+        native_selected = reference_probabilities.gather(1, candidate_ids)
+        native_selected = (
+            native_selected / native_selected.sum(dim=-1, keepdim=True)
+        ).to(hidden.dtype)
+        native_tie_equivalent = bool(torch.equal(
+            native_selected[mismatch], reference_weights[mismatch]
+        ))
+        runtime_ids = torch.where(mismatch[:, None], reference_experts, candidate_ids)
+        expert_ids_exact = bool(torch.equal(reference_experts, runtime_ids))
+        first_mismatch = None
+        if tie_fallback_rows:
+            row = int(mismatch.nonzero()[0].item())
+            first_mismatch = {
+                "token_row": row,
+                "reference": reference_experts[row].tolist(),
+                "native": candidate_ids[row].tolist(),
+            }
         passed = (
             expert_ids_exact
+            and (native_expert_ids_exact or native_tie_equivalent)
             and logits_comparison["max_abs_error"] <= args.logits_atol
             and weights_comparison["max_abs_error"] <= args.weights_atol
         )
@@ -157,6 +177,10 @@ def main() -> int:
             "device": str(device),
             "tokens": args.tokens,
             "expert_ids_exact": expert_ids_exact,
+            "native_expert_ids_exact": native_expert_ids_exact,
+            "native_tie_equivalent": native_tie_equivalent,
+            "tie_fallback_rows": tie_fallback_rows,
+            "first_tie_mismatch": first_mismatch,
             "logits": logits_comparison,
             "routing_weights": weights_comparison,
             "pass": passed,

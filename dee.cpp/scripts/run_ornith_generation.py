@@ -171,6 +171,7 @@ class ExecutionContext:
     def __init__(self):
         self.mode = "dee"
         self.collector: TraceCollector | None = None
+        self.router_tie_fallback_rows = 0
 
 
 class LazyReferenceExperts:
@@ -287,12 +288,40 @@ class HybridRouter:
             logits = torch.from_numpy(np.asarray(logits_np)).to(
                 flattened.device, dtype=flattened.dtype
             )
-            weights = torch.from_numpy(np.asarray(weights_np)).to(
+            native_weights = torch.from_numpy(np.asarray(weights_np)).to(
                 flattened.device, dtype=flattened.dtype
             )
-            experts = torch.from_numpy(np.asarray(experts_np).astype(np.int64)).to(
+            native_experts = torch.from_numpy(np.asarray(experts_np).astype(np.int64)).to(
                 flattened.device, dtype=torch.long
             )
+            # torch.topk does not promise a stable order for exact ties. The
+            # native route is authoritative except for rows where its expert
+            # IDs differ from torch despite selecting the exact same logit
+            # multiset. Canonicalize only those tie rows so trace ordering and
+            # eager expert accumulation remain bit-for-bit reference-compatible.
+            probabilities = torch.softmax(logits, dim=-1, dtype=torch.float)
+            canonical_weights, canonical_experts = torch.topk(
+                probabilities, self.top_k, dim=-1
+            )
+            canonical_weights = (
+                canonical_weights / canonical_weights.sum(dim=-1, keepdim=True)
+            ).to(flattened.dtype)
+            mismatch = torch.any(native_experts != canonical_experts, dim=-1)
+            if bool(mismatch.any().item()):
+                native_selected = probabilities.gather(1, native_experts)
+                native_selected = (
+                    native_selected / native_selected.sum(dim=-1, keepdim=True)
+                ).to(flattened.dtype)
+                if not torch.equal(native_selected[mismatch], canonical_weights[mismatch]):
+                    raise RuntimeError(
+                        f"dee.cpp router selected non-equivalent experts at layer {self.layer}"
+                    )
+                self.context.router_tie_fallback_rows += int(mismatch.sum().item())
+                experts = torch.where(mismatch[:, None], canonical_experts, native_experts)
+                weights = torch.where(mismatch[:, None], canonical_weights, native_weights)
+            else:
+                experts = native_experts
+                weights = native_weights
         if self.context.collector is not None:
             self.context.collector.router(self.layer, logits, weights, experts)
         return logits, weights, experts
@@ -567,6 +596,7 @@ def run_generation(runtime, tokenizer, prompt: str, max_new_tokens: int,
     context = runtime["context"]
     gpu_count = torch.cuda.device_count()
     context.mode = mode
+    tie_fallback_start = context.router_tie_fallback_rows
     collector = TraceCollector() if trace else None
     context.collector = collector
     prompt_ids_cpu = tokenize_prompt(tokenizer, prompt, chat_template)
@@ -643,6 +673,7 @@ def run_generation(runtime, tokenizer, prompt: str, max_new_tokens: int,
         "total_generation_seconds": total_seconds,
         "cache_sequence_lengths": cache_lengths,
         "resources": resources,
+        "router_tie_fallback_rows": context.router_tie_fallback_rows - tie_fallback_start,
         "collector": collector,
         "logits_records": logits_records,
     }
