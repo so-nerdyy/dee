@@ -281,17 +281,18 @@ class HybridRouter:
         if self.context.mode == "reference":
             logits, weights, experts = self.module.reference(flattened)
         else:
-            logits_rows, weight_rows, expert_rows = [], [], []
-            for row in flattened:
-                logits_np, weights_np, experts_np = self.engine.route_topk(
-                    self.layer, row.detach().float().cpu().numpy()
-                )
-                logits_rows.append(torch.from_numpy(np.asarray(logits_np)))
-                weight_rows.append(torch.from_numpy(np.asarray(weights_np)))
-                expert_rows.append(torch.from_numpy(np.asarray(experts_np).astype(np.int64)))
-            logits = torch.stack(logits_rows).to(flattened.device, dtype=flattened.dtype)
-            weights = torch.stack(weight_rows).to(flattened.device, dtype=flattened.dtype)
-            experts = torch.stack(expert_rows).to(flattened.device, dtype=torch.long)
+            logits_np, weights_np, experts_np = self.engine.route_topk_batch(
+                self.layer, flattened.detach().float().cpu().numpy()
+            )
+            logits = torch.from_numpy(np.asarray(logits_np)).to(
+                flattened.device, dtype=flattened.dtype
+            )
+            weights = torch.from_numpy(np.asarray(weights_np)).to(
+                flattened.device, dtype=flattened.dtype
+            )
+            experts = torch.from_numpy(np.asarray(experts_np).astype(np.int64)).to(
+                flattened.device, dtype=torch.long
+            )
         if self.context.collector is not None:
             self.context.collector.router(self.layer, logits, weights, experts)
         return logits, weights, experts

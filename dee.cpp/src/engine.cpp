@@ -399,43 +399,173 @@ const float* Engine::get_router_weights(int source_layer) {
 
 bool Engine::route_topk(int layer, const float* h_in, float* router_logits,
                         float* routing_weights, int* experts) {
-    if (!h_in || !router_logits || !routing_weights || !experts ||
-        cfg_.topk <= 0 || cfg_.topk > cfg_.num_experts) return false;
-    const int source_layer = avail_layer(layer);
-    const float* weights = get_router_weights(source_layer);
-    if (!weights) return false;
-    float maximum = -std::numeric_limits<float>::infinity();
-    for (int expert = 0; expert < cfg_.num_experts; ++expert) {
-        const float* row = weights + static_cast<size_t>(expert) * hidden_;
-        float logit = 0.0f;
-        for (int h = 0; h < hidden_; ++h) logit += row[h] * h_in[h];
-        router_logits[expert] = logit;
-        maximum = std::max(maximum, logit);
-    }
-    std::vector<float> probabilities(static_cast<size_t>(cfg_.num_experts));
-    double denominator = 0.0;
-    for (int expert = 0; expert < cfg_.num_experts; ++expert) {
-        probabilities[expert] = std::exp(router_logits[expert] - maximum);
-        denominator += probabilities[expert];
-    }
-    if (!(denominator > 0.0) || !std::isfinite(denominator)) return false;
-    const float inv_denominator = static_cast<float>(1.0 / denominator);
-    for (float& probability : probabilities) probability *= inv_denominator;
+    return route_topk_batch(layer, h_in, 1, router_logits, routing_weights, experts);
+}
 
+bool Engine::route_topk_batch(int layer, const float* h_in, int tokens,
+                              float* router_logits, float* routing_weights,
+                              int* experts) {
+    if (!h_in || !router_logits || !routing_weights || !experts ||
+        tokens <= 0 || cfg_.topk <= 0 || cfg_.topk > cfg_.num_experts) return false;
+    const int source_layer = avail_layer(layer);
+
+#ifdef DEE_CUDA
+    if (cfg_.use_cuda) {
+        if (!DEE_CUDA_CHECK_NAMED(cudaSetDevice(cfg_.device_id),
+                                  "cudaSetDevice(router)")) return false;
+        const TensorView view = resolver_.resolve_tensor(
+            "model.language_model.layers." + std::to_string(source_layer) +
+            ".mlp.gate.weight");
+        const size_t weight_elements = static_cast<size_t>(cfg_.num_experts) * hidden_;
+        if (!view.ok() || view.shape.size() != 2 ||
+            view.shape[0] != cfg_.num_experts || view.shape[1] != hidden_) {
+            std::fprintf(stderr, "[engine] CUDA router tensor missing or has wrong shape\n");
+            return false;
+        }
+        if (router_weight_layer_ != source_layer) {
+            if (d_router_weight_half_) {
+                if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_router_weight_half_),
+                                          "cudaFree(old router weight)")) return false;
+                d_router_weight_half_ = nullptr;
+            }
+            if (!DEE_CUDA_CHECK_NAMED(
+                    cudaMalloc(&d_router_weight_half_, weight_elements * sizeof(uint16_t)),
+                    "cudaMalloc(router FP16 weight)")) return false;
+            void* source = nullptr;
+            if (!DEE_CUDA_CHECK_NAMED(cudaMalloc(&source, view.nbytes),
+                                      "cudaMalloc(router source)")) return false;
+            bool converted = DEE_CUDA_CHECK_NAMED(
+                cudaMemcpyAsync(source, view.data, view.nbytes, cudaMemcpyHostToDevice,
+                                compute_stream_),
+                "cudaMemcpyAsync(router source)");
+            if (converted && view.dtype == DType::BF16 &&
+                view.nbytes == weight_elements * sizeof(uint16_t)) {
+                converted = bf16_to_f16_cuda(
+                    static_cast<const uint16_t*>(source), d_router_weight_half_,
+                    weight_elements, compute_stream_, &profiler_);
+            } else if (converted && view.dtype == DType::F16 &&
+                       view.nbytes == weight_elements * sizeof(uint16_t)) {
+                converted = DEE_CUDA_CHECK_NAMED(
+                    cudaMemcpyAsync(d_router_weight_half_, source, view.nbytes,
+                                    cudaMemcpyDeviceToDevice, compute_stream_),
+                    "cudaMemcpyAsync(router FP16 weight)");
+            } else if (converted && view.dtype == DType::F32 &&
+                       view.nbytes == weight_elements * sizeof(float)) {
+                converted = f32_to_f16_cuda(
+                    static_cast<const float*>(source), d_router_weight_half_,
+                    weight_elements, compute_stream_, &profiler_);
+            } else {
+                converted = false;
+                std::fprintf(stderr, "[engine] CUDA router tensor has unsupported dtype/size\n");
+            }
+            if (converted) {
+                converted = DEE_CUDA_CHECK_NAMED(
+                    cudaStreamSynchronize(compute_stream_),
+                    "cudaStreamSynchronize(router weight)");
+            }
+            DEE_CUDA_CHECK_NAMED(cudaFree(source), "cudaFree(router source)");
+            if (!converted) return false;
+            router_weight_layer_ = source_layer;
+        }
+        if (router_capacity_tokens_ < static_cast<size_t>(tokens)) {
+            if (d_router_input_) {
+                if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_router_input_),
+                                          "cudaFree(router input)")) return false;
+                d_router_input_ = nullptr;
+            }
+            if (d_router_input_half_) {
+                if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_router_input_half_),
+                                          "cudaFree(router FP16 input)")) return false;
+                d_router_input_half_ = nullptr;
+            }
+            if (d_router_logits_half_) {
+                if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_router_logits_half_),
+                                          "cudaFree(router FP16 logits)")) return false;
+                d_router_logits_half_ = nullptr;
+            }
+            const size_t input_elements = static_cast<size_t>(tokens) * hidden_;
+            const size_t logit_elements = static_cast<size_t>(tokens) * cfg_.num_experts;
+            if (!DEE_CUDA_CHECK_NAMED(cudaMalloc(reinterpret_cast<void**>(&d_router_input_),
+                                                  input_elements * sizeof(float)),
+                                      "cudaMalloc(router input)") ||
+                !DEE_CUDA_CHECK_NAMED(cudaMalloc(&d_router_input_half_,
+                                                  input_elements * sizeof(uint16_t)),
+                                      "cudaMalloc(router FP16 input)") ||
+                !DEE_CUDA_CHECK_NAMED(cudaMalloc(&d_router_logits_half_,
+                                                  logit_elements * sizeof(uint16_t)),
+                                      "cudaMalloc(router FP16 logits)")) return false;
+            router_capacity_tokens_ = static_cast<size_t>(tokens);
+        }
+        const size_t input_elements = static_cast<size_t>(tokens) * hidden_;
+        const size_t logit_elements = static_cast<size_t>(tokens) * cfg_.num_experts;
+        if (!DEE_CUDA_CHECK_NAMED(
+                cudaMemcpyAsync(d_router_input_, h_in, input_elements * sizeof(float),
+                                cudaMemcpyHostToDevice, compute_stream_),
+                "cudaMemcpyAsync(router input)") ||
+            !f32_to_f16_cuda(d_router_input_, d_router_input_half_, input_elements,
+                             compute_stream_, &profiler_) ||
+            !router_logits_fp16_cuda(cublas_handle_, d_router_weight_half_,
+                                     d_router_input_half_, d_router_logits_half_,
+                                     tokens, cfg_.num_experts, hidden_, compute_stream_,
+                                     &profiler_)) return false;
+        std::vector<uint16_t> half_logits(logit_elements);
+        if (!DEE_CUDA_CHECK_NAMED(
+                cudaMemcpyAsync(half_logits.data(), d_router_logits_half_,
+                                logit_elements * sizeof(uint16_t),
+                                cudaMemcpyDeviceToHost, compute_stream_),
+                "cudaMemcpyAsync(router logits)") ||
+            !DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(compute_stream_),
+                                  "cudaStreamSynchronize(router logits)")) return false;
+        for (size_t i = 0; i < logit_elements; ++i) {
+            router_logits[i] = f16_to_f32(half_logits[i]);
+        }
+    } else
+#endif
+    {
+        const float* weights = get_router_weights(source_layer);
+        if (!weights) return false;
+        for (int token = 0; token < tokens; ++token) {
+            const float* input = h_in + static_cast<size_t>(token) * hidden_;
+            float* logits = router_logits + static_cast<size_t>(token) * cfg_.num_experts;
+            for (int expert = 0; expert < cfg_.num_experts; ++expert) {
+                const float* row = weights + static_cast<size_t>(expert) * hidden_;
+                float logit = 0.0f;
+                for (int h = 0; h < hidden_; ++h) logit += row[h] * input[h];
+                logits[expert] = logit;
+            }
+        }
+    }
+
+    std::vector<float> probabilities(static_cast<size_t>(cfg_.num_experts));
     std::vector<int> order(static_cast<size_t>(cfg_.num_experts));
-    std::iota(order.begin(), order.end(), 0);
-    std::partial_sort(order.begin(), order.begin() + cfg_.topk, order.end(),
-        [&](int lhs, int rhs) {
-            if (probabilities[lhs] != probabilities[rhs])
-                return probabilities[lhs] > probabilities[rhs];
-            return lhs < rhs;
-        });
-    float selected_sum = 0.0f;
-    for (int k = 0; k < cfg_.topk; ++k) selected_sum += probabilities[order[k]];
-    if (!(selected_sum > 0.0f)) return false;
-    for (int k = 0; k < cfg_.topk; ++k) {
-        experts[k] = order[k];
-        routing_weights[k] = probabilities[order[k]] / selected_sum;
+    for (int token = 0; token < tokens; ++token) {
+        float* logits = router_logits + static_cast<size_t>(token) * cfg_.num_experts;
+        float maximum = -std::numeric_limits<float>::infinity();
+        for (int expert = 0; expert < cfg_.num_experts; ++expert)
+            maximum = std::max(maximum, logits[expert]);
+        double denominator = 0.0;
+        for (int expert = 0; expert < cfg_.num_experts; ++expert) {
+            probabilities[expert] = std::exp(logits[expert] - maximum);
+            denominator += probabilities[expert];
+        }
+        if (!(denominator > 0.0) || !std::isfinite(denominator)) return false;
+        const float inv_denominator = static_cast<float>(1.0 / denominator);
+        for (float& probability : probabilities) probability *= inv_denominator;
+        std::iota(order.begin(), order.end(), 0);
+        std::partial_sort(order.begin(), order.begin() + cfg_.topk, order.end(),
+            [&](int lhs, int rhs) {
+                if (probabilities[lhs] != probabilities[rhs])
+                    return probabilities[lhs] > probabilities[rhs];
+                return lhs < rhs;
+            });
+        float selected_sum = 0.0f;
+        for (int k = 0; k < cfg_.topk; ++k) selected_sum += probabilities[order[k]];
+        if (!(selected_sum > 0.0f)) return false;
+        for (int k = 0; k < cfg_.topk; ++k) {
+            experts[static_cast<size_t>(token) * cfg_.topk + k] = order[k];
+            routing_weights[static_cast<size_t>(token) * cfg_.topk + k] =
+                probabilities[order[k]] / selected_sum;
+        }
     }
     return true;
 }
@@ -1234,6 +1364,12 @@ void Engine::cuda_cleanup() {
     if (d_ybuf_)  { DEE_CUDA_CHECK_NAMED(cudaFree(d_ybuf_), "cudaFree(d_ybuf)");  d_ybuf_  = nullptr; }
     if (d_h_in_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_h_in_half_), "cudaFree(d_h_in_half)"); d_h_in_half_ = nullptr; }
     if (d_activation_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_activation_half_), "cudaFree(d_activation_half)"); d_activation_half_ = nullptr; }
+    if (d_router_weight_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_router_weight_half_), "cudaFree(router weight)"); d_router_weight_half_ = nullptr; }
+    if (d_router_input_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_router_input_), "cudaFree(router input)"); d_router_input_ = nullptr; }
+    if (d_router_input_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_router_input_half_), "cudaFree(router FP16 input)"); d_router_input_half_ = nullptr; }
+    if (d_router_logits_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_router_logits_half_), "cudaFree(router FP16 logits)"); d_router_logits_half_ = nullptr; }
+    router_capacity_tokens_ = 0;
+    router_weight_layer_ = -1;
     if (d_oracle_scratch_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_oracle_scratch_), "cudaFree(oracle_scratch)"); d_oracle_scratch_ = nullptr; }
     oracle_.free_gpu();
     if (cublas_handle_) { DEE_CUBLAS_CHECK_NAMED(cublasDestroy(cublas_handle_), "cublasDestroy"); cublas_handle_ = nullptr; }

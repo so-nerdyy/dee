@@ -46,6 +46,17 @@ int main() {
           std::fabs(weights[1] - 0.2689414f) < 1e-5f,
           "native router renormalizes selected probabilities");
 
+    const float hidden_batch[8] = {1, 2, 3, 4, -1, 4, 2, 0};
+    float batch_logits[6]{};
+    float batch_weights[4]{};
+    int batch_experts[4]{};
+    CHECK(engine.route_topk_batch(5, hidden_batch, 2, batch_logits,
+                                  batch_weights, batch_experts),
+          "native router executes a token batch");
+    CHECK(batch_experts[0] == 2 && batch_experts[1] == 1 &&
+          batch_experts[2] == 1 && batch_experts[3] == 2,
+          "native batch router keeps token-local expert order");
+
     float output[4]{};
     CHECK(engine.moe_forward_experts(5, hidden, output, std::vector<int>{2}),
           "expert located only in second shard executes");
@@ -66,4 +77,3 @@ int main() {
     std::printf("ALL PASS\n");
     return 0;
 }
-

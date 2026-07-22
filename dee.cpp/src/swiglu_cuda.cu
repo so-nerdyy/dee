@@ -183,6 +183,40 @@ bool swiglu_expert_fp16_cuda(cublasHandle_t handle, const void* d_weights,
 #endif
 }
 
+bool router_logits_fp16_cuda(cublasHandle_t handle, const void* d_weights,
+                             const void* d_hidden, void* d_logits,
+                             int tokens, int experts, int hidden,
+                             cudaStream_t stream, StageProfiler* profiler) {
+    if (!handle || !d_weights || !d_hidden || !d_logits || !stream ||
+        tokens <= 0 || experts <= 0 || hidden <= 0) {
+        std::fprintf(stderr,
+            "[cuda] invalid FP16 router arguments (tokens=%d experts=%d hidden=%d)\n",
+            tokens, experts, hidden);
+        return false;
+    }
+    constexpr float alpha = 1.0f;
+    constexpr float beta = 0.0f;
+    const size_t ticket = profiler && profiler->enabled()
+        ? profiler->cuda_begin(GpuStage::GateProjection, static_cast<void*>(stream))
+        : static_cast<size_t>(-1);
+    if (profiler && profiler->enabled()) profiler->note_cublas_call();
+    // Row-major W[experts,hidden] is column-major W^T[hidden,experts], and
+    // row-major X[tokens,hidden] is column-major X^T[hidden,tokens]. The
+    // column-major result [experts,tokens] is the same storage as row-major
+    // [tokens,experts].
+    const bool ok = DEE_CUBLAS_CHECK_NAMED(
+        cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+                     experts, tokens, hidden, &alpha,
+                     d_weights, CUDA_R_16F, hidden,
+                     d_hidden, CUDA_R_16F, hidden,
+                     &beta, d_logits, CUDA_R_16F, experts,
+                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP),
+        "cublasGemmEx(FP16 batched router)");
+    if (!ok) return false;
+    return !profiler || !profiler->enabled() ||
+           profiler->cuda_end(ticket, static_cast<void*>(stream));
+}
+
 bool combine_cuda(const float* d_ybuf, float* d_output, int experts, int hidden,
                   cudaStream_t stream, StageProfiler* profiler) {
     if (!d_ybuf || !d_output || !stream || experts <= 0 || hidden <= 0) {

@@ -101,6 +101,30 @@ PYBIND11_MODULE(pydee_core, m) {
             return py::make_tuple(logits, weights, experts);
         }, py::arg("layer"), py::arg("h_in"),
            "Run the real checkpoint router and return (logits, topk_weights, expert_ids).")
+        .def("route_topk_batch", [](
+                dee::Engine& self,
+                int layer,
+                py::array_t<float, py::array::c_style | py::array::forcecast> h_in) {
+            auto in_buf = h_in.request();
+            if (in_buf.ndim != 2 || in_buf.shape[1] != self.hidden_dim()) {
+                throw std::runtime_error("h_in must have shape [tokens, hidden_dim]");
+            }
+            const py::ssize_t tokens = in_buf.shape[0];
+            const dee::EngineConfig& cfg = self.config();
+            py::array_t<float> logits({tokens, static_cast<py::ssize_t>(cfg.num_experts)});
+            py::array_t<float> weights({tokens, static_cast<py::ssize_t>(cfg.topk)});
+            py::array_t<int> experts({tokens, static_cast<py::ssize_t>(cfg.topk)});
+            bool ok = false;
+            {
+                py::gil_scoped_release release;
+                ok = self.route_topk_batch(
+                    layer, static_cast<float*>(in_buf.ptr), static_cast<int>(tokens),
+                    logits.mutable_data(), weights.mutable_data(), experts.mutable_data());
+            }
+            if (!ok) throw std::runtime_error("dee.cpp route_topk_batch failed (see stderr)");
+            return py::make_tuple(logits, weights, experts);
+        }, py::arg("layer"), py::arg("h_in"),
+           "Run the real checkpoint router for a [tokens, hidden] batch.")
         .def("moe_forward_experts", [](
                 dee::Engine& self,
                 int layer,

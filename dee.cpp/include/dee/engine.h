@@ -176,10 +176,14 @@ public:
     bool moe_forward_experts(int layer, const float* h_in, float* experts_out,
                              const std::vector<int>& experts);
 
-    // Genuine checkpoint router: logits = W_router * hidden, fp32 softmax,
-    // ordered top-K, followed by top-K probability renormalization.
+    // Genuine checkpoint router: logits = W_router * hidden using the active
+    // runtime dtype (FP16 CUDA for Ornith), then FP32 softmax, ordered top-K,
+    // and top-K probability renormalization.
     bool route_topk(int layer, const float* h_in, float* router_logits,
                     float* routing_weights, int* experts);
+    bool route_topk_batch(int layer, const float* h_in, int tokens,
+                          float* router_logits, float* routing_weights,
+                          int* experts);
 
     int hidden_dim() const { return hidden_; }
     int inter_dim()  const { return inter_; }
@@ -213,6 +217,12 @@ private:
     float* d_ybuf_   = nullptr;   // [topk * hidden] per-expert outputs
     void* d_h_in_half_ = nullptr; // [hidden] FP16 input for FP16 cache mode
     void* d_activation_half_ = nullptr; // [inter] FP16 SwiGLU activation
+    void* d_router_weight_half_ = nullptr; // [num_experts, hidden]
+    float* d_router_input_ = nullptr;       // [router_capacity_tokens, hidden]
+    void* d_router_input_half_ = nullptr;   // [router_capacity_tokens, hidden]
+    void* d_router_logits_half_ = nullptr;  // [router_capacity_tokens, num_experts]
+    size_t router_capacity_tokens_ = 0;
+    int router_weight_layer_ = -1;
     cublasHandle_t cublas_handle_ = nullptr;
     float* d_oracle_scratch_ = nullptr; // GPU Oracle scratch (H_ + E_ floats)
     bool gpu_oracle_ready_ = false;
