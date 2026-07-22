@@ -541,12 +541,16 @@ def main() -> int:
         report_path = DEE_CPP_ROOT / "benchmark_reports" / f"ornith-layer0-parity-{stamp}.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    try:
+        report_locator = str(report_path.relative_to(DEE_CPP_ROOT))
+    except ValueError:
+        report_locator = str(report_path)
     ledger_record = {
         "id": report["id"],
         "stage": "genuine-ornith-layer0-parity",
         "timestamp_utc": report["timestamp_utc"],
         "pass": overall_pass,
-        "report": str(report_path.relative_to(DEE_CPP_ROOT)),
+        "report": report_locator,
         "additional_download_bytes": 0,
         "prompts": len(results),
         "first_difference": next((item["first_difference"] for item in results if item["first_difference"]), None),
