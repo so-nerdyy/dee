@@ -80,6 +80,9 @@ if cuda_enabled:
     if not cuda_root:
         nvcc = shutil.which("nvcc")
         cuda_root = os.path.dirname(os.path.dirname(os.path.realpath(nvcc))) if nvcc else "/usr/local/cuda"
+    cuda_include = os.path.join(cuda_root, "include")
+    if os.path.isdir(cuda_include) and cuda_include not in DEE_INCLUDES:
+        DEE_INCLUDES.append(cuda_include)
     for candidate in (os.path.join(cuda_root, "lib64"),
                       os.path.join(cuda_root, "targets", "x86_64-linux", "lib")):
         if os.path.isdir(candidate) and candidate not in library_dirs:
