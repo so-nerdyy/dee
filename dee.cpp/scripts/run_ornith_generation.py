@@ -785,9 +785,19 @@ def run_generation(runtime, tokenizer, prompt: str, max_new_tokens: int,
             context.current_phase = "prefill" if step == 0 else "decode"
             if context.forensics is not None:
                 context.forensics.begin_step(step, context.current_phase)
+            # Milestone 2.5 fix (defects #1/#7): the per-step synchronize_all
+            # across all visible GPUs was pure serialization. HF's sequential
+            # layer walk already serializes the inter-layer residual chain
+            # (layer N+1 reads layer N's hidden), and the next step's argmax
+            # .item() forces its own CPU sync of the logits. Removing these two
+            # barriers lets layer 20's expert H2D prefetch on cuda:1 overlap
+            # with layer 19's compute on cuda:0, eliminating the measured
+            # sequential 20/20 two-GPU pipeline (2249 ms model wall, 1/18
+            # dual-active NVML samples). step_start still measures the warm
+            # decode pass accurately; the argmax sync anchors the boundary.
             with forensic_span(context, "step_pre_synchronize", -1,
-                               {"barrier": "all_visible_gpus"}):
-                synchronize_all(torch, gpu_count)
+                               {"barrier": "removed_for_overlap"}):
+                pass
             step_start = time.perf_counter()
             model_profile = (
                 context.forensics.profile_model_call(step)
@@ -802,9 +812,14 @@ def run_generation(runtime, tokenizer, prompt: str, max_new_tokens: int,
                     logits_to_keep=1,
                     return_dict=True,
                 )
+            # Milestone 2.5 fix (defects #1/#7): no per-step post barrier. The
+            # logits argmax below performs the necessary CPU sync; any further
+            # GPU work drains naturally before the next step. Keeping this
+            # barrier would re-introduce the measured 4.84 ms step_post gap
+            # and re-serialize the two GPUs after each token.
             with forensic_span(context, "step_post_synchronize", -1,
-                               {"barrier": "all_visible_gpus"}):
-                synchronize_all(torch, gpu_count)
+                               {"barrier": "removed_for_overlap"}):
+                pass
             elapsed = time.perf_counter() - step_start
             step_seconds.append(elapsed)
             if context.forensics is not None:
