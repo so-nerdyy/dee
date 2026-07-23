@@ -204,6 +204,20 @@ public:
     bool moe_forward_batch(int layer, const float* h_in, int tokens,
                            const int* expert_ids, int topk, float* experts_out);
 
+    // Milestone 3 fix (defect #6): device-resident MoE forward path.
+    // Accepts FP16 device hidden (d_h_in) + host expert IDs (h_expert_ids,
+    // small, host-side for grouping only) and writes FP16 per-(token,position)
+    // expert outputs to d_experts_out (both device-resident).  Eliminates the
+    // measured Python d2h→call→h2d round-trips (router_hidden_gpu_to_cpu,
+    // expert_inputs_gpu_to_cpu, expert_outputs_cpu_to_gpu) by keeping the
+    // per-layer hidden and MoE outputs on-device throughout.  Only expert_ids
+    // cross the host boundary (tokens * topk * sizeof(int) ≈ 32 bytes).
+    // Caller still handles the weighted combine on-device in Python (a tensor
+    // op, not orchestration).  Requires FP16 device cache (DEE_CUDA).
+    bool moe_forward_batch_device(int layer, const void* d_h_in, int tokens,
+                                   const int* h_expert_ids, int topk,
+                                   void* d_experts_out);
+
     // Genuine checkpoint router: logits = W_router * hidden using the active
     // runtime dtype (FP16 CUDA for Ornith), then FP32 softmax, ordered top-K,
     // and top-K probability renormalization.

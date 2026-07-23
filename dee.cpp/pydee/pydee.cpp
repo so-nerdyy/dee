@@ -29,6 +29,8 @@
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 
+#include <cstdint>
+
 #include "dee/engine.h"
 
 namespace py = pybind11;
@@ -208,6 +210,44 @@ PYBIND11_MODULE(pydee_core, m) {
             return output;
         }, py::arg("layer"), py::arg("h_in"), py::arg("expert_ids"),
            "Run token batches grouped by expert with eager-compatible CUDA GEMM shapes.")
+        .def("moe_forward_batch_device", [](
+                dee::Engine& self,
+                int layer,
+                uintptr_t d_h_in_ptr,
+                int tokens,
+                py::array_t<int, py::array::c_style | py::array::forcecast> expert_ids,
+                int topk,
+                uintptr_t d_experts_out_ptr) -> bool {
+            auto ids_buf = expert_ids.request();
+            if (ids_buf.ndim != 2 || ids_buf.shape[0] != tokens ||
+                ids_buf.shape[1] != topk) {
+                throw std::runtime_error("expert_ids must have shape [tokens, topk]");
+            }
+            if (topk != self.config().topk) {
+                throw std::runtime_error("expert_ids topk does not match EngineConfig.topk");
+            }
+            bool ok = false;
+            {
+                py::gil_scoped_release release;
+                ok = self.moe_forward_batch_device(
+                    layer,
+                    reinterpret_cast<const void*>(d_h_in_ptr),
+                    tokens,
+                    static_cast<int*>(ids_buf.ptr),
+                    topk,
+                    reinterpret_cast<void*>(d_experts_out_ptr));
+            }
+            return ok;
+        }, py::arg("layer"), py::arg("d_h_in_ptr"), py::arg("tokens"),
+           py::arg("expert_ids"), py::arg("topk"), py::arg("d_experts_out_ptr"),
+           R"pbdoc(
+                Run MoE forward with device-resident hidden and outputs.
+                d_h_in_ptr: device pointer to FP16 hidden [tokens, hidden].
+                expert_ids: numpy int32 array [tokens, topk] (host-side for grouping).
+                d_experts_out_ptr: device pointer to FP16 output [tokens, topk, hidden].
+                Returns True on success; caller must sync the compute stream before
+                reading d_experts_out.
+            )pbdoc")
         .def("last_stats_json", [](const dee::Engine& self) -> std::string {
             std::ostringstream ss;
             const dee::EngineStats s = self.runtime_stats();

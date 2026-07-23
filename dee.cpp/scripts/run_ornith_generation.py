@@ -414,29 +414,54 @@ class HybridExperts:
             raise RuntimeError(f"failed to reset diagnostic cache at layer {self.layer}")
         if hasattr(self.engine, "set_external_token"):
             self.engine.set_external_token(self.context.current_step)
-        expert_input_transfer = {
-            "direction": "d2h",
-            "component": "expert_input",
-            "bytes": int(top_k_index.numel()) * int(top_k_index.element_size()) +
-                     int(hidden_states.numel()) * np.dtype(np.float32).itemsize,
-        }
-        with forensic_span(self.context, "expert_inputs_gpu_to_cpu", self.layer,
-                           expert_input_transfer):
-            expert_ids = top_k_index.detach().cpu().numpy().astype(np.int32)
-            hidden_cpu = hidden_states.detach().float().cpu().numpy()
-        with forensic_span(self.context, "expert_native", self.layer):
-            expert_outputs = self.engine.moe_forward_batch(
-                self.layer, hidden_cpu, expert_ids,
+
+        # Milestone 3 fix (defect #6): try device-resident MoE path first.
+        # Keeps hidden_states and expert outputs on-device; only expert_ids
+        # (tokens * topk * sizeof(int32)) cross the host boundary.
+        # Falls back to the host path (d2h->native->h2d) if unavailable.
+        with forensic_span(self.context, "expert_ids_gpu_to_cpu", self.layer,
+                           {"direction": "d2h", "component": "expert_ids_only",
+                            "bytes": int(top_k_index.numel()) * int(top_k_index.element_size())}):
+            expert_ids_np = top_k_index.detach().cpu().numpy().astype(np.int32)
+
+        # Allocate FP32 device output (matches moe_forward_batch contract);
+        # Python converts to FP16 via .to(dtype=...) below.
+        raw_f32 = torch.empty(
+            hidden_states.shape[0], top_k_index.shape[1], hidden_states.shape[1],
+            dtype=torch.float32, device=hidden_states.device
+        )
+        with forensic_span(self.context, "expert_native_device", self.layer):
+            device_ok = self.engine.moe_forward_batch_device(
+                self.layer,
+                hidden_states.data_ptr(), hidden_states.shape[0],
+                expert_ids_np, top_k_index.shape[1],
+                raw_f32.data_ptr(),
             )
-        expert_output_transfer = {
-            "direction": "h2d", "component": "expert_output",
-            "bytes": int(np.asarray(expert_outputs).nbytes),
-        }
-        with forensic_span(self.context, "expert_outputs_cpu_to_gpu", self.layer,
-                           expert_output_transfer):
-            raw = torch.from_numpy(np.asarray(expert_outputs)).to(
-                hidden_states.device, dtype=hidden_states.dtype
-            )
+        if device_ok:
+            raw = raw_f32.to(dtype=hidden_states.dtype)
+        else:
+            # Fall back to host path (original code path).
+            expert_input_transfer = {
+                "direction": "d2h",
+                "component": "expert_input",
+                "bytes": int(hidden_states.numel()) * np.dtype(np.float32).itemsize,
+            }
+            with forensic_span(self.context, "expert_inputs_gpu_to_cpu", self.layer,
+                               expert_input_transfer):
+                hidden_cpu = hidden_states.detach().float().cpu().numpy()
+            with forensic_span(self.context, "expert_native", self.layer):
+                expert_outputs = self.engine.moe_forward_batch(
+                    self.layer, hidden_cpu, expert_ids_np,
+                )
+            expert_output_transfer = {
+                "direction": "h2d", "component": "expert_output",
+                "bytes": int(np.asarray(expert_outputs).nbytes),
+            }
+            with forensic_span(self.context, "expert_outputs_cpu_to_gpu", self.layer,
+                               expert_output_transfer):
+                raw = torch.from_numpy(np.asarray(expert_outputs)).to(
+                    hidden_states.device, dtype=hidden_states.dtype
+                )
         if tuple(raw.shape) != (
             hidden_states.shape[0], top_k_index.shape[1], hidden_states.shape[1]
         ):
