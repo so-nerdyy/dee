@@ -274,8 +274,11 @@ bool Engine::moe_forward_experts(int layer, const float* h_in, float* experts_ou
             pinned.reserve(static_cast<size_t>(last - first));
             for (int k = first; k < last; ++k) {
                 const int expert = experts[k];
-                if (!prefetcher_.wait(source_layer, expert) ||
-                    !cache_.pin(source_layer, expert)) return false;
+                // Milestone 2.5 fix (defect #2): device-side wait so the host
+                // can keep issuing subsequent experts' cache pin / GEMM.
+                if (!prefetcher_.wait_on_stream(source_layer, expert, compute_stream_) &&
+                    !prefetcher_.wait(source_layer, expert)) return false;
+                if (!cache_.pin(source_layer, expert)) return false;
                 pinned.push_back(expert);
                 const void* d_blob = cache_.data(source_layer, expert);
                 const bool ok = d_blob && (cfg_.cache_dtype == DeviceCacheDType::Fp16
@@ -300,7 +303,7 @@ bool Engine::moe_forward_experts(int layer, const float* h_in, float* experts_ou
                 "cudaMemcpyAsync(external expert output device to host)") ||
             !DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(compute_stream_),
                                   "cudaStreamSynchronize(external expert output)")) return false;
-        release_transient_bf16_sources();
+        release_transient_f32_sources();
         stats_.peak_vram = std::max(stats_.peak_vram, cache_.used_bytes());
         return true;
     }
@@ -494,8 +497,14 @@ bool Engine::moe_forward_batch(int layer, const float* h_in, int tokens,
                 if (profiler_.enabled() &&
                     !profiler_.cuda_end(activation_convert,
                                         static_cast<void*>(compute_stream_))) return false;
-                if (!prefetcher_.wait(source_layer, expert) ||
-                    !cache_.pin(source_layer, expert)) return false;
+                // Milestone 2.5 fix (defect #2): arm a device-side wait on the
+                // compute stream for this expert's prefetch completion instead
+                // of blocking the host via cudaEventSynchronize. Lets the host
+                // keeps issuing the next expert's input H2D / cache stage while
+                // cuBLAS waits on-device for the weight transfer to land.
+                if (!prefetcher_.wait_on_stream(source_layer, expert, compute_stream_) &&
+                    !prefetcher_.wait(source_layer, expert)) return false;
+                if (!cache_.pin(source_layer, expert)) return false;
                 const void* d_blob = cache_.data(source_layer, expert);
                 if (profiler_.enabled()) {
                     profiler_.set_cuda_context(current_token_, layer, expert);
@@ -572,7 +581,7 @@ bool Engine::moe_forward_batch(int layer, const float* h_in, int tokens,
                 }
             }
         }
-        release_transient_bf16_sources();
+        release_transient_f32_sources();
         stats_.peak_vram = std::max(stats_.peak_vram, cache_.used_bytes());
         if (profiler_.enabled()) profiler_.add_layer_latency(external_layer_begin);
         return true;
@@ -1343,6 +1352,17 @@ void Engine::release_transient_bf16_sources() {
     staging_bf16_.clear();
 }
 
+void Engine::release_transient_f32_sources() {
+    // Milestone 2.5 fix (defects #3/#5): keep persistent pinned BF16 staging
+    // across decode calls so first-touch pinning happens once per unique
+    // expert instead of every decode step. Only the F32 staging_bf16_ fallback
+    // (used by the CPU path) is dropped; host memory stays bounded by
+    // kPinnedStagingLimit in get_staging_bf16. The forensic matrix measured
+    // 1225 ms of synchronous cudaHostAlloc + 267 ms of mmap->pinned memcpy per
+    // warm decode, dominated by the prior per-call free/re-pin churn.
+    staging_bf16_.clear();
+}
+
 bool Engine::preload_all_experts() {
     std::unordered_set<int> source_layers;
     for (int layer = 0; layer < cfg_.num_layers; ++layer) source_layers.insert(avail_layer(layer));
@@ -1939,7 +1959,11 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
         }
         for (int k = first; k < last; ++k) {
             const int e = experts[k];
-            if (!bypass_cache && !prefetcher_.wait(source_layer, e)) return false;
+            // Milestone 2.5 fix (defect #2): device-side wait, host-blocking
+            // only as fallback (e.g. ResidentBypass/TransferOnly diagnostics).
+            if (!bypass_cache &&
+                !prefetcher_.wait_on_stream(source_layer, e, compute_stream_) &&
+                !prefetcher_.wait(source_layer, e)) return false;
             if (cfg_.scenario == BenchmarkScenario::TransferOnly) continue;
             if (!bypass_cache && !cache_.pin(source_layer, e)) return false;
             const void* d_blob = cache_.data(source_layer, e);

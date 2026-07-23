@@ -319,6 +319,56 @@ bool AsyncPrefetcher::wait(int layer, int expert) {
     return transfer.done && cache_.is_resident(layer, expert);
 }
 
+bool AsyncPrefetcher::wait_on_stream(int layer, int expert, void* compute_stream) {
+#ifdef DEE_CUDA
+    const long index = find_inflight(layer, expert);
+    if (index < 0 || index >= static_cast<long>(inflight_.size())) return false;
+    Transfer& transfer = inflight_[index];
+    if (transfer.abandoned) return false;
+    if (transfer.done) {
+        // Already complete: no device wait needed, just release ownership.
+        release_transfer(transfer);
+        return cache_.is_resident(layer, expert);
+    }
+    if (!use_cuda_ || !transfer.event || !compute_stream) {
+        // No event/stream to arm against: fall back to the host-blocking wait.
+        return wait(layer, expert);
+    }
+    // Arm the device-side dependency: the compute stream will not advance past
+    // the next cuBLAS GEMM until this expert's H2D + dtype-convert has landed
+    // in the cache arena. The HOST does not block here, so it can keep issuing
+    // subsequent experts' H2D / routing while the previous expert's compute
+    // waits on-device. This is the Milestone 2.5 fix for defect #2
+    // (missing compute/transfer overlap). Record GpuStage::StreamWait so the
+    // profiler can attribute device-side waits separately from host stalls.
+    if (profiler_ && profiler_->enabled()) {
+        profiler_->set_cuda_context(transfer.token, transfer.logical_layer,
+                                    transfer.key.expert, active_transfers_,
+                                    transfer.staging_slot);
+        auto ticket = profiler_->cuda_begin(GpuStage::StreamWait, compute_stream);
+        profiler_->cuda_end(ticket, compute_stream);
+    }
+    if (!DEE_CUDA_CHECK_NAMED(
+            cudaStreamWaitEvent(static_cast<cudaStream_t>(compute_stream),
+                                static_cast<cudaEvent_t>(transfer.event), 0),
+            "cudaStreamWaitEvent(prefetch completion on compute stream)")) {
+        return false;
+    }
+    // The H2D/conversion is in flight on the prefetch stream; once it signals,
+    // the staging slot's host source can be recycled (the data lives in the
+    // device cache arena, independent of the staging slot). The cache pin
+    // stays held so the cache block is not evicted before the compute GEMM
+    // reads it; release_transfer will drop the pin when the consumer later
+    // calls wait() or synchronize_all().
+    transfer.done = true;
+    release_staging(transfer);
+    return cache_.is_resident(layer, expert);
+#else
+    (void)layer; (void)expert; (void)compute_stream;
+    return false;
+#endif
+}
+
 void AsyncPrefetcher::synchronize_all() {
     if (use_cuda_) {
 #ifdef DEE_CUDA

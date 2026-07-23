@@ -103,6 +103,17 @@ public:
     // true if ready.
     bool wait(int layer, int expert);
 
+    // Milestone 2.5 fix (defect #2): make the compute stream wait on this
+    // expert's prefetch transfer *on the device* via cudaStreamWaitEvent,
+    // instead of blocking the host via cudaEventSynchronize.  Lets the host
+    // keep issuing expert H2D / routing while the previous expert's compute
+    // begins only once its weights have landed.  `compute_stream` is the
+    // caller's compute stream (cuBLAS-bearing).  Returns true if ready or
+    // device-side wait was armed; false on lookup failure (caller must fall
+    // back to host wait).  Mirrors wait() but never blocks the host for
+    // an in-flight transfer; only the GPU waits.
+    bool wait_on_stream(int layer, int expert, void* compute_stream);
+
     // Drain all in-flight transfers (e.g. between sequences). Real CUDA path
     // calls cudaStreamSynchronize; mock drains the queue in order.
     void synchronize_all();

@@ -272,6 +272,13 @@ private:
     std::unordered_map<uint64_t, std::vector<float>> staging_;
     std::unordered_map<uint64_t, std::vector<uint16_t>> staging_bf16_;
     std::unordered_map<uint64_t, void*> pinned_staging_bf16_;
+    // Milestone 2.5 fix: persistent pinned source pool.  The first-touch pin
+    // path now registers the resolved mmap view in place (cudaHostRegister)
+    // instead of allocating a separate pinned buffer and copying into it,
+    // eliminating the measured 1225 ms Pinning + 267 ms MmapToPinned costs
+    // and the per-call re-pin churn from release_transient_bf16_sources().
+    // Entries survive across decode calls and are unregistered at teardown.
+    std::unordered_map<uint64_t, void*> registered_mmap_views_bf16_;
     std::unordered_map<int, std::vector<float>> router_weights_;
     struct QuantizedExpert {
         std::vector<int8_t> host;
@@ -309,6 +316,12 @@ private:
     bool stage_expert(int logical_layer, int source_layer, int expert, int priority);
     const float* get_router_weights(int source_layer);
     void release_transient_bf16_sources();
+    // Milestone 2.5 fix (defects #3/#5): pinned BF16 staging persists across
+    // decode calls so first-touch cudaHostAlloc + mmap->pinned memcpy happens
+    // once per unique expert, not every step. Only the unused F32 fallback
+    // staging_bf16_ is dropped. Pinning is still bounded by
+    // kPinnedStagingLimit in get_staging_bf16.
+    void release_transient_f32_sources();
     bool prepare_profile_scenario();
     bool preload_all_experts();
 };
