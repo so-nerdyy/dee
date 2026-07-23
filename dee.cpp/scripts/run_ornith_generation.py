@@ -186,6 +186,28 @@ class ExecutionContext:
         self.current_phase = "unclassified"
         self.cache_disabled = False
         self.executed_router_layers: set[int] = set()
+        # Milestone 3 audit counters.  These are the only M3-deliverable
+        # counters that the existing M2.5 forensic schema cannot infer, and
+        # they prove that the device-resident MoE forward path actually ran
+        # (vs. silently falling back to the host path on every call).  They
+        # accumulate over the lifetime of a single generation and are flushed
+        # to path-proof.json by run_ornith_forensics.py after recorder.stop().
+        self.engine_path_proof = fresh_engine_path_proof()
+
+
+def fresh_engine_path_proof() -> dict:
+    """Single source of truth for Milestone 3 path-proof counter layout.
+    Used both by ExecutionContext.__init__ and by the explicit warmup/profiled
+    reset in run_ornith_forensics.main(); keep these two sites in lock-step
+    to avoid silent field-trap drift in the analyzer."""
+    return {
+        "device_path_calls": 0,
+        "host_path_fallback_calls": 0,
+        "fp32_to_fp16_conversion_ms_total": 0.0,
+        "expert_ids_d2h_total_bytes": 0,
+        "expert_native_device_calls_total_ms": 0.0,
+        "expert_native_host_calls_total_ms": 0.0,
+    }
 
 
 def forensic_span(context: ExecutionContext, name: str, layer: int,
@@ -419,10 +441,18 @@ class HybridExperts:
         # Keeps hidden_states and expert outputs on-device; only expert_ids
         # (tokens * topk * sizeof(int32)) cross the host boundary.
         # Falls back to the host path (d2h->native->h2d) if unavailable.
+        # The proof counters in context.engine_path_proof increment on
+        # every call so path-proof.json can attribute either:
+        #   (a) the device-resident path was actually exercised;
+        #   (b) the device path returned false and the silent fallback took
+        #       over (which is observable as host_path_fallback_calls > 0).
+        proof = self.context.engine_path_proof
+        expert_ids_bytes = int(top_k_index.numel()) * int(top_k_index.element_size())
         with forensic_span(self.context, "expert_ids_gpu_to_cpu", self.layer,
                            {"direction": "d2h", "component": "expert_ids_only",
-                            "bytes": int(top_k_index.numel()) * int(top_k_index.element_size())}):
+                            "bytes": expert_ids_bytes}):
             expert_ids_np = top_k_index.detach().cpu().numpy().astype(np.int32)
+        proof["expert_ids_d2h_total_bytes"] += expert_ids_bytes
 
         # Allocate FP32 device output (matches moe_forward_batch contract);
         # Python converts to FP16 via .to(dtype=...) below.
@@ -430,6 +460,7 @@ class HybridExperts:
             hidden_states.shape[0], top_k_index.shape[1], hidden_states.shape[1],
             dtype=torch.float32, device=hidden_states.device
         )
+        native_device_start = time.perf_counter()
         with forensic_span(self.context, "expert_native_device", self.layer):
             device_ok = self.engine.moe_forward_batch_device(
                 self.layer,
@@ -437,15 +468,37 @@ class HybridExperts:
                 expert_ids_np, top_k_index.shape[1],
                 raw_f32.data_ptr(),
             )
+        proof["expert_native_device_calls_total_ms"] += (
+            (time.perf_counter() - native_device_start) * 1000.0
+        )
         if device_ok:
+            proof["device_path_calls"] += 1
+            # M3 deliverable: explicitly time the FP32->FP16 device conversion
+            # performed after the device MoE forward returns raw_f32.  This
+            # is the conversion the deliverable list calls "FP32 output
+            # followed by Python .to(FP16)" and is the residual cost of the
+            # device path that the previous host path absorbed inside its
+            # own H2D->FP16 staging.
+            conv_start = time.perf_counter()
             raw = raw_f32.to(dtype=hidden_states.dtype)
+            proof["fp32_to_fp16_conversion_ms_total"] += (
+                (time.perf_counter() - conv_start) * 1000.0
+            )
         else:
-            # Fall back to host path (original code path).
+            proof["host_path_fallback_calls"] += 1
+            # Fall back to host path (original code path).  The host path
+            # also incurs an FP32->FP16 device conversion: torch.from_numpy
+            # materializes the FP32 expert_outputs numpy on-device, then
+            # .to(dtype=hidden_states.dtype) casts FP32 to FP16.  Time it
+            # with the same timer as the device path so the before/after
+            # comparison does not unfairly hide the host path's conversion
+            # cost.
             expert_input_transfer = {
                 "direction": "d2h",
                 "component": "expert_input",
                 "bytes": int(hidden_states.numel()) * np.dtype(np.float32).itemsize,
             }
+            native_host_start = time.perf_counter()
             with forensic_span(self.context, "expert_inputs_gpu_to_cpu", self.layer,
                                expert_input_transfer):
                 hidden_cpu = hidden_states.detach().float().cpu().numpy()
@@ -453,6 +506,16 @@ class HybridExperts:
                 expert_outputs = self.engine.moe_forward_batch(
                     self.layer, hidden_cpu, expert_ids_np,
                 )
+            proof["expert_native_host_calls_total_ms"] += (
+                (time.perf_counter() - native_host_start) * 1000.0
+            )
+            host_conv_start = time.perf_counter()
+            raw = torch.from_numpy(np.asarray(expert_outputs)).to(
+                hidden_states.device, dtype=hidden_states.dtype
+            )
+            proof["fp32_to_fp16_conversion_ms_total"] += (
+                (time.perf_counter() - host_conv_start) * 1000.0
+            )
             expert_output_transfer = {
                 "direction": "h2d", "component": "expert_output",
                 "bytes": int(np.asarray(expert_outputs).nbytes),

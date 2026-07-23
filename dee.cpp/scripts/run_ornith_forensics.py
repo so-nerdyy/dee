@@ -322,6 +322,241 @@ def _source_shards(index: dict[str, Any], layer: int, expert: int) -> list[str]:
     })
 
 
+# ---------------------------------------------------------------------------
+# Milestone 3 derived artifacts.  These consume the M2.5 forensic recorder
+# output verbatim (no additional per-call instrumentation).  They exist so
+# the analyzer can compare M3 vs M2.5 without re-parsing the M2.5 schema.
+# ---------------------------------------------------------------------------
+
+
+def build_synchronization_analysis(timing: dict[str, Any]) -> dict[str, Any]:
+    """Aggregate host/device synchronization counters from timing wall_spans
+    plus the per-layer ExternalProfile already augmented each step.
+
+    Reads two distinct host-sync sources to cover the full M2.5 vocabulary:
+      * cpu_ms.synchronization (StageProfile::add_cpu_ms(CpuStage::Synchronization))
+      * profile.host_synchronizations (StageProfile::note_host_synchronization)
+    only one of which is the "host_synchronizations: 2488" M2.5 baseline.
+    Without reading both the M3 vs M2.5 comparison breaks silently.
+    """
+    spans = timing.get("wall_spans", [])
+    by_name: dict[str, int] = collections.Counter()
+    by_name_wall_ms: dict[str, float] = collections.Counter()
+    for span in spans:
+        name = span.get("name", "")
+        by_name[name] += 1
+        by_name_wall_ms[name] += float(span.get("cpu_wall_ms", 0.0))
+    snapshots = timing.get("profile_snapshots", [])
+    stream_waits_total = 0
+    host_synchronizations_total_cpu_section = 0
+    host_synchronizations_total_dedicated = 0
+    for snapshot in snapshots:
+        for layer_item in snapshot.get("layers", []):
+            profile = layer_item.get("profile", {})
+            gpu_section = profile.get("gpu_ms", {})
+            stream_waits_total += int(gpu_section.get("stream_wait", 0))
+            host_synchronizations_total_cpu_section += int(
+                profile.get("cpu_ms", {}).get("synchronization", 0)
+            )
+            host_synchronizations_total_dedicated += int(
+                profile.get("host_synchronizations", 0)
+            )
+    by_step: dict[int, dict[str, int]] = collections.defaultdict(
+        lambda: collections.Counter()
+    )
+    model_level_excluded_spans_count = 0
+    for span in spans:
+        step = int(span.get("step", -1))
+        if step < 0:
+            model_level_excluded_spans_count += 1
+            continue
+        by_step[step][span.get("name", "")] += 1
+    host_synchronizations_total = (
+        host_synchronizations_total_cpu_section +
+        host_synchronizations_total_dedicated
+    )
+    return {
+        "schema_version": 2,
+        "wall_spans_by_name": dict(by_name),
+        "wall_ms_by_name": {name: round(value, 6) for name, value in by_name_wall_ms.items()},
+        "stream_wait_events_total": stream_waits_total,
+        "host_synchronization_events_total": host_synchronizations_total,
+        "host_synchronization_events_breakdown": {
+            "cpu_section_synchronization_ms_total": host_synchronizations_total_cpu_section,
+            "dedicated_host_synchronization_counter_total": host_synchronizations_total_dedicated,
+        },
+        "step_breakdown": {f"step_{step}": dict(counts)
+                            for step, counts in sorted(by_step.items())},
+        "model_level_excluded_spans_count": model_level_excluded_spans_count,
+    }
+
+
+def build_overlap_analysis(nvml_samples: list[dict[str, Any]],
+                            gpu_count: int) -> dict[str, Any]:
+    """Compute TRUE simultaneous dual-GPU activity from NVML samples.
+
+    both_busy_us  : time BOTH GPUs report non-zero utilization
+    one_busy_us   : time exactly one GPU is busy / the other idle
+    neither_busy_us: time both GPUs are idle by NVML
+    """
+    both_busy_us = 0
+    one_busy_us = 0
+    neither_us = 0
+    samples_total = 0
+    samples_with_both_busy = 0
+    samples_both_above_50 = 0
+    samples_both_above_25 = 0
+    nvml_both_active_samples = 0
+    if len(nvml_samples) < 2 or gpu_count < 2:
+        return {
+            "schema_version": 2,
+            "note": "insufficient samples or fewer than 2 GPUs",
+            "samples_total": samples_total,
+            "both_busy_us": both_busy_us,
+            "one_busy_us": one_busy_us,
+            "neither_busy_us": neither_us,
+            "samples_with_both_busy": samples_with_both_busy,
+            "nvml_both_gpus_active_samples": nvml_both_active_samples,
+            "samples_both_above_50_percent": samples_both_above_50,
+            "samples_both_above_25_percent": samples_both_above_25,
+            "intersample_interval_us_estimated": 0,
+        }
+    first_ns = int(nvml_samples[0]["monotonic_ns"])
+    last_ns = int(nvml_samples[-1]["monotonic_ns"])
+    total_elapsed_ns = max(0, last_ns - first_ns)
+    avg_interval_us = (
+        (total_elapsed_ns // 1_000) // (len(nvml_samples) - 1)
+        if len(nvml_samples) > 1 else 50_000
+    )
+    for sample in nvml_samples:
+        samples_total += 1
+        gpus = sample.get("gpus", [])
+        if len(gpus) < 2:
+            continue
+        u0 = int(gpus[0].get("gpu_utilization_percent", 0) or 0)
+        u1 = int(gpus[1].get("gpu_utilization_percent", 0) or 0)
+        if u0 > 0 and u1 > 0:
+            both_busy_us += int(avg_interval_us)
+            samples_with_both_busy += 1
+            nvml_both_active_samples += 1
+            if u0 >= 50 and u1 >= 50:
+                samples_both_above_50 += 1
+            if u0 >= 25 and u1 >= 25:
+                samples_both_above_25 += 1
+        elif u0 > 0 or u1 > 0:
+            one_busy_us += int(avg_interval_us)
+        else:
+            neither_us += int(avg_interval_us)
+    total_us = both_busy_us + one_busy_us + neither_us
+    active_us = both_busy_us + one_busy_us
+    return {
+        "schema_version": 2,
+        "samples_total": samples_total,
+        "both_busy_us": both_busy_us,
+        "one_busy_us": one_busy_us,
+        "neither_busy_us": neither_us,
+        "intersample_interval_us_estimated": int(avg_interval_us),
+        "samples_with_both_busy": samples_with_both_busy,
+        "nvml_both_gpus_active_samples": nvml_both_active_samples,
+        "samples_both_above_50_percent": samples_both_above_50,
+        "samples_both_above_25_percent": samples_both_above_25,
+        # "active" excludes idle time, mirrors the M2.5 semantic that only
+        # counts covered at least one working GPU.
+        "both_busy_fraction_of_active": (
+            both_busy_us / active_us if active_us else 0.0
+        ),
+        "both_busy_fraction_of_total": (
+            both_busy_us / total_us if total_us else 0.0
+        ),
+    }
+
+
+def build_multi_gpu_timeline(timing: dict[str, Any],
+                              expert_events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build a per-GPU per-step summary from engine_timelines already emitted
+    by the M2.5 forensic recorder.  Each layer's timeline is in absolute
+    ms relative to model_wall_ms; we project them onto wall-clock model time
+    so the analyzer can directly plot both-GPU activity per-step.
+
+    Filters out current_token<0 rollup entries so end-of-gen snapshots
+    (where StageProfile.current_token_ == last step) don't pollute the
+    per-step view.
+    """
+    step_rollup: dict[tuple[int, int], dict[str, Any]] = collections.defaultdict(
+        lambda: {
+            "h2d_event_count": 0,
+            "compute_event_count": 0,
+            "h2d_active_ms_total": 0.0,
+            "compute_active_ms_total": 0.0,
+            "weight_conversion_ms_total": 0.0,
+            "layers_touched": set(),
+        }
+    )
+    for engine_item, timeline_item in zip(
+            timing.get("engine_profiles", []),
+            timing.get("engine_timelines", [])):
+        layer = int(engine_item["layer"])
+        gpu = int(engine_item["gpu"])
+        events = timeline_item["timeline"].get("traceEvents", [])
+        if not events:
+            continue
+        token_value = int(engine_item["profile"].get("current_token",
+                                                     engine_item["profile"].get("token", -1)))
+        if token_value < 0:
+            continue
+        h2d_count = sum(1 for event in events if event.get("name") == "h2d")
+        h2d_ms = sum(event["dur"] for event in events
+                     if event.get("name") == "h2d") / 1000.0
+        compute_keys = {"gate_projection", "up_projection", "silu_multiply",
+                        "down_projection"}
+        compute_count = sum(1 for event in events if event.get("name") in compute_keys)
+        compute_ms = sum(event["dur"] for event in events
+                         if event.get("name") in compute_keys) / 1000.0
+        conv_ms = sum(event["dur"] for event in events
+                      if event.get("name") == "weight_conversion") / 1000.0
+        step_rollup[(token_value, gpu)]["h2d_event_count"] += h2d_count
+        step_rollup[(token_value, gpu)]["compute_event_count"] += compute_count
+        step_rollup[(token_value, gpu)]["h2d_active_ms_total"] += h2d_ms
+        step_rollup[(token_value, gpu)]["compute_active_ms_total"] += compute_ms
+        step_rollup[(token_value, gpu)]["weight_conversion_ms_total"] += conv_ms
+        step_rollup[(token_value, gpu)]["layers_touched"].add(layer)
+    out = []
+    for (step, gpu), row in sorted(step_rollup.items()):
+        out.append({
+            "step": step,
+            "gpu": gpu,
+            "h2d_event_count": row["h2d_event_count"],
+            "compute_event_count": row["compute_event_count"],
+            "h2d_active_ms_total": round(row["h2d_active_ms_total"], 6),
+            "compute_active_ms_total": round(row["compute_active_ms_total"], 6),
+            "weight_conversion_ms_total": round(row["weight_conversion_ms_total"], 6),
+            "layers_touched": sorted(row["layers_touched"]),
+        })
+    transfer_only_drops: list[dict[str, Any]] = []
+    transfer_events = [event for event in expert_events
+                       if event.get("event_type") == "expert_transfer"]
+    if transfer_events:
+        by_layer = collections.defaultdict(list)
+        for event_ in transfer_events:
+            by_layer[int(event_["logical_layer"])].append(event_)
+        for layer, rows in by_layer.items():
+            drops = sum(1 for row in rows
+                        if not row.get("overlapped_compute", False))
+            total = len(rows)
+            if total:
+                transfer_only_drops.append({
+                    "logical_layer": layer,
+                    "transfer_drop_count": drops,
+                    "transfer_total": total,
+                    "fraction_drop": (drops / total) if total else 0.0,
+                })
+    return {
+        "schema_version": 2,
+        "per_step_per_gpu": out,
+        "transfer_only_layer_summary": transfer_only_drops,
+    }
+
+
 def build_expert_events(run_id: str, timing: dict[str, Any],
                         index: dict[str, Any]) -> list[dict[str, Any]]:
     route_rows = timing.get("route_selections", [])
@@ -577,8 +812,8 @@ def main() -> None:
     from scripts.milestone25_timing import ForensicTimingRecorder, summarize_nvml
     from scripts.ornith_support import build_complete_tensor_map, read_checkpoint_index
     from scripts.run_ornith_generation import (
-        compare_trace, engine_stats, load_runtime, run_generation,
-        serializable_generation,
+        compare_trace, engine_stats, fresh_engine_path_proof,
+        load_runtime, run_generation, serializable_generation,
     )
     dependency_seconds = time.perf_counter() - dependency_begin
 
@@ -675,6 +910,14 @@ def main() -> None:
     )
     for device in range(effective_gpus):
         torch.cuda.reset_peak_memory_stats(device)
+
+    # Milestone 3: reset the M3 path-proof counters so the optional warmup
+    # generation above does NOT pollute the profiled run's evidence.  The
+    # warmup runs HybridExperts.forward over the same context/engine, so
+    # device_path_calls / host_path_fallback_calls / fp32_to_fp16_conversion_ms
+    # would otherwise include the warmup's counts in addition to the
+    # profiled run's.  This reset is critical for the warm vs cold control.
+    runtime["context"].engine_path_proof = fresh_engine_path_proof()
 
     generation = run_generation(
         runtime, tokenizer, args.prompt, args.max_new_tokens,
@@ -790,6 +1033,35 @@ def main() -> None:
         for event in expert_events:
             stream.write(json.dumps(event, sort_keys=True) + "\n")
 
+    # Milestone 3: flush the path-proof counters accumulated by
+    # run_ornith_generation.HybridExperts.forward.  device_path_calls /
+    # host_path_fallback_calls prove that the device-resident MoE bound
+    # method actually ran (and how often it had to fall back).  The
+    # fp32_to_fp16_conversion_ms_total measures the residual .to() cost
+    # the device path still incurs because the C++ tensor contract is
+    # FP32 even when the surrounding model is FP16.
+    path_proof = dict(runtime["context"].engine_path_proof)
+    path_proof["schema_version"] = 2
+    path_proof["run_id"] = args.run_id
+    path_proof["git_commit"] = git_revision()
+    # Aggregates that let the analyzer prove the device path was the
+    # dominant execution route.  device_share=1.0 means every hybrid
+    # forward routed through moe_forward_batch_device; 0.0 means every
+    # call fell back to the host path silently (a regression).
+    total_calls = (path_proof["device_path_calls"] +
+                   path_proof["host_path_fallback_calls"])
+    if total_calls > 0:
+        path_proof["device_path_share"] = (
+            path_proof["device_path_calls"] / total_calls
+        )
+        path_proof["host_fallback_share"] = (
+            path_proof["host_path_fallback_calls"] / total_calls
+        )
+    else:
+        path_proof["device_path_share"] = 0.0
+        path_proof["host_fallback_share"] = 0.0
+    write_json(args.output_dir / "path-proof.json", path_proof)
+
     memory.write_json(args.output_dir / "memory-timeline.json")
     write_json(args.output_dir / "layer-timing.json", layer_timing)
     write_json(args.output_dir / "timing-raw.json", timing)
@@ -797,6 +1069,20 @@ def main() -> None:
         "per_gpu": summarize_nvml(timing["nvml"].get("samples", []), effective_gpus),
         "sampler_error": timing["nvml"].get("error"),
     })
+
+    # Milestone 3: derived artifacts consumed by analyze_milestone3_matrix.
+    # Synchronization, true GPU overlap (both-active samples), and per-GPU
+    # event timelines are all derivable from timing["nvml"] and
+    # timing["engine_timelines"], already produced by the M2.5 forensic
+    # recorder.  No additional per-call instrumentation is needed; these
+    # JSONs are pure re-aggregation.
+    nvml_samples = timing["nvml"].get("samples", [])
+    write_json(args.output_dir / "synchronization-analysis.json",
+               build_synchronization_analysis(timing))
+    write_json(args.output_dir / "overlap-analysis.json",
+               build_overlap_analysis(nvml_samples, effective_gpus))
+    write_json(args.output_dir / "multi-gpu-timeline.json",
+               build_multi_gpu_timeline(timing, expert_events))
 
     machine = {
         "python": sys.version,
