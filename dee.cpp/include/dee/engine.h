@@ -127,6 +127,23 @@ struct EngineStats {
     uint64_t h2d_copies = 0;
     size_t current_vram = 0;
     size_t resident_experts = 0;
+    // Measurement-only ownership ledger.  These are live allocation sizes,
+    // not RSS/NVML estimates, and deliberately separate reserved cache arenas
+    // from the resident payload tracked by current_vram.
+    size_t host_pinned_expert_staging_bytes = 0;
+    size_t host_pageable_expert_staging_bytes = 0;
+    size_t host_router_weight_bytes = 0;
+    size_t host_hidden_buffer_bytes = 0;
+    size_t host_prefetch_ring_bytes = 0;
+    size_t host_prefetch_ring_slots = 0;
+    size_t peak_transient_host_bytes = 0;
+    size_t device_expert_cache_reserved_bytes = 0;
+    size_t device_prefetch_staging_bytes = 0;
+    size_t device_fixed_work_buffer_bytes = 0;
+    size_t device_router_weight_bytes = 0;
+    size_t device_router_dynamic_bytes = 0;
+    size_t device_moe_batch_buffer_bytes = 0;
+    size_t device_oracle_scratch_bytes = 0;
     bool   hidden_finite = true;   // output hidden all-finite at the end
     std::vector<float> final_hidden; // final normalized hidden for validation
     size_t cuda_total    = 0;       // GPU memory total (cudaMemGetInfo), 0 if N/A
@@ -155,6 +172,15 @@ public:
     const EngineStats& stats() const { return stats_; }
     EngineStats runtime_stats() const;
     bool reset_runtime_cache();
+
+    // Measurement-only controls for the Python-owned full-model path.  They
+    // reset counters/timing without evicting resident experts, attach the
+    // external decode-step index to cache/transfer records, and expose the
+    // existing StageProfiler data after the caller's measured interval.
+    bool reset_external_profile();
+    void set_external_token(int token) { current_token_ = token; }
+    std::string external_profile_json(double total_wall_ms);
+    std::string external_timeline_json(double total_wall_ms);
 
     // Expose for tests: run a single layer's MoE on caller-provided hidden,
     // write the new hidden to `h_out` (length hidden_).
@@ -259,6 +285,7 @@ private:
     std::vector<float> hidden_buf_[2];  // double buffer for the loop
 
     EngineStats stats_{};
+    size_t peak_transient_host_bytes_ = 0;
     int current_token_ = -1;
     uint64_t scenario_requests_ = 0;
     uint64_t scenario_resident_hits_ = 0;
@@ -275,6 +302,7 @@ private:
     const QuantizedExpert* get_staging_int8(int source_layer, int expert);
     const QuantizedExpert* get_staging_int4(int source_layer, int expert);
     bool prepack_quantized_sources();
+    StageProfile external_profile_snapshot(double total_wall_ms);
 
     // Stream `expert` from a resolved shard layer into VRAM.  The cache key
     // must describe the source weights, not merely the logical model layer.

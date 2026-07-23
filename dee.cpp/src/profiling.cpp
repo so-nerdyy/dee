@@ -291,7 +291,13 @@ void StageProfiler::add_oracle_ms(OracleStage stage, double milliseconds) {
 
 void StageProfiler::note_request(int token, int logical_layer, int resolved_layer,
                                  int expert, RequestKind kind, size_t cache_bytes_used,
-                                 int evicted_layer, int evicted_expert, int priority) {
+                                 int evicted_layer, int evicted_expert, int priority,
+                                 size_t cache_bytes_before,
+                                 size_t cache_entries_before,
+                                 size_t source_bytes,
+                                 size_t destination_bytes,
+                                 uint64_t transfer_id,
+                                 bool source_pinned) {
     if (!enabled_) return;
     const uint64_t key = physical_key(resolved_layer, expert);
     unique_requested_.insert(key);
@@ -310,16 +316,24 @@ void StageProfiler::note_request(int token, int logical_layer, int resolved_laye
     if (trace_enabled_) {
         RequestTraceRecord record;
         record.index = request_index_;
+        record.request_time_ms = std::chrono::duration<double, std::milli>(
+            Clock::now() - cpu_timeline_origin_).count();
         record.token = token;
         record.logical_layer = logical_layer;
         record.resolved_layer = resolved_layer;
         record.expert = expert;
         record.kind = kind;
+        record.cache_bytes_before = cache_bytes_before;
+        record.cache_entries_before = cache_entries_before;
         record.cache_bytes_used = cache_bytes_used;
         record.evicted_layer = evicted_layer;
         record.evicted_expert = evicted_expert;
         record.reuse_distance = reuse_distance;
         record.priority = priority;
+        record.source_bytes = source_bytes;
+        record.destination_bytes = destination_bytes;
+        record.transfer_id = transfer_id;
+        record.source_pinned = source_pinned;
         trace_.push_back(record);
     }
     ++request_index_;
@@ -559,6 +573,8 @@ StageProfile StageProfiler::finish(double total_wall_ms, uint64_t resident_hits,
         cpu_ms_[static_cast<size_t>(CpuStage::CacheLookup)] +
         cpu_ms_[static_cast<size_t>(CpuStage::CacheHitPinning)] +
         cpu_ms_[static_cast<size_t>(CpuStage::EvictionSelection)] +
+        cpu_ms_[static_cast<size_t>(CpuStage::Pinning)] +
+        cpu_ms_[static_cast<size_t>(CpuStage::HostTensorPreparation)] +
         cpu_ms_[static_cast<size_t>(CpuStage::MmapToPinned)] +
         cpu_ms_[static_cast<size_t>(CpuStage::TransferSubmission)] +
         cpu_ms_[static_cast<size_t>(CpuStage::HostWaiting)];
@@ -568,12 +584,17 @@ StageProfile StageProfiler::finish(double total_wall_ms, uint64_t resident_hits,
         ? (cpu_ms_[static_cast<size_t>(CpuStage::TensorResolution)] +
            cpu_ms_[static_cast<size_t>(CpuStage::CacheLookup)] +
            cpu_ms_[static_cast<size_t>(CpuStage::EvictionSelection)] +
+           cpu_ms_[static_cast<size_t>(CpuStage::Pinning)] +
+           cpu_ms_[static_cast<size_t>(CpuStage::HostTensorPreparation)] +
            cpu_ms_[static_cast<size_t>(CpuStage::MmapToPinned)] +
            cpu_ms_[static_cast<size_t>(CpuStage::TransferSubmission)] +
            cpu_ms_[static_cast<size_t>(CpuStage::HostWaiting)]) * 1000.0 / cold_loads
         : 0.0;
 
-    result.total_gpu_transfer_ms = gpu_ms_[static_cast<size_t>(GpuStage::H2D)];
+    result.total_gpu_transfer_ms =
+        gpu_ms_[static_cast<size_t>(GpuStage::H2D)] +
+        gpu_ms_[static_cast<size_t>(GpuStage::ActivationH2D)] +
+        gpu_ms_[static_cast<size_t>(GpuStage::D2H)];
     result.total_gpu_weight_conversion_ms =
         gpu_ms_[static_cast<size_t>(GpuStage::WeightConversion)];
     result.total_gpu_compute_ms =
@@ -627,13 +648,17 @@ StageProfile StageProfiler::finish(double total_wall_ms, uint64_t resident_hits,
             if (!record.gpu) continue;
             first_gpu = std::min(first_gpu, record.start_ms);
             last_gpu = std::max(last_gpu, record.end_ms);
-            if (record.gpu_stage == GpuStage::H2D) {
+            if (record.gpu_stage == GpuStage::H2D ||
+                record.gpu_stage == GpuStage::ActivationH2D ||
+                record.gpu_stage == GpuStage::D2H) {
                 copy_intervals.emplace_back(record.start_ms, record.end_ms);
-                const size_t bucket = h2d_bucket(record.bytes);
-                ++result.h2d_bucket_copies[bucket];
-                result.h2d_bucket_bytes[bucket] += record.bytes;
-                result.h2d_bucket_ms[bucket] += record.end_ms - record.start_ms;
-                if (record.expert >= 0) {
+                if (record.gpu_stage == GpuStage::H2D) {
+                    const size_t bucket = h2d_bucket(record.bytes);
+                    ++result.h2d_bucket_copies[bucket];
+                    result.h2d_bucket_bytes[bucket] += record.bytes;
+                    result.h2d_bucket_ms[bucket] += record.end_ms - record.start_ms;
+                }
+                if (record.gpu_stage == GpuStage::H2D && record.expert >= 0) {
                     queue_sum += static_cast<double>(record.queue_depth);
                     ++queue_samples;
                     result.max_transfer_queue_depth = std::max<uint64_t>(
@@ -866,7 +891,8 @@ StageProfile StageProfiler::finish(double total_wall_ms, uint64_t resident_hits,
 const char* cpu_stage_name(CpuStage stage) {
     static const char* names[] = {
         "oracle", "tensor_resolution", "cache_lookup", "cache_hit_pinning",
-        "eviction_selection", "mmap_to_pinned", "transfer_submission",
+        "eviction_selection", "pinning", "host_tensor_preparation",
+        "mmap_to_pinned", "transfer_submission",
         "batch_construction", "host_waiting", "synchronization", "everything_else"
     };
     return names[static_cast<size_t>(stage)];
@@ -875,7 +901,8 @@ const char* cpu_stage_name(CpuStage stage) {
 const char* gpu_stage_name(GpuStage stage) {
     static const char* names[] = {
         "h2d", "weight_conversion", "gate_projection", "up_projection", "silu_multiply",
-        "down_projection", "combine", "stream_wait"
+        "down_projection", "combine", "stream_wait", "activation_h2d",
+        "activation_conversion", "d2h"
     };
     return names[static_cast<size_t>(stage)];
 }
@@ -1079,18 +1106,28 @@ std::string stage_profile_json(const StageProfile& profile, bool include_trace) 
             if (i) out << ',';
             const RequestTraceRecord& record = profile.trace[i];
             out << "{\"index\":" << record.index
+                << ",\"request_time_ms\":" << record.request_time_ms
                 << ",\"token\":" << record.token
                 << ",\"logical_layer\":" << record.logical_layer
                 << ",\"resolved_shard_layer\":" << record.resolved_layer
                 << ",\"expert\":" << record.expert
                 << ",\"kind\":\"" << request_kind_name(record.kind) << '\"'
+                << ",\"cache_bytes_before\":" << record.cache_bytes_before
+                << ",\"cache_entries_before\":" << record.cache_entries_before
                 << ",\"cache_bytes_used\":" << record.cache_bytes_used
                 << ",\"evicted_layer\":" << record.evicted_layer
                 << ",\"evicted_expert\":" << record.evicted_expert
                 << ",\"reuse_distance\":" << record.reuse_distance
                 << ",\"distinct_reuse_distance\":" << record.distinct_reuse_distance
                 << ",\"theoretical_min_cache_bytes\":" << record.theoretical_min_cache_bytes
-                << ",\"priority\":" << record.priority << '}';
+                << ",\"priority\":" << record.priority
+                << ",\"source_bytes\":" << record.source_bytes
+                << ",\"destination_bytes\":" << record.destination_bytes
+                << ",\"transfer_id\":" << record.transfer_id
+                << ",\"source_pinned\":" << (record.source_pinned ? "true" : "false")
+                << ",\"eviction_reason\":"
+                << (record.evicted_expert >= 0 ? "\"capacity_lru\"" : "null")
+                << '}';
         }
         out << ']';
     }

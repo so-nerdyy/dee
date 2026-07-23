@@ -17,6 +17,8 @@ enum class CpuStage : size_t {
     CacheLookup,
     CacheHitPinning,
     EvictionSelection,
+    Pinning,
+    HostTensorPreparation,
     MmapToPinned,
     TransferSubmission,
     BatchConstruction,
@@ -35,6 +37,9 @@ enum class GpuStage : size_t {
     DownProjection,
     Combine,
     StreamWait,
+    ActivationH2D,
+    ActivationConversion,
+    D2H,
     Count
 };
 
@@ -112,11 +117,14 @@ enum class OracleStage : size_t {
 
 struct RequestTraceRecord {
     uint64_t index = 0;
+    double request_time_ms = 0.0;
     int token = -1;
     int logical_layer = -1;
     int resolved_layer = -1;
     int expert = -1;
     RequestKind kind = RequestKind::ColdLoad;
+    size_t cache_bytes_before = 0;
+    size_t cache_entries_before = 0;
     size_t cache_bytes_used = 0;
     int evicted_layer = -1;
     int evicted_expert = -1;
@@ -124,6 +132,10 @@ struct RequestTraceRecord {
     int64_t distinct_reuse_distance = -1;
     size_t theoretical_min_cache_bytes = 0;
     int priority = 0;
+    size_t source_bytes = 0;
+    size_t destination_bytes = 0;
+    uint64_t transfer_id = 0;
+    bool source_pinned = false;
 };
 
 struct TimelineRecord {
@@ -261,8 +273,14 @@ public:
     }
 
     void note_request(int token, int logical_layer, int resolved_layer, int expert,
-                      RequestKind kind, size_t cache_bytes_used, int evicted_layer,
-                      int evicted_expert, int priority);
+                       RequestKind kind, size_t cache_bytes_used, int evicted_layer,
+                       int evicted_expert, int priority,
+                       size_t cache_bytes_before = 0,
+                       size_t cache_entries_before = 0,
+                       size_t source_bytes = 0,
+                       size_t destination_bytes = 0,
+                       uint64_t transfer_id = 0,
+                       bool source_pinned = false);
     void note_prediction(int token, int logical_layer, int resolved_layer,
                          const std::vector<int>& experts);
     void note_eviction(uint64_t count = 1) { evictions_ += count; }

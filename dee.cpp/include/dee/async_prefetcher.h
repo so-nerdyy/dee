@@ -139,6 +139,17 @@ public:
         return true;
     }
     size_t ring_size() const { return ring_size_; }
+    size_t pinned_staging_bytes() const {
+        size_t total = 0;
+        for (const auto& slot : staging_slots_) total += slot.bytes;
+        return total;
+    }
+    size_t device_staging_bytes() const {
+        size_t total = 0;
+        for (const auto& slot : staging_slots_) total += slot.device_bytes;
+        return total;
+    }
+    size_t staging_slot_count() const { return staging_slots_.size(); }
 
     bool using_cuda() const { return use_cuda_; }
     void* cuda_stream() const { return stream_; }
@@ -189,8 +200,14 @@ private:
     void   release_staging(Transfer& transfer);
     bool   release_transfer(Transfer& transfer);
     void   record_request(RequestKind kind, int token, int logical_layer,
-                          int resolved_layer, int expert, int priority,
-                          int evicted_layer = -1, int evicted_expert = -1);
+                           int resolved_layer, int expert, int priority,
+                           int evicted_layer = -1, int evicted_expert = -1,
+                           size_t cache_bytes_before = 0,
+                           size_t cache_entries_before = 0,
+                           size_t source_bytes = 0,
+                           size_t destination_bytes = 0,
+                           uint64_t transfer_id = 0,
+                           bool source_pinned = false);
 };
 
 } // namespace dee

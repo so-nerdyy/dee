@@ -74,7 +74,13 @@ bool AsyncPrefetcher::release_transfer(Transfer& transfer) {
 
 void AsyncPrefetcher::record_request(RequestKind kind, int token, int logical_layer,
                                      int resolved_layer, int expert, int priority,
-                                     int evicted_layer, int evicted_expert) {
+                                     int evicted_layer, int evicted_expert,
+                                     size_t cache_bytes_before,
+                                     size_t cache_entries_before,
+                                     size_t source_bytes,
+                                     size_t destination_bytes,
+                                     uint64_t transfer_id,
+                                     bool source_pinned) {
     ++stats_.requests;
     ++stats_.issued;
     switch (kind) {
@@ -84,7 +90,10 @@ void AsyncPrefetcher::record_request(RequestKind kind, int token, int logical_la
     }
     if (profiler_) {
         profiler_->note_request(token, logical_layer, resolved_layer, expert, kind,
-                                cache_.used_bytes(), evicted_layer, evicted_expert, priority);
+                                cache_.used_bytes(), evicted_layer, evicted_expert, priority,
+                                cache_bytes_before, cache_entries_before,
+                                source_bytes, destination_bytes, transfer_id,
+                                source_pinned);
     }
 }
 
@@ -167,6 +176,8 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
         std::fprintf(stderr, "AsyncPrefetcher: invalid source for expert (%d,%d)\n", layer, expert);
         return -1;
     }
+    const size_t cache_bytes_before = cache_.used_bytes();
+    const size_t cache_entries_before = profiler_ ? cache_.resident_count() : 0;
     const long request_key = static_cast<long>(key_id(layer, expert));
     if (std::find(batch_keys_.begin(), batch_keys_.end(), request_key) != batch_keys_.end()) {
         ++stats_.duplicate_requests;
@@ -178,7 +189,10 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
     if (existing >= 0 && existing < static_cast<long>(inflight_.size())) {
         Transfer& prior = inflight_[existing];
         if (!prior.done && !prior.abandoned) {
-            record_request(RequestKind::InflightHit, token, logical_layer, layer, expert, priority);
+            record_request(RequestKind::InflightHit, token, logical_layer, layer,
+                           expert, priority, -1, -1, cache_bytes_before,
+                           cache_entries_before, prior.source_nbytes, prior.nbytes,
+                           static_cast<uint64_t>(prior.id), prior.source_pinned);
             return prior.id;  // never duplicate an in-flight DMA
         }
         if (prior.done && cache_.is_resident(layer, expert)) {
@@ -192,7 +206,10 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
             if (!prior.cache_pin_held && !cache_.pin(layer, expert)) return -1;
             if (profiler_ && profiler_->enabled()) profiler_->add_cpu(CpuStage::CacheHitPinning, pin_begin);
             prior.cache_pin_held = true;
-            record_request(RequestKind::ResidentHit, token, logical_layer, layer, expert, priority);
+            record_request(RequestKind::ResidentHit, token, logical_layer, layer,
+                           expert, priority, -1, -1, cache_bytes_before,
+                           cache_entries_before, prior.source_nbytes, prior.nbytes,
+                           static_cast<uint64_t>(prior.id), prior.source_pinned);
             return prior.id;
         }
         key_to_idx_.erase(static_cast<long>(key_id(layer, expert)));
@@ -224,7 +241,10 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
         inflight_.push_back(transfer);
         const long resident_index = static_cast<long>(inflight_.size() - 1);
         key_to_idx_[request_key] = static_cast<int>(resident_index);
-        record_request(RequestKind::ResidentHit, token, logical_layer, layer, expert, priority);
+        record_request(RequestKind::ResidentHit, token, logical_layer, layer,
+                       expert, priority, -1, -1, cache_bytes_before,
+                       cache_entries_before, source_nbytes, destination_nbytes,
+                       static_cast<uint64_t>(transfer.id), source_pinned);
         return transfer.id;
     }
     if (!cache_.ensure(layer, expert, destination_nbytes, priority)) return -1;
@@ -261,7 +281,10 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
     }
     record_request(RequestKind::ColdLoad, token, logical_layer, layer, expert, priority,
                    ensure_info.evicted ? ensure_info.evicted_key.layer : -1,
-                   ensure_info.evicted ? ensure_info.evicted_key.expert : -1);
+                   ensure_info.evicted ? ensure_info.evicted_key.expert : -1,
+                   cache_bytes_before, cache_entries_before,
+                   source_nbytes, destination_nbytes,
+                   static_cast<uint64_t>(transfer.id), source_pinned);
     return transfer.id;
 }
 

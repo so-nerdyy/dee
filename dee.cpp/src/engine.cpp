@@ -329,6 +329,8 @@ bool Engine::moe_forward_batch(int layer, const float* h_in, int tokens,
     if (!h_in || !expert_ids || !experts_out || tokens <= 0 || topk <= 0 ||
         topk > cfg_.topk) return false;
     const size_t selections = static_cast<size_t>(tokens) * topk;
+    const auto external_layer_begin = profiler_.enabled()
+        ? StageProfiler::now() : StageProfiler::TimePoint{};
     if (selections > std::numeric_limits<size_t>::max() /
                          (static_cast<size_t>(hidden_) * sizeof(float))) return false;
     std::memset(experts_out, 0, selections * static_cast<size_t>(hidden_) * sizeof(float));
@@ -344,6 +346,8 @@ bool Engine::moe_forward_batch(int layer, const float* h_in, int tokens,
     if (cfg_.use_cuda && cfg_.cache_dtype == DeviceCacheDType::Fp16) {
         if (!DEE_CUDA_CHECK_NAMED(cudaSetDevice(cfg_.device_id),
                                   "cudaSetDevice(external batched MoE)")) return false;
+        const auto batch_begin = profiler_.enabled()
+            ? StageProfiler::now() : StageProfiler::TimePoint{};
         std::vector<std::vector<size_t>> groups(static_cast<size_t>(cfg_.num_experts));
         size_t max_group_tokens = 0;
         // Match torch.where(expert_mask[expert]) traversal: top-k rank first,
@@ -421,8 +425,16 @@ bool Engine::moe_forward_batch(int layer, const float* h_in, int tokens,
         for (int expert = 0; expert < cfg_.num_experts; ++expert) {
             if (!groups[static_cast<size_t>(expert)].empty()) active_experts.push_back(expert);
         }
+        if (profiler_.enabled()) {
+            profiler_.add_cpu(CpuStage::BatchConstruction, batch_begin);
+            profiler_.note_prediction(current_token_, layer, avail_layer(layer),
+                                      active_experts);
+        }
         std::vector<float> host_input(max_group_tokens * static_cast<size_t>(hidden_));
         std::vector<float> host_output(max_group_tokens * static_cast<size_t>(hidden_));
+        peak_transient_host_bytes_ = std::max(
+            peak_transient_host_bytes_,
+            (host_input.size() + host_output.size()) * sizeof(float));
         const int source_layer = avail_layer(layer);
         const int cache_batch = std::max(
             1, static_cast<int>(cache_.budget_bytes() / cache_blob_bytes_));
@@ -440,40 +452,112 @@ bool Engine::moe_forward_batch(int layer, const float* h_in, int tokens,
                 const auto& positions = groups[static_cast<size_t>(expert)];
                 const size_t group_tokens = positions.size();
                 const size_t input_elements = group_tokens * static_cast<size_t>(hidden_);
+                const auto host_prepare_begin = profiler_.enabled()
+                    ? StageProfiler::now() : StageProfiler::TimePoint{};
                 for (size_t row = 0; row < group_tokens; ++row) {
                     const size_t token = positions[row] / static_cast<size_t>(topk);
                     std::memcpy(host_input.data() + row * static_cast<size_t>(hidden_),
                                 h_in + token * static_cast<size_t>(hidden_),
                                 static_cast<size_t>(hidden_) * sizeof(float));
                 }
+                if (profiler_.enabled()) {
+                    profiler_.add_cpu(CpuStage::HostTensorPreparation,
+                                      host_prepare_begin);
+                    profiler_.set_cuda_context(
+                        current_token_, layer, expert,
+                        input_elements * sizeof(float));
+                }
+                const size_t activation_h2d = profiler_.enabled()
+                    ? profiler_.cuda_begin(GpuStage::ActivationH2D,
+                                           static_cast<void*>(compute_stream_))
+                    : static_cast<size_t>(-1);
                 if (!DEE_CUDA_CHECK_NAMED(
                         cudaMemcpyAsync(d_moe_batch_input_, host_input.data(),
                                         input_elements * sizeof(float),
                                         cudaMemcpyHostToDevice, compute_stream_),
-                        "cudaMemcpyAsync(MoE batch input)") ||
-                    !f32_to_f16_cuda(d_moe_batch_input_, d_moe_batch_input_half_,
-                                     input_elements, compute_stream_, nullptr) ||
-                    !prefetcher_.wait(source_layer, expert) ||
+                        "cudaMemcpyAsync(MoE batch input)")) return false;
+                if (profiler_.enabled() &&
+                    !profiler_.cuda_end(activation_h2d,
+                                        static_cast<void*>(compute_stream_))) return false;
+
+                if (profiler_.enabled()) {
+                    profiler_.set_cuda_context(
+                        current_token_, layer, expert,
+                        input_elements * sizeof(uint16_t));
+                }
+                const size_t activation_convert = profiler_.enabled()
+                    ? profiler_.cuda_begin(GpuStage::ActivationConversion,
+                                           static_cast<void*>(compute_stream_))
+                    : static_cast<size_t>(-1);
+                if (!f32_to_f16_cuda(d_moe_batch_input_, d_moe_batch_input_half_,
+                                     input_elements, compute_stream_, nullptr)) return false;
+                if (profiler_.enabled() &&
+                    !profiler_.cuda_end(activation_convert,
+                                        static_cast<void*>(compute_stream_))) return false;
+                if (!prefetcher_.wait(source_layer, expert) ||
                     !cache_.pin(source_layer, expert)) return false;
                 const void* d_blob = cache_.data(source_layer, expert);
+                if (profiler_.enabled()) {
+                    profiler_.set_cuda_context(current_token_, layer, expert);
+                }
                 const bool computed = d_blob && swiglu_expert_batch_fp16_cuda(
                     cublas_handle_, d_blob, d_moe_batch_input_half_,
                     d_moe_batch_gate_half_, d_moe_batch_up_half_,
                     d_moe_batch_activation_half_, d_moe_batch_output_,
-                    static_cast<int>(group_tokens), inter_, hidden_, compute_stream_, nullptr);
-                if (!computed ||
-                    !DEE_CUDA_CHECK_NAMED(
+                    static_cast<int>(group_tokens), inter_, hidden_, compute_stream_,
+                    profiler_.enabled() ? &profiler_ : nullptr);
+                if (!computed) {
+                    cache_.unpin(source_layer, expert);
+                    return false;
+                }
+                if (profiler_.enabled()) {
+                    profiler_.set_cuda_context(
+                        current_token_, layer, expert,
+                        input_elements * sizeof(float));
+                }
+                const size_t d2h = profiler_.enabled()
+                    ? profiler_.cuda_begin(GpuStage::D2H,
+                                           static_cast<void*>(compute_stream_))
+                    : static_cast<size_t>(-1);
+                if (!DEE_CUDA_CHECK_NAMED(
                         cudaMemcpyAsync(host_output.data(), d_moe_batch_output_,
                                         input_elements * sizeof(float),
                                         cudaMemcpyDeviceToHost, compute_stream_),
-                        "cudaMemcpyAsync(MoE batch output)") ||
-                    !DEE_CUDA_CHECK_NAMED(
+                        "cudaMemcpyAsync(MoE batch output)")) {
+                    cache_.unpin(source_layer, expert);
+                    return false;
+                }
+                if (profiler_.enabled() &&
+                    !profiler_.cuda_end(d2h, static_cast<void*>(compute_stream_))) {
+                    cache_.unpin(source_layer, expert);
+                    return false;
+                }
+                const auto output_wait_begin = profiler_.enabled()
+                    ? StageProfiler::now() : StageProfiler::TimePoint{};
+                if (!DEE_CUDA_CHECK_NAMED(
                         cudaStreamSynchronize(compute_stream_),
                         "cudaStreamSynchronize(MoE batch output)")) {
                     cache_.unpin(source_layer, expert);
                     return false;
                 }
+                if (profiler_.enabled()) {
+                    const auto output_wait_end = StageProfiler::now();
+                    profiler_.add_cpu_ms(
+                        CpuStage::Synchronization,
+                        std::chrono::duration<double, std::milli>(
+                            output_wait_end - output_wait_begin).count());
+                    profiler_.note_host_wait(
+                        HostWaitReason::LayerOutput, output_wait_begin,
+                        output_wait_end, current_token_, layer, expert);
+                    profiler_.note_host_synchronization();
+                    if (!profiler_.cuda_collect_ready()) {
+                        cache_.unpin(source_layer, expert);
+                        return false;
+                    }
+                }
                 cache_.unpin(source_layer, expert);
+                const auto host_output_begin = profiler_.enabled()
+                    ? StageProfiler::now() : StageProfiler::TimePoint{};
                 for (size_t row = 0; row < group_tokens; ++row) {
                     float* destination = experts_out +
                         positions[row] * static_cast<size_t>(hidden_);
@@ -482,10 +566,15 @@ bool Engine::moe_forward_batch(int layer, const float* h_in, int tokens,
                     std::memcpy(destination, source,
                                 static_cast<size_t>(hidden_) * sizeof(float));
                 }
+                if (profiler_.enabled()) {
+                    profiler_.add_cpu(CpuStage::HostTensorPreparation,
+                                      host_output_begin);
+                }
             }
         }
         release_transient_bf16_sources();
         stats_.peak_vram = std::max(stats_.peak_vram, cache_.used_bytes());
+        if (profiler_.enabled()) profiler_.add_layer_latency(external_layer_begin);
         return true;
     }
 #endif
@@ -500,6 +589,7 @@ bool Engine::moe_forward_batch(int layer, const float* h_in, int tokens,
                 layer, h_in + static_cast<size_t>(token) * hidden_,
                 experts_out + static_cast<size_t>(token) * topk * hidden_, row)) return false;
     }
+    if (profiler_.enabled()) profiler_.add_layer_latency(external_layer_begin);
     return true;
 }
 
@@ -522,6 +612,77 @@ EngineStats Engine::runtime_stats() const {
     result.current_vram = cache_.used_bytes();
     result.resident_experts = cache_.resident_count();
     result.peak_vram = std::max(result.peak_vram, result.current_vram);
+    result.host_pinned_expert_staging_bytes = pinned_staging_bytes_;
+    for (const auto& entry : staging_) {
+        result.host_pageable_expert_staging_bytes +=
+            entry.second.size() * sizeof(float);
+    }
+    for (const auto& entry : staging_bf16_) {
+        result.host_pageable_expert_staging_bytes +=
+            entry.second.size() * sizeof(uint16_t);
+    }
+    for (const auto& entry : staging_int8_) {
+        result.host_pageable_expert_staging_bytes += entry.second.host.size();
+    }
+    for (const auto& entry : router_weights_) {
+        result.host_router_weight_bytes += entry.second.size() * sizeof(float);
+    }
+    result.host_hidden_buffer_bytes =
+        (hidden_buf_[0].size() + hidden_buf_[1].size()) * sizeof(float);
+    result.host_prefetch_ring_bytes = prefetcher_.pinned_staging_bytes();
+    result.host_prefetch_ring_slots = prefetcher_.staging_slot_count();
+    result.peak_transient_host_bytes = peak_transient_host_bytes_;
+    result.device_expert_cache_reserved_bytes = cache_.budget_bytes();
+    result.device_prefetch_staging_bytes = prefetcher_.device_staging_bytes();
+#ifdef DEE_CUDA
+    if (cfg_.use_cuda) {
+        if (d_h_in_) result.device_fixed_work_buffer_bytes +=
+            static_cast<size_t>(hidden_) * sizeof(float);
+        if (d_h_out_) result.device_fixed_work_buffer_bytes +=
+            static_cast<size_t>(hidden_) * sizeof(float);
+        if (d_hbuf_) result.device_fixed_work_buffer_bytes +=
+            static_cast<size_t>(inter_) * sizeof(float);
+        if (d_ubuf_) result.device_fixed_work_buffer_bytes +=
+            static_cast<size_t>(inter_) * sizeof(float);
+        if (d_ybuf_) result.device_fixed_work_buffer_bytes +=
+            static_cast<size_t>(cfg_.topk) * hidden_ * sizeof(float);
+        if (d_h_in_half_) result.device_fixed_work_buffer_bytes +=
+            static_cast<size_t>(hidden_) * sizeof(uint16_t);
+        if (d_activation_half_) result.device_fixed_work_buffer_bytes +=
+            static_cast<size_t>(inter_) * sizeof(uint16_t);
+        if (d_router_weight_half_) result.device_router_weight_bytes =
+            static_cast<size_t>(cfg_.num_experts) * hidden_ * sizeof(uint16_t);
+        if (router_capacity_tokens_ > 0) {
+            if (d_router_input_) result.device_router_dynamic_bytes +=
+                router_capacity_tokens_ * hidden_ * sizeof(float);
+            if (d_router_input_half_) result.device_router_dynamic_bytes +=
+                router_capacity_tokens_ * hidden_ * sizeof(uint16_t);
+            if (d_router_logits_half_) result.device_router_dynamic_bytes +=
+                router_capacity_tokens_ * static_cast<size_t>(cfg_.num_experts) *
+                sizeof(uint16_t);
+        }
+        if (moe_batch_capacity_tokens_ > 0) {
+            const size_t input_elements = moe_batch_capacity_tokens_ *
+                static_cast<size_t>(hidden_);
+            const size_t inter_elements = moe_batch_capacity_tokens_ *
+                static_cast<size_t>(inter_);
+            if (d_moe_batch_input_) result.device_moe_batch_buffer_bytes +=
+                input_elements * sizeof(float);
+            if (d_moe_batch_input_half_) result.device_moe_batch_buffer_bytes +=
+                input_elements * sizeof(uint16_t);
+            if (d_moe_batch_gate_half_) result.device_moe_batch_buffer_bytes +=
+                inter_elements * sizeof(uint16_t);
+            if (d_moe_batch_up_half_) result.device_moe_batch_buffer_bytes +=
+                inter_elements * sizeof(uint16_t);
+            if (d_moe_batch_activation_half_) result.device_moe_batch_buffer_bytes +=
+                inter_elements * sizeof(uint16_t);
+            if (d_moe_batch_output_) result.device_moe_batch_buffer_bytes +=
+                input_elements * sizeof(float);
+        }
+        if (d_oracle_scratch_) result.device_oracle_scratch_bytes =
+            static_cast<size_t>(256 + 256) * sizeof(float);
+    }
+#endif
     return result;
 }
 
@@ -544,6 +705,68 @@ bool Engine::reset_runtime_cache() {
     stats_.current_vram = 0;
     stats_.resident_experts = 0;
     return true;
+}
+
+bool Engine::reset_external_profile() {
+#ifdef DEE_CUDA
+    if (cfg_.use_cuda) {
+        if (!DEE_CUDA_CHECK_NAMED(cudaSetDevice(cfg_.device_id),
+                                  "cudaSetDevice(reset external profile)")) return false;
+        prefetcher_.synchronize_all();
+        if (compute_stream_ &&
+            !DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(compute_stream_),
+                                  "cudaStreamSynchronize(reset external profile)")) return false;
+    }
+#endif
+    cache_.reset_stats();
+    prefetcher_.reset_stats();
+    stats_.profile = StageProfile{};
+    current_token_ = -1;
+    profiler_.configure(cfg_.profile_stages, cfg_.trace_requests,
+                        cache_blob_bytes_, oracle_.num_experts(),
+                        cfg_.profile_timeline);
+    cache_.set_profiler(cfg_.profile_stages ? &profiler_ : nullptr);
+    prefetcher_.set_profiler(cfg_.profile_stages ? &profiler_ : nullptr);
+    oracle_.set_profiler(cfg_.profile_stages ? &profiler_ : nullptr);
+#ifdef DEE_CUDA
+    if (cfg_.use_cuda && cfg_.profile_timeline &&
+        !profiler_.begin_cuda_timeline(static_cast<void*>(compute_stream_),
+                                       prefetcher_.cuda_stream())) return false;
+#endif
+    return true;
+}
+
+StageProfile Engine::external_profile_snapshot(double total_wall_ms) {
+#ifdef DEE_CUDA
+    if (cfg_.use_cuda) {
+        DEE_CUDA_CHECK_NAMED(cudaSetDevice(cfg_.device_id),
+                             "cudaSetDevice(external profile snapshot)");
+        prefetcher_.synchronize_all();
+        if (compute_stream_) {
+            DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(compute_stream_),
+                                 "cudaStreamSynchronize(external profile snapshot)");
+        }
+        profiler_.cuda_collect_ready();
+    }
+#endif
+    const auto& cache_stats = cache_.stats();
+    const auto& prefetch_stats = prefetcher_.stats();
+    return profiler_.finish(
+        total_wall_ms,
+        prefetch_stats.resident_hits,
+        prefetch_stats.inflight_hits,
+        prefetch_stats.cold_loads,
+        prefetch_stats.duplicate_requests,
+        cache_stats.evictions,
+        cache_stats.pinned_blocks_skipped);
+}
+
+std::string Engine::external_profile_json(double total_wall_ms) {
+    return stage_profile_json(external_profile_snapshot(total_wall_ms), true);
+}
+
+std::string Engine::external_timeline_json(double total_wall_ms) {
+    return cuda_timeline_json(external_profile_snapshot(total_wall_ms));
 }
 
 const float* Engine::get_router_weights(int source_layer) {
@@ -821,10 +1044,19 @@ const uint16_t* Engine::get_staging_bf16(int source_layer, int expert) {
     const size_t source_bytes = blob_elems_ * sizeof(uint16_t);
     if (cfg_.use_cuda && pinned_staging_bytes_ + source_bytes <= kPinnedStagingLimit) {
         void* allocation = nullptr;
+        const auto pin_begin = profiler_.enabled()
+            ? StageProfiler::now() : StageProfiler::TimePoint{};
         if (DEE_CUDA_CHECK_NAMED(cudaHostAlloc(&allocation, source_bytes, cudaHostAllocDefault),
                                  "cudaHostAlloc(persistent BF16 expert source)")) {
-            // Tensor lookup/allocation and host copying are distinct profile categories.
-            if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
+            if (profiler_.enabled()) profiler_.add_cpu(CpuStage::Pinning, pin_begin);
+            // Tensor lookup, pin allocation, and host copying are distinct
+            // non-overlapping profile categories.
+            if (profiler_.enabled()) {
+                profiler_.add_cpu_ms(
+                    CpuStage::TensorResolution,
+                    std::chrono::duration<double, std::milli>(
+                        pin_begin - profile_begin).count());
+            }
             const auto copy_begin = profiler_.enabled()
                 ? StageProfiler::now() : StageProfiler::TimePoint{};
             auto* destination = static_cast<uint16_t*>(allocation);
@@ -839,15 +1071,24 @@ const uint16_t* Engine::get_staging_bf16(int source_layer, int expert) {
             pinned_staging_bytes_ += source_bytes;
             return destination;
         }
+        if (profiler_.enabled()) profiler_.add_cpu(CpuStage::Pinning, pin_begin);
     }
 #endif
 
+    const auto prepare_begin = profiler_.enabled()
+        ? StageProfiler::now() : StageProfiler::TimePoint{};
     std::vector<uint16_t> blob(blob_elems_);
     std::memcpy(blob.data(), gv.data, projection_bytes);
     std::memcpy(blob.data() + projection, uv.data, projection_bytes);
     std::memcpy(blob.data() + 2 * projection, dv.data, projection_bytes);
     auto result = staging_bf16_.emplace(key, std::move(blob));
-    if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
+    if (profiler_.enabled()) {
+        profiler_.add_cpu(CpuStage::HostTensorPreparation, prepare_begin);
+        profiler_.add_cpu_ms(
+            CpuStage::TensorResolution,
+            std::chrono::duration<double, std::milli>(
+                prepare_begin - profile_begin).count());
+    }
     return result.first->second.data();
 }
 

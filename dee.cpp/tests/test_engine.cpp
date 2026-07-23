@@ -85,6 +85,24 @@ static void test_engine_e2e() {
     CHECK(s.cache_loads > 0, "cache performed loads");
     // with an 8-expert activation and 4-expert budget, eviction MUST occur
     CHECK(s.evictions > 0, "cache evictions occurred (budget < topk*depth pressure)");
+    CHECK(engine.reset_external_profile(),
+          "external profiler resets counters without rebuilding the engine");
+    engine.set_external_token(7);
+    std::vector<float> external_input(2048, 0.01f);
+    std::vector<float> external_output(2048, 0.0f);
+    engine.forward_layer(0, external_input.data(), external_output.data());
+    const std::string external_profile = engine.external_profile_json(1.0);
+    CHECK(external_profile.find("\"enabled\":true") != std::string::npos,
+          "external profile JSON is enabled");
+    CHECK(external_profile.find("\"token\":7") != std::string::npos,
+          "external profile preserves caller token context");
+    CHECK(external_profile.find("\"host_tensor_preparation\"") != std::string::npos,
+          "external profile exposes host tensor preparation category");
+    const dee::EngineStats memory_stats = engine.runtime_stats();
+    CHECK(memory_stats.device_expert_cache_reserved_bytes > 0,
+          "runtime stats expose the reserved expert-cache arena");
+    CHECK(memory_stats.host_hidden_buffer_bytes > 0,
+          "runtime stats expose native host work buffers");
     printf("    tok/s=%.3f peak_vram=%.1fMB loads=%llu evict=%llu fb=%llu\n",
            s.tok_per_sec, s.peak_vram / (1024.0*1024.0),
            (unsigned long long)s.cache_loads, (unsigned long long)s.evictions,

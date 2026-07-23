@@ -68,7 +68,9 @@ PYBIND11_MODULE(pydee_core, m) {
         .def_readwrite("inter", &dee::EngineConfig::inter)
         .def_readwrite("verbose", &dee::EngineConfig::verbose)
         .def_readwrite("prefetch_depth", &dee::EngineConfig::prefetch_depth)
-        .def_readwrite("profile_stages", &dee::EngineConfig::profile_stages);
+        .def_readwrite("profile_stages", &dee::EngineConfig::profile_stages)
+        .def_readwrite("trace_requests", &dee::EngineConfig::trace_requests)
+        .def_readwrite("profile_timeline", &dee::EngineConfig::profile_timeline);
 
     py::class_<dee::Engine>(m, "Engine")
         .def(py::init<>())
@@ -77,6 +79,17 @@ PYBIND11_MODULE(pydee_core, m) {
         .def("inter_dim", &dee::Engine::inter_dim)
         .def("reset_runtime_cache", &dee::Engine::reset_runtime_cache,
              "Evict all streamed experts and reset live cache/transfer counters.")
+        .def("reset_external_profile", &dee::Engine::reset_external_profile,
+             "Reset measurement counters without evicting resident experts.")
+        .def("set_external_token", &dee::Engine::set_external_token,
+             py::arg("token"),
+             "Attach an external prefill/decode-step index to trace records.")
+        .def("external_profile_json", &dee::Engine::external_profile_json,
+             py::arg("total_wall_ms"),
+             "Return the measurement-only stage/cache/request profile.")
+        .def("external_timeline_json", &dee::Engine::external_timeline_json,
+             py::arg("total_wall_ms"),
+             "Return the bounded CUDA/host timeline as Chrome trace JSON.")
         .def("route_topk", [](
                 dee::Engine& self,
                 int layer,
@@ -214,6 +227,27 @@ PYBIND11_MODULE(pydee_core, m) {
                << ",\"peak_vram\":" << s.peak_vram
                << ",\"current_vram\":" << s.current_vram
                << ",\"resident_experts\":" << s.resident_experts
+               << ",\"host_pinned_expert_staging_bytes\":"
+               << s.host_pinned_expert_staging_bytes
+               << ",\"host_pageable_expert_staging_bytes\":"
+               << s.host_pageable_expert_staging_bytes
+               << ",\"host_router_weight_bytes\":" << s.host_router_weight_bytes
+               << ",\"host_hidden_buffer_bytes\":" << s.host_hidden_buffer_bytes
+               << ",\"host_prefetch_ring_bytes\":" << s.host_prefetch_ring_bytes
+               << ",\"host_prefetch_ring_slots\":" << s.host_prefetch_ring_slots
+               << ",\"peak_transient_host_bytes\":" << s.peak_transient_host_bytes
+               << ",\"device_expert_cache_reserved_bytes\":"
+               << s.device_expert_cache_reserved_bytes
+               << ",\"device_prefetch_staging_bytes\":"
+               << s.device_prefetch_staging_bytes
+               << ",\"device_fixed_work_buffer_bytes\":"
+               << s.device_fixed_work_buffer_bytes
+               << ",\"device_router_weight_bytes\":" << s.device_router_weight_bytes
+               << ",\"device_router_dynamic_bytes\":" << s.device_router_dynamic_bytes
+               << ",\"device_moe_batch_buffer_bytes\":"
+               << s.device_moe_batch_buffer_bytes
+               << ",\"device_oracle_scratch_bytes\":"
+               << s.device_oracle_scratch_bytes
                << "}";
             return ss.str();
         });

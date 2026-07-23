@@ -74,6 +74,11 @@ def git_revision() -> str:
         return "unknown"
 
 
+def record_elapsed(recorder, name: str, started: float, **metadata):
+    if recorder is not None:
+        recorder.record_phase(name, time.perf_counter() - started, metadata)
+
+
 class ResourceMonitor:
     def __init__(self, torch_module, gpu_count: int, interval: float = 0.05):
         self.torch = torch_module
@@ -120,21 +125,25 @@ class ResourceMonitor:
 
 
 class CheckpointPool:
-    def __init__(self, model_dir: Path):
+    def __init__(self, model_dir: Path, phase_recorder=None):
         from safetensors import safe_open
 
         self.model_dir = model_dir
         self.safe_open = safe_open
         self.contexts: dict[str, Any] = {}
         self.handles: dict[str, Any] = {}
+        self.phase_recorder = phase_recorder
 
     def handle(self, shard_name: str):
         if shard_name not in self.handles:
+            started = time.perf_counter()
             context = self.safe_open(
                 str(self.model_dir / shard_name), framework="pt", device="cpu"
             )
             self.contexts[shard_name] = context
             self.handles[shard_name] = context.__enter__()
+            record_elapsed(self.phase_recorder, "checkpoint_shard_open", started,
+                           shard=shard_name)
         return self.handles[shard_name]
 
     def tensor(self, shard_name: str, tensor_name: str):
@@ -172,6 +181,34 @@ class ExecutionContext:
         self.mode = "dee"
         self.collector: TraceCollector | None = None
         self.router_tie_fallback_rows = 0
+        self.forensics = None
+        self.current_step = -1
+        self.current_phase = "unclassified"
+        self.cache_disabled = False
+        self.executed_router_layers: set[int] = set()
+
+
+def forensic_span(context: ExecutionContext, name: str, layer: int,
+                  metadata: dict[str, Any] | None = None):
+    if context.forensics is None:
+        return contextlib.nullcontext()
+    return context.forensics.span(name, layer, context.current_step,
+                                  context.current_phase, metadata)
+
+
+def tensor_transfer_bytes(value, destination_device) -> int:
+    """Count tensor bytes whose current device differs from destination."""
+    if hasattr(value, "numel") and hasattr(value, "element_size"):
+        return (
+            int(value.numel()) * int(value.element_size())
+            if getattr(value, "device", None) != destination_device else 0
+        )
+    if isinstance(value, dict):
+        return sum(tensor_transfer_bytes(item, destination_device)
+                   for item in value.values())
+    if isinstance(value, (tuple, list)):
+        return sum(tensor_transfer_bytes(item, destination_device) for item in value)
+    return 0
 
 
 class LazyReferenceExperts:
@@ -278,50 +315,76 @@ class HybridRouter:
 
     def forward(self, hidden_states):
         torch = __import__("torch")
+        self.context.executed_router_layers.add(self.layer)
         flattened = hidden_states.reshape(-1, hidden_states.shape[-1])
         if self.context.mode == "reference":
-            logits, weights, experts = self.module.reference(flattened)
+            with forensic_span(self.context, "reference_router", self.layer):
+                logits, weights, experts = self.module.reference(flattened)
         else:
-            logits_np, weights_np, experts_np = self.engine.route_topk_batch(
-                self.layer, flattened.detach().float().cpu().numpy()
-            )
-            logits = torch.from_numpy(np.asarray(logits_np)).to(
-                flattened.device, dtype=flattened.dtype
-            )
-            native_weights = torch.from_numpy(np.asarray(weights_np)).to(
-                flattened.device, dtype=flattened.dtype
-            )
-            native_experts = torch.from_numpy(np.asarray(experts_np).astype(np.int64)).to(
-                flattened.device, dtype=torch.long
-            )
+            if hasattr(self.engine, "set_external_token"):
+                self.engine.set_external_token(self.context.current_step)
+            router_input_transfer = {
+                "direction": "d2h",
+                "bytes": int(flattened.numel()) * np.dtype(np.float32).itemsize,
+                "component": "router_input",
+            }
+            with forensic_span(self.context, "router_hidden_gpu_to_cpu", self.layer,
+                               router_input_transfer):
+                flattened_cpu = flattened.detach().float().cpu().numpy()
+            with forensic_span(self.context, "router_native", self.layer):
+                logits_np, weights_np, experts_np = self.engine.route_topk_batch(
+                    self.layer, flattened_cpu
+                )
+            router_output_transfer = {"direction": "h2d", "component": "router_output"}
+            with forensic_span(self.context, "router_outputs_cpu_to_gpu", self.layer,
+                               router_output_transfer):
+                router_output_transfer["bytes"] = int(
+                    np.asarray(logits_np).nbytes + np.asarray(weights_np).nbytes +
+                    np.asarray(experts_np).astype(np.int64, copy=False).nbytes
+                )
+                logits = torch.from_numpy(np.asarray(logits_np)).to(
+                    flattened.device, dtype=flattened.dtype
+                )
+                native_weights = torch.from_numpy(np.asarray(weights_np)).to(
+                    flattened.device, dtype=flattened.dtype
+                )
+                native_experts = torch.from_numpy(np.asarray(experts_np).astype(np.int64)).to(
+                    flattened.device, dtype=torch.long
+                )
             # torch.topk does not promise a stable order for exact ties. The
             # native route is authoritative except for rows where its expert
             # IDs differ from torch despite selecting the exact same logit
             # multiset. Canonicalize only those tie rows so trace ordering and
             # eager expert accumulation remain bit-for-bit reference-compatible.
-            probabilities = torch.softmax(logits, dim=-1, dtype=torch.float)
-            canonical_weights, canonical_experts = torch.topk(
-                probabilities, self.top_k, dim=-1
-            )
-            canonical_weights = (
-                canonical_weights / canonical_weights.sum(dim=-1, keepdim=True)
-            ).to(flattened.dtype)
-            mismatch = torch.any(native_experts != canonical_experts, dim=-1)
-            if bool(mismatch.any().item()):
-                native_selected = probabilities.gather(1, native_experts)
-                native_selected = (
-                    native_selected / native_selected.sum(dim=-1, keepdim=True)
+            with forensic_span(self.context, "router_canonicalization", self.layer):
+                probabilities = torch.softmax(logits, dim=-1, dtype=torch.float)
+                canonical_weights, canonical_experts = torch.topk(
+                    probabilities, self.top_k, dim=-1
+                )
+                canonical_weights = (
+                    canonical_weights / canonical_weights.sum(dim=-1, keepdim=True)
                 ).to(flattened.dtype)
-                if not torch.equal(native_selected[mismatch], canonical_weights[mismatch]):
-                    raise RuntimeError(
-                        f"dee.cpp router selected non-equivalent experts at layer {self.layer}"
-                    )
-                self.context.router_tie_fallback_rows += int(mismatch.sum().item())
-                experts = torch.where(mismatch[:, None], canonical_experts, native_experts)
-                weights = torch.where(mismatch[:, None], canonical_weights, native_weights)
-            else:
-                experts = native_experts
-                weights = native_weights
+                mismatch = torch.any(native_experts != canonical_experts, dim=-1)
+                if bool(mismatch.any().item()):
+                    native_selected = probabilities.gather(1, native_experts)
+                    native_selected = (
+                        native_selected / native_selected.sum(dim=-1, keepdim=True)
+                    ).to(flattened.dtype)
+                    if not torch.equal(native_selected[mismatch], canonical_weights[mismatch]):
+                        raise RuntimeError(
+                            f"dee.cpp router selected non-equivalent experts at layer {self.layer}"
+                        )
+                    self.context.router_tie_fallback_rows += int(mismatch.sum().item())
+                    experts = torch.where(mismatch[:, None], canonical_experts, native_experts)
+                    weights = torch.where(mismatch[:, None], canonical_weights, native_weights)
+                else:
+                    experts = native_experts
+                    weights = native_weights
+        if self.context.forensics is not None:
+            self.context.forensics.record_routes(
+                self.layer, self.context.current_step, self.context.current_phase,
+                experts, weights,
+            )
         if self.context.collector is not None:
             self.context.collector.router(self.layer, logits, weights, experts)
         return logits, weights, experts
@@ -347,15 +410,33 @@ class HybridExperts:
         import torch
 
         output = torch.zeros_like(hidden_states)
-        expert_ids = top_k_index.detach().cpu().numpy().astype(np.int32)
-        expert_outputs = self.engine.moe_forward_batch(
-            self.layer,
-            hidden_states.detach().float().cpu().numpy(),
-            expert_ids,
-        )
-        raw = torch.from_numpy(np.asarray(expert_outputs)).to(
-            hidden_states.device, dtype=hidden_states.dtype
-        )
+        if self.context.cache_disabled and not self.engine.reset_runtime_cache():
+            raise RuntimeError(f"failed to reset diagnostic cache at layer {self.layer}")
+        if hasattr(self.engine, "set_external_token"):
+            self.engine.set_external_token(self.context.current_step)
+        expert_input_transfer = {
+            "direction": "d2h",
+            "component": "expert_input",
+            "bytes": int(top_k_index.numel()) * int(top_k_index.element_size()) +
+                     int(hidden_states.numel()) * np.dtype(np.float32).itemsize,
+        }
+        with forensic_span(self.context, "expert_inputs_gpu_to_cpu", self.layer,
+                           expert_input_transfer):
+            expert_ids = top_k_index.detach().cpu().numpy().astype(np.int32)
+            hidden_cpu = hidden_states.detach().float().cpu().numpy()
+        with forensic_span(self.context, "expert_native", self.layer):
+            expert_outputs = self.engine.moe_forward_batch(
+                self.layer, hidden_cpu, expert_ids,
+            )
+        expert_output_transfer = {
+            "direction": "h2d", "component": "expert_output",
+            "bytes": int(np.asarray(expert_outputs).nbytes),
+        }
+        with forensic_span(self.context, "expert_outputs_cpu_to_gpu", self.layer,
+                           expert_output_transfer):
+            raw = torch.from_numpy(np.asarray(expert_outputs)).to(
+                hidden_states.device, dtype=hidden_states.dtype
+            )
         if tuple(raw.shape) != (
             hidden_states.shape[0], top_k_index.shape[1], hidden_states.shape[1]
         ):
@@ -363,13 +444,14 @@ class HybridExperts:
                 f"dee.cpp batched expert output shape mismatch at layer {self.layer}: "
                 f"{tuple(raw.shape)}"
             )
-        for token in range(hidden_states.shape[0]):
-            # Official eager implementation accumulates contributions in
-            # ascending expert id order, not router top-k order.
-            accumulator = torch.zeros_like(hidden_states[token])
-            for position in np.argsort(expert_ids[token], kind="stable").tolist():
-                accumulator.add_(raw[token, position] * top_k_weights[token, position])
-            output[token] = accumulator
+        with forensic_span(self.context, "expert_output_combination", self.layer):
+            for token in range(hidden_states.shape[0]):
+                # Official eager implementation accumulates contributions in
+                # ascending expert id order, not router top-k order.
+                accumulator = torch.zeros_like(hidden_states[token])
+                for position in np.argsort(expert_ids[token], kind="stable").tolist():
+                    accumulator.add_(raw[token, position] * top_k_weights[token, position])
+                output[token] = accumulator
         if self.context.collector is not None and self.layer in TRACE_LAYERS:
             self.context.collector.add(
                 "selected_expert_outputs", f"layer={self.layer}", raw
@@ -402,25 +484,72 @@ def synchronize_all(torch, gpu_count: int):
         torch.cuda.synchronize(device)
 
 
-def load_runtime(model_dir: Path, gpu_count: int, split_layer: int, cache_experts: int):
+def tensor_tree_inventory(root, max_objects: int = 100_000):
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    seen: set[int] = set()
+    stack = [root]
+    visited = 0
+    while stack and visited < max_objects:
+        value = stack.pop()
+        identity = id(value)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        visited += 1
+        if hasattr(value, "numel") and hasattr(value, "element_size"):
+            key = (str(value.device), str(value.dtype))
+            row = groups.setdefault(key, {
+                "device": key[0], "dtype": key[1], "tensor_count": 0,
+                "bytes": 0,
+            })
+            row["tensor_count"] += 1
+            row["bytes"] += int(value.numel() * value.element_size())
+            continue
+        if isinstance(value, dict):
+            stack.extend(value.values())
+        elif isinstance(value, (list, tuple, set)):
+            stack.extend(value)
+        elif hasattr(value, "__dict__"):
+            stack.extend(vars(value).values())
+    return {
+        "groups": sorted(groups.values(), key=lambda item: (item["device"], item["dtype"])),
+        "objects_visited": visited,
+        "truncated": bool(stack),
+    }
+
+
+def load_runtime(model_dir: Path, gpu_count: int, split_layer: int, cache_experts: int,
+                 *, profile_stages: bool = False, trace_requests: bool = False,
+                 profile_timeline: bool = False,
+                 allow_diagnostic_sub_topk_cache: bool = False,
+                 phase_recorder=None):
+    import_started = time.perf_counter()
     import torch
     import torch.nn as nn
     import torch.nn.functional as F
     from transformers import AutoConfig, Qwen3_5MoeForCausalLM
 
     import pydee
+    record_elapsed(phase_recorder, "native_and_runtime_imports", import_started)
 
+    index_started = time.perf_counter()
     index = read_checkpoint_index(model_dir)
+    record_elapsed(phase_recorder, "checkpoint_index_parsing", index_started)
+    config_started = time.perf_counter()
     outer_config = AutoConfig.from_pretrained(model_dir, local_files_only=True)
     text_config = outer_config.text_config
     text_config.use_cache = True
     text_config._attn_implementation = "eager"
+    record_elapsed(phase_recorder, "model_configuration", config_started)
+    structure_started = time.perf_counter()
     with torch.device("meta"):
         model = Qwen3_5MoeForCausalLM(text_config)
+    record_elapsed(phase_recorder, "model_structure_construction", structure_started)
 
     context = ExecutionContext()
-    pool = CheckpointPool(model_dir)
+    pool = CheckpointPool(model_dir, phase_recorder)
     reference_experts = []
+    reference_expert_caches = []
     for layer, block in enumerate(model.model.layers):
         lazy = LazyReferenceExperts(
             torch, nn, F, layer, pool, index, context,
@@ -429,17 +558,22 @@ def load_runtime(model_dir: Path, gpu_count: int, split_layer: int, cache_expert
         )
         block.mlp.experts = lazy.module
         reference_experts.append(lazy.module)
+        reference_expert_caches.append(lazy.cache)
 
+    metadata_started = time.perf_counter()
     expected = dict(model.named_parameters())
     load_plan: dict[str, list[tuple[str, str]]] = collections.defaultdict(list)
     for checkpoint_name, shard in index["weight_map"].items():
         target = checkpoint_to_text_name(checkpoint_name)
         if target in expected:
             load_plan[shard].append((checkpoint_name, target))
+    record_elapsed(phase_recorder, "tensor_metadata_creation", metadata_started,
+                   parameter_count=len(expected), shard_count=len(load_plan))
 
     loaded: set[str] = set()
     loaded_bytes = [0] * gpu_count
     started = time.perf_counter()
+    dense_started = time.perf_counter()
     for shard in sorted(load_plan):
         handle = pool.handle(shard)
         for checkpoint_name, target in sorted(load_plan[shard]):
@@ -459,10 +593,13 @@ def load_runtime(model_dir: Path, gpu_count: int, split_layer: int, cache_expert
             assign_parameter(model, target, tensor, nn)
             loaded.add(target)
             loaded_bytes[device_id] += tensor.numel() * tensor.element_size()
+    record_elapsed(phase_recorder, "dense_tensor_acquisition", dense_started,
+                   tensor_count=len(loaded), bytes=sum(loaded_bytes))
     missing = sorted(set(expected) - loaded)
     if missing:
         raise RuntimeError(f"dense checkpoint load left meta parameter uninitialized: {missing[0]}")
 
+    kernel_started = time.perf_counter()
     rotary = model.model.rotary_emb
     inv_freq, attention_scaling = rotary.compute_default_rope_parameters(
         text_config, torch.device("cuda:0")
@@ -470,14 +607,20 @@ def load_runtime(model_dir: Path, gpu_count: int, split_layer: int, cache_expert
     rotary.inv_freq = inv_freq
     rotary.original_inv_freq = inv_freq.clone()
     rotary.attention_scaling = attention_scaling
+    record_elapsed(phase_recorder, "kernel_and_rotary_initialization", kernel_started)
 
     engines = []
     expert_bytes = 3 * text_config.hidden_size * text_config.moe_intermediate_size * 2
     budget_bytes = cache_experts * expert_bytes
-    validate_expert_cache_budget(
-        budget_bytes, text_config.hidden_size, text_config.moe_intermediate_size,
-        text_config.num_experts_per_tok,
-    )
+    if allow_diagnostic_sub_topk_cache:
+        if cache_experts < 1:
+            raise ValueError("diagnostic expert cache must hold at least one expert")
+    else:
+        validate_expert_cache_budget(
+            budget_bytes, text_config.hidden_size, text_config.moe_intermediate_size,
+            text_config.num_experts_per_tok,
+        )
+    mmap_started = time.perf_counter()
     for layer, block in enumerate(model.model.layers):
         device_id = layer_device(layer, gpu_count, split_layer)
         shard_names = shard_paths_for_layer(index, layer)
@@ -499,6 +642,9 @@ def load_runtime(model_dir: Path, gpu_count: int, split_layer: int, cache_expert
         cfg.cache_dtype = pydee.DeviceCacheDType.Fp16
         cfg.transfer_dtype = pydee.WeightTransferDType.Bf16
         cfg.verbose = False
+        cfg.profile_stages = profile_stages
+        cfg.trace_requests = trace_requests
+        cfg.profile_timeline = profile_timeline
         engine = pydee.Engine()
         if not engine.init(cfg):
             raise RuntimeError(f"dee.cpp Engine::init failed for layer {layer}")
@@ -513,22 +659,36 @@ def load_runtime(model_dir: Path, gpu_count: int, split_layer: int, cache_expert
         block.mlp.experts = HybridExperts(
             nn, reference_expert, engine, layer, context
         ).module
+    record_elapsed(phase_recorder, "initial_mmap_and_engine_setup", mmap_started,
+                   engines=len(engines), cache_experts=cache_experts)
 
     # Move layer inputs and kwargs at the exact 19->20 pipeline boundary.
     for layer, block in enumerate(model.model.layers):
         device = torch.device(f"cuda:{layer_device(layer, gpu_count, split_layer)}")
 
-        def move_to_layer(_module, args, kwargs, device=device):
-            args = list(args)
-            args[0] = args[0].to(device)
-            for key in ("attention_mask", "position_ids"):
-                if kwargs.get(key) is not None:
-                    kwargs[key] = kwargs[key].to(device)
-            if kwargs.get("position_embeddings") is not None:
-                kwargs["position_embeddings"] = tuple(
-                    tensor.to(device) for tensor in kwargs["position_embeddings"]
-                )
-            return tuple(args), kwargs
+        def move_to_layer(_module, args, kwargs, device=device, layer=layer):
+            moved_bytes = tensor_transfer_bytes(args, device) + tensor_transfer_bytes(
+                {key: kwargs.get(key) for key in (
+                    "attention_mask", "position_ids", "position_embeddings"
+                )}, device)
+            transfer_metadata = {
+                "direction": "d2d" if moved_bytes else "none",
+                "bytes": moved_bytes,
+                "destination": str(device),
+                "component": "pipeline_boundary",
+            }
+            with forensic_span(context, "inter_device_transfer", layer,
+                               transfer_metadata):
+                args = list(args)
+                args[0] = args[0].to(device)
+                for key in ("attention_mask", "position_ids"):
+                    if kwargs.get(key) is not None:
+                        kwargs[key] = kwargs[key].to(device)
+                if kwargs.get("position_embeddings") is not None:
+                    kwargs["position_embeddings"] = tuple(
+                        tensor.to(device) for tensor in kwargs["position_embeddings"]
+                    )
+                return tuple(args), kwargs
 
         block.register_forward_pre_hook(move_to_layer, with_kwargs=True)
 
@@ -550,8 +710,10 @@ def load_runtime(model_dir: Path, gpu_count: int, split_layer: int, cache_expert
 
     model.model.embed_tokens.register_forward_hook(capture_embedding)
     model.model.norm.register_forward_hook(capture_final)
+    finalize_started = time.perf_counter()
     model.eval()
     synchronize_all(torch, gpu_count)
+    record_elapsed(phase_recorder, "model_setup_finalization", finalize_started)
     return {
         "model": model,
         "config": text_config,
@@ -559,6 +721,7 @@ def load_runtime(model_dir: Path, gpu_count: int, split_layer: int, cache_expert
         "pool": pool,
         "engines": engines,
         "reference_experts": reference_experts,
+        "reference_expert_caches": reference_expert_caches,
         "load_seconds": time.perf_counter() - started,
         "dense_loaded_bytes": {f"cuda:{i}": value for i, value in enumerate(loaded_bytes)},
         "expert_cache_budget_per_layer": budget_bytes,
@@ -587,11 +750,22 @@ def run_generation(runtime, tokenizer, prompt: str, max_new_tokens: int,
     context = runtime["context"]
     gpu_count = torch.cuda.device_count()
     context.mode = mode
+    context.executed_router_layers = set()
     tie_fallback_start = context.router_tie_fallback_rows
     collector = TraceCollector() if trace else None
     context.collector = collector
-    prompt_ids_cpu = tokenize_prompt(tokenizer, prompt, chat_template)
-    prompt_ids = prompt_ids_cpu.to("cuda:0")
+    tokenization_phase = (
+        context.forensics.phase("prompt_tokenization", {"mode": mode, "prompt": prompt})
+        if context.forensics is not None else contextlib.nullcontext()
+    )
+    with tokenization_phase:
+        prompt_ids_cpu = tokenize_prompt(tokenizer, prompt, chat_template)
+    prompt_transfer = {
+        "direction": "h2d", "component": "prompt_ids",
+        "bytes": int(prompt_ids_cpu.numel()) * int(prompt_ids_cpu.element_size()),
+    }
+    with forensic_span(context, "prompt_input_cpu_to_gpu", -1, prompt_transfer):
+        prompt_ids = prompt_ids_cpu.to("cuda:0")
     attention_mask = torch.ones_like(prompt_ids, device="cuda:0")
     current_input = prompt_ids
     past_key_values = None
@@ -607,24 +781,41 @@ def run_generation(runtime, tokenizer, prompt: str, max_new_tokens: int,
     total_start = time.perf_counter()
     with torch.inference_mode():
         for step in range(max_new_tokens):
-            synchronize_all(torch, gpu_count)
+            context.current_step = step
+            context.current_phase = "prefill" if step == 0 else "decode"
+            if context.forensics is not None:
+                context.forensics.begin_step(step, context.current_phase)
+            with forensic_span(context, "step_pre_synchronize", -1,
+                               {"barrier": "all_visible_gpus"}):
+                synchronize_all(torch, gpu_count)
             step_start = time.perf_counter()
-            outputs = model(
-                input_ids=current_input,
-                attention_mask=attention_mask,
-                past_key_values=past_key_values,
-                use_cache=True,
-                logits_to_keep=1,
-                return_dict=True,
+            model_profile = (
+                context.forensics.profile_model_call(step)
+                if context.forensics is not None else contextlib.nullcontext()
             )
-            synchronize_all(torch, gpu_count)
+            with model_profile:
+                outputs = model(
+                    input_ids=current_input,
+                    attention_mask=attention_mask,
+                    past_key_values=past_key_values,
+                    use_cache=True,
+                    logits_to_keep=1,
+                    return_dict=True,
+                )
+            with forensic_span(context, "step_post_synchronize", -1,
+                               {"barrier": "all_visible_gpus"}):
+                synchronize_all(torch, gpu_count)
             elapsed = time.perf_counter() - step_start
             step_seconds.append(elapsed)
+            if context.forensics is not None:
+                context.forensics.end_step(step, context.current_phase, elapsed)
             logits = outputs.logits[:, -1, :]
             if collector is not None:
                 collector.add("lm_head_logits", f"step={step}", logits)
             logits_records.append(logits.detach().float().cpu().numpy())
-            next_token = int(torch.argmax(logits, dim=-1).item())
+            with forensic_span(context, "token_selection_and_item_sync", -1,
+                               {"barrier": "cuda_scalar_to_host"}):
+                next_token = int(torch.argmax(logits, dim=-1).item())
             generated.append(next_token)
             past_key_values = outputs.past_key_values
             try:
@@ -645,14 +836,23 @@ def run_generation(runtime, tokenizer, prompt: str, max_new_tokens: int,
     prompt_tokens = int(prompt_ids.shape[1])
     prefill_seconds = step_seconds[0] if step_seconds else 0.0
     decode_seconds = step_seconds[1:]
+    detokenization_phase = (
+        context.forensics.phase("detokenization", {"mode": mode, "prompt": prompt})
+        if context.forensics is not None else contextlib.nullcontext()
+    )
+    with detokenization_phase:
+        generated_text = tokenizer.decode(generated, skip_special_tokens=False)
+        full_text = tokenizer.decode(
+            prompt_ids_cpu[0].tolist() + generated, skip_special_tokens=False
+        )
     return {
         "mode": mode,
         "prompt": prompt,
         "prompt_token_ids": prompt_ids_cpu[0].tolist(),
         "prompt_token_count": prompt_tokens,
         "generated_token_ids": generated,
-        "generated_text": tokenizer.decode(generated, skip_special_tokens=False),
-        "full_text": tokenizer.decode(prompt_ids_cpu[0].tolist() + generated, skip_special_tokens=False),
+        "generated_text": generated_text,
+        "full_text": full_text,
         "stop_reason": "eos" if generated and generated[-1] in eos_ids else "max_new_tokens",
         "prefill_seconds": prefill_seconds,
         "prefill_tokens_per_second": prompt_tokens / prefill_seconds if prefill_seconds else 0.0,
@@ -663,8 +863,14 @@ def run_generation(runtime, tokenizer, prompt: str, max_new_tokens: int,
         ),
         "total_generation_seconds": total_seconds,
         "cache_sequence_lengths": cache_lengths,
+        "recurrent_or_kv_state": tensor_tree_inventory(past_key_values),
+        "live_generation_inputs": tensor_tree_inventory({
+            "current_input": current_input,
+            "attention_mask": attention_mask,
+        }),
         "resources": resources,
         "router_tie_fallback_rows": context.router_tie_fallback_rows - tie_fallback_start,
+        "executed_router_layers": sorted(context.executed_router_layers),
         "collector": collector,
         "logits_records": logits_records,
     }
@@ -718,14 +924,24 @@ def engine_stats(runtime):
     aggregate = collections.Counter()
     by_device = collections.defaultdict(collections.Counter)
     visible_gpus = min(__import__("torch").cuda.device_count(), 2)
+    by_layer = []
+    numeric_keys = (
+        "cache_hits", "cache_loads", "cold_loads", "resident_hits", "inflight_hits",
+        "evictions", "h2d_bytes", "h2d_copies", "peak_vram", "current_vram",
+        "resident_experts", "host_pinned_expert_staging_bytes",
+        "host_pageable_expert_staging_bytes", "host_router_weight_bytes",
+        "host_hidden_buffer_bytes", "host_prefetch_ring_bytes",
+        "host_prefetch_ring_slots", "peak_transient_host_bytes",
+        "device_expert_cache_reserved_bytes", "device_prefetch_staging_bytes",
+        "device_fixed_work_buffer_bytes", "device_router_weight_bytes",
+        "device_router_dynamic_bytes", "device_moe_batch_buffer_bytes",
+        "device_oracle_scratch_bytes",
+    )
     for layer, engine in enumerate(runtime["engines"]):
         stats = json.loads(engine.last_stats_json())
         device = f"cuda:{layer_device(layer, visible_gpus)}"
-        for key in (
-            "cache_hits", "cache_loads", "cold_loads", "resident_hits", "inflight_hits",
-            "evictions", "h2d_bytes", "h2d_copies", "peak_vram", "current_vram",
-            "resident_experts",
-        ):
+        by_layer.append({"layer": layer, "device": device, **stats})
+        for key in numeric_keys:
             aggregate[key] += stats.get(key, 0)
             by_device[device][key] += stats.get(key, 0)
     misses = aggregate["cold_loads"]
@@ -733,7 +949,8 @@ def engine_stats(runtime):
     aggregate["cache_misses"] = misses
     aggregate["cache_hit_rate"] = hits / (hits + misses) if hits + misses else 0.0
     return {"aggregate": dict(aggregate),
-            "by_device": {device: dict(values) for device, values in by_device.items()}}
+            "by_device": {device: dict(values) for device, values in by_device.items()},
+            "by_layer": by_layer}
 
 
 def stats_delta(before: dict[str, Any], after: dict[str, Any]):
