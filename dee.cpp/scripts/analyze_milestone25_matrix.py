@@ -570,8 +570,12 @@ def build_timing_analysis(runs: Mapping[str, dict[str, Any]]) -> tuple[dict[str,
     gpu_intervals: dict[int, list[tuple[int, int]]] = defaultdict(list)
     for span in timing_spans:
         if span.get("name") == "layer_total":
+            start_key = "start_monotonic_ns" if "start_monotonic_ns" in span else "cpu_begin_ns"
+            end_key = "end_monotonic_ns" if "end_monotonic_ns" in span else "cpu_end_ns"
+            if start_key not in span or end_key not in span:
+                continue
             gpu_intervals[int(span.get("gpu", 0))].append((
-                int(span["start_monotonic_ns"]), int(span["end_monotonic_ns"])
+                int(span[start_key]), int(span[end_key])
             ))
     overlap_ns = interval_intersection(gpu_intervals.get(0, []), gpu_intervals.get(1, []))
     gpu_wall_ns = {gpu: interval_total(rows) for gpu, rows in gpu_intervals.items()}

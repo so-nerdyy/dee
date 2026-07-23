@@ -1,0 +1,27 @@
+﻿evidence-integrity-sha256
+8bbd08cf797df4498caff4a2cbdeb020fab66f6327204ba133f4338514941c3c  3231  MILESTONE_2_5_VERIFIED.md
+5dab8b61f7d08848ca110561a6e6a78b73ca0a52280cf1628b3ad91ed5ac54f4  188753  milestone-2.5-report.json
+d7d4f8daf778524b43e51017340dcd1e5398e18311dff344eb955555d716c447  4144282  memory-timeline.json
+5620d5974ff314fa9371356c29dbc5af8410b8cd39f5fb6a26550796f79830ff  216258  host-memory-breakdown.json
+0a060adde5c518300f1a79b16336a2d2b5237990afb895432e37c8e852a4672c  30905  gpu-memory-breakdown.json
+be7f2f458963cb1e5a7504ada02b1cc5dc838ea845c2dbcf8cdda0c7603f2843  1403652  layer-timing.json
+008bb7d1bc509b84b3268a40fbd0062e972d336a26c5de1a1112042046437ecf  1387630  expert-trace.jsonl.gz
+92711fbbafe7cd45c734c8d74a9f395da1e2ccfa81a984bde3a8e61694ae7599  14353108  expert-cache-analysis.json
+18ed4211eb12bbf6a40416e3e59e62b24054e03113b9ee9069685abe8a30e57c  6054997  transfer-analysis.json
+063437bf1f09f4f27a4aa01e074b45480306b6564c363b3a917b185911246422  2731  profiler-summary.md
+0a045f5b7b0683561478d085bc3e578de9e017ed088a7da43761f7e75f17ef19  21462  prior-30-tps-audit.md
+23cbf720b26abbe5f3a68d99481964b90c3806f50b9a752e8d813e93b71c40a4  5898  bottleneck-ranking.json
+56adc1e700d83bd41f26474b87365d4a67efbb39675de20a56f133b378622036  2574  matrix-summary.json
+b931b0d8f0470ba053817d354516f25390e768e4183fd0b6a6b0cc8d65816afc  2578  ornith-router-parity.json
+437b2aa8521f7871a3f05f229025554786b6e4a7e3c937a09d190d3dc715209a  21438  ornith-layer0-regression.json
+f3e668c3b1cd9a8448f160971dbd827f43ba6a60cce9250132dc0d88600d2891  3609  acceptance-audit.json
+737df0c1ad802f86c30773c691396c5d2754ab937e187f647a23f00d0858522e  220416  runs/dual-cache-capacity-4/run-report.json
+c662aeae12bbac763519a8cbd2cc5fb083cc3d00e564868351cd655aa4a1b186  220221  runs/dual-cache-disabled/run-report.json
+3900f9e54c815c5117677f32af4df337bda3da2def04c65bbdae6d5994a36edd  634427  runs/dual-cold-primary/run-report.json
+b6c4b6d5fa2d3a7b2e6bb65854f5063cac19ada24516b42c12a8911c1f9b3ef9  221160  runs/dual-long-prompt/run-report.json
+f635fc7ba2aa10f7bb27028a49e2105e3574a1e082541d6d5a536805dc2ebeac  219748  runs/dual-one-token/run-report.json
+49e98f8e22d9134a9c6f47f793c41f069af3b59d5ea2c0296b184a16ede5cb4f  220255  runs/dual-warm-control/run-report.json
+ffca0ed9aa3cbfb042552898392eb8312531fe056b724306bfff56616907c128  321236  runs/dual-warm-profiled/run-report.json
+1a0bac21edc7e03de7b74fd843f724a2783cf84dd81cd9fb75152f9f394528d2  532474  runs/dual-warm-reference-present/run-report.json
+1fec39d1e26ce52164ac20a5fcd43ecd660f037aa0efeafd673fb8abe2e18bdc  217586  runs/single-t4-warm/run-report.json
+# generated 2026-07-23T20:26:15.7670839Z
