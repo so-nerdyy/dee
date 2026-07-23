@@ -69,7 +69,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--layer0-regression", type=Path)
     parser.add_argument("--router-parity", type=Path)
     parser.add_argument(
-        "--kernel-slug", default="nivind/dee-cpp-ornith-milestone-25-forensics"
+        "--kernel-slug", default="nivind/dee-cpp-ornith-milestone-2-5-forensics"
     )
     parser.add_argument("--kernel-version")
     parser.add_argument("--publication-commit")

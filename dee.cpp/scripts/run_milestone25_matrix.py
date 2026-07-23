@@ -28,7 +28,7 @@ def parse_args() -> argparse.Namespace:
         default=REPO_ROOT / "benchmark_reports/milestone-2.5/work/prior-30-tps-audit.md",
     )
     parser.add_argument(
-        "--kernel-slug", default="nivind/dee-cpp-ornith-milestone-25-forensics"
+        "--kernel-slug", default="nivind/dee-cpp-ornith-milestone-2-5-forensics"
     )
     return parser.parse_args()
 
