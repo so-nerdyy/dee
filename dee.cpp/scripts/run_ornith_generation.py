@@ -509,13 +509,15 @@ class HybridExperts:
             proof["expert_native_host_calls_total_ms"] += (
                 (time.perf_counter() - native_host_start) * 1000.0
             )
+            # The FP32 device output buffer was allocated for the device
+            # path; on the host-fallback it is unused.  Release it before
+            # the pageable H2D copy so the host-path pinned allocation does
+            # not co-exist with an idle FP32 device buffer.  This is purely
+            # VRAM hygiene (no architectural change) but also bound the
+            # window in which an unrelated Python exception could let the
+            # CUDA driver observe a dangling device pointer.
+            del raw_f32
             host_conv_start = time.perf_counter()
-            raw = torch.from_numpy(np.asarray(expert_outputs)).to(
-                hidden_states.device, dtype=hidden_states.dtype
-            )
-            proof["fp32_to_fp16_conversion_ms_total"] += (
-                (time.perf_counter() - host_conv_start) * 1000.0
-            )
             expert_output_transfer = {
                 "direction": "h2d", "component": "expert_output",
                 "bytes": int(np.asarray(expert_outputs).nbytes),
@@ -525,6 +527,9 @@ class HybridExperts:
                 raw = torch.from_numpy(np.asarray(expert_outputs)).to(
                     hidden_states.device, dtype=hidden_states.dtype
                 )
+            proof["fp32_to_fp16_conversion_ms_total"] += (
+                (time.perf_counter() - host_conv_start) * 1000.0
+            )
         if tuple(raw.shape) != (
             hidden_states.shape[0], top_k_index.shape[1], hidden_states.shape[1]
         ):
@@ -537,7 +542,7 @@ class HybridExperts:
                 # Official eager implementation accumulates contributions in
                 # ascending expert id order, not router top-k order.
                 accumulator = torch.zeros_like(hidden_states[token])
-                for position in np.argsort(expert_ids[token], kind="stable").tolist():
+                for position in np.argsort(expert_ids_np[token], kind="stable").tolist():
                     accumulator.add_(raw[token, position] * top_k_weights[token, position])
                 output[token] = accumulator
         if self.context.collector is not None and self.layer in TRACE_LAYERS:
