@@ -356,12 +356,19 @@ bool AsyncPrefetcher::wait_on_stream(int layer, int expert, void* compute_stream
     }
     // The H2D/conversion is in flight on the prefetch stream; once it signals,
     // the staging slot's host source can be recycled (the data lives in the
-    // device cache arena, independent of the staging slot). The cache pin
-    // stays held so the cache block is not evicted before the compute GEMM
-    // reads it; release_transfer will drop the pin when the consumer later
-    // calls wait() or synchronize_all().
+    // device cache arena, independent of the staging slot).
+    //
+    // Milestone 3 fix: drop the prefetch transfer's cache pin here.
+    // Earlier design assumed a later wait()/synchronize_all() would release;
+    // commits 6ed324f + e5a610a removed those teardowns on the device path,
+    // leaking pins=1 (field-measured at 992s on dual-T4). Engine re-pins the
+    // block before launching cuBLAS, so transient pins==0 is race-free.
     transfer.done = true;
     release_staging(transfer);
+    if (transfer.cache_pin_held) {
+        cache_.unpin(transfer.key.layer, transfer.key.expert);
+        transfer.cache_pin_held = false;
+    }
     return cache_.is_resident(layer, expert);
 #else
     (void)layer; (void)expert; (void)compute_stream;
