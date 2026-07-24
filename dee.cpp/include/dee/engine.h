@@ -232,8 +232,21 @@ public:
 
     ~Engine();
 
+    // Milestone 3 forensic: capture the most recent native error context so
+    // the Python binding surfaces precise file/line/state instead of
+    // collapsing it to a generic RuntimeError.  Set on every early-return
+    // site of moe_forward_experts / moe_forward_batch /
+    // moe_forward_batch_device / stage_expert / the cache ensure path.
+    // Cleared at entry of each forward call so the value reflects only the
+    // most recent attempt.  Used by pydee bindings to disambiguate native
+    // root causes in the analyzer.
+    void set_last_error(const std::string& m) { last_error_message_ = m; }
+    void clear_last_error() { last_error_message_.clear(); }
+    const std::string& last_error_message() const { return last_error_message_; }
+
 private:
     EngineConfig cfg_;
+    std::string last_error_message_;
 
     WeightMmap     mmap_;
     std::vector<std::unique_ptr<WeightMmap>> extra_mmaps_;

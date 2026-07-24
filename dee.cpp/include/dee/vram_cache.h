@@ -151,6 +151,14 @@ public:
     bool pin(int layer, int expert);
     void unpin(int layer, int expert);
 
+    // Milestone 3 forensic: capture the most recent ensure/evict failure
+    // context so the engine can surface it to Python instead of collapsing
+    // to a single "cannot allocate" line.  Cleared by ensure() on entry;
+    // written on every failure path.
+    void set_last_error(const std::string& m) { last_error_message_ = m; }
+    void clear_last_error() { last_error_message_.clear(); }
+    const std::string& last_error_message() const { return last_error_message_; }
+
 private:
     Arena arena_;
     std::unordered_map<ExpertKey, ExpertBlock, ExpertKeyHash> blocks_;
@@ -158,6 +166,7 @@ private:
     Stats   stats_{};
     EnsureInfo last_ensure_info_{};
     StageProfiler* profiler_ = nullptr;
+    std::string last_error_message_;
 
     ExpertBlock* find_block(int layer, int expert);
     const ExpertBlock* find_block(int layer, int expert) const;

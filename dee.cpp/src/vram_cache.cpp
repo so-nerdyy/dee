@@ -94,23 +94,50 @@ const ExpertBlock* VramCacheManager::find_block(int layer, int expert) const {
 }
 
 void VramCacheManager::evict_until_free(size_t need) {
+    int iteration = 0;
+    int pinned_skipped_total = 0;
     while (arena_.free_space() < need && !blocks_.empty()) {
+        ++iteration;
         // find the resident block with the lowest eviction score
         ExpertBlock* victim = nullptr;
         int64_t worst = 0;
         bool first = true;
+        int pinned_skipped_this_iter = 0;
         for (auto& kv : blocks_) {
             ExpertBlock& b = kv.second;
             if (!b.resident) continue;
             if (b.pins != 0) {
                 ++stats_.pinned_blocks_skipped;
+                ++pinned_skipped_this_iter;
                 if (profiler_) profiler_->note_pinned_skip();
                 continue;
             }
             int64_t s = eviction_score(b);
             if (first || s < worst) { worst = s; victim = &b; first = false; }
         }
-        if (!victim) break; // nothing resident to evict
+        pinned_skipped_total += pinned_skipped_this_iter;
+        if (!victim) {
+            std::fprintf(stderr,
+                "[dee-cache %s:%d] evict_until_free(need=%zuB) ABORT iter=%d: "
+                "no evictable victim (pinned_skipped_this_iter=%d "
+                "resident_count=%zu arena_free=%zuB arena_used=%zuB)\n",
+                __FILE__, __LINE__, need, iteration, pinned_skipped_this_iter,
+                resident_count(), arena_.free_space(), arena_.used());
+            last_error_message_ =
+                "evict_until_free aborted: no evictable victim (all resident "
+                "blocks pinned, pins>0 prevents eviction; the most likely "
+                "cause is a leaked cache_.pin() from a prior failed cuBLAS "
+                "launch or premature re-entry into the same forward path)";
+            break; // nothing resident to evict
+        }
+        std::fprintf(stderr,
+            "[dee-cache %s:%d] evict_until_free(need=%zuB) iter=%d EVICT "
+            "layer=%d expert=%d size=%zuB score=%lld priority=%d "
+            "last_used=%lld arena_free_before=%zuB\n",
+            __FILE__, __LINE__, need, iteration,
+            victim->key.layer, victim->key.expert, victim->size,
+            (long long)worst, victim->priority,
+            (long long)victim->last_used, arena_.free_space());
         arena_.free(victim->offset, victim->size);
         last_ensure_info_.evicted = true;
         last_ensure_info_.evicted_key = victim->key;
@@ -126,6 +153,7 @@ void VramCacheManager::evict_until_free(size_t need) {
 bool VramCacheManager::ensure(int layer, int expert, size_t nbytes, int priority) {
     ++stats_.ensures;
     last_ensure_info_ = EnsureInfo{};
+    last_error_message_.clear();
     const auto lookup_begin = profiler_ && profiler_->enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
     ExpertBlock* b = find_block(layer, expert);
     if (profiler_ && profiler_->enabled()) {
@@ -154,10 +182,56 @@ bool VramCacheManager::ensure(int layer, int expert, size_t nbytes, int priority
     }
     size_t off = arena_.alloc(nbytes);
     if (off == size_t(-1)) {
-        // still no room (nbytes > budget). Allocate at bump even if over budget
-        // so the engine doesn't deadlock; caller's budget should prevent this.
-        fprintf(stderr, "VramCacheManager: cannot allocate expert (%d,%d) %zuB in budget %zuB; all remaining blocks may be pinned\n",
-                layer, expert, nbytes, arena_.capacity());
+        // Detailed forensic dump.  Enumerate every resident block sorted by
+        // eviction score so the analyzer can identify *why* eviction could
+        // not free enough space -- expected root cause for this M3 failure
+        // is "every resident block is pinned (pins > 0)" because a prior
+        // cuBLAS or DMA launch leaked a cache_.pin() reference.
+        std::vector<std::pair<int64_t, const ExpertBlock*>> ranked;
+        ranked.reserve(blocks_.size());
+        for (const auto& kv : blocks_) {
+            if (!kv.second.resident) continue;
+            ranked.emplace_back(eviction_score(kv.second), &kv.second);
+        }
+        std::sort(ranked.begin(), ranked.end());
+        const size_t live_resident = ranked.size();
+        const size_t live_pinned  = pinned_count();
+        char err_summary[1024];
+        std::snprintf(err_summary, sizeof(err_summary),
+            "VramCacheManager::ensure(layer=%d expert=%d nbytes=%zu) failed "
+            "[requested=%zuB budget=%zuB arena_used=%zuB arena_free=%zuB "
+            "live_resident=%zu live_pinned=%zu]",
+            layer, expert, nbytes,
+            nbytes, arena_.capacity(), arena_.used(), arena_.free_space(),
+            live_resident, live_pinned);
+        std::fprintf(stderr,
+            "[dee-cache %s:%d] %s\n", __FILE__, __LINE__, err_summary);
+        if (live_resident == 0) {
+            std::fprintf(stderr,
+                "[dee-cache %s:%d] block dump: NO resident blocks.  Eviction "
+                "still failed -> fragmented free-list smaller than requested "
+                "allocation despite empty resident map (free-space=%zuB "
+                "requested=%zuB).\n",
+                __FILE__, __LINE__, arena_.free_space(), nbytes);
+        } else {
+            std::fprintf(stderr,
+                "[dee-cache %s:%d] block dump (%zu resident entries, sorted by "
+                "ascending eviction_score):\n", __FILE__, __LINE__, live_resident);
+            for (size_t i = 0; i < ranked.size(); ++i) {
+                const ExpertBlock& bb = *ranked[i].second;
+                std::fprintf(stderr,
+                    "  [%zu] layer=%d expert=%d size=%zuB offset=%zuB "
+                    "last_used=%lld priority=%d pins=%u resident=%s "
+                    "score=%lld -> %s\n",
+                    i, bb.key.layer, bb.key.expert, bb.size, bb.offset,
+                    (long long)bb.last_used, bb.priority, bb.pins,
+                    bb.resident ? "true" : "false",
+                    (long long)ranked[i].first,
+                    bb.pins != 0 ? "SKIP (pinned, pins>0 -> ensure fails)"
+                                 : "would-evict candidate");
+            }
+        }
+        last_error_message_ = err_summary;
         return false;
     }
     ExpertBlock nb;

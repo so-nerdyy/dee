@@ -207,6 +207,13 @@ def fresh_engine_path_proof() -> dict:
         "expert_ids_d2h_total_bytes": 0,
         "expert_native_device_calls_total_ms": 0.0,
         "expert_native_host_calls_total_ms": 0.0,
+        # Milestone 3 forensic: precise native diagnostic captured from
+        # pydee.Engine.last_error_message() at each device attempt and at
+        # any host-fallback RuntimeError.  Empty or "<none>/<empty: ...>"
+        # placeholders are valid; analyzer should treat absence as the
+        # default state and presence as an actual native-rootcause signal.
+        "last_native_error_device_attempt": "",
+        "last_native_error_host_fallback_attempt": "",
     }
 
 
@@ -471,6 +478,17 @@ class HybridExperts:
         proof["expert_native_device_calls_total_ms"] += (
             (time.perf_counter() - native_device_start) * 1000.0
         )
+        # Capture native diagnostic so the analyzer can attribute any failure
+        # to a precise file/line/state, not the generic "<none>".  Updated on
+        # every call, irrespective of device_ok, so first-failure forensics
+        # is preserved when the host fallback path also fails.
+        if hasattr(self.engine, "last_error_message"):
+            proof["last_native_error_device_attempt"] = (
+                self.engine.last_error_message()
+                or (f"<empty: moe_forward_batch_device returned {device_ok} "
+                    f"at layer {self.layer}, tokens={int(expert_ids_np.shape[0])}, "
+                    f"topk={int(expert_ids_np.shape[1])}>")
+            )
         if device_ok:
             proof["device_path_calls"] += 1
             # M3 deliverable: explicitly time the FP32->FP16 device conversion
@@ -503,9 +521,23 @@ class HybridExperts:
                                expert_input_transfer):
                 hidden_cpu = hidden_states.detach().float().cpu().numpy()
             with forensic_span(self.context, "expert_native", self.layer):
-                expert_outputs = self.engine.moe_forward_batch(
-                    self.layer, hidden_cpu, expert_ids_np,
-                )
+                try:
+                    expert_outputs = self.engine.moe_forward_batch(
+                        self.layer, hidden_cpu, expert_ids_np,
+                    )
+                except RuntimeError as e:
+                    # Preserve the engine's last_error_message() detail --
+                    # already appended to the RuntimeError -- in path-proof for
+                    # the analyzer to attribute to a precise native line.
+                    if hasattr(self.engine, "last_error_message"):
+                        native = self.engine.last_error_message()
+                        proof["last_native_error_host_fallback_attempt"] = (
+                            f"[host-fallback-path] layer={self.layer} "
+                            f"tokens={int(expert_ids_np.shape[0])} "
+                            f"topk={int(expert_ids_np.shape[1])}: "
+                            f"native={native or '<none>'}"
+                        )
+                    raise
             proof["expert_native_host_calls_total_ms"] += (
                 (time.perf_counter() - native_host_start) * 1000.0
             )

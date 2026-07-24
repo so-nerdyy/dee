@@ -206,7 +206,17 @@ PYBIND11_MODULE(pydee_core, m) {
                     static_cast<int*>(ids_buf.ptr), static_cast<int>(topk),
                     output.mutable_data());
             }
-            if (!ok) throw std::runtime_error("dee.cpp batched MoE failed (see stderr)");
+            if (!ok) {
+                std::string msg = "dee.cpp batched MoE failed (moe_forward_batch("
+                    "layer=" + std::to_string(layer)
+                    + " tokens=" + std::to_string(tokens)
+                    + " topk=" + std::to_string(topk)
+                    + " device=" + std::to_string(self.config().device_id) + "))";
+                const std::string& native = self.last_error_message();
+                if (!native.empty()) msg += " | native: " + native;
+                else msg += " | native: <no detailed diagnostic recorded>";
+                throw std::runtime_error(msg);
+            }
             return output;
         }, py::arg("layer"), py::arg("h_in"), py::arg("expert_ids"),
            "Run token batches grouped by expert with eager-compatible CUDA GEMM shapes.")
@@ -248,6 +258,11 @@ PYBIND11_MODULE(pydee_core, m) {
                 Returns True on success; caller must sync the compute stream before
                 reading d_experts_out.
             )pbdoc")
+        .def("last_error_message", [](const dee::Engine& self) -> std::string {
+            return self.last_error_message();
+        }, "Return the most recent native diagnostic captured by the failure "
+           "paths of moe_forward_experts/moe_forward_batch/moe_forward_batch_device. "
+           "Empty string if the last call succeeded or no detail was captured.")
         .def("last_stats_json", [](const dee::Engine& self) -> std::string {
             std::ostringstream ss;
             const dee::EngineStats s = self.runtime_stats();
