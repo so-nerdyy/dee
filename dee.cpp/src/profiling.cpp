@@ -1,4 +1,5 @@
 #include "dee/profiling.h"
+#include "dee/trace_alloc.h"  // Milestone 3 v5 teardown-forensics sentinel
 
 #include <algorithm>
 #include <cmath>
@@ -145,13 +146,13 @@ int idle_category_priority(IdleGapCategory category) {
 StageProfiler::~StageProfiler() {
 #ifdef DEE_CUDA
     if (timeline_origin_event_) {
-        DEE_CUDA_CHECK_NAMED(cudaEventDestroy(static_cast<cudaEvent_t>(timeline_origin_event_)),
+        DEE_CUDA_CHECK_NAMED(DEE_TA_EVENT_DESTROY(static_cast<cudaEvent_t>(timeline_origin_event_), "timeline_origin_event_"),
                              "cudaEventDestroy(timeline origin)");
         timeline_origin_event_ = nullptr;
     }
     for (void* event : all_cuda_events_) {
         if (event) {
-            DEE_CUDA_CHECK_NAMED(cudaEventDestroy(static_cast<cudaEvent_t>(event)),
+            DEE_CUDA_CHECK_NAMED(DEE_TA_EVENT_DESTROY(static_cast<cudaEvent_t>(event), "event"),
                                  "cudaEventDestroy(stage profiler pool)");
         }
     }
@@ -354,12 +355,12 @@ bool StageProfiler::begin_cuda_timeline(void* compute_stream, void* transfer_str
     if (!compute_stream || !transfer_stream) return false;
     if (timeline_origin_event_) {
         if (!DEE_CUDA_CHECK_NAMED(
-                cudaEventDestroy(static_cast<cudaEvent_t>(timeline_origin_event_)),
+                DEE_TA_EVENT_DESTROY(static_cast<cudaEvent_t>(timeline_origin_event_), "timeline_origin_event_"),
                 "cudaEventDestroy(previous timeline origin)")) return false;
         timeline_origin_event_ = nullptr;
     }
     cudaEvent_t origin = nullptr;
-    if (!DEE_CUDA_CHECK_NAMED(cudaEventCreate(&origin),
+    if (!DEE_CUDA_CHECK_NAMED(DEE_TA_EVENT_CREATE(&origin, "origin"),
                               "cudaEventCreate(timeline origin)")) return false;
     timeline_origin_event_ = static_cast<void*>(origin);
     timeline_compute_stream_ = compute_stream;
@@ -398,7 +399,7 @@ void* StageProfiler::acquire_cuda_event() {
         return nullptr;
     }
     cudaEvent_t event = nullptr;
-    if (!DEE_CUDA_CHECK_NAMED(cudaEventCreate(&event),
+    if (!DEE_CUDA_CHECK_NAMED(DEE_TA_EVENT_CREATE(&event, "event"),
                               "cudaEventCreate(stage profiler timing)")) return nullptr;
     all_cuda_events_.push_back(static_cast<void*>(event));
     return static_cast<void*>(event);

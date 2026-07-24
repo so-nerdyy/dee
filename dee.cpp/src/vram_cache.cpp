@@ -1,5 +1,6 @@
 // dee/vram_cache.cpp
 #include "dee/vram_cache.h"
+#include "dee/trace_alloc.h"  // Milestone 3 v5 teardown-forensics sentinel
 
 #include <algorithm>
 #include <cstdio>

@@ -1,5 +1,6 @@
 // dee/engine.cpp
 #include "dee/engine.h"
+#include "dee/trace_alloc.h"  // Milestone 3 v5 teardown-forensics sentinel
 
 #include <cmath>
 #include <algorithm>
@@ -369,57 +370,57 @@ bool Engine::moe_forward_batch(int layer, const float* h_in, int tokens,
         if (max_group_tokens == 0) return false;
         if (moe_batch_capacity_tokens_ < max_group_tokens) {
             if (d_moe_batch_input_) {
-                if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_input_),
+                if (!DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_batch_input_, "d_moe_batch_input_"),
                                           "cudaFree(MoE batch input)")) return false;
                 d_moe_batch_input_ = nullptr;
             }
             if (d_moe_batch_input_half_) {
-                if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_input_half_),
+                if (!DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_batch_input_half_, "d_moe_batch_input_half_"),
                                           "cudaFree(MoE batch FP16 input)")) return false;
                 d_moe_batch_input_half_ = nullptr;
             }
             if (d_moe_batch_gate_half_) {
-                if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_gate_half_),
+                if (!DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_batch_gate_half_, "d_moe_batch_gate_half_"),
                                           "cudaFree(MoE batch gate)")) return false;
                 d_moe_batch_gate_half_ = nullptr;
             }
             if (d_moe_batch_up_half_) {
-                if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_up_half_),
+                if (!DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_batch_up_half_, "d_moe_batch_up_half_"),
                                           "cudaFree(MoE batch up)")) return false;
                 d_moe_batch_up_half_ = nullptr;
             }
             if (d_moe_batch_activation_half_) {
-                if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_activation_half_),
+                if (!DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_batch_activation_half_, "d_moe_batch_activation_half_"),
                                           "cudaFree(MoE batch activation)")) return false;
                 d_moe_batch_activation_half_ = nullptr;
             }
             if (d_moe_batch_output_) {
-                if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_output_),
+                if (!DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_batch_output_, "d_moe_batch_output_"),
                                           "cudaFree(MoE batch output)")) return false;
                 d_moe_batch_output_ = nullptr;
             }
             const size_t input_elements = max_group_tokens * static_cast<size_t>(hidden_);
             const size_t inter_elements = max_group_tokens * static_cast<size_t>(inter_);
             if (!DEE_CUDA_CHECK_NAMED(
-                    cudaMalloc(reinterpret_cast<void**>(&d_moe_batch_input_),
-                               input_elements * sizeof(float)),
+                    DEE_TA_MALLOC(reinterpret_cast<void**>(&d_moe_batch_input_),
+                               input_elements * sizeof(float), "d_moe_batch_input_"),
                     "cudaMalloc(MoE batch input)") ||
                 !DEE_CUDA_CHECK_NAMED(
-                    cudaMalloc(&d_moe_batch_input_half_, input_elements * sizeof(uint16_t)),
+                    DEE_TA_MALLOC(&d_moe_batch_input_half_, input_elements * sizeof(uint16_t), "d_moe_batch_input_half_"),
                     "cudaMalloc(MoE batch FP16 input)") ||
                 !DEE_CUDA_CHECK_NAMED(
-                    cudaMalloc(&d_moe_batch_gate_half_, inter_elements * sizeof(uint16_t)),
+                    DEE_TA_MALLOC(&d_moe_batch_gate_half_, inter_elements * sizeof(uint16_t), "d_moe_batch_gate_half_"),
                     "cudaMalloc(MoE batch gate)") ||
                 !DEE_CUDA_CHECK_NAMED(
-                    cudaMalloc(&d_moe_batch_up_half_, inter_elements * sizeof(uint16_t)),
+                    DEE_TA_MALLOC(&d_moe_batch_up_half_, inter_elements * sizeof(uint16_t), "d_moe_batch_up_half_"),
                     "cudaMalloc(MoE batch up)") ||
                 !DEE_CUDA_CHECK_NAMED(
-                    cudaMalloc(&d_moe_batch_activation_half_,
-                               inter_elements * sizeof(uint16_t)),
+                    DEE_TA_MALLOC(&d_moe_batch_activation_half_,
+                               inter_elements * sizeof(uint16_t), "d_moe_batch_activation_half_"),
                     "cudaMalloc(MoE batch activation)") ||
                 !DEE_CUDA_CHECK_NAMED(
-                    cudaMalloc(reinterpret_cast<void**>(&d_moe_batch_output_),
-                               input_elements * sizeof(float)),
+                    DEE_TA_MALLOC(reinterpret_cast<void**>(&d_moe_batch_output_),
+                               input_elements * sizeof(float), "d_moe_batch_output_"),
                     "cudaMalloc(MoE batch output)")) return false;
             moe_batch_capacity_tokens_ = max_group_tokens;
         }
@@ -655,57 +656,57 @@ bool Engine::moe_forward_batch_device(int layer, const void* d_h_in, int tokens,
     // Ensure batch buffers are sized for the largest expert group.
     if (moe_batch_capacity_tokens_ < max_group_tokens) {
         if (d_moe_batch_input_) {
-            if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_input_),
+            if (!DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_batch_input_, "d_moe_batch_input_"),
                                       "cudaFree(MoE batch input)")) return false;
             d_moe_batch_input_ = nullptr;
         }
         if (d_moe_batch_input_half_) {
-            if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_input_half_),
+            if (!DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_batch_input_half_, "d_moe_batch_input_half_"),
                                       "cudaFree(MoE batch FP16 input)")) return false;
             d_moe_batch_input_half_ = nullptr;
         }
         if (d_moe_batch_gate_half_) {
-            if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_gate_half_),
+            if (!DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_batch_gate_half_, "d_moe_batch_gate_half_"),
                                       "cudaFree(MoE batch gate)")) return false;
             d_moe_batch_gate_half_ = nullptr;
         }
         if (d_moe_batch_up_half_) {
-            if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_up_half_),
+            if (!DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_batch_up_half_, "d_moe_batch_up_half_"),
                                       "cudaFree(MoE batch up)")) return false;
             d_moe_batch_up_half_ = nullptr;
         }
         if (d_moe_batch_activation_half_) {
-            if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_activation_half_),
+            if (!DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_batch_activation_half_, "d_moe_batch_activation_half_"),
                                       "cudaFree(MoE batch activation)")) return false;
             d_moe_batch_activation_half_ = nullptr;
         }
         if (d_moe_batch_output_) {
-            if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_output_),
+            if (!DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_batch_output_, "d_moe_batch_output_"),
                                       "cudaFree(MoE batch output)")) return false;
             d_moe_batch_output_ = nullptr;
         }
         const size_t input_elements = max_group_tokens * static_cast<size_t>(hidden_);
         const size_t inter_elements = max_group_tokens * static_cast<size_t>(inter_);
         if (!DEE_CUDA_CHECK_NAMED(
-                cudaMalloc(reinterpret_cast<void**>(&d_moe_batch_input_),
-                           input_elements * sizeof(float)),
+                DEE_TA_MALLOC(reinterpret_cast<void**>(&d_moe_batch_input_),
+                           input_elements * sizeof(float), "d_moe_batch_input_"),
                 "cudaMalloc(MoE batch input)") ||
             !DEE_CUDA_CHECK_NAMED(
-                cudaMalloc(&d_moe_batch_input_half_, input_elements * sizeof(uint16_t)),
+                DEE_TA_MALLOC(&d_moe_batch_input_half_, input_elements * sizeof(uint16_t), "d_moe_batch_input_half_"),
                 "cudaMalloc(MoE batch FP16 input)") ||
             !DEE_CUDA_CHECK_NAMED(
-                cudaMalloc(&d_moe_batch_gate_half_, inter_elements * sizeof(uint16_t)),
+                DEE_TA_MALLOC(&d_moe_batch_gate_half_, inter_elements * sizeof(uint16_t), "d_moe_batch_gate_half_"),
                 "cudaMalloc(MoE batch gate)") ||
             !DEE_CUDA_CHECK_NAMED(
-                cudaMalloc(&d_moe_batch_up_half_, inter_elements * sizeof(uint16_t)),
+                DEE_TA_MALLOC(&d_moe_batch_up_half_, inter_elements * sizeof(uint16_t), "d_moe_batch_up_half_"),
                 "cudaMalloc(MoE batch up)") ||
             !DEE_CUDA_CHECK_NAMED(
-                cudaMalloc(&d_moe_batch_activation_half_,
-                           inter_elements * sizeof(uint16_t)),
+                DEE_TA_MALLOC(&d_moe_batch_activation_half_,
+                           inter_elements * sizeof(uint16_t), "d_moe_batch_activation_half_"),
                 "cudaMalloc(MoE batch activation)") ||
             !DEE_CUDA_CHECK_NAMED(
-                cudaMalloc(reinterpret_cast<void**>(&d_moe_batch_output_),
-                           input_elements * sizeof(float)),
+                DEE_TA_MALLOC(reinterpret_cast<void**>(&d_moe_batch_output_),
+                           input_elements * sizeof(float), "d_moe_batch_output_"),
                 "cudaMalloc(MoE batch output)")) return false;
         moe_batch_capacity_tokens_ = max_group_tokens;
     }
@@ -1048,15 +1049,15 @@ bool Engine::route_topk_batch(int layer, const float* h_in, int tokens,
         }
         if (router_weight_layer_ != source_layer) {
             if (d_router_weight_half_) {
-                if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_router_weight_half_),
+                if (!DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_router_weight_half_, "d_router_weight_half_"),
                                           "cudaFree(old router weight)")) return false;
                 d_router_weight_half_ = nullptr;
             }
             if (!DEE_CUDA_CHECK_NAMED(
-                    cudaMalloc(&d_router_weight_half_, weight_elements * sizeof(uint16_t)),
+                    DEE_TA_MALLOC(&d_router_weight_half_, weight_elements * sizeof(uint16_t), "d_router_weight_half_"),
                     "cudaMalloc(router FP16 weight)")) return false;
             void* source = nullptr;
-            if (!DEE_CUDA_CHECK_NAMED(cudaMalloc(&source, view.nbytes),
+            if (!DEE_CUDA_CHECK_NAMED(DEE_TA_MALLOC(&source, view.nbytes, "source"),
                                       "cudaMalloc(router source)")) return false;
             bool converted = DEE_CUDA_CHECK_NAMED(
                 cudaMemcpyAsync(source, view.data, view.nbytes, cudaMemcpyHostToDevice,
@@ -1087,36 +1088,36 @@ bool Engine::route_topk_batch(int layer, const float* h_in, int tokens,
                     cudaStreamSynchronize(compute_stream_),
                     "cudaStreamSynchronize(router weight)");
             }
-            DEE_CUDA_CHECK_NAMED(cudaFree(source), "cudaFree(router source)");
+            DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(source, "source"), "cudaFree(router source)");
             if (!converted) return false;
             router_weight_layer_ = source_layer;
         }
         if (router_capacity_tokens_ < static_cast<size_t>(tokens)) {
             if (d_router_input_) {
-                if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_router_input_),
+                if (!DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_router_input_, "d_router_input_"),
                                           "cudaFree(router input)")) return false;
                 d_router_input_ = nullptr;
             }
             if (d_router_input_half_) {
-                if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_router_input_half_),
+                if (!DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_router_input_half_, "d_router_input_half_"),
                                           "cudaFree(router FP16 input)")) return false;
                 d_router_input_half_ = nullptr;
             }
             if (d_router_logits_half_) {
-                if (!DEE_CUDA_CHECK_NAMED(cudaFree(d_router_logits_half_),
+                if (!DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_router_logits_half_, "d_router_logits_half_"),
                                           "cudaFree(router FP16 logits)")) return false;
                 d_router_logits_half_ = nullptr;
             }
             const size_t input_elements = static_cast<size_t>(tokens) * hidden_;
             const size_t logit_elements = static_cast<size_t>(tokens) * cfg_.num_experts;
-            if (!DEE_CUDA_CHECK_NAMED(cudaMalloc(reinterpret_cast<void**>(&d_router_input_),
-                                                  input_elements * sizeof(float)),
+            if (!DEE_CUDA_CHECK_NAMED(DEE_TA_MALLOC(reinterpret_cast<void**>(&d_router_input_),
+                                                  input_elements * sizeof(float), "d_router_input_"),
                                       "cudaMalloc(router input)") ||
-                !DEE_CUDA_CHECK_NAMED(cudaMalloc(&d_router_input_half_,
-                                                  input_elements * sizeof(uint16_t)),
+                !DEE_CUDA_CHECK_NAMED(DEE_TA_MALLOC(&d_router_input_half_,
+                                                  input_elements * sizeof(uint16_t), "d_router_input_half_"),
                                       "cudaMalloc(router FP16 input)") ||
-                !DEE_CUDA_CHECK_NAMED(cudaMalloc(&d_router_logits_half_,
-                                                  logit_elements * sizeof(uint16_t)),
+                !DEE_CUDA_CHECK_NAMED(DEE_TA_MALLOC(&d_router_logits_half_,
+                                                  logit_elements * sizeof(uint16_t), "d_router_logits_half_"),
                                       "cudaMalloc(router FP16 logits)")) return false;
             router_capacity_tokens_ = static_cast<size_t>(tokens);
         }
@@ -1288,6 +1289,7 @@ const uint16_t* Engine::get_staging_bf16(int source_layer, int expert) {
                 profiler_.add_cpu(CpuStage::MmapToPinned, copy_begin);
                 profiler_.note_mmap_copy(source_bytes);
             }
+            DEE_TA_INSERT("pinned_staging_bf16_", key, allocation, "cudaMallocHost_or_cudaHostAlloc");  // Milestone 3 v5: assert origin tag in post-mortem
             pinned_staging_bf16_.emplace(key, allocation);
             pinned_staging_bytes_ += source_bytes;
             return destination;
@@ -1376,6 +1378,7 @@ const Engine::QuantizedExpert* Engine::get_staging_int8(int source_layer, int ex
             blob_elems_ * sizeof(uint16_t));
         profiler_.note_mmap_copy(blob_elems_ * sizeof(uint16_t));
     }
+    DEE_TA_INSERT("staging_int8_", key, std::move(quantized), "cudaMallocHost");  // Milestone 3 v5: assert origin tag in post-mortem
     auto inserted = staging_int8_.emplace(key, std::move(quantized));
     return &inserted.first->second;
 }
@@ -1442,6 +1445,7 @@ const Engine::QuantizedExpert* Engine::get_staging_int4(int source_layer, int ex
             blob_elems_ * sizeof(uint16_t));
         profiler_.note_mmap_copy(blob_elems_ * sizeof(uint16_t));
     }
+    DEE_TA_INSERT("staging_int8_", key, std::move(quantized), "cudaMallocHost");  // Milestone 3 v5: assert origin tag in post-mortem
     auto inserted = staging_int8_.emplace(key, std::move(quantized));
     return &inserted.first->second;
 }
@@ -1550,7 +1554,7 @@ void Engine::release_transient_bf16_sources() {
     size_t released_pinned = 0;
     for (const auto& entry : pinned_staging_bf16_) {
         if (entry.second) {
-            DEE_CUDA_CHECK_NAMED(cudaFreeHost(entry.second),
+            DEE_CUDA_CHECK_NAMED(DEE_TA_FREE_HOST(entry.second, "entry"),
                                  "cudaFreeHost(transient BF16 expert source)");
             released_pinned += blob_elems_ * sizeof(uint16_t);
         }
@@ -1782,7 +1786,7 @@ bool Engine::init(const EngineConfig& cfg) {
         if (oracle_.upload_to_gpu()) {
             const size_t scratch_elements = static_cast<size_t>(256 + 256);
             if (DEE_CUDA_CHECK_NAMED(
-                    cudaMalloc(&d_oracle_scratch_, scratch_elements * sizeof(float)),
+                    DEE_TA_MALLOC(&d_oracle_scratch_, scratch_elements * sizeof(float), "d_oracle_scratch_"),
                     "cudaMalloc(oracle scratch)")) {
                 gpu_oracle_ready_ = true;
                 if (cfg.verbose) {
@@ -1816,8 +1820,8 @@ bool Engine::init(const EngineConfig& cfg) {
     if (cfg.use_cuda) {
 #ifdef DEE_CUDA
         be.kind = "cuda";
-        be.alloc = [](size_t n) -> void* { void* p = nullptr; return DEE_CUDA_CHECK_NAMED(cudaMalloc(&p, n), "cudaMalloc(expert cache)") ? p : nullptr; };
-        be.free  = [](void* p) { if (p) DEE_CUDA_CHECK_NAMED(cudaFree(p), "cudaFree(expert cache)"); };
+        be.alloc = [](size_t n) -> void* { void* p = nullptr; return DEE_CUDA_CHECK_NAMED(DEE_TA_MALLOC(&p, n, "p"), "cudaMalloc(expert cache)") ? p : nullptr; };
+        be.free  = [](void* p) { if (p) DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(p, "p"), "cudaFree(expert cache)"); };
 #else
         fprintf(stderr, "[engine] --cuda requested but this build has DEE_CUDA=OFF\n");
         return false;
@@ -1839,11 +1843,11 @@ bool Engine::init(const EngineConfig& cfg) {
         if (!DEE_CUDA_CHECK_NAMED(cudaGetDevice(&device), "cudaGetDevice")) return false;
         cudaDeviceProp prop{};
         if (!DEE_CUDA_CHECK_NAMED(cudaGetDeviceProperties(&prop, device), "cudaGetDeviceProperties")) return false;
-        if (!DEE_CUDA_CHECK_NAMED(cudaStreamCreateWithFlags(&compute_stream_, cudaStreamNonBlocking),
+        if (!DEE_CUDA_CHECK_NAMED(DEE_TA_STREAM_CREATE_FLAGS(&compute_stream_, cudaStreamNonBlocking, "compute_stream_"),
                                   "cudaStreamCreateWithFlags(compute)")) return false;
-        if (!DEE_CUBLAS_CHECK_NAMED(cublasCreate(&cublas_handle_), "cublasCreate") ||
+        if (!DEE_CUBLAS_CHECK_NAMED(DEE_TA_CUBLAS_CREATE(&cublas_handle_, "cublas_handle_"), "cublasCreate") ||
             !DEE_CUBLAS_CHECK_NAMED(cublasSetStream(cublas_handle_, compute_stream_), "cublasSetStream(compute)")) return false;
-        auto dev_alloc = [](size_t n) -> float* { float* p = nullptr; return DEE_CUDA_CHECK_NAMED(cudaMalloc(reinterpret_cast<void**>(&p), n), "cudaMalloc(engine work buffer)") ? p : nullptr; };
+        auto dev_alloc = [](size_t n) -> float* { float* p = nullptr; return DEE_CUDA_CHECK_NAMED(DEE_TA_MALLOC(reinterpret_cast<void**>(&p), n, "p"), "cudaMalloc(engine work buffer)") ? p : nullptr; };
         d_h_in_  = dev_alloc((size_t)hidden_ * sizeof(float));
         d_h_out_ = dev_alloc((size_t)hidden_ * sizeof(float));
         d_hbuf_  = dev_alloc((size_t)inter_  * sizeof(float));
@@ -2010,30 +2014,30 @@ bool Engine::generate() {
 
 #ifdef DEE_CUDA
 void Engine::cuda_cleanup() {
-    if (d_h_in_)  { DEE_CUDA_CHECK_NAMED(cudaFree(d_h_in_), "cudaFree(d_h_in)");  d_h_in_  = nullptr; }
-    if (d_h_out_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_h_out_), "cudaFree(d_h_out)"); d_h_out_ = nullptr; }
-    if (d_hbuf_)  { DEE_CUDA_CHECK_NAMED(cudaFree(d_hbuf_), "cudaFree(d_hbuf)");  d_hbuf_  = nullptr; }
-    if (d_ubuf_)  { DEE_CUDA_CHECK_NAMED(cudaFree(d_ubuf_), "cudaFree(d_ubuf)");  d_ubuf_  = nullptr; }
-    if (d_ybuf_)  { DEE_CUDA_CHECK_NAMED(cudaFree(d_ybuf_), "cudaFree(d_ybuf)");  d_ybuf_  = nullptr; }
-    if (d_h_in_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_h_in_half_), "cudaFree(d_h_in_half)"); d_h_in_half_ = nullptr; }
-    if (d_activation_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_activation_half_), "cudaFree(d_activation_half)"); d_activation_half_ = nullptr; }
-    if (d_router_weight_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_router_weight_half_), "cudaFree(router weight)"); d_router_weight_half_ = nullptr; }
-    if (d_router_input_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_router_input_), "cudaFree(router input)"); d_router_input_ = nullptr; }
-    if (d_router_input_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_router_input_half_), "cudaFree(router FP16 input)"); d_router_input_half_ = nullptr; }
-    if (d_router_logits_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_router_logits_half_), "cudaFree(router FP16 logits)"); d_router_logits_half_ = nullptr; }
+    if (d_h_in_)  { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_h_in_, "d_h_in_"), "cudaFree(d_h_in)");  d_h_in_  = nullptr; }
+    if (d_h_out_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_h_out_, "d_h_out_"), "cudaFree(d_h_out)"); d_h_out_ = nullptr; }
+    if (d_hbuf_)  { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_hbuf_, "d_hbuf_"), "cudaFree(d_hbuf)");  d_hbuf_  = nullptr; }
+    if (d_ubuf_)  { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_ubuf_, "d_ubuf_"), "cudaFree(d_ubuf)");  d_ubuf_  = nullptr; }
+    if (d_ybuf_)  { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_ybuf_, "d_ybuf_"), "cudaFree(d_ybuf)");  d_ybuf_  = nullptr; }
+    if (d_h_in_half_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_h_in_half_, "d_h_in_half_"), "cudaFree(d_h_in_half)"); d_h_in_half_ = nullptr; }
+    if (d_activation_half_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_activation_half_, "d_activation_half_"), "cudaFree(d_activation_half)"); d_activation_half_ = nullptr; }
+    if (d_router_weight_half_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_router_weight_half_, "d_router_weight_half_"), "cudaFree(router weight)"); d_router_weight_half_ = nullptr; }
+    if (d_router_input_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_router_input_, "d_router_input_"), "cudaFree(router input)"); d_router_input_ = nullptr; }
+    if (d_router_input_half_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_router_input_half_, "d_router_input_half_"), "cudaFree(router FP16 input)"); d_router_input_half_ = nullptr; }
+    if (d_router_logits_half_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_router_logits_half_, "d_router_logits_half_"), "cudaFree(router FP16 logits)"); d_router_logits_half_ = nullptr; }
     router_capacity_tokens_ = 0;
     router_weight_layer_ = -1;
-    if (d_moe_batch_input_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_input_), "cudaFree(MoE batch input)"); d_moe_batch_input_ = nullptr; }
-    if (d_moe_batch_input_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_input_half_), "cudaFree(MoE batch FP16 input)"); d_moe_batch_input_half_ = nullptr; }
-    if (d_moe_batch_gate_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_gate_half_), "cudaFree(MoE batch gate)"); d_moe_batch_gate_half_ = nullptr; }
-    if (d_moe_batch_up_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_up_half_), "cudaFree(MoE batch up)"); d_moe_batch_up_half_ = nullptr; }
-    if (d_moe_batch_activation_half_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_activation_half_), "cudaFree(MoE batch activation)"); d_moe_batch_activation_half_ = nullptr; }
-    if (d_moe_batch_output_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_moe_batch_output_), "cudaFree(MoE batch output)"); d_moe_batch_output_ = nullptr; }
+    if (d_moe_batch_input_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_batch_input_, "d_moe_batch_input_"), "cudaFree(MoE batch input)"); d_moe_batch_input_ = nullptr; }
+    if (d_moe_batch_input_half_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_batch_input_half_, "d_moe_batch_input_half_"), "cudaFree(MoE batch FP16 input)"); d_moe_batch_input_half_ = nullptr; }
+    if (d_moe_batch_gate_half_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_batch_gate_half_, "d_moe_batch_gate_half_"), "cudaFree(MoE batch gate)"); d_moe_batch_gate_half_ = nullptr; }
+    if (d_moe_batch_up_half_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_batch_up_half_, "d_moe_batch_up_half_"), "cudaFree(MoE batch up)"); d_moe_batch_up_half_ = nullptr; }
+    if (d_moe_batch_activation_half_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_batch_activation_half_, "d_moe_batch_activation_half_"), "cudaFree(MoE batch activation)"); d_moe_batch_activation_half_ = nullptr; }
+    if (d_moe_batch_output_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_batch_output_, "d_moe_batch_output_"), "cudaFree(MoE batch output)"); d_moe_batch_output_ = nullptr; }
     moe_batch_capacity_tokens_ = 0;
-    if (d_oracle_scratch_) { DEE_CUDA_CHECK_NAMED(cudaFree(d_oracle_scratch_), "cudaFree(oracle_scratch)"); d_oracle_scratch_ = nullptr; }
+    if (d_oracle_scratch_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_oracle_scratch_, "d_oracle_scratch_"), "cudaFree(oracle_scratch)"); d_oracle_scratch_ = nullptr; }
     oracle_.free_gpu();
-    if (cublas_handle_) { DEE_CUBLAS_CHECK_NAMED(cublasDestroy(cublas_handle_), "cublasDestroy"); cublas_handle_ = nullptr; }
-    if (compute_stream_) { DEE_CUDA_CHECK_NAMED(cudaStreamDestroy(compute_stream_), "cudaStreamDestroy(compute)"); compute_stream_ = nullptr; }
+    if (cublas_handle_) { DEE_CUBLAS_CHECK_NAMED(DEE_TA_CUBLAS_DESTROY(cublas_handle_, "cublas_handle_"), "cublasDestroy"); cublas_handle_ = nullptr; }
+    if (compute_stream_) { DEE_CUDA_CHECK_NAMED(DEE_TA_STREAM_DESTROY(compute_stream_, "compute_stream_"), "cudaStreamDestroy(compute)"); compute_stream_ = nullptr; }
 }
 
 // GPU forward: Oracle predicts experts -> H2D weight copies (secondary stream)
@@ -2267,13 +2271,13 @@ Engine::~Engine() {
         }
         if (profiler_.enabled()) profiler_.cuda_collect_ready();
         for (const auto& entry : pinned_staging_bf16_) {
-            DEE_CUDA_CHECK_NAMED(cudaFreeHost(entry.second),
+            DEE_CUDA_CHECK_NAMED(DEE_TA_FREE_HOST(entry.second, "entry"),
                                  "cudaFreeHost(persistent BF16 expert source)");
         }
         pinned_staging_bf16_.clear();
         for (const auto& entry : staging_int8_) {
             if (entry.second.pinned) {
-                DEE_CUDA_CHECK_NAMED(cudaFreeHost(entry.second.pinned),
+                DEE_CUDA_CHECK_NAMED(DEE_TA_FREE_HOST(entry.second.pinned, "entry"),
                                      "cudaFreeHost(persistent INT8 expert source)");
             }
         }

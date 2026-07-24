@@ -33,7 +33,8 @@ set(DEE_CORE_SOURCES
     src/async_prefetcher.cpp
     src/pt_loader.cpp
     src/oracle.cpp
-    src/engine.cpp)
+    src/engine.cpp
+    src/trace_alloc.cpp)
 
 add_library(dee_core STATIC ${DEE_CORE_SOURCES})
 set_target_properties(dee_core PROPERTIES POSITION_INDEPENDENT_CODE ON)

@@ -1,4 +1,5 @@
 #include "dee/async_prefetcher.h"
+#include "dee/trace_alloc.h"  // Milestone 3 v5 teardown-forensics sentinel
 
 #include <algorithm>
 #include <chrono>
@@ -29,12 +30,12 @@ AsyncPrefetcher::~AsyncPrefetcher() {
     reset();
 #ifdef DEE_CUDA
     for (auto& slot : staging_slots_) {
-        if (slot.ptr) DEE_CUDA_CHECK_NAMED(cudaFreeHost(slot.ptr), "cudaFreeHost(pinned staging slot)");
+        if (slot.ptr) DEE_CUDA_CHECK_NAMED(DEE_TA_FREE_HOST(slot.ptr, "slot"), "cudaFreeHost(pinned staging slot)");
         if (slot.device_ptr) {
-            DEE_CUDA_CHECK_NAMED(cudaFree(slot.device_ptr), "cudaFree(BF16 device staging slot)");
+            DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(slot.device_ptr, "slot"), "cudaFree(BF16 device staging slot)");
         }
     }
-    if (stream_) DEE_CUDA_CHECK_NAMED(cudaStreamDestroy(static_cast<cudaStream_t>(stream_)),
+    if (stream_) DEE_CUDA_CHECK_NAMED(DEE_TA_STREAM_DESTROY(static_cast<cudaStream_t>(stream_), "stream_"),
                                        "cudaStreamDestroy(prefetch)");
 #endif
 }
@@ -408,7 +409,7 @@ void AsyncPrefetcher::reset() {
 #ifdef DEE_CUDA
     for (auto& transfer : inflight_) {
         if (transfer.event) {
-            DEE_CUDA_CHECK_NAMED(cudaEventDestroy(static_cast<cudaEvent_t>(transfer.event)),
+            DEE_CUDA_CHECK_NAMED(DEE_TA_EVENT_DESTROY(static_cast<cudaEvent_t>(transfer.event), "transfer"),
                                  "cudaEventDestroy(prefetch completion)");
             transfer.event = nullptr;
         }
@@ -423,7 +424,7 @@ void AsyncPrefetcher::reset() {
 bool AsyncPrefetcher::cuda_init() {
 #ifdef DEE_CUDA
     cudaStream_t stream = nullptr;
-    if (!DEE_CUDA_CHECK_NAMED(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking),
+    if (!DEE_CUDA_CHECK_NAMED(DEE_TA_STREAM_CREATE_FLAGS(&stream, cudaStreamNonBlocking, "stream"),
                               "cudaStreamCreateWithFlags(prefetch)")) return false;
     stream_ = static_cast<void*>(stream);
     return true;
@@ -450,7 +451,7 @@ bool AsyncPrefetcher::cuda_submit(long index) {
     if (chosen == static_cast<size_t>(-1) && staging_slots_.size() < ring_size_) {
         PinnedStagingSlot slot;
         slot.bytes = transfer.source_nbytes;
-        if (!DEE_CUDA_CHECK_NAMED(cudaMallocHost(&slot.ptr, slot.bytes),
+        if (!DEE_CUDA_CHECK_NAMED(DEE_TA_MALLOC_HOST(&slot.ptr, slot.bytes, "slot"),
                                   "cudaMallocHost(pinned staging slot)")) return false;
         staging_slots_.push_back(slot);
         chosen = staging_slots_.size() - 1;
@@ -484,10 +485,10 @@ bool AsyncPrefetcher::cuda_submit(long index) {
     if ((transfer.expand_bf16 || transfer.dequantize_int8 || transfer.dequantize_int4) &&
         slot.device_bytes < transfer.source_nbytes) {
         if (slot.device_ptr &&
-            !DEE_CUDA_CHECK_NAMED(cudaFree(slot.device_ptr),
+            !DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(slot.device_ptr, "slot"),
                                   "cudaFree(resize BF16 device staging slot)")) return false;
         slot.device_ptr = nullptr;
-        if (!DEE_CUDA_CHECK_NAMED(cudaMalloc(&slot.device_ptr, transfer.source_nbytes),
+        if (!DEE_CUDA_CHECK_NAMED(DEE_TA_MALLOC(&slot.device_ptr, transfer.source_nbytes, "slot"),
                                   "cudaMalloc(BF16 device staging slot)")) return false;
         slot.device_bytes = transfer.source_nbytes;
     }
@@ -509,7 +510,7 @@ bool AsyncPrefetcher::cuda_submit(long index) {
 
     const auto submission_begin = profiler_ && profiler_->enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
     cudaEvent_t event = nullptr;
-    if (!DEE_CUDA_CHECK_NAMED(cudaEventCreateWithFlags(&event, cudaEventDisableTiming),
+    if (!DEE_CUDA_CHECK_NAMED(DEE_TA_EVENT_CREATE_FLAGS(&event, cudaEventDisableTiming, "event"),
                               "cudaEventCreateWithFlags(prefetch completion)")) return false;
     transfer.event = static_cast<void*>(event);
     const size_t queue_depth = active_transfers_ + 1;
