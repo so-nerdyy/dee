@@ -31,14 +31,6 @@ Usage:
 """
 from __future__ import annotations
 
-#  v6.2 / FIX-12: analyzer stdio must be UTF-8 BEFORE the first
-#  open()/write_text(), otherwise the partial-write crash at line 518
-#  ("'charmap' codec can't encode characters in position 10xxx-10yyy")
-#  re-fires whenever the log contains non-ASCII forensic bytes.
-import os as _anl_os
-_anl_os.environ.setdefault("PYTHONUTF8", "1")
-_anl_os.environ.setdefault("PYTHONIOENCODING", "utf-8")
-
 import argparse
 import json
 import os

@@ -101,23 +101,12 @@ def save_state(payload: dict[str, object]) -> None:
 
 
 def run(cmd, timeout=120, env=None):
-    """Run shell command; return (rc, combined stdout+stderr text).
-
-    v6.2 / FIX-12: merge PYTHONUTF8 + PYTHONIOENCODING into every
-    child env so subprocess Python (including the Kaggle CLI) never
-    defaults to cp1252 charmap and crashes mid-write on non-ASCII
-    bytes captured from the kernel log.
-    """
-    merged_env = os.environ.copy()
-    if env is not None:
-        merged_env.update(env)
-    merged_env.setdefault("PYTHONUTF8", "1")
-    merged_env.setdefault("PYTHONIOENCODING", "utf-8")
+    """Run shell command; return (rc, combined stdout+stderr text)."""
     try:
         cp = subprocess.run(
             cmd, capture_output=True, text=True,
             encoding="utf-8", errors="replace",
-            timeout=timeout, env=merged_env,
+            timeout=timeout, env=env,
         )
         return cp.returncode, (cp.stdout or "") + (cp.stderr or "")
     except subprocess.TimeoutExpired:
