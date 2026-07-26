@@ -772,17 +772,26 @@ def _main_unlocked(argv):
         help="Exact remote commit SHA. Defaults to the current local HEAD.",
     )
     args = parser.parse_args(argv)
+    resume_identity = {}
     if args.run_id:
         RUN_ID = args.run_id
     elif args.no_push:
         try:
-            RUN_ID = json.loads(
+            resume_identity = json.loads(
                 STATE_FILE.read_text(encoding="utf-8")
-            )["run_id"]
+            )
+            RUN_ID = resume_identity["run_id"]
         except (KeyError, OSError, TypeError, ValueError):
             raise RuntimeError(
                 "--no-push resume requires --run-id or a valid supervisor state file"
             )
+    if args.no_push and not resume_identity:
+        try:
+            resume_identity = json.loads(
+                STATE_FILE.read_text(encoding="utf-8")
+            )
+        except (OSError, TypeError, ValueError):
+            resume_identity = {}
     if not args.commit_expected:
         args.commit_expected = subprocess.check_output(
             ["git", "-C", str(ROOT.parent), "rev-parse", "HEAD"],
@@ -803,12 +812,17 @@ def _main_unlocked(argv):
         archive_stale(args.evidence_dir)
 
     start = time.time()
-    save_state({
+    initial_state = {
         "schema_version": 2, "started_at": stamp(), "slug": args.slug,
         "run_id": RUN_ID, "evidence_dir": str(args.evidence_dir),
         "no_push": args.no_push, "no_download": args.no_download,
         "commit_expected": args.commit_expected,
-    }, merge=False)
+    }
+    if args.no_push:
+        for key in ("kaggle_version", "notebook_sha256", "harness_nonce"):
+            if resume_identity.get(key) is not None:
+                initial_state[key] = resume_identity[key]
+    save_state(initial_state, merge=False)
 
     if not args.no_push:
         env_for_kernel = {

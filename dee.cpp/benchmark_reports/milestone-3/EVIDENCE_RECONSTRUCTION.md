@@ -88,3 +88,38 @@ The next push is allowed only after:
    complete.
 
 No teardown root cause or Milestone 3 completion is claimed by this report.
+
+## Version 15 terminal evidence and teardown root cause
+
+Run `20260726T180456Z-f2ce9ce9` executed Kaggle version 15 at commit
+`fb6534a92d90a02bb2c28bceb5f61ff93a8f677a`. The fresh binary identity and
+trace self-test passed. The crash-safe matrix summary records PASS for the
+first six selected variants and `return_code=-6` for `dual-long-prompt`.
+
+The long-prompt child wrote its run artifacts, entered
+`run_ornith_forensics.py:1225` (`gc.collect()`), destroyed the final Engine's
+tracked CUDA resources, then glibc emitted:
+
+```text
+double free or corruption (!prev)
+Fatal Python error: Aborted
+```
+
+There was no `DEE_TA_*_ABORT`. The final tracked sequence destroys the
+`StageProfiler` timeline origin and all 128 pooled CUDA events. The native
+ownership bug is the subsequent implicit member-destruction order:
+
+1. `Engine` declares `AsyncPrefetcher prefetcher_` before
+   `StageProfiler profiler_`.
+2. C++ therefore destroys `profiler_` first.
+3. `AsyncPrefetcher::~AsyncPrefetcher()` then calls
+   `reset()` -> `synchronize_all()`.
+4. Its non-owning `profiler_` pointer is still attached. With profiling enabled,
+   it writes through that pointer into already-destroyed profiler vectors,
+   producing the observed glibc heap abort.
+
+The repair detaches the prefetcher, cache, and oracle profiler pointers after
+the final synchronized profiler collection in `Engine::~Engine()`. The
+dual-device native preflight now enables stage, request, and timeline profiling
+so destruction exercises the previously missing failure path before the
+seven-run matrix begins.

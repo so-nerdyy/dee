@@ -560,29 +560,41 @@ def write_outputs(
     )
 
     if first_op is None:
-        # No abort markers anywhere; emit a clean no-abort report.
+        # No trace-table abort markers. A glibc/ASan fatal is still an abort:
+        # report it explicitly instead of labeling the evidence NO_TRACE_ABORT.
+        glibc_double = any(
+            stat.counts_by_marker.get("glibc_double_free_!prev", 0) > 0
+            for stat, _, _ in per_file
+        )
+        glibc_generic = any(
+            stat.counts_by_marker.get("glibc_generic_corruption", 0) > 0
+            for stat, _, _ in per_file
+        )
+        address_sanitizer = any(
+            stat.counts_by_marker.get("address_sanitizer", 0) > 0
+            for stat, _, _ in per_file
+        )
+        fatal_without_trace = glibc_double or glibc_generic or address_sanitizer
+        result = (
+            "HEAP_ABORT_WITHOUT_TRACE_ABORT"
+            if fatal_without_trace else "NO_TRACE_ABORT"
+        )
         report = {
             "schema_version": 1,
             "generated_at": stamp(),
-            "result": "NO_TRACE_ABORT",
+            "result": result,
             "notes": [
                 "No DEE_TA_*_ABORT markers in any downloaded log.",
-                "Either the v5 sentinel table never caught an invalid free",
-                "(the bug slipped past our hooks), OR glibc fired first and",
-                "the kernel aborted before our post-mortem dump could run.",
+                (
+                    "A heap/sanitizer fatal occurred outside the traced CUDA "
+                    "allocation wrappers."
+                    if fatal_without_trace else
+                    "No traced allocator abort or heap/sanitizer fatal occurred."
+                ),
             ],
-            "glibc_double_free_anywhere": any(
-                stat.counts_by_marker.get("glibc_double_free_!prev", 0) > 0
-                for stat, _, _ in per_file
-            ),
-            "glibc_generic_corruption_anywhere": any(
-                stat.counts_by_marker.get("glibc_generic_corruption", 0) > 0
-                for stat, _, _ in per_file
-            ),
-            "address_sanitizer_anywhere": any(
-                stat.counts_by_marker.get("address_sanitizer", 0) > 0
-                for stat, _, _ in per_file
-            ),
+            "glibc_double_free_anywhere": glibc_double,
+            "glibc_generic_corruption_anywhere": glibc_generic,
+            "address_sanitizer_anywhere": address_sanitizer,
             "per_file_marker_counts": [s.counts_by_marker for s, _, _ in per_file],
         }
         (out_dir / "lifetime_report.json").write_text(
@@ -591,7 +603,7 @@ def write_outputs(
         )
         (out_dir / "timeline.txt").write_text(
             "=== M3 v6 LIFETIME RECONSTRUCTION ===\n"
-            f"RESULT: NO_TRACE_ABORT (no DEE_TA_*_ABORT markers found)\n"
+            f"RESULT: {result} (no DEE_TA_*_ABORT markers found)\n"
             f"GLIBC_DOUBLE_FREE: {report['glibc_double_free_anywhere']}\n"
             f"GLIBC_GENERIC:     {report['glibc_generic_corruption_anywhere']}\n"
             f"ADDRESS_SANITIZER: {report['address_sanitizer_anywhere']}\n"

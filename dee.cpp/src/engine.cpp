@@ -2282,6 +2282,13 @@ Engine::~Engine() {
                                  "cudaStreamSynchronize(engine teardown)");
         }
         if (profiler_.enabled()) profiler_.cuda_collect_ready();
+        // profiler_ is declared after these borrowers, so C++ destroys it
+        // before prefetcher_. AsyncPrefetcher::~AsyncPrefetcher() calls
+        // reset()->synchronize_all(); leaving this pointer attached makes that
+        // teardown write into StageProfiler vectors after their destruction.
+        prefetcher_.set_profiler(nullptr);
+        cache_.set_profiler(nullptr);
+        oracle_.set_profiler(nullptr);
         for (const auto& entry : pinned_staging_bf16_) {
             DEE_CUDA_CHECK_NAMED(DEE_TA_FREE_HOST(entry.second, "entry"),
                                  "cudaFreeHost(persistent BF16 expert source)");
