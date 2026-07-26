@@ -34,6 +34,7 @@ namespace {
 std::mutex           g_mutex;
 bool                 g_enabled = true;
 std::atomic<uint64_t> g_next_id{1};
+std::atomic<size_t>   g_non_selftest_allocs{0};
 
 std::unordered_map<void*, AllocRec> g_live;
 std::vector<InsertRec>              g_insertions;
@@ -120,11 +121,27 @@ uint64_t record_alloc(Kind k, void* ptr, size_t sz, const char* owner,
     rec.line      = line;
     rec.tid       = current_tid();
     rec.alive     = true;
+    if (rec.owner != "__dee_ta_selftest__") {
+        g_non_selftest_allocs.fetch_add(1, std::memory_order_relaxed);
+    }
     std::lock_guard<std::mutex> g(g_mutex);
     auto it = g_live.find(ptr);
     if (it != g_live.end()) {
+        if (it->second.alive) {
+            ++g_mismatch_aborts;
+            std::fprintf(stderr,
+                "[ta_alloc_LIVE_OVERLAP_ABORT] new_id=%llu prev_id=%llu "
+                "ptr=%p kind=%s prev_site=%s:%d new_site=%s:%d\n",
+                (unsigned long long)id,
+                (unsigned long long)it->second.id,
+                ptr, kind_name(it->second.kind),
+                it->second.file.c_str(), it->second.line,
+                rec.file.c_str(), rec.line);
+            dump_internal_no_lock_();
+            std::abort();
+        }
         std::fprintf(stderr,
-            "[ta_alloc_overlap] new_id=%llu prev_id=%llu ptr=%p kind=%s "
+            "[ta_alloc_reuse] new_id=%llu prev_id=%llu ptr=%p kind=%s "
             "prev_site=%s:%d new_site=%s:%d\n",
             (unsigned long long)id,
             (unsigned long long)it->second.id,
@@ -144,7 +161,8 @@ uint64_t record_alloc(Kind k, void* ptr, size_t sz, const char* owner,
     return id;
 }
 
-bool record_free(void* p, const char* owner, const char* file, int line) {
+bool record_free(void* p, Kind expected_kind, const char* owner,
+                 const char* file, int line) {
     if (!g_enabled) return true;
     if (p == nullptr) {
         std::fprintf(stderr,
@@ -177,13 +195,40 @@ bool record_free(void* p, const char* owner, const char* file, int line) {
         dump_internal_no_lock_();
         std::abort();
     }
+    if (it->second.kind != expected_kind) {
+        ++g_mismatch_aborts;
+        const AllocRec& rec = it->second;
+        std::fprintf(stderr,
+            "[ta_free_MISMATCH_ABORT] owner=%s ptr=%p file=%s:%d "
+            "alloc_kind=%s expected_free_kind=%s alloc=%s original_id=%llu "
+            "original_site=%s:%d\n",
+            owner ? owner : "?", p, file ? file : "?", line,
+            kind_name(rec.kind), kind_name(expected_kind),
+            rec.allocator.c_str(), (unsigned long long)rec.id,
+            rec.file.c_str(), rec.line);
+        dump_internal_no_lock_();
+        std::abort();
+    }
+    return true;
+}
+
+void commit_free(void* p, const char* owner, const char* file, int line) {
+    if (!g_enabled || p == nullptr) return;
+    std::lock_guard<std::mutex> g(g_mutex);
+    auto it = g_live.find(p);
+    if (it == g_live.end() || !it->second.alive) {
+        std::fprintf(stderr,
+            "[ta_commit_free_INTERNAL_ERROR] owner=%s ptr=%p file=%s:%d\n",
+            owner ? owner : "?", p, file ? file : "?", line);
+        dump_internal_no_lock_();
+        std::abort();
+    }
     it->second.alive = false;
     std::fprintf(stderr,
         "[ta_free] id=%llu ptr=%p kind=%s alloc=%s owner=%s file=%s:%d\n",
         (unsigned long long)it->second.id, p,
         kind_name(it->second.kind), it->second.allocator.c_str(),
         owner ? owner : "?", file ? file : "?", line);
-    return true;
 }
 
 // Cross-check helper: does `claimed` (the caller's reported origin for an
@@ -288,7 +333,9 @@ void dump_to_stderr_locked() {
 
 size_t live_count() {
     std::lock_guard<std::mutex> g(g_mutex);
-    return g_live.size();
+    size_t n = 0;
+    for (const auto& kv : g_live) if (kv.second.alive) ++n;
+    return n;
 }
 
 size_t dead_count() {
@@ -298,9 +345,92 @@ size_t dead_count() {
     return n;
 }
 
-size_t unalloc_abort_count()    { return g_unalloc_aborts; }
-size_t double_free_abort_count(){ return g_double_free_aborts; }
-size_t mismatch_abort_count()   { return g_mismatch_aborts; }
-size_t uaf_abort_count()        { return g_uaf_aborts; }
+size_t unalloc_abort_count() {
+    std::lock_guard<std::mutex> g(g_mutex);
+    return g_unalloc_aborts;
+}
+size_t double_free_abort_count() {
+    std::lock_guard<std::mutex> g(g_mutex);
+    return g_double_free_aborts;
+}
+size_t mismatch_abort_count() {
+    std::lock_guard<std::mutex> g(g_mutex);
+    return g_mismatch_aborts;
+}
+size_t uaf_abort_count() {
+    std::lock_guard<std::mutex> g(g_mutex);
+    return g_uaf_aborts;
+}
+
+uint64_t allocation_id(void* ptr, bool* alive) {
+    std::lock_guard<std::mutex> g(g_mutex);
+    const auto it = g_live.find(ptr);
+    if (it == g_live.end()) {
+        if (alive) *alive = false;
+        return 0;
+    }
+    if (alive) *alive = it->second.alive;
+    return it->second.id;
+}
+
+size_t non_selftest_alloc_count() {
+    return g_non_selftest_allocs.load(std::memory_order_relaxed);
+}
+
+bool startup_self_test() {
+    std::fprintf(stderr, "[DEE_TA_SELFTEST_BEGIN]\n");
+    std::fflush(stderr);
+#ifdef DEE_CUDA
+    void* ptr = nullptr;
+    const cudaError_t alloc_status =
+        DEE_TA_HOST_ALLOC(
+            &ptr, 64, cudaHostAllocDefault, "__dee_ta_selftest__");
+    if (alloc_status != cudaSuccess || ptr == nullptr) {
+        std::fprintf(stderr, "[DEE_TA_SELFTEST_FAIL] stage=alloc status=%d\n",
+                     static_cast<int>(alloc_status));
+        std::fflush(stderr);
+        return false;
+    }
+    bool alive = false;
+    const uint64_t alloc_id = allocation_id(ptr, &alive);
+    if (alloc_id == 0 || !alive) {
+        std::fprintf(stderr, "[DEE_TA_SELFTEST_FAIL] stage=lookup_alloc\n");
+        std::fflush(stderr);
+        cudaFreeHost(ptr);
+        return false;
+    }
+    note_insertion("__dee_ta_selftest__", alloc_id, ptr, "cudaHostAlloc",
+                   __FILE__, __LINE__);
+    std::fprintf(stderr, "[DEE_TA_ALLOC] id=%llu ptr=%p\n",
+                 static_cast<unsigned long long>(alloc_id), ptr);
+    std::fflush(stderr);
+
+    const cudaError_t free_status =
+        DEE_TA_FREE_HOST(ptr, "__dee_ta_selftest__");
+    bool alive_after = true;
+    const uint64_t free_id = allocation_id(ptr, &alive_after);
+    if (free_status != cudaSuccess || free_id != alloc_id || alive_after) {
+        std::fprintf(
+            stderr,
+            "[DEE_TA_SELFTEST_FAIL] stage=free status=%d alloc_id=%llu free_id=%llu alive=%s\n",
+            static_cast<int>(free_status),
+            static_cast<unsigned long long>(alloc_id),
+            static_cast<unsigned long long>(free_id),
+            alive_after ? "true" : "false");
+        std::fflush(stderr);
+        return false;
+    }
+    std::fprintf(stderr, "[DEE_TA_FREE] id=%llu ptr=%p\n",
+                 static_cast<unsigned long long>(free_id), ptr);
+    std::fprintf(stderr, "[DEE_TA_SELFTEST_PASS] id=%llu\n",
+                 static_cast<unsigned long long>(free_id));
+    std::fflush(stderr);
+    return true;
+#else
+    std::fprintf(stderr, "[DEE_TA_SELFTEST_FAIL] stage=DEE_CUDA_OFF\n");
+    std::fflush(stderr);
+    return false;
+#endif
+}
 
 }  // namespace dee::trace_alloc

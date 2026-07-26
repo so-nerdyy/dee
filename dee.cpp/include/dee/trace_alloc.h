@@ -71,15 +71,19 @@ bool is_enabled();
 uint64_t record_alloc(Kind k, void* ptr, size_t sz, const char* owner,
                        const char* file, int line, const char* allocator);
 
-// Free-time validation: returns true iff the pointer was live and recorded by
-// the SAME allocator tag (or by ANY host-allocator). Returns false (which
-// triggers std::abort in the macro) if:
+// Free-time validation: returns true iff the pointer was live and recorded
+// with the kind required by the native destroy operation. Validation does not
+// mark the record dead; the wrapper commits that transition only after the
+// native free/destroy succeeds. Returns false (which triggers std::abort in
+// the macro) if:
 //   - pointer was never allocated (UNALLOC)
 //   - pointer already freed (DOUBLE-FREE)
 //   - allocator mismatch (MISMATCH)
 //
 // The "owner" argument is logged only; it is not part of the validation.
-bool record_free(void* p, const char* owner, const char* file, int line);
+bool record_free(void* p, Kind expected_kind, const char* owner,
+                 const char* file, int line);
+void commit_free(void* p, const char* owner, const char* file, int line);
 
 // Map insertion log. Append-only.
 void note_insertion(const char* map_name, uint64_t key, void* ptr,
@@ -92,6 +96,14 @@ size_t dead_count();
 size_t unalloc_abort_count();
 size_t double_free_abort_count();
 size_t mismatch_abort_count();
+size_t uaf_abort_count();
+
+// Connectivity proof helpers. allocation_id() returns the retained sentinel
+// record for a pointer after both allocation and free so a caller can prove
+// that the same monotonic ID transitioned alive -> dead.
+uint64_t allocation_id(void* ptr, bool* alive = nullptr);
+size_t non_selftest_alloc_count();
+bool startup_self_test();
 
 }  // namespace dee::trace_alloc
 
@@ -142,6 +154,24 @@ size_t mismatch_abort_count();
                 cudaGetErrorString(_ta_e));                                       \
         }                                                                         \
         return _ta_e;                                                             \
+    }()
+
+#define DEE_TA_HOST_ALLOC(ptr_out, sz_expr, flags_expr, owner_str)               \
+    [&]() -> cudaError_t {                                                       \
+        cudaError_t _ta_e = cudaHostAlloc((ptr_out), (sz_expr), (flags_expr));   \
+        if (_ta_e == cudaSuccess) {                                              \
+            dee::trace_alloc::record_alloc(                                      \
+                dee::trace_alloc::Kind::Host, *(ptr_out),                        \
+                (size_t)(sz_expr), (owner_str), __FILE__, __LINE__,              \
+                "cudaHostAlloc");                                                \
+        } else {                                                                 \
+            std::fprintf(stderr,                                                 \
+                "[ta_alloc_fail=cudaHostAlloc owner=%s file=%s line=%d "        \
+                "sz=%zu err=%s]\n",                                             \
+                (owner_str), __FILE__, __LINE__, (size_t)(sz_expr),              \
+                cudaGetErrorString(_ta_e));                                      \
+        }                                                                        \
+        return _ta_e;                                                            \
     }()
 
 #define DEE_TA_EVENT_CREATE(event_out, owner_str)                                \
@@ -233,12 +263,17 @@ size_t mismatch_abort_count();
 
 #define DEE_TA_FREE(p_expr, owner_str)                                           \
     [&]() -> cudaError_t {                                                       \
-        if (!dee::trace_alloc::record_free((p_expr), (owner_str),                \
+        if (!dee::trace_alloc::record_free((p_expr),                             \
+                                             dee::trace_alloc::Kind::Device,      \
+                                             (owner_str),                        \
                                              __FILE__, __LINE__)) {              \
             std::abort();                                                         \
         }                                                                         \
         cudaError_t _ta_e = cudaFree((p_expr));                                   \
-        if (_ta_e != cudaSuccess) {                                              \
+        if (_ta_e == cudaSuccess) {                                              \
+            dee::trace_alloc::commit_free((p_expr), (owner_str),                 \
+                                           __FILE__, __LINE__);                   \
+        } else {                                                                  \
             std::fprintf(stderr,                                                  \
                 "[ta_free_fail=cudaFree owner=%s file=%s line=%d "               \
                 "err=%s]\n",                                                     \
@@ -249,12 +284,17 @@ size_t mismatch_abort_count();
 
 #define DEE_TA_FREE_HOST(p_expr, owner_str)                                      \
     [&]() -> cudaError_t {                                                       \
-        if (!dee::trace_alloc::record_free((p_expr), (owner_str),                \
+        if (!dee::trace_alloc::record_free((p_expr),                             \
+                                             dee::trace_alloc::Kind::Host,        \
+                                             (owner_str),                        \
                                              __FILE__, __LINE__)) {              \
             std::abort();                                                         \
         }                                                                         \
         cudaError_t _ta_e = cudaFreeHost((p_expr));                               \
-        if (_ta_e != cudaSuccess) {                                              \
+        if (_ta_e == cudaSuccess) {                                              \
+            dee::trace_alloc::commit_free((p_expr), (owner_str),                 \
+                                           __FILE__, __LINE__);                   \
+        } else {                                                                  \
             std::fprintf(stderr,                                                  \
                 "[ta_free_fail=cudaFreeHost owner=%s file=%s line=%d "          \
                 "err=%s]\n",                                                     \
@@ -266,11 +306,15 @@ size_t mismatch_abort_count();
 #define DEE_TA_EVENT_DESTROY(event_expr, owner_str)                              \
     [&]() -> cudaError_t {                                                       \
         if (!dee::trace_alloc::record_free((void*)(event_expr),                  \
+                                             dee::trace_alloc::Kind::Event,       \
                                              (owner_str), __FILE__, __LINE__)) { \
             std::abort();                                                         \
         }                                                                         \
         cudaError_t _ta_e = cudaEventDestroy((event_expr));                      \
-        if (_ta_e != cudaSuccess) {                                              \
+        if (_ta_e == cudaSuccess) {                                              \
+            dee::trace_alloc::commit_free((void*)(event_expr), (owner_str),      \
+                                           __FILE__, __LINE__);                   \
+        } else {                                                                  \
             std::fprintf(stderr,                                                  \
                 "[ta_free_fail=cudaEventDestroy owner=%s file=%s line=%d "      \
                 "err=%s]\n",                                                     \
@@ -282,11 +326,15 @@ size_t mismatch_abort_count();
 #define DEE_TA_STREAM_DESTROY(stream_expr, owner_str)                            \
     [&]() -> cudaError_t {                                                       \
         if (!dee::trace_alloc::record_free((void*)(stream_expr),                \
+                                             dee::trace_alloc::Kind::Stream,      \
                                              (owner_str), __FILE__, __LINE__)) { \
             std::abort();                                                         \
         }                                                                         \
         cudaError_t _ta_e = cudaStreamDestroy((stream_expr));                    \
-        if (_ta_e != cudaSuccess) {                                              \
+        if (_ta_e == cudaSuccess) {                                              \
+            dee::trace_alloc::commit_free((void*)(stream_expr), (owner_str),     \
+                                           __FILE__, __LINE__);                   \
+        } else {                                                                  \
             std::fprintf(stderr,                                                  \
                 "[ta_free_fail=cudaStreamDestroy owner=%s file=%s line=%d "     \
                 "err=%s]\n",                                                     \
@@ -298,11 +346,15 @@ size_t mismatch_abort_count();
 #define DEE_TA_CUBLAS_DESTROY(handle_expr, owner_str)                            \
     [&]() -> cublasStatus_t {                                                    \
         if (!dee::trace_alloc::record_free((void*)(handle_expr),                \
+                                             dee::trace_alloc::Kind::CublasHandle,\
                                              (owner_str), __FILE__, __LINE__)) { \
             std::abort();                                                         \
         }                                                                         \
         cublasStatus_t _ta_e = cublasDestroy((handle_expr));                    \
-        if (_ta_e != CUBLAS_STATUS_SUCCESS) {                                    \
+        if (_ta_e == CUBLAS_STATUS_SUCCESS) {                                    \
+            dee::trace_alloc::commit_free((void*)(handle_expr), (owner_str),     \
+                                           __FILE__, __LINE__);                   \
+        } else {                                                                  \
             std::fprintf(stderr,                                                  \
                 "[ta_free_fail=cublasDestroy owner=%s file=%s line=%d "          \
                 "status=%d]\n",                                                  \
@@ -326,6 +378,7 @@ size_t mismatch_abort_count();
 
 #define DEE_TA_MALLOC(ptr_out, sz_expr, owner_str)               ((void)0)
 #define DEE_TA_MALLOC_HOST(ptr_out, sz_expr, owner_str)           ((void)0)
+#define DEE_TA_HOST_ALLOC(ptr_out, sz_expr, flags_expr, owner_str) ((void)0)
 #define DEE_TA_EVENT_CREATE(event_out, owner_str)                 ((void)0)
 #define DEE_TA_EVENT_CREATE_FLAGS(event_out, flags_expr, owner_str) ((void)0)
 #define DEE_TA_STREAM_CREATE(stream_out, owner_str)               ((void)0)

@@ -1268,7 +1268,9 @@ const uint16_t* Engine::get_staging_bf16(int source_layer, int expert) {
         void* allocation = nullptr;
         const auto pin_begin = profiler_.enabled()
             ? StageProfiler::now() : StageProfiler::TimePoint{};
-        if (DEE_CUDA_CHECK_NAMED(cudaHostAlloc(&allocation, source_bytes, cudaHostAllocDefault),
+        if (DEE_CUDA_CHECK_NAMED(
+                DEE_TA_HOST_ALLOC(&allocation, source_bytes, cudaHostAllocDefault,
+                                  "persistent_bf16_expert_source"),
                                  "cudaHostAlloc(persistent BF16 expert source)")) {
             if (profiler_.enabled()) profiler_.add_cpu(CpuStage::Pinning, pin_begin);
             // Tensor lookup, pin allocation, and host copying are distinct
@@ -1348,7 +1350,10 @@ const Engine::QuantizedExpert* Engine::get_staging_int8(int source_layer, int ex
 #ifdef DEE_CUDA
     const size_t output_bytes = blob_elems_ * sizeof(int8_t);
     if (cfg_.use_cuda && pinned_staging_bytes_ + output_bytes <= kPinnedStagingLimit) {
-        if (DEE_CUDA_CHECK_NAMED(cudaHostAlloc(&quantized.pinned, output_bytes, cudaHostAllocDefault),
+        if (DEE_CUDA_CHECK_NAMED(
+                DEE_TA_HOST_ALLOC(&quantized.pinned, output_bytes,
+                                  cudaHostAllocDefault,
+                                  "persistent_int8_expert_source"),
                                  "cudaHostAlloc(persistent INT8 expert source)")) {
             pinned_staging_bytes_ += output_bytes;
         }
@@ -1378,7 +1383,9 @@ const Engine::QuantizedExpert* Engine::get_staging_int8(int source_layer, int ex
             blob_elems_ * sizeof(uint16_t));
         profiler_.note_mmap_copy(blob_elems_ * sizeof(uint16_t));
     }
-    DEE_TA_INSERT("staging_int8_", key, std::move(quantized), "cudaMallocHost");  // Milestone 3 v5: assert origin tag in post-mortem
+    if (quantized.pinned) {
+        DEE_TA_INSERT("staging_int8_", key, quantized.pinned, "cudaHostAlloc");
+    }
     auto inserted = staging_int8_.emplace(key, std::move(quantized));
     return &inserted.first->second;
 }
@@ -1414,7 +1421,10 @@ const Engine::QuantizedExpert* Engine::get_staging_int4(int source_layer, int ex
     const size_t packed_bytes = (blob_elems_ + 1) / 2;
 #ifdef DEE_CUDA
     if (cfg_.use_cuda && pinned_staging_bytes_ + packed_bytes <= kPinnedStagingLimit) {
-        if (DEE_CUDA_CHECK_NAMED(cudaHostAlloc(&quantized.pinned, packed_bytes, cudaHostAllocDefault),
+        if (DEE_CUDA_CHECK_NAMED(
+                DEE_TA_HOST_ALLOC(&quantized.pinned, packed_bytes,
+                                  cudaHostAllocDefault,
+                                  "persistent_int4_expert_source"),
                                  "cudaHostAlloc(persistent INT4 expert source)")) {
             pinned_staging_bytes_ += packed_bytes;
         }
@@ -1445,7 +1455,9 @@ const Engine::QuantizedExpert* Engine::get_staging_int4(int source_layer, int ex
             blob_elems_ * sizeof(uint16_t));
         profiler_.note_mmap_copy(blob_elems_ * sizeof(uint16_t));
     }
-    DEE_TA_INSERT("staging_int8_", key, std::move(quantized), "cudaMallocHost");  // Milestone 3 v5: assert origin tag in post-mortem
+    if (quantized.pinned) {
+        DEE_TA_INSERT("staging_int8_", key, quantized.pinned, "cudaHostAlloc");
+    }
     auto inserted = staging_int8_.emplace(key, std::move(quantized));
     return &inserted.first->second;
 }

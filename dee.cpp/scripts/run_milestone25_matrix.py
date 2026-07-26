@@ -24,6 +24,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--layer0-regression", type=Path)
     parser.add_argument("--router-parity", type=Path)
     parser.add_argument(
+        "--run-ids", nargs="+",
+        help="Run only these experiment IDs, preserving the declared order.",
+    )
+    parser.add_argument(
         "--prior-audit", type=Path,
         default=REPO_ROOT / "benchmark_reports/milestone-2.5/work/prior-30-tps-audit.md",
     )
@@ -34,9 +38,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def run_tee(command: list[str], log_path: Path,
-            environment: dict[str, str] | None = None) -> float:
+            environment: dict[str, str] | None = None,
+            trace_path: Path | None = None) -> float:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
+    trace = None
+    if trace_path is not None:
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        trace = trace_path.open("a", encoding="utf-8")
     with log_path.open("w", encoding="utf-8") as log:
         process = subprocess.Popen(
             command, cwd=REPO_ROOT, env=environment,
@@ -48,11 +57,37 @@ def run_tee(command: list[str], log_path: Path,
             print(line, end="", flush=True)
             log.write(line)
             log.flush()
+            if trace is not None and (
+                    "[ta_" in line or "[DEE_TA_" in line
+                    or "TRACE_ALLOC" in line):
+                trace.write(line)
+                trace.flush()
+                os.fsync(trace.fileno())
         return_code = process.wait()
+    if trace is not None:
+        trace.close()
     elapsed = time.perf_counter() - started
     if return_code:
         raise subprocess.CalledProcessError(return_code, command)
     return elapsed
+
+
+def write_json_atomic(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
+
+
+def append_progress(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(payload, sort_keys=True) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
 
 
 def main() -> None:
@@ -122,8 +157,29 @@ def main() -> None:
             "single_gpu": True,
         },
     ]
+    if args.run_ids:
+        requested = set(args.run_ids)
+        known = {item["run_id"] for item in experiments}
+        unknown = sorted(requested - known)
+        if unknown:
+            raise RuntimeError(f"unknown experiment IDs: {unknown}")
+        experiments = [
+            item for item in experiments if item["run_id"] in requested
+        ]
+        if [item["run_id"] for item in experiments] != args.run_ids:
+            raise RuntimeError(
+                "--run-ids must follow the declared matrix order: "
+                + ", ".join(item["run_id"] for item in experiments)
+            )
 
-    summary = {"schema_version": 1, "experiments": []}
+    summary = {
+        "schema_version": 2,
+        "selected_run_ids": [item["run_id"] for item in experiments],
+        "experiments": [],
+    }
+    summary_path = args.output_dir / "matrix-summary.json"
+    progress_path = args.output_dir / "matrix-progress.jsonl"
+    write_json_atomic(summary_path, summary)
     for experiment in experiments:
         run_id = experiment["run_id"]
         output = args.output_dir / "runs" / run_id
@@ -139,30 +195,84 @@ def main() -> None:
         environment = os.environ.copy()
         if experiment.get("single_gpu"):
             environment["CUDA_VISIBLE_DEVICES"] = "0"
-        elapsed = run_tee(command, args.output_dir / "logs" / f"{run_id}.log",
-                          environment)
-        report_path = output / "run-report.json"
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-        if report.get("result") != "PASS":
-            raise RuntimeError(f"{run_id} did not pass")
-        analysis_command = [
-            sys.executable, str(REPO_ROOT / "scripts/analyze_milestone25_expert_trace.py"),
-            str(output / "expert-trace.jsonl"),
-            "--output-dir", str(output),
-        ]
-        if (output / "expert-trace.jsonl").stat().st_size:
-            run_tee(analysis_command, args.output_dir / "logs" / f"{run_id}-analysis.log")
-        summary["experiments"].append({
+        running = {
             "run_id": run_id,
-            "elapsed_seconds": elapsed,
-            "result": report["result"],
-            "report": str(report_path.relative_to(args.output_dir)),
-            "generated_token_ids": report["generation"]["generated_token_ids"],
-            "all_40_layers": report["correctness"]["all_40_layers_executed"],
-        })
-        (args.output_dir / "matrix-summary.json").write_text(
-            json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+            "classification": experiment["classification"],
+            "result": "RUNNING",
+            "started_unix": time.time(),
+        }
+        summary["experiments"].append(running)
+        write_json_atomic(summary_path, summary)
+        append_progress(progress_path, running)
+        try:
+            elapsed = run_tee(
+                command, args.output_dir / "logs" / f"{run_id}.log",
+                environment,
+                args.output_dir / "raw-allocation-trace.log",
+            )
+        except subprocess.CalledProcessError as exc:
+            running.update({
+                "result": "FAILED",
+                "return_code": exc.returncode,
+                "finished_unix": time.time(),
+            })
+            write_json_atomic(summary_path, summary)
+            append_progress(progress_path, running)
+            raise
+        try:
+            report_path = output / "run-report.json"
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            if report.get("result") != "PASS":
+                raise RuntimeError(f"{run_id} run-report did not pass")
+            trace_path = output / "expert-trace.jsonl"
+            trace_expected = run_id != "dual-warm-control"
+            if not trace_path.is_file() or (
+                    trace_expected and trace_path.stat().st_size == 0):
+                raise RuntimeError(f"{run_id} expert trace is missing or empty")
+            analysis_command = [
+                sys.executable,
+                str(REPO_ROOT / "scripts/analyze_milestone25_expert_trace.py"),
+                str(trace_path),
+                "--output-dir", str(output),
+            ]
+            if trace_expected:
+                run_tee(
+                    analysis_command,
+                    args.output_dir / "logs" / f"{run_id}-analysis.log",
+                )
+            required_analysis = [] if not trace_expected else [
+                output / "expert-cache-analysis.json",
+                output / "transfer-analysis.json",
+            ]
+            missing_analysis = [
+                str(path) for path in required_analysis
+                if not path.is_file() or path.stat().st_size == 0
+            ]
+            if missing_analysis:
+                raise RuntimeError(
+                    f"{run_id} trace postprocessing omitted: {missing_analysis}"
+                )
+            running.clear()
+            running.update({
+                "run_id": run_id,
+                "elapsed_seconds": elapsed,
+                "result": report["result"],
+                "report": str(report_path.relative_to(args.output_dir)),
+                "generated_token_ids": report["generation"]["generated_token_ids"],
+                "all_40_layers": report["correctness"]["all_40_layers_executed"],
+                "finished_unix": time.time(),
+            })
+            write_json_atomic(summary_path, summary)
+            append_progress(progress_path, running)
+        except Exception as exc:
+            running.update({
+                "result": "FAILED",
+                "reason": f"{type(exc).__name__}: {exc}",
+                "finished_unix": time.time(),
+            })
+            write_json_atomic(summary_path, summary)
+            append_progress(progress_path, running)
+            raise
     if not args.skip_aggregate:
         if args.layer0_regression is None:
             raise RuntimeError("--layer0-regression is required unless --skip-aggregate is used")

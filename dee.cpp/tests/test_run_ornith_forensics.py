@@ -1,9 +1,47 @@
 import unittest
 
-from scripts.run_ornith_forensics import build_expert_events, build_layer_timing
+from scripts.run_ornith_forensics import (
+    build_expert_events,
+    build_layer_timing,
+    build_synchronization_analysis,
+)
 
 
 class ForensicPackagingTests(unittest.TestCase):
+    def test_synchronization_uses_representative_cumulative_delta(self):
+        def snapshot(step, phase, host_syncs, stream_waits, sync_ms):
+            return {
+                "step": step,
+                "phase": phase,
+                "layers": [{
+                    "profile": {
+                        "operations": {
+                            "host_synchronizations": host_syncs,
+                            "stream_waits": stream_waits,
+                        },
+                        "cpu_ms": {"synchronization": sync_ms},
+                    },
+                }],
+            }
+
+        result = build_synchronization_analysis({
+            "wall_spans": [],
+            "profile_snapshots": [
+                snapshot(0, "prefill", 6, 1, 1.5),
+                snapshot(1, "decode", 14, 3, 2.5),
+                snapshot(2, "decode", 22, 6, 4.0),
+            ],
+        })
+        self.assertEqual(result["representative_step"], 2)
+        self.assertEqual(result["host_synchronization_events_total"], 8)
+        self.assertEqual(result["stream_wait_events_total"], 3)
+        self.assertEqual(
+            result["host_synchronization_events_breakdown"][
+                "cpu_section_synchronization_ms_total"
+            ],
+            1.5,
+        )
+
     def test_layer_timing_uses_cumulative_profile_deltas(self):
         timing = {
             "wall_spans": [

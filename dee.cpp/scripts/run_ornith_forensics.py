@@ -32,6 +32,10 @@ BASELINE_TOKENS = {
     "Hello": [11, 271, 40, 1044],
     "2+2=": [19, 271, 248068, 198],
     "Paris": [11, 279, 4170, 314],
+    # Exact M3 v4 full-runtime output prefix. This is a regression oracle
+    # for the seventh matrix variant; router/layer-0 reference parity is
+    # independently checked against Transformers later in the notebook.
+    "The quick brown fox jumps over the lazy dog.": [198, 760],
 }
 
 
@@ -347,20 +351,44 @@ def build_synchronization_analysis(timing: dict[str, Any]) -> dict[str, Any]:
         by_name[name] += 1
         by_name_wall_ms[name] += float(span.get("cpu_wall_ms", 0.0))
     snapshots = timing.get("profile_snapshots", [])
-    stream_waits_total = 0
-    host_synchronizations_total_cpu_section = 0
-    host_synchronizations_total_dedicated = 0
-    for snapshot in snapshots:
+
+    def snapshot_totals(snapshot: dict[str, Any]) -> tuple[int, int, float]:
+        stream_waits = 0
+        host_synchronizations = 0
+        synchronization_ms = 0.0
         for layer_item in snapshot.get("layers", []):
             profile = layer_item.get("profile", {})
-            gpu_section = profile.get("gpu_ms", {})
-            stream_waits_total += int(gpu_section.get("stream_wait", 0))
-            host_synchronizations_total_cpu_section += int(
-                profile.get("cpu_ms", {}).get("synchronization", 0)
+            operations = profile.get("operations", {})
+            stream_waits += int(operations.get("stream_waits", 0) or 0)
+            host_synchronizations += int(
+                operations.get("host_synchronizations", 0) or 0
             )
-            host_synchronizations_total_dedicated += int(
-                profile.get("host_synchronizations", 0)
+            synchronization_ms += float(
+                profile.get("cpu_ms", {}).get("synchronization", 0) or 0
             )
+        return stream_waits, host_synchronizations, synchronization_ms
+
+    # Native profile snapshots are cumulative. Compare the second decode
+    # snapshot with its predecessor, matching the representative warm decode
+    # used by the timing analyzer, instead of summing cumulative snapshots.
+    decode_indices = [
+        index for index, snapshot in enumerate(snapshots)
+        if snapshot.get("phase") == "decode"
+    ]
+    selected_index = decode_indices[1] if len(decode_indices) > 1 else (
+        decode_indices[0] if decode_indices else None
+    )
+    stream_waits_total = 0
+    host_synchronizations_total_dedicated = 0
+    host_synchronization_ms = 0.0
+    selected_step = None
+    if selected_index is not None:
+        current = snapshot_totals(snapshots[selected_index])
+        previous = snapshot_totals(snapshots[selected_index - 1]) if selected_index else (0, 0, 0.0)
+        stream_waits_total = max(0, current[0] - previous[0])
+        host_synchronizations_total_dedicated = max(0, current[1] - previous[1])
+        host_synchronization_ms = max(0.0, current[2] - previous[2])
+        selected_step = snapshots[selected_index].get("step")
     by_step: dict[int, dict[str, int]] = collections.defaultdict(
         lambda: collections.Counter()
     )
@@ -372,7 +400,6 @@ def build_synchronization_analysis(timing: dict[str, Any]) -> dict[str, Any]:
             continue
         by_step[step][span.get("name", "")] += 1
     host_synchronizations_total = (
-        host_synchronizations_total_cpu_section +
         host_synchronizations_total_dedicated
     )
     return {
@@ -382,13 +409,37 @@ def build_synchronization_analysis(timing: dict[str, Any]) -> dict[str, Any]:
         "stream_wait_events_total": stream_waits_total,
         "host_synchronization_events_total": host_synchronizations_total,
         "host_synchronization_events_breakdown": {
-            "cpu_section_synchronization_ms_total": host_synchronizations_total_cpu_section,
+            "cpu_section_synchronization_ms_total": host_synchronization_ms,
             "dedicated_host_synchronization_counter_total": host_synchronizations_total_dedicated,
         },
+        "representative_step": selected_step,
+        "snapshot_scope": "representative_decode_delta",
         "step_breakdown": {f"step_{step}": dict(counts)
                             for step, counts in sorted(by_step.items())},
         "model_level_excluded_spans_count": model_level_excluded_spans_count,
     }
+
+
+def representative_decode_nvml_samples(
+    timing: dict[str, Any],
+) -> tuple[list[dict[str, Any]], int | None]:
+    decode_steps = [
+        row for row in timing.get("steps", [])
+        if row.get("phase") == "decode"
+    ]
+    selected = (
+        decode_steps[1] if len(decode_steps) > 1
+        else (decode_steps[0] if decode_steps else None)
+    )
+    if selected is None:
+        return [], None
+    begin = int(selected["begin_monotonic_ns"])
+    end = int(selected["end_monotonic_ns"])
+    samples = [
+        row for row in timing.get("nvml", {}).get("samples", [])
+        if begin <= int(row.get("monotonic_ns", -1)) <= end
+    ]
+    return samples, int(selected["step"])
 
 
 def build_overlap_analysis(nvml_samples: list[dict[str, Any]],
@@ -1076,11 +1127,14 @@ def main() -> None:
     # timing["engine_timelines"], already produced by the M2.5 forensic
     # recorder.  No additional per-call instrumentation is needed; these
     # JSONs are pure re-aggregation.
-    nvml_samples = timing["nvml"].get("samples", [])
+    nvml_samples, overlap_step = representative_decode_nvml_samples(timing)
+    overlap_analysis = build_overlap_analysis(nvml_samples, effective_gpus)
+    overlap_analysis["representative_step"] = overlap_step
+    overlap_analysis["sample_scope"] = "representative_decode"
     write_json(args.output_dir / "synchronization-analysis.json",
                build_synchronization_analysis(timing))
     write_json(args.output_dir / "overlap-analysis.json",
-               build_overlap_analysis(nvml_samples, effective_gpus))
+               overlap_analysis)
     write_json(args.output_dir / "multi-gpu-timeline.json",
                build_multi_gpu_timeline(timing, expert_events))
 

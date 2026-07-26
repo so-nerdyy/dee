@@ -26,6 +26,7 @@
 // 31.647 tok/s baseline (which uses --oracle oracle.pt) is unaffected.
 
 #include "dee/oracle.h"
+#include "dee/trace_alloc.h"
 
 #include <algorithm>
 #include <chrono>
@@ -241,7 +242,9 @@ bool OracleScheduler::upload_to_gpu() {
 
         auto alloc_and_copy = [](float*& d_ptr, const std::vector<float>& src, const char* name) -> bool {
             const size_t bytes = src.size() * sizeof(float);
-            if (!DEE_CUDA_CHECK_NAMED(cudaMalloc(&d_ptr, bytes), name)) return false;
+            if (!DEE_CUDA_CHECK_NAMED(
+                    DEE_TA_MALLOC(reinterpret_cast<void**>(&d_ptr), bytes, name),
+                    name)) return false;
             if (!DEE_CUDA_CHECK_NAMED(cudaMemcpy(d_ptr, src.data(), bytes, cudaMemcpyHostToDevice),
                                       name)) return false;
             return true;
@@ -264,7 +267,11 @@ void OracleScheduler::free_gpu() {
     if (is_no_op_) return;
     for (auto& gpu : gpu_layers_) {
         auto safe_free = [](float*& p) {
-            if (p) { cudaFree(p); p = nullptr; }
+            if (p) {
+                DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(p, "oracle_gpu_weight"),
+                                     "cudaFree(oracle GPU weight)");
+                p = nullptr;
+            }
         };
         safe_free(gpu.d_w0); safe_free(gpu.d_b0);
         safe_free(gpu.d_w2); safe_free(gpu.d_b2);

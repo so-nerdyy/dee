@@ -14,7 +14,6 @@ REPO_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.analyze_milestone3_matrix import (  # noqa: E402
-    EXPERT_H2D_LOWER_BOUND_BYTES,
     M25_BASELINES,
     build_before_after,
     classify_defect_1_sequential_dual_gpu,
@@ -101,7 +100,8 @@ def test_defect_2_stream_wait_plus_overlap_fixes():
     overlap = _overlap(both_busy_us=8_000, one_busy_us=2_000,
                         neither_busy_us=0, samples_total=20,
                         samples_both_busy=10)
-    result = classify_defect_2_compute_transfer_overlap(sync, overlap)
+    transfer = {"all_h2d": {"measured_overlap_with_compute_seconds": 0.001}}
+    result = classify_defect_2_compute_transfer_overlap(sync, overlap, transfer)
     assert result["status"] == "FULLY_FIXED", result
 
 
@@ -109,7 +109,8 @@ def test_defect_2_zero_waits_returns_not_fixed():
     sync = _sync(stream_waits=0, host_synchronizations=2488)
     overlap = _overlap(both_busy_us=0, one_busy_us=20_000,
                         samples_total=20, samples_both_busy=0)
-    result = classify_defect_2_compute_transfer_overlap(sync, overlap)
+    transfer = {"all_h2d": {"measured_overlap_with_compute_seconds": 0.0}}
+    result = classify_defect_2_compute_transfer_overlap(sync, overlap, transfer)
     assert result["status"] in {"NOT_FIXED", "PARTIALLY_FIXED"}, result
 
 
@@ -130,25 +131,40 @@ def test_defect_3_high_hit_rate_fixes():
 
 
 def test_defect_4_full_fix_when_below_lower_bound_and_no_repeats():
-    path = {"expert_ids_d2h_total_bytes":
-            EXPERT_H2D_LOWER_BOUND_BYTES * 1.02}
-    transfer = {"repeated_misses_per_token": []}
+    path = {"expert_ids_d2h_total_bytes": 10240}
+    transfer = {
+        "by_component": [{
+            "component": "expert_weight",
+            "direction": "h2d",
+            "measured_bytes": (
+                M25_BASELINES["expert_h2d_bytes_total"].value * 0.80
+            ),
+        }],
+        "same_token_repeat_transfers": {"repeated_events": 0},
+    }
     result = classify_defect_4_repeated_transfers(path, transfer)
     assert result["status"] == "FULLY_FIXED", result
 
 
 def test_defect_4_partial_when_under_baseline():
-    path = {"expert_ids_d2h_total_bytes": int(M25_BASELINES["expert_h2d_bytes_total"].value * 1.02)}
-    transfer = {"repeated_misses_per_token": [{"count": 1}]}
+    path = {"expert_ids_d2h_total_bytes": 10240}
+    transfer = {
+        "by_component": [{
+            "component": "expert_weight",
+            "direction": "h2d",
+            "measured_bytes": int(
+                M25_BASELINES["expert_h2d_bytes_total"].value * 0.97
+            ),
+        }],
+        "same_token_repeat_transfers": {"repeated_events": 1},
+    }
     result = classify_defect_4_repeated_transfers(path, transfer)
     assert result["status"] == "PARTIALLY_FIXED", result
 
 
 def test_defect_5_zero_pinning_fixes():
-    sync = _sync()
-    sync["wall_ms_by_name"]["cudaHostAlloc"] = 1.0
-    sync["wall_ms_by_name"]["mmap_to_pinned"] = 2.0
-    result = classify_defect_5_duplicate_staging(sync)
+    run = {"pinning_ms_total": 1.0, "mmap_to_pinned_ms_total": 2.0}
+    result = classify_defect_5_duplicate_staging(run)
     assert result["status"] == "FULLY_FIXED", result
 
 
@@ -166,7 +182,7 @@ def test_defect_6_all_device_calls_fixes():
 
 
 def test_defect_7_low_syncs_and_both_active_fixes():
-    sync = _sync(stream_waits=120, host_synchronizations=900)
+    sync = _sync(stream_waits=120, host_synchronizations=200)
     overlap = _overlap(samples_total=20, samples_both_busy=4)  # > baseline 1
     result = classify_defect_7_multi_gpu_utilization(sync, overlap)
     assert result["status"] == "FULLY_FIXED", result
@@ -217,7 +233,6 @@ def test_build_before_after_handles_synthetic_run(tmp_path: Path):
 
 
 def test_main_fails_when_no_canonical_run(tmp_path: Path, capsys):
-    args_path = tmp_path / "args.json"
     (tmp_path / "runs" / "dual-cache-disabled").mkdir(parents=True)
     # Force parse_args to use tmp_path's runs/ dir by patching via sys.argv
     backup = sys.argv[:]
@@ -225,7 +240,7 @@ def test_main_fails_when_no_canonical_run(tmp_path: Path, capsys):
                  "--m3-dir", str(tmp_path),
                  "--output-dir", str(tmp_path / "out")]
     try:
-        with pytest.raises(RuntimeError, match="missing canonical run"):
+        with pytest.raises(RuntimeError, match="exactly the seven declared runs"):
             main()
     finally:
         sys.argv = backup

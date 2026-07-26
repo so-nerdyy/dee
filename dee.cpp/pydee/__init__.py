@@ -23,6 +23,8 @@ try:
         EngineConfig,
         DeviceCacheDType,
         WeightTransferDType,
+        _trace_alloc_selftest,
+        _trace_alloc_stats,
     )
 except ImportError:
     # pydee_core not built yet; expose stubs so static imports work.
@@ -30,6 +32,8 @@ except ImportError:
     EngineConfig = None
     DeviceCacheDType = None
     WeightTransferDType = None
+    _trace_alloc_selftest = None
+    _trace_alloc_stats = None
 
 
 def configure(shard_path: str,

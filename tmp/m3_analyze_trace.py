@@ -41,14 +41,13 @@ _anl_os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 import argparse
 import json
-import os
 import re
 import sys
-from collections import Counter, defaultdict
+from collections import Counter
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterator
 
 
 # ------------------------------------------------------------------
@@ -335,11 +334,44 @@ def analyze_log_file(log_path: Path, evidence_root: Path) -> tuple[
                     rec.inserts.append(insert_event)
             elif name in ("insert_uaf", "insert_mismatch",
                           "free_double", "free_unalloc"):
-                inv = build_invalid_op(name, re_match:=_match(raw, name), log_path, lineno, raw)
+                inv = build_invalid_op(
+                    name, _match(raw, name), log_path, lineno, raw
+                )
                 invalid_ops.append(inv)
                 if stats.first_invalid_op is None:
                     stats.first_invalid_op = inv
             continue  # no need for glibc regex after a recognized marker
+
+        # Fail closed on newly added sentinel shapes. A marker must never be
+        # silently treated as NO_TRACE_ABORT merely because this analyzer has
+        # not learned its full field schema yet.
+        if "[ta_" in raw and "_ABORT]" in raw:
+            stats.counts_by_marker["unparsed_trace_abort"] = (
+                stats.counts_by_marker.get("unparsed_trace_abort", 0) + 1
+            )
+            pointer_match = re.search(r"\bptr=(0x[0-9a-fA-F]+|\w+)", raw)
+            tag_match = re.search(r"\[(ta_[A-Za-z0-9_]+_ABORT)\]", raw)
+            pointer = pointer_match.group(1) if pointer_match else "UNKNOWN"
+            invalid = InvalidOp(
+                op_type=tag_match.group(1) if tag_match else "UNPARSED_TRACE_ABORT",
+                ptr_repr=pointer,
+                raw_text=raw,
+                source_log=str(log_path),
+                source_log_relative=stats.log_relative,
+                line_number=lineno,
+                pointer=pointer,
+                alloc_id=None,
+                alloc_kind=None,
+                alloc_allocator=None,
+                alloc_site=None,
+                alloc_line=None,
+                insert_site=None,
+                insert_line=None,
+            )
+            invalid_ops.append(invalid)
+            if stats.first_invalid_op is None:
+                stats.first_invalid_op = invalid
+            continue
 
         if RE_GLIBC_DOUBLE_FREE.search(raw):
             stats.counts_by_marker["glibc_double_free_!prev"] = \
@@ -608,14 +640,14 @@ def write_outputs(
         "EVIDENCE-ONLY CONCLUSION (no fix recommendations per directive):",
         f"  Pointer {op.pointer} produced a {op.op_type} event in",
         f"  source log {op.source_log_relative} at L{op.line_number}.",
-        f"  This is the FIRST invalid operation surfaced by the v5 sentinel",
-        f"  table across the full M3 v6 forensic matrix.  Subsequent",
-        f"  invalid operations targeting other pointers were observed but are",
-        f"  suppressed here per the user's 'first pointer' directive.  Any",
-        f"  fix or repair MUST wait until this exact allocation ID + pointer",
-        f"  + allocator chain is reviewed in the post-mortem dump",
-        f"  (TRACE_ALLOC POST-MORTEM DUMP) that trace_alloc.cpp emits before",
-        f"  std::abort().",
+        "  This is the FIRST invalid operation surfaced by the v5 sentinel",
+        "  table across the full M3 v6 forensic matrix.  Subsequent",
+        "  invalid operations targeting other pointers were observed but are",
+        "  suppressed here per the user's 'first pointer' directive.  Any",
+        "  fix or repair MUST wait until this exact allocation ID + pointer",
+        "  + allocator chain is reviewed in the post-mortem dump",
+        "  (TRACE_ALLOC POST-MORTEM DUMP) that trace_alloc.cpp emits before",
+        "  std::abort().",
     ])
     (out_dir / "timeline.txt").write_text(
         "\n".join(timeline_lines) + "\n", encoding="utf-8",
@@ -638,12 +670,13 @@ def chronologically_order_log_files(
     if not matrix_summary_path or not matrix_summary_path.exists():
         return sorted(log_files, key=lambda p: p.stat().st_mtime)
     summary = json.loads(matrix_summary_path.read_text())
-    runs = summary.get("runs", [])
+    runs = summary.get("experiments", summary.get("runs", []))
     run_order: dict[str, int] = {}
     for i, entry in enumerate(runs):
-        run_order[str(entry.get("id",
-                                 entry.get("name",
-                                            entry.get("label", i))))] = i
+        run_order[str(entry.get(
+            "run_id",
+            entry.get("id", entry.get("name", entry.get("label", i))),
+        ))] = i
     out_of_matrix = 10 ** 6
     def sort_key(p: Path) -> tuple[int, float]:
         return (run_order.get(p.stem, out_of_matrix), p.stat().st_mtime)

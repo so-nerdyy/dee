@@ -32,6 +32,7 @@
 #include <cstdint>
 
 #include "dee/engine.h"
+#include "dee/trace_alloc.h"
 
 namespace py = pybind11;
 
@@ -42,6 +43,22 @@ PYBIND11_MODULE(pydee_core, m) {
     }
     m.doc() = "pydee: Python binding for dee.cpp MoE expert execution "
               "(real-model integration mode; caller owns routing + combine).";
+    m.def("_trace_alloc_selftest", &dee::trace_alloc::startup_self_test,
+          "Run the harmless traced host-allocation connectivity proof.");
+    m.def("_trace_alloc_stats", []() {
+        py::dict result;
+        result["live"] = dee::trace_alloc::live_count();
+        result["dead"] = dee::trace_alloc::dead_count();
+        result["non_selftest_allocs"] =
+            dee::trace_alloc::non_selftest_alloc_count();
+        result["unalloc_aborts"] = dee::trace_alloc::unalloc_abort_count();
+        result["double_free_aborts"] =
+            dee::trace_alloc::double_free_abort_count();
+        result["mismatch_aborts"] =
+            dee::trace_alloc::mismatch_abort_count();
+        result["uaf_aborts"] = dee::trace_alloc::uaf_abort_count();
+        return result;
+    }, "Return bounded trace-allocation connectivity counters.");
 
     py::enum_<dee::DeviceCacheDType>(m, "DeviceCacheDType")
         .value("Fp32", dee::DeviceCacheDType::Fp32)
