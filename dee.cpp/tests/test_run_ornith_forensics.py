@@ -96,7 +96,7 @@ class ForensicPackagingTests(unittest.TestCase):
                 "reuse_distance": 5, "distinct_reuse_distance": 4,
                 "theoretical_min_cache_bytes": 30, "priority": 1,
                 "source_bytes": 16, "destination_bytes": 16,
-                "transfer_id": 7, "source_pinned": True,
+                "transfer_id": 0, "source_pinned": True,
                 "transfer_launched": True, "consumed": True,
                 "evicted_before_use": False,
                 "eviction_reason": "capacity_lru",
@@ -105,7 +105,7 @@ class ForensicPackagingTests(unittest.TestCase):
         timeline = {"traceEvents": [
             {"name": "h2d", "ts": 1000, "dur": 500,
              "args": {"token": 1, "logical_layer": 0, "expert": 9,
-                      "bytes": 16, "transfer_id": 7}},
+                      "bytes": 16, "transfer_id": 0}},
             {"name": "gate_projection", "ts": 1600, "dur": 100,
              "args": {"token": 1, "logical_layer": 0, "expert": 9,
                       "bytes": 0, "transfer_id": 0}},
@@ -138,6 +138,7 @@ class ForensicPackagingTests(unittest.TestCase):
         self.assertTrue(request["transfer_launched"])
         self.assertTrue(request["transfer_consumed"])
         self.assertFalse(request["evicted_before_use"])
+        self.assertEqual(transfer["transfer_id"], 0)
         self.assertEqual(transfer["bytes"], 16)
         self.assertEqual(transfer["transfer_completion_ms"], 1.5)
         self.assertEqual(eviction["expert_id"], 3)

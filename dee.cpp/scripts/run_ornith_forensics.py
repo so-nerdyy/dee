@@ -637,8 +637,13 @@ def build_expert_events(run_id: str, timing: dict[str, Any],
         }]
         for event in timeline:
             args = event.get("args", {})
-            transfer_id = int(args.get("transfer_id", 0) or 0)
-            if transfer_id:
+            # Transfer IDs are Engine-local and start at zero. Do not treat
+            # the first valid transfer as a false/no-ID sentinel.
+            if (
+                event.get("name") in {"h2d", "weight_conversion"}
+                and args.get("transfer_id") is not None
+            ):
+                transfer_id = int(args["transfer_id"])
                 by_transfer[transfer_id].append(event)
             token = int(args.get("token", -1))
             expert = int(args.get("expert", -1))
