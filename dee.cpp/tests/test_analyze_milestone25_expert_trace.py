@@ -152,6 +152,55 @@ class Milestone25ExpertTraceAnalysisTests(unittest.TestCase):
         self.assertTrue(any("expert_bytes was not substituted" in item
                             for item in transfer["limitations"]))
 
+    def test_engine_local_transfer_ids_and_projected_evictions_are_scoped(self):
+        trace = records(
+            {
+                "event_type": "expert_request", "run_id": "warm-1",
+                "token_step": 1, "logical_layer": 0, "resolved_shard_layer": 0,
+                "expert_id": 9, "gpu_destination": "cuda:0",
+                "cache_result": "miss", "evicted_expert_id": 2,
+                "evicted_layer": 0, "eviction_reason": "capacity_lru",
+            },
+            {
+                "event_type": "expert_transfer", "run_id": "warm-1",
+                "token_step": 1, "logical_layer": 0, "resolved_shard_layer": 0,
+                "expert_id": 9, "gpu_destination": "cuda:0",
+                "direction": "h2d", "bytes": 100, "transfer_id": 7,
+            },
+            {
+                "event_type": "expert_eviction", "run_id": "warm-1",
+                "token_step": 1, "logical_layer": 0, "resolved_shard_layer": 0,
+                "expert_id": 2, "triggering_expert_id": 9,
+                "gpu_destination": "cuda:0", "eviction_reason": "capacity_lru",
+            },
+            {
+                "event_type": "expert_request", "run_id": "warm-1",
+                "token_step": 1, "logical_layer": 1, "resolved_shard_layer": 1,
+                "expert_id": 10, "gpu_destination": "cuda:0",
+                "cache_result": "miss", "evicted_expert_id": 3,
+                "evicted_layer": 1, "eviction_reason": "capacity_lru",
+            },
+            {
+                "event_type": "expert_transfer", "run_id": "warm-1",
+                "token_step": 1, "logical_layer": 1, "resolved_shard_layer": 1,
+                "expert_id": 10, "gpu_destination": "cuda:0",
+                "direction": "h2d", "bytes": 100, "transfer_id": 7,
+            },
+            {
+                "event_type": "expert_eviction", "run_id": "warm-1",
+                "token_step": 1, "logical_layer": 1, "resolved_shard_layer": 1,
+                "expert_id": 3, "triggering_expert_id": 10,
+                "gpu_destination": "cuda:0", "eviction_reason": "capacity_lru",
+            },
+        )
+
+        cache, transfer = analyze(trace, "engine-local-ids.jsonl")
+
+        self.assertEqual(transfer["overall"]["transfers"], 2)
+        self.assertEqual(transfer["h2d"]["measured_bytes"], 200)
+        self.assertEqual(cache["input_summary"]["eviction_events"], 2)
+        self.assertEqual(cache["input_summary"]["deduplicated_eviction_records"], 2)
+
     def test_missing_optional_fields_and_invalid_events_are_reported(self):
         trace = records(
             {"event_type": "expert_request", "logical_layer": 1, "expert_id": 9},

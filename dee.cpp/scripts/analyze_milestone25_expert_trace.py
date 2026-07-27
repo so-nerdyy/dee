@@ -390,6 +390,10 @@ def _normalize_eviction(raw: Mapping[str, Any], line: int,
             _pick(source, ("evicted_gpu", "gpu_destination", "destination_gpu", "gpu", "device"))
         ) or parent.get("gpu_destination"),
         "eviction_reason": _pick(source, ("eviction_reason", "reason")),
+        "triggering_expert_id": _integer(
+            _pick(source, ("triggering_expert_id", "trigger_expert_id"))
+        ) if _pick(source, ("triggering_expert_id", "trigger_expert_id")) is not None
+        else parent.get("expert_id"),
     }
 
 
@@ -412,14 +416,23 @@ def read_jsonl(path: Path) -> list[tuple[int, dict[str, Any]]]:
 
 def _deduplicate_transfers(transfers: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
     result: list[dict[str, Any]] = []
-    by_id: dict[tuple[str, str], int] = {}
+    by_id: dict[tuple[str, Any, Any, str], int] = {}
     duplicate_count = 0
     for transfer in transfers:
         transfer_id = transfer.get("transfer_id")
         if transfer_id is None:
             result.append(transfer)
             continue
-        key = (transfer["run_id"], str(transfer_id))
+        # Native transfer IDs are local to one Engine.  Real Ornith creates one
+        # Engine per layer, so (run_id, transfer_id) aliases up to 40 distinct
+        # copies.  Layer and destination scope the ID while still allowing the
+        # request-embedded and standalone records for one copy to merge.
+        key = (
+            transfer["run_id"],
+            transfer.get("physical_layer"),
+            transfer.get("gpu_destination"),
+            str(transfer_id),
+        )
         previous_index = by_id.get(key)
         if previous_index is None:
             by_id[key] = len(result)
@@ -434,6 +447,35 @@ def _deduplicate_transfers(transfers: list[dict[str, Any]]) -> tuple[list[dict[s
         else:
             primary, secondary = previous.copy(), transfer
         for name, value in secondary.items():
+            if primary.get(name) is None and value is not None:
+                primary[name] = value
+        result[previous_index] = primary
+    return result, duplicate_count
+
+
+def _deduplicate_evictions(evictions: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    result: list[dict[str, Any]] = []
+    by_identity: dict[tuple[Any, ...], int] = {}
+    duplicate_count = 0
+    for eviction in evictions:
+        identity = (
+            eviction["run_id"],
+            eviction.get("token_step"),
+            eviction.get("logical_layer"),
+            eviction.get("physical_layer"),
+            eviction.get("gpu_destination"),
+            eviction.get("expert_id"),
+            eviction.get("triggering_expert_id"),
+        )
+        previous_index = by_identity.get(identity)
+        if previous_index is None:
+            by_identity[identity] = len(result)
+            result.append(eviction)
+            continue
+        duplicate_count += 1
+        previous = result[previous_index]
+        primary = previous.copy()
+        for name, value in eviction.items():
             if primary.get(name) is None and value is not None:
                 primary[name] = value
         result[previous_index] = primary
@@ -472,7 +514,8 @@ def normalize(records: list[tuple[int, dict[str, Any]]]) -> dict[str, Any]:
                 evictions.append(eviction)
         else:
             ignored_types[event_type] += 1
-    transfers, deduplicated = _deduplicate_transfers(transfers)
+    transfers, deduplicated_transfers = _deduplicate_transfers(transfers)
+    evictions, deduplicated_evictions = _deduplicate_evictions(evictions)
     for ordinal, request in enumerate(requests):
         request["request_ordinal"] = ordinal
     return {
@@ -481,7 +524,8 @@ def normalize(records: list[tuple[int, dict[str, Any]]]) -> dict[str, Any]:
         "evictions": evictions,
         "ignored_types": dict(sorted(ignored_types.items())),
         "invalid_events": invalid,
-        "deduplicated_transfer_records": deduplicated,
+        "deduplicated_transfer_records": deduplicated_transfers,
+        "deduplicated_eviction_records": deduplicated_evictions,
     }
 
 
@@ -1079,6 +1123,7 @@ def analyze(records: list[tuple[int, dict[str, Any]]], source: str,
             "ignored_event_types": normalized["ignored_types"],
             "invalid_events": normalized["invalid_events"],
             "deduplicated_transfer_records": normalized["deduplicated_transfer_records"],
+            "deduplicated_eviction_records": normalized["deduplicated_eviction_records"],
         },
         "coverage": request_coverage,
         "overall": _request_group_rows(requests, ())[0] if requests else _new_request_group(),
