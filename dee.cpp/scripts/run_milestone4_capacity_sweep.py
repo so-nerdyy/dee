@@ -205,6 +205,16 @@ def main() -> None:
                     ],
                     args.output_dir / "logs" / f"{run_id}-ledger.log",
                 )
+                run_tee(
+                    [
+                        sys.executable,
+                        str(REPO_ROOT / "scripts/analyze_milestone4_capacity_bounds.py"),
+                        "--warmup-trace", str(warmup_trace_path),
+                        "--measured-trace", str(trace_path),
+                        "--output", str(output / "capacity-bounds.json"),
+                    ],
+                    args.output_dir / "logs" / f"{run_id}-capacity-bounds.log",
+                )
 
             running.clear()
             running.update({
