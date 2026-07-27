@@ -1,0 +1,30 @@
+{
+  "id": "nivind/dee-cpp-ornith-milestone-4-capacity-sweep",
+  "title": "dee.cpp Ornith Milestone 4 Capacity Sweep",
+  "code_file": "ornith_milestone4.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "enable_network": true,
+  "accelerator": "NvidiaTeslaT4",
+  "machine_shape": "NvidiaTeslaT4",
+  "machine_spec": {
+    "accelerator": "NvidiaTeslaT4",
+    "gpu_count": 2,
+    "is_shared_vm": false,
+    "container_size": "medium"
+  },
+  "dataset_sources": [
+    "nivind/ornith-1-0-35b"
+  ],
+  "keywords": [
+    "dee.cpp",
+    "ornith",
+    "moe",
+    "milestone-4",
+    "capacity-sweep",
+    "dual-t4"
+  ]
+}
