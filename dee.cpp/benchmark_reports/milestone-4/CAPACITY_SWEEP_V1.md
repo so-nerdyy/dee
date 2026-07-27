@@ -6,8 +6,8 @@ classification artifact.
 
 ## Identity and integrity
 
-- Kaggle kernel: `nivind/dee-cpp-ornith-milestone-4-capacity-sweep`
-- URL: <https://www.kaggle.com/code/nivind/dee-cpp-ornith-milestone-4-capacity-sweep>
+- Kaggle kernel: `nivind/dee-cpp-ornith-milestone-4-ledger-sweep`
+- URL: <https://www.kaggle.com/code/nivind/dee-cpp-ornith-milestone-4-ledger-sweep>
 - Run ID: `20260727T024309Z-capacity-sweep`
 - Tested commit: `726fbfce22d676e9c86e1af1e1cb197d21ea8612`
 - Accelerator: two dedicated Nvidia Tesla T4 GPUs

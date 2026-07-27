@@ -46,6 +46,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-dir", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--require-dual-gpu", action="store_true")
+    parser.add_argument(
+        "--default-cache-experts",
+        type=int,
+        default=8,
+        help="Cache capacity for matrix rows without an explicit diagnostic override.",
+    )
     parser.add_argument("--skip-aggregate", action="store_true")
     parser.add_argument("--layer0-regression", type=Path)
     parser.add_argument("--router-parity", type=Path)
@@ -61,6 +67,14 @@ def parse_args() -> argparse.Namespace:
         "--kernel-slug", default="nivind/dee-cpp-ornith-milestone-2-5-forensics"
     )
     return parser.parse_args()
+
+
+def default_capacity_flags(flags: list[str], capacity: int) -> list[str]:
+    if capacity < 8:
+        raise ValueError("default matrix cache capacity must be at least routing top-k 8")
+    if "--cache-experts" in flags:
+        return []
+    return ["--cache-experts", str(capacity)]
 
 
 def run_tee(command: list[str], log_path: Path,
@@ -145,6 +159,10 @@ def append_progress(path: Path, payload: object) -> None:
 
 def main() -> None:
     args = parse_args()
+    if args.default_cache_experts < 8:
+        raise ValueError(
+            "--default-cache-experts must be at least routing top-k 8"
+        )
     args.output_dir.mkdir(parents=True, exist_ok=True)
     base = [
         sys.executable, "-u", "-X", "faulthandler",
@@ -227,6 +245,7 @@ def main() -> None:
 
     summary = {
         "schema_version": 2,
+        "default_cache_experts": args.default_cache_experts,
         "selected_run_ids": [item["run_id"] for item in experiments],
         "experiments": [],
     }
@@ -243,6 +262,9 @@ def main() -> None:
             "--classification", experiment["classification"],
             "--prompt", experiment["prompt"],
             "--max-new-tokens", str(experiment["tokens"]),
+            *default_capacity_flags(
+                experiment["flags"], args.default_cache_experts
+            ),
             *experiment["flags"],
         ]
         environment = os.environ.copy()

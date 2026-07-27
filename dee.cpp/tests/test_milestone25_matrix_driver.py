@@ -4,6 +4,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 
 SCRIPT = (
     Path(__file__).resolve().parents[1]
@@ -14,6 +16,17 @@ SPEC = importlib.util.spec_from_file_location("run_milestone25_matrix", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 MATRIX = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MATRIX)
+
+
+def test_default_capacity_preserves_explicit_diagnostic_override() -> None:
+    assert MATRIX.default_capacity_flags(["--profile"], 32) == [
+        "--cache-experts", "32",
+    ]
+    assert MATRIX.default_capacity_flags(
+        ["--cache-experts", "4", "--allow-sub-topk-cache"], 32
+    ) == []
+    with pytest.raises(ValueError, match="top-k 8"):
+        MATRIX.default_capacity_flags([], 4)
 
 
 def test_run_tee_keeps_complete_trace_off_notebook_stdout(
