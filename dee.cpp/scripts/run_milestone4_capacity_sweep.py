@@ -96,6 +96,26 @@ def _validate_path_proof(path: Path, run_id: str) -> dict[str, Any]:
     return proof
 
 
+def _validate_timing_completeness(path: Path, run_id: str) -> None:
+    timing = json.loads(path.read_text(encoding="utf-8"))
+    failures = []
+    for snapshot in timing.get("profile_snapshots", []):
+        for layer in snapshot.get("layers", []):
+            operations = layer.get("profile", {}).get("operations", {})
+            dropped = operations.get("timing_events_dropped")
+            if dropped != 0:
+                failures.append({
+                    "phase": snapshot.get("phase"),
+                    "step": snapshot.get("step"),
+                    "layer": layer.get("layer"),
+                    "timing_events_dropped": dropped,
+                })
+    if failures:
+        raise RuntimeError(
+            f"{run_id} CUDA timing instrumentation is incomplete: {failures[:8]}"
+        )
+
+
 def main() -> None:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -176,6 +196,9 @@ def main() -> None:
             proof = _validate_path_proof(output / "path-proof.json", run_id)
 
             if experiment["profiled"]:
+                _validate_timing_completeness(
+                    output / "timing-raw.json", run_id
+                )
                 trace_path = output / "expert-trace.jsonl"
                 warmup_trace_path = output / "warmup-expert-trace.jsonl"
                 if not trace_path.is_file() or trace_path.stat().st_size == 0:

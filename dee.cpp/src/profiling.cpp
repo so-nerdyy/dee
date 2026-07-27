@@ -188,6 +188,7 @@ void StageProfiler::configure(bool enabled, bool trace_enabled,
     host_synchronizations_ = 0;
     duplicate_requests_ = 0;
     repeated_hits_ = 0;
+    timing_events_dropped_ = 0;
     host_wait_ms_.fill(0.0);
     host_wait_count_.fill(0);
     cpu_timeline_origin_ = Clock::now();
@@ -429,6 +430,7 @@ void* StageProfiler::acquire_cuda_event() {
         return event;
     }
     if (all_cuda_events_.size() >= kMaxTimingEvents) {
+        ++timing_events_dropped_;
         std::fprintf(stderr, "[profile] CUDA timing event pool exhausted (%zu events)\n",
                      kMaxTimingEvents);
         return nullptr;
@@ -592,6 +594,7 @@ StageProfile StageProfiler::finish(double total_wall_ms, uint64_t resident_hits,
 #ifdef DEE_CUDA
     result.timing_events_allocated = all_cuda_events_.size() +
         (timeline_origin_event_ ? 1 : 0);
+    result.timing_events_dropped = timing_events_dropped_;
 #endif
     result.average_h2d_copy_bytes = h2d_copies_ ? static_cast<double>(h2d_bytes_) / h2d_copies_ : 0.0;
 
@@ -1061,7 +1064,8 @@ std::string stage_profile_json(const StageProfile& profile, bool include_trace) 
         << ",\"kernel_launches\":" << profile.kernel_launches
         << ",\"stream_waits\":" << profile.stream_waits
         << ",\"host_synchronizations\":" << profile.host_synchronizations
-        << ",\"timing_events_allocated\":" << profile.timing_events_allocated << '}';
+        << ",\"timing_events_allocated\":" << profile.timing_events_allocated
+        << ",\"timing_events_dropped\":" << profile.timing_events_dropped << '}';
     out << ",\"host_waits\":{";
     for (size_t i = 0; i < static_cast<size_t>(HostWaitReason::Count); ++i) {
         if (i) out << ',';

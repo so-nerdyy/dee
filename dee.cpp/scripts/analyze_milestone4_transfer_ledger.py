@@ -156,6 +156,7 @@ def analyze(
     *,
     capacity: int,
     split_layer: int = 20,
+    allow_missing_warmup_timing: bool = False,
 ) -> dict[str, Any]:
     if capacity <= 0:
         raise ValueError("capacity must be positive")
@@ -220,7 +221,8 @@ def analyze(
         expert = int(request["expert_id"])
         resident = actual_resident[domain]
         is_transfer = id(request) in launched_ids
-        victim = int(request.get("evicted_expert_id", -1) or -1)
+        victim_value = request.get("evicted_expert_id", -1)
+        victim = int(victim_value) if victim_value is not None else -1
         was_resident = expert in resident
 
         if is_transfer:
@@ -228,25 +230,49 @@ def analyze(
             matching = transfer_by_id.get(identity, [])
             before = request["cache_state_before"]
             after = request["cache_state_after"]
+            timing_observed = len(matching) == 1
+            timing_optional = (
+                allow_missing_warmup_timing
+                and request["_ledger_phase"] == "warmup"
+            )
             projected_after = set(resident)
             if victim >= 0:
                 projected_after.discard(victim)
             projected_after.add(expert)
-            metadata_consistent = (
-                request.get("cache_kind") == "cold"
-                and request.get("cache_result") == "miss"
-                and len(matching) == 1
-                and int(matching[0].get("bytes", -1)) == int(request["source_bytes"])
-                and int(request["expert_bytes"]) > 0
-                and int(request["source_bytes"]) > 0
-                and int(request["residency_generation"]) > 0
-                and int(after.get("resident_entries", -1)) <= capacity
-                and int(after.get("resident_entries", -1)) >= 1
-                and int(after.get("bytes", -1)) >= int(request["expert_bytes"])
-                and int(request["pin_count_after"]) >= 1
-                and int(before.get("resident_entries", -1)) == len(resident)
-                and int(after.get("resident_entries", -1)) == len(projected_after)
+            metadata_checks = {
+                "cold_request": request.get("cache_kind") == "cold",
+                "cache_miss": request.get("cache_result") == "miss",
+                "transfer_timing_unique_or_optional": (
+                    timing_observed or (timing_optional and not matching)
+                ),
+                "transfer_bytes_match": (
+                    not timing_observed
+                    or int(matching[0].get("bytes", -1))
+                    == int(request["source_bytes"])
+                ),
+                "expert_bytes_positive": int(request["expert_bytes"]) > 0,
+                "source_bytes_positive": int(request["source_bytes"]) > 0,
+                "residency_generation_positive": (
+                    int(request["residency_generation"]) > 0
+                ),
+                "after_entries_within_capacity": (
+                    1 <= int(after.get("resident_entries", -1)) <= capacity
+                ),
+                "after_bytes_cover_expert": (
+                    int(after.get("bytes", -1)) >= int(request["expert_bytes"])
+                ),
+                "pin_count_positive": int(request["pin_count_after"]) >= 1,
+                "before_entries_match_replay": (
+                    int(before.get("resident_entries", -1)) == len(resident)
+                ),
+                "after_entries_match_replay": (
+                    int(after.get("resident_entries", -1)) == len(projected_after)
+                ),
+            }
+            metadata_failures = sorted(
+                name for name, passed in metadata_checks.items() if not passed
             )
+            metadata_consistent = not metadata_failures
             duplicate = was_resident or len(matching) > 1
             wrong_gpu = request["gpu_destination"] != expected_gpu(
                 int(request["logical_layer"]), split_layer
@@ -292,6 +318,7 @@ def analyze(
                 "cache_state_after": after,
                 "residency_generation": int(request["residency_generation"]),
                 "pin_count_after": int(request["pin_count_after"]),
+                "transfer_timing_observed": timing_observed,
                 "another_copy_already_resident": bool(another_copy_gpus),
                 "another_copy_resident_gpus": another_copy_gpus,
                 "another_copy_basis": "replayed per-layer per-GPU cache state",
@@ -311,6 +338,7 @@ def analyze(
                 "serialized_transfer_ms": event.get("serialized_transfer_ms"),
                 "belady_same_capacity_hit": belady_by_object[id(request)],
                 "metadata_consistent": metadata_consistent,
+                "metadata_failures": metadata_failures,
                 "category": category,
                 "source_trace": {
                     "file": request["_source_file"],
@@ -416,11 +444,52 @@ def analyze(
         for phase in ("warmup", "measured")
     }
     total_transfers = aggregate["totals"]["transfers"]
-    if len(transfer_events) != total_transfers:
-        raise ValueError(
-            f"expert transfer event mismatch: {len(transfer_events)} events, "
-            f"{total_transfers} launched requests"
-        )
+    for phase in ("warmup", "measured"):
+        phase_transfer_events = [
+            row for row in transfer_events if row["_ledger_phase"] == phase
+        ]
+        phase_launched = [
+            row for row in launched if row["_ledger_phase"] == phase
+        ]
+        if len(phase_transfer_events) != len(phase_launched) and not (
+            phase == "warmup" and allow_missing_warmup_timing
+        ):
+            raise ValueError(
+                f"{phase} expert transfer timing mismatch: "
+                f"{len(phase_transfer_events)} events, "
+                f"{len(phase_launched)} launched requests"
+            )
+    matched_timing = sum(row["transfer_timing_observed"] for row in ledger)
+    coverage["required_fields_complete"] = coverage["complete"]
+    coverage["timing_complete"] = matched_timing == total_transfers
+    coverage["complete"] = (
+        coverage["required_fields_complete"] and coverage["timing_complete"]
+    )
+    coverage["transfer_timing"] = {
+        "observed": matched_timing,
+        "launched": total_transfers,
+        "fraction": matched_timing / total_transfers if total_transfers else None,
+        "by_phase": {
+            phase: {
+                "observed": sum(
+                    row["transfer_timing_observed"]
+                    for row in ledger if row["phase"] == phase
+                ),
+                "launched": sum(
+                    row["phase"] == phase for row in ledger
+                ),
+            }
+            for phase in ("warmup", "measured")
+        },
+        "note": (
+            "request records are authoritative for count/bytes/lifecycle; "
+            + (
+                "legacy warmup timing gaps were explicitly allowed"
+                if allow_missing_warmup_timing
+                else "all transfer timing is required"
+            )
+        ),
+    }
 
     return {
         "schema_version": 1,
@@ -449,6 +518,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--measured-trace", required=True, type=Path)
     parser.add_argument("--capacity", required=True, type=int)
     parser.add_argument("--split-layer", type=int, default=20)
+    parser.add_argument(
+        "--allow-missing-warmup-timing",
+        action="store_true",
+        help="Permit legacy traces truncated by the pre-M4 CUDA timing pool.",
+    )
     parser.add_argument("--output", required=True, type=Path)
     return parser.parse_args()
 
@@ -460,6 +534,7 @@ def main() -> None:
         read_jsonl(args.measured_trace),
         capacity=args.capacity,
         split_layer=args.split_layer,
+        allow_missing_warmup_timing=args.allow_missing_warmup_timing,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(

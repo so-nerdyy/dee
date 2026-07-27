@@ -209,9 +209,59 @@ def test_transfer_ids_are_scoped_by_profiler_phase():
     assert len({row["stable_key"] for row in report["ledger"]}) == 2
 
 
+def test_evicted_expert_zero_is_replayed_as_a_real_victim():
+    measured = events(
+        request(0, 0, 0),
+        request(1, 1, 1, victim=0, before_entries=1, after_entries=1),
+        request(2, 2, 2, victim=1, before_entries=1, after_entries=1),
+    )
+
+    report = analyze([], measured, capacity=1)
+
+    assert all(row["metadata_consistent"] for row in report["ledger"])
+    assert all(not row["metadata_failures"] for row in report["ledger"])
+
+
+def test_metadata_failure_names_are_reported():
+    report = analyze(
+        [],
+        events(request(0, 1, 0, before_entries=1, after_entries=1)),
+        capacity=2,
+    )
+
+    row = report["ledger"][0]
+    assert not row["metadata_consistent"]
+    assert row["metadata_failures"] == ["before_entries_match_replay"]
+
+
 def test_missing_required_transfer_field_fails_closed():
     row = request(0, 1, 0)
     row.pop("residency_generation")
 
     with pytest.raises(ValueError, match="residency_generation"):
         analyze([], events(row), capacity=2)
+
+
+def test_bounded_warmup_timing_is_reported_but_measured_timing_fails_closed():
+    warm = request(0, 1, 0)
+    measured = request(1, 2, 0, before_entries=1, after_entries=2)
+
+    report = analyze(
+        [warm],
+        events(measured),
+        capacity=2,
+        allow_missing_warmup_timing=True,
+    )
+
+    timing = report["coverage"]["transfer_timing"]
+    assert timing["by_phase"]["warmup"] == {"observed": 0, "launched": 1}
+    assert timing["by_phase"]["measured"] == {"observed": 1, "launched": 1}
+    assert report["ledger"][0]["transfer_timing_observed"] is False
+    assert report["coverage"]["required_fields_complete"]
+    assert not report["coverage"]["timing_complete"]
+    assert not report["coverage"]["complete"]
+
+    with pytest.raises(ValueError, match="warmup expert transfer timing mismatch"):
+        analyze([warm], events(measured), capacity=2)
+    with pytest.raises(ValueError, match="measured expert transfer timing mismatch"):
+        analyze([], [measured], capacity=2)

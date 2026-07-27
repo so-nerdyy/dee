@@ -207,6 +207,7 @@ struct StageProfile {
     uint64_t stream_waits = 0;
     uint64_t host_synchronizations = 0;
     uint64_t timing_events_allocated = 0;
+    uint64_t timing_events_dropped = 0;
     std::array<double, static_cast<size_t>(HostWaitReason::Count)> host_wait_ms{};
     std::array<uint64_t, static_cast<size_t>(HostWaitReason::Count)> host_wait_count{};
 
@@ -378,6 +379,7 @@ private:
     std::unordered_map<int, std::unordered_set<uint64_t>> token_working_sets_;
     std::vector<RequestTraceRecord> trace_;
     std::vector<std::vector<uint64_t>> predictions_;
+    uint64_t timing_events_dropped_ = 0;
 
 #ifdef DEE_CUDA
     struct PendingCudaSample {
@@ -403,7 +405,10 @@ private:
         size_t queue_depth = 0;
         size_t staging_slot = 0;
     };
-    static constexpr size_t kMaxTimingEvents = 128;
+    // A 32-expert CUDA batch can have more than 64 concurrent profiled
+    // operations. Keep this bounded, but large enough to retain one full
+    // batch without silently losing timing records.
+    static constexpr size_t kMaxTimingEvents = 1024;
     std::vector<void*> all_cuda_events_;
     std::vector<void*> free_cuda_events_;
     std::vector<PendingCudaSample> pending_cuda_;
