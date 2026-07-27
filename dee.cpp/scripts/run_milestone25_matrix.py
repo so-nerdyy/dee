@@ -13,6 +13,32 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+TRACE_SYNC_INTERVAL = 256
+
+
+def is_trace_line(line: str) -> bool:
+    return (
+        "[ta_" in line
+        or "[DEE_TA_" in line
+        or "TRACE_ALLOC" in line
+    )
+
+
+def is_critical_trace_line(line: str) -> bool:
+    return (
+        "_ABORT]" in line
+        or "_FAIL]" in line
+        or "TRACE_ALLOC POST-MORTEM" in line
+    )
+
+
+def is_critical_line(line: str) -> bool:
+    return (
+        is_critical_trace_line(line)
+        or "double free or corruption" in line
+        or "Fatal Python error" in line
+        or "AddressSanitizer" in line
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,26 +72,53 @@ def run_tee(command: list[str], log_path: Path,
     if trace_path is not None:
         trace_path.parent.mkdir(parents=True, exist_ok=True)
         trace = trace_path.open("a", encoding="utf-8")
-    with log_path.open("w", encoding="utf-8") as log:
-        process = subprocess.Popen(
-            command, cwd=REPO_ROOT, env=environment,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1,
-        )
-        assert process.stdout is not None
-        for line in process.stdout:
-            print(line, end="", flush=True)
-            log.write(line)
+    try:
+        with log_path.open("w", encoding="utf-8") as log:
+            process = subprocess.Popen(
+                command, cwd=REPO_ROOT, env=environment,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+            )
+            assert process.stdout is not None
+            line_count = 0
+            trace_count = 0
+            for line in process.stdout:
+                line_count += 1
+                traced = is_trace_line(line)
+                critical = is_critical_line(line)
+                # Routine success records remain complete in both disk logs,
+                # but bypass Kaggle's high-overhead notebook/SSE renderer.
+                if not traced or critical:
+                    print(line, end="", flush=True)
+                log.write(line)
+                if trace is not None and traced:
+                    trace.write(line)
+                    trace_count += 1
+
+                if critical:
+                    log.flush()
+                    os.fsync(log.fileno())
+                    if trace is not None:
+                        trace.flush()
+                        os.fsync(trace.fileno())
+                else:
+                    if line_count % TRACE_SYNC_INTERVAL == 0:
+                        log.flush()
+                    if (
+                        trace is not None
+                        and trace_count
+                        and trace_count % TRACE_SYNC_INTERVAL == 0
+                    ):
+                        trace.flush()
+                        os.fsync(trace.fileno())
+            return_code = process.wait()
             log.flush()
-            if trace is not None and (
-                    "[ta_" in line or "[DEE_TA_" in line
-                    or "TRACE_ALLOC" in line):
-                trace.write(line)
-                trace.flush()
-                os.fsync(trace.fileno())
-        return_code = process.wait()
-    if trace is not None:
-        trace.close()
+            os.fsync(log.fileno())
+    finally:
+        if trace is not None:
+            trace.flush()
+            os.fsync(trace.fileno())
+            trace.close()
     elapsed = time.perf_counter() - started
     if return_code:
         raise subprocess.CalledProcessError(return_code, command)

@@ -123,3 +123,30 @@ the final synchronized profiler collection in `Engine::~Engine()`. The
 dual-device native preflight now enables stage, request, and timeline profiling
 so destruction exercises the previously missing failure path before the
 seven-run matrix begins.
+
+## Version 16 teardown closure and performance-gate failure
+
+Run `20260726T203932Z-5a90112c` at repair commit `2e4d534` completed all seven
+matrix variants. The long-prompt row passed with token IDs `[198, 760]`;
+router parity, layer-0 parity, all-40-layer correctness, and 100% device-path
+share passed. Lifetime analysis found no trace abort, glibc corruption, or
+sanitizer fatal. This deterministically closes the teardown defect.
+
+The notebook still terminated `ERROR` because the strict M3-v4 performance
+gate failed:
+
+- warm-control decode: `1.792904 TPS` versus `2.992295 TPS`;
+- representative profiled model wall: `565.536506 ms` versus `372.449266 ms`.
+
+The matrix configuration was unchanged. The connected tracing harness was
+performing four synchronous output operations for every successful allocation
+record: notebook stdout, per-run log write/flush, raw trace write/flush, and
+`fsync`. This is measurement-path overhead absent from v4, and short-run
+elapsed time grew in proportion to the connected trace volume while the
+cold-load-dominated run changed little.
+
+The next harness revision keeps every trace record in the per-run and raw trace
+files, suppresses only routine successful trace lines from notebook stdout,
+periodically syncs batches of 256 records, and immediately flushes/fsyncs trace
+aborts, glibc/Python fatals, and sanitizer reports. The seven matrix variants
+and native runtime remain unchanged.
