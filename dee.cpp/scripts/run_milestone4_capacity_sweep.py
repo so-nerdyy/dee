@@ -177,8 +177,14 @@ def main() -> None:
 
             if experiment["profiled"]:
                 trace_path = output / "expert-trace.jsonl"
+                warmup_trace_path = output / "warmup-expert-trace.jsonl"
                 if not trace_path.is_file() or trace_path.stat().st_size == 0:
                     raise RuntimeError(f"{run_id} expert trace is missing or empty")
+                if (
+                    not warmup_trace_path.is_file()
+                    or warmup_trace_path.stat().st_size == 0
+                ):
+                    raise RuntimeError(f"{run_id} warmup expert trace is missing or empty")
                 run_tee(
                     [
                         sys.executable,
@@ -187,6 +193,17 @@ def main() -> None:
                         "--output-dir", str(output),
                     ],
                     args.output_dir / "logs" / f"{run_id}-analysis.log",
+                )
+                run_tee(
+                    [
+                        sys.executable,
+                        str(REPO_ROOT / "scripts/analyze_milestone4_transfer_ledger.py"),
+                        "--warmup-trace", str(warmup_trace_path),
+                        "--measured-trace", str(trace_path),
+                        "--capacity", str(capacity),
+                        "--output", str(output / "transfer-ledger.json"),
+                    ],
+                    args.output_dir / "logs" / f"{run_id}-ledger.log",
                 )
 
             running.clear()

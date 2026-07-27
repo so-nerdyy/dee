@@ -27,6 +27,20 @@
 #endif
 
 namespace dee {
+
+bool Engine::validate_cache_invariants(std::string* error) const {
+    std::string detail;
+    if (!cache_.validate_invariants(&detail)) {
+        if (error) *error = "cache: " + detail;
+        return false;
+    }
+    if (!prefetcher_.validate_invariants(&detail)) {
+        if (error) *error = "prefetcher: " + detail;
+        return false;
+    }
+    if (error) error->clear();
+    return true;
+}
 namespace {
 
 uint64_t staging_key(int layer, int expert) {
@@ -290,8 +304,9 @@ bool Engine::moe_forward_experts(int layer, const float* h_in, float* experts_ou
                     : swiglu_expert_cuda(
                           cublas_handle_, static_cast<const float*>(d_blob), d_h_in_,
                           d_hbuf_, d_ubuf_, d_ybuf_ + (size_t)k * hidden_,
-                          inter_, hidden_, compute_stream_, nullptr));
+                           inter_, hidden_, compute_stream_, nullptr));
                 if (!ok) return false;
+                prefetcher_.mark_consumed(source_layer, expert);
             }
             if (!DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(compute_stream_),
                                       "cudaStreamSynchronize(external expert batch)")) return false;
@@ -520,6 +535,7 @@ bool Engine::moe_forward_batch(int layer, const float* h_in, int tokens,
                     cache_.unpin(source_layer, expert);
                     return false;
                 }
+                prefetcher_.mark_consumed(source_layer, expert);
                 if (profiler_.enabled()) {
                     profiler_.set_cuda_context(
                         current_token_, layer, expert,
@@ -775,6 +791,7 @@ bool Engine::moe_forward_batch_device(int layer, const void* d_h_in, int tokens,
                 cache_.unpin(source_layer, expert);
                 return false;
             }
+            prefetcher_.mark_consumed(source_layer, expert);
 
             // Device-to-device scatter: write each row's FP32 result from
             // d_moe_batch_output_ to d_experts_out position.  FP32 output
@@ -1661,6 +1678,7 @@ void Engine::forward_layer(int layer, const float* h_in, float* h_out) {
             continue;
         }
         swiglu((const float*)p, h_in, inter_, hidden_, acc.data());
+        prefetcher_.mark_consumed(source_layer, e);
         cache_.touch(source_layer, e);
     }
     // 3) combine (mean over top-K) then stabilize (frozen layer-norm stand-in).
@@ -1845,6 +1863,11 @@ bool Engine::init(const EngineConfig& cfg) {
     }
     if (!cache_.init(budget, be)) {
         fprintf(stderr, "[engine] cache init failed (budget %zu bytes)\n", budget);
+        return false;
+    }
+    cache_.set_debug_validation(cfg_.debug_validate_cache);
+    if (cfg_.debug_validate_cache && !cache_.validate_invariants()) {
+        std::fprintf(stderr, "[engine] cache invariant validation failed after init\n");
         return false;
     }
 
@@ -2140,10 +2163,17 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
                 const VramCacheManager::EnsureInfo info = cache_.last_ensure_info();
                 profiler_.note_request(current_token_, layer, source_layer, expert,
                                        resident ? RequestKind::ResidentHit : RequestKind::ColdLoad,
-                                       cache_.used_bytes(),
                                        info.evicted ? info.evicted_key.layer : -1,
                                        info.evicted ? info.evicted_key.expert : -1,
-                                       cfg_.topk - k);
+                                       cfg_.topk - k,
+                                       info.cache_bytes_before,
+                                       info.cache_entries_before,
+                                       info.cache_bytes_after,
+                                       info.cache_entries_after,
+                                       0, cache_blob_bytes_, 0, false,
+                                       info.generation,
+                                       cache_.pin_count(source_layer, expert),
+                                       false, info.evicted_generation);
             }
             for (int expert : pinned) cache_.unpin(source_layer, expert);
         }
@@ -2211,6 +2241,7 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
                 if (!bypass_cache) cache_.unpin(source_layer, e);
                 return false;
             }
+            if (!bypass_cache) prefetcher_.mark_consumed(source_layer, e);
         }
         if (cfg_.scenario == BenchmarkScenario::TransferOnly) {
             // wait() has already completed every transfer in this batch, so

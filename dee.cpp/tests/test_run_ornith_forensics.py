@@ -90,11 +90,15 @@ class ForensicPackagingTests(unittest.TestCase):
                 "logical_layer": 0, "resolved_shard_layer": 0, "expert": 9,
                 "kind": "cold", "cache_bytes_before": 10,
                 "cache_entries_before": 2, "cache_bytes_used": 20,
+                "cache_bytes_after": 20, "cache_entries_after": 2,
                 "evicted_layer": 0, "evicted_expert": 3,
+                "evicted_generation": 4, "generation": 5, "pin_count": 1,
                 "reuse_distance": 5, "distinct_reuse_distance": 4,
                 "theoretical_min_cache_bytes": 30, "priority": 1,
                 "source_bytes": 16, "destination_bytes": 16,
                 "transfer_id": 7, "source_pinned": True,
+                "transfer_launched": True, "consumed": True,
+                "evicted_before_use": False,
                 "eviction_reason": "capacity_lru",
             }]
         }
@@ -128,6 +132,12 @@ class ForensicPackagingTests(unittest.TestCase):
         self.assertEqual(request["routing_rank"], 2)
         self.assertEqual(request["source_checkpoint_shards"], ["a.safetensors", "b.safetensors"])
         self.assertEqual(request["cache_state_before"]["resident_entries"], 2)
+        self.assertEqual(request["cache_state_after"]["resident_entries"], 2)
+        self.assertEqual(request["residency_generation"], 5)
+        self.assertEqual(request["pin_count_after"], 1)
+        self.assertTrue(request["transfer_launched"])
+        self.assertTrue(request["transfer_consumed"])
+        self.assertFalse(request["evicted_before_use"])
         self.assertEqual(transfer["bytes"], 16)
         self.assertEqual(transfer["transfer_completion_ms"], 1.5)
         self.assertEqual(eviction["expert_id"], 3)

@@ -125,9 +125,13 @@ struct RequestTraceRecord {
     RequestKind kind = RequestKind::ColdLoad;
     size_t cache_bytes_before = 0;
     size_t cache_entries_before = 0;
-    size_t cache_bytes_used = 0;
+    size_t cache_bytes_after = 0;
+    size_t cache_entries_after = 0;
     int evicted_layer = -1;
     int evicted_expert = -1;
+    uint64_t evicted_generation = 0;
+    uint64_t generation = 0;
+    uint32_t pin_count = 0;
     int64_t reuse_distance = -1;
     int64_t distinct_reuse_distance = -1;
     size_t theoretical_min_cache_bytes = 0;
@@ -136,6 +140,9 @@ struct RequestTraceRecord {
     size_t destination_bytes = 0;
     uint64_t transfer_id = 0;
     bool source_pinned = false;
+    bool transfer_launched = false;
+    bool consumed = false;
+    bool evicted_before_use = false;
 };
 
 struct TimelineRecord {
@@ -273,14 +280,22 @@ public:
     }
 
     void note_request(int token, int logical_layer, int resolved_layer, int expert,
-                       RequestKind kind, size_t cache_bytes_used, int evicted_layer,
+                       RequestKind kind, int evicted_layer,
                        int evicted_expert, int priority,
                        size_t cache_bytes_before = 0,
                        size_t cache_entries_before = 0,
+                       size_t cache_bytes_after = 0,
+                       size_t cache_entries_after = 0,
                        size_t source_bytes = 0,
                        size_t destination_bytes = 0,
                        uint64_t transfer_id = 0,
-                       bool source_pinned = false);
+                       bool source_pinned = false,
+                       uint64_t generation = 0,
+                       uint32_t pin_count = 0,
+                       bool transfer_launched = false,
+                       uint64_t evicted_generation = 0);
+    void note_generation_evicted(int resolved_layer, int expert, uint64_t generation);
+    void note_transfer_consumed(int resolved_layer, int expert, uint64_t generation);
     void note_prediction(int token, int logical_layer, int resolved_layer,
                          const std::vector<int>& experts);
     void note_eviction(uint64_t count = 1) { evictions_ += count; }

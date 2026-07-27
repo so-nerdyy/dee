@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <sstream>
+#include <unordered_set>
 
 #ifdef DEE_CUDA
 #include "dee/cuda_check.h"
@@ -73,15 +75,92 @@ bool AsyncPrefetcher::release_transfer(Transfer& transfer) {
     return true;
 }
 
+bool AsyncPrefetcher::validate_invariants(std::string* error) const {
+    auto fail = [&](const std::string& message) {
+        if (error) *error = message;
+        return false;
+    };
+    std::unordered_set<int> mapped_indices;
+    mapped_indices.reserve(key_to_idx_.size());
+    size_t active_count = 0;
+    for (size_t index = 0; index < inflight_.size(); ++index) {
+        const Transfer& transfer = inflight_[index];
+        if (transfer.active_counted) ++active_count;
+    }
+    if (active_count != active_transfers_) {
+        return fail("active transfer count does not match transfer metadata");
+    }
+    for (const auto& entry : key_to_idx_) {
+        const int index = entry.second;
+        if (index < 0 || index >= static_cast<int>(inflight_.size())) {
+            return fail("transfer key maps outside the in-flight table");
+        }
+        if (!mapped_indices.insert(index).second) {
+            return fail("multiple expert keys map to the same transfer");
+        }
+        const Transfer& transfer = inflight_[static_cast<size_t>(index)];
+        if (entry.first != static_cast<long>(
+                key_id(transfer.key.layer, transfer.key.expert))) {
+            return fail("transfer key does not match mapped transfer expert");
+        }
+        if (transfer.abandoned) {
+            return fail("abandoned transfer remains in the current-key map");
+        }
+        if (!cache_.is_resident(transfer.key.layer, transfer.key.expert)) {
+            return fail("current transfer key has no resident cache block");
+        }
+        if (transfer.dst != cache_.data(
+                transfer.key.layer, transfer.key.expert)) {
+            return fail("transfer destination is stale for resident cache block");
+        }
+        if (transfer.nbytes != cache_.size_of(
+                transfer.key.layer, transfer.key.expert)) {
+            return fail("transfer byte count does not match resident cache block");
+        }
+        if (transfer.generation == 0 ||
+            transfer.generation != cache_.generation_of(
+                transfer.key.layer, transfer.key.expert)) {
+            return fail("transfer generation does not match resident cache generation");
+        }
+        if (transfer.cache_pin_held &&
+            cache_.pin_count(transfer.key.layer, transfer.key.expert) == 0) {
+            return fail("transfer claims a cache pin but resident pin count is zero");
+        }
+        if (!transfer.done && !transfer.cache_pin_held) {
+            return fail("in-flight transfer does not hold its cache block pinned");
+        }
+    }
+    if (error) error->clear();
+    return true;
+}
+
+long AsyncPrefetcher::validate_request_result(long transfer_id,
+                                              const char* context) {
+    if (!cache_.debug_validation_enabled()) return transfer_id;
+    std::string error;
+    if (validate_invariants(&error)) return transfer_id;
+    std::ostringstream message;
+    message << "prefetch invariant failure after " << context << ": " << error;
+    cache_.set_last_error(message.str());
+    std::fprintf(stderr, "[dee-cache] %s\n", message.str().c_str());
+    return -1;
+}
+
 void AsyncPrefetcher::record_request(RequestKind kind, int token, int logical_layer,
                                      int resolved_layer, int expert, int priority,
                                      int evicted_layer, int evicted_expert,
                                      size_t cache_bytes_before,
                                      size_t cache_entries_before,
+                                     size_t cache_bytes_after,
+                                     size_t cache_entries_after,
                                      size_t source_bytes,
                                      size_t destination_bytes,
                                      uint64_t transfer_id,
-                                     bool source_pinned) {
+                                     bool source_pinned,
+                                     uint64_t generation,
+                                     uint32_t pin_count,
+                                     bool transfer_launched,
+                                     uint64_t evicted_generation) {
     ++stats_.requests;
     ++stats_.issued;
     switch (kind) {
@@ -91,10 +170,12 @@ void AsyncPrefetcher::record_request(RequestKind kind, int token, int logical_la
     }
     if (profiler_) {
         profiler_->note_request(token, logical_layer, resolved_layer, expert, kind,
-                                cache_.used_bytes(), evicted_layer, evicted_expert, priority,
+                                evicted_layer, evicted_expert, priority,
                                 cache_bytes_before, cache_entries_before,
+                                cache_bytes_after, cache_entries_after,
                                 source_bytes, destination_bytes, transfer_id,
-                                source_pinned);
+                                source_pinned, generation, pin_count,
+                                transfer_launched, evicted_generation);
     }
 }
 
@@ -192,9 +273,12 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
         if (!prior.done && !prior.abandoned) {
             record_request(RequestKind::InflightHit, token, logical_layer, layer,
                            expert, priority, -1, -1, cache_bytes_before,
-                           cache_entries_before, prior.source_nbytes, prior.nbytes,
-                           static_cast<uint64_t>(prior.id), prior.source_pinned);
-            return prior.id;  // never duplicate an in-flight DMA
+                           cache_entries_before, cache_.used_bytes(),
+                           cache_.resident_count(), prior.source_nbytes, prior.nbytes,
+                           static_cast<uint64_t>(prior.id), prior.source_pinned,
+                           prior.generation, cache_.pin_count(layer, expert), false);
+            return validate_request_result(
+                prior.id, "coalesced in-flight request");
         }
         if (prior.done && cache_.is_resident(layer, expert)) {
             // A resident hit must remain protected while the caller stages
@@ -209,9 +293,11 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
             prior.cache_pin_held = true;
             record_request(RequestKind::ResidentHit, token, logical_layer, layer,
                            expert, priority, -1, -1, cache_bytes_before,
-                           cache_entries_before, prior.source_nbytes, prior.nbytes,
-                           static_cast<uint64_t>(prior.id), prior.source_pinned);
-            return prior.id;
+                           cache_entries_before, cache_.used_bytes(),
+                           cache_.resident_count(), prior.source_nbytes, prior.nbytes,
+                           static_cast<uint64_t>(prior.id), prior.source_pinned,
+                           prior.generation, cache_.pin_count(layer, expert), false);
+            return validate_request_result(prior.id, "resident transfer reuse");
         }
         key_to_idx_.erase(static_cast<long>(key_id(layer, expert)));
     }
@@ -239,17 +325,24 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
         transfer.cache_pin_held = true;
         transfer.token = token;
         transfer.logical_layer = logical_layer;
+        transfer.generation = cache_.generation_of(layer, expert);
         inflight_.push_back(transfer);
         const long resident_index = static_cast<long>(inflight_.size() - 1);
         key_to_idx_[request_key] = static_cast<int>(resident_index);
         record_request(RequestKind::ResidentHit, token, logical_layer, layer,
                        expert, priority, -1, -1, cache_bytes_before,
-                       cache_entries_before, source_nbytes, destination_nbytes,
-                       static_cast<uint64_t>(transfer.id), source_pinned);
-        return transfer.id;
+                       cache_entries_before, cache_.used_bytes(),
+                       cache_.resident_count(), source_nbytes, destination_nbytes,
+                       static_cast<uint64_t>(transfer.id), source_pinned,
+                       transfer.generation, cache_.pin_count(layer, expert), false);
+        return validate_request_result(transfer.id, "resident cache hit");
     }
     if (!cache_.ensure(layer, expert, destination_nbytes, priority)) return -1;
     const VramCacheManager::EnsureInfo ensure_info = cache_.last_ensure_info();
+    if (ensure_info.evicted) {
+        key_to_idx_.erase(static_cast<long>(
+            key_id(ensure_info.evicted_key.layer, ensure_info.evicted_key.expert)));
+    }
     void* dst = cache_.data(layer, expert);
     if (!dst || !cache_.pin(layer, expert)) return -1;
 
@@ -270,6 +363,7 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
     transfer.cache_pin_held = true;
     transfer.token = token;
     transfer.logical_layer = logical_layer;
+    transfer.generation = ensure_info.generation;
     inflight_.push_back(transfer);
     const long index = static_cast<long>(inflight_.size() - 1);
     key_to_idx_[static_cast<long>(key_id(layer, expert))] = static_cast<int>(index);
@@ -284,9 +378,12 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
                    ensure_info.evicted ? ensure_info.evicted_key.layer : -1,
                    ensure_info.evicted ? ensure_info.evicted_key.expert : -1,
                    cache_bytes_before, cache_entries_before,
+                   cache_.used_bytes(), cache_.resident_count(),
                    source_nbytes, destination_nbytes,
-                   static_cast<uint64_t>(transfer.id), source_pinned);
-    return transfer.id;
+                   static_cast<uint64_t>(transfer.id), source_pinned,
+                   transfer.generation, cache_.pin_count(layer, expert), true,
+                   ensure_info.evicted_generation);
+    return validate_request_result(transfer.id, "cold transfer launch");
 }
 
 void AsyncPrefetcher::drain_until(int index) {
@@ -344,8 +441,9 @@ bool AsyncPrefetcher::wait_on_stream(int layer, int expert, void* compute_stream
     // profiler can attribute device-side waits separately from host stalls.
     if (profiler_ && profiler_->enabled()) {
         profiler_->set_cuda_context(transfer.token, transfer.logical_layer,
-                                    transfer.key.expert, active_transfers_,
-                                    transfer.staging_slot);
+                                    transfer.key.expert, 0,
+                                    static_cast<uint64_t>(transfer.id),
+                                    active_transfers_, transfer.staging_slot);
         auto ticket = profiler_->cuda_begin(GpuStage::StreamWait, compute_stream);
         profiler_->cuda_end(ticket, compute_stream);
     }
@@ -375,6 +473,12 @@ bool AsyncPrefetcher::wait_on_stream(int layer, int expert, void* compute_stream
     (void)layer; (void)expert; (void)compute_stream;
     return false;
 #endif
+}
+
+void AsyncPrefetcher::mark_consumed(int layer, int expert) {
+    if (!profiler_) return;
+    profiler_->note_transfer_consumed(
+        layer, expert, cache_.generation_of(layer, expert));
 }
 
 void AsyncPrefetcher::synchronize_all() {

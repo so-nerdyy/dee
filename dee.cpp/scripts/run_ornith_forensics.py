@@ -55,6 +55,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile", action="store_true")
     parser.add_argument("--trace-requests", action="store_true")
     parser.add_argument("--profile-timeline", action="store_true")
+    parser.add_argument(
+        "--debug-validate-cache", action="store_true",
+        help="Enable expensive native cache invariant checks for validation runs.",
+    )
     parser.add_argument("--torch-profiler-step", type=int)
     parser.add_argument("--reference-parity", action="store_true")
     parser.add_argument("--warmup-generation", action="store_true")
@@ -680,13 +684,40 @@ def build_expert_events(run_id: str, timing: dict[str, Any],
                     "bytes": int(raw.get("cache_bytes_before", 0)),
                     "resident_entries": int(raw.get("cache_entries_before", 0)),
                 },
+                "cache_state_after": {
+                    "bytes": int(raw.get(
+                        "cache_bytes_after", raw.get("cache_bytes_used", 0)
+                    )),
+                    "resident_entries": int(raw.get(
+                        "cache_entries_after", raw.get("cache_entries_before", 0)
+                    )),
+                },
                 "cache_result": "miss" if raw.get("kind") == "cold" else "hit",
                 "cache_kind": raw.get("kind"),
                 "gpu_destination": gpu,
                 "transfer_id": transfer_id,
+                "transfer_reason": (
+                    "demand_miss" if raw.get("transfer_launched", False)
+                    else "resident_or_inflight_reuse"
+                ),
+                "transfer_launched": bool(raw.get("transfer_launched", False)),
+                "residency_generation": (
+                    int(raw["generation"]) if raw.get("generation") is not None else None
+                ),
+                "pin_count_after": (
+                    int(raw["pin_count"]) if raw.get("pin_count") is not None else None
+                ),
+                "transfer_consumed": (
+                    bool(raw["consumed"]) if raw.get("consumed") is not None else None
+                ),
+                "evicted_before_use": (
+                    bool(raw["evicted_before_use"])
+                    if raw.get("evicted_before_use") is not None else None
+                ),
                 "source_pinned": bool(raw.get("source_pinned", False)),
                 "evicted_layer": int(raw.get("evicted_layer", -1)),
                 "evicted_expert_id": int(raw.get("evicted_expert", -1)),
+                "evicted_generation": int(raw.get("evicted_generation", 0)),
                 "eviction_reason": raw.get("eviction_reason"),
                 "prior_reuse_distance": int(raw.get("reuse_distance", -1)),
                 "prior_distinct_reuse_distance": int(raw.get("distinct_reuse_distance", -1)),
@@ -926,18 +957,39 @@ def main() -> None:
         profile_stages=args.profile,
         trace_requests=args.trace_requests,
         profile_timeline=args.profile_timeline,
+        debug_validate_cache=args.debug_validate_cache,
         allow_diagnostic_sub_topk_cache=args.allow_sub_topk_cache,
         phase_recorder=bridge,
     )
     runtime["context"].cache_disabled = args.cache_disabled
     recorder.set_engines(runtime["engines"])
     warmup_generation = None
+    warmup_engine_profiles = []
+    warmup_engine_timelines = []
     if args.warmup_generation:
+        # M4 transfer accounting needs the complete residency history that
+        # seeds the measured warm-cache run. Start a separate profiler epoch,
+        # capture it below, then retain the existing reset before measurement.
+        if args.profile and args.trace_requests:
+            recorder.reset_engine_profiles()
         with recorder.phase("warmup_generation"):
             warmup_generation = run_generation(
                 runtime, tokenizer, args.prompt, args.max_new_tokens,
                 False, "dee", trace=False,
             )
+        if args.profile and args.trace_requests:
+            warmup_wall_ms = warmup_generation["total_generation_seconds"] * 1000.0
+            for layer, engine in enumerate(runtime["engines"]):
+                warmup_engine_profiles.append({
+                    "layer": layer,
+                    "gpu": recorder.device_for_layer(layer),
+                    "profile": json.loads(engine.external_profile_json(warmup_wall_ms)),
+                })
+                warmup_engine_timelines.append({
+                    "layer": layer,
+                    "gpu": recorder.device_for_layer(layer),
+                    "timeline": json.loads(engine.external_timeline_json(warmup_wall_ms)),
+                })
         memory.checkpoint("after_warmup_generation", include_maps=True,
                           include_smaps=True, include_cuda=True, include_nvml=True)
     if args.profile:
@@ -981,6 +1033,34 @@ def main() -> None:
     runtime["context"].forensics = None
     timing = recorder.stop()
     primary_engine_stats = engine_stats(runtime)
+    cache_invariant_rows = []
+    for layer, engine in enumerate(runtime["engines"]):
+        if not hasattr(engine, "validate_cache_invariants"):
+            cache_invariant_rows.append({
+                "layer": layer,
+                "available": False,
+                "valid": None,
+                "error": "binding unavailable",
+            })
+            continue
+        valid, error = engine.validate_cache_invariants()
+        cache_invariant_rows.append({
+            "layer": layer,
+            "available": True,
+            "valid": bool(valid),
+            "error": error or None,
+        })
+    cache_invariants = {
+        "schema_version": 1,
+        "debug_validation_enabled": args.debug_validate_cache,
+        "all_layers_valid": all(
+            row.get("valid") is True for row in cache_invariant_rows
+        ),
+        "layers": cache_invariant_rows,
+    }
+    write_json(args.output_dir / "cache-invariants.json", cache_invariants)
+    if args.debug_validate_cache and not cache_invariants["all_layers_valid"]:
+        raise RuntimeError("debug cache invariant validation failed")
     primary_tensor_inventory = inventory_tensors(
         {"transformers_model": runtime["model"]},
         owner_metadata={"transformers_model": {
@@ -1083,6 +1163,24 @@ def main() -> None:
     with (args.output_dir / "expert-trace.jsonl").open("w", encoding="utf-8") as stream:
         for event in expert_events:
             stream.write(json.dumps(event, sort_keys=True) + "\n")
+    warmup_expert_events = []
+    if warmup_engine_profiles:
+        warmup_expert_events = build_expert_events(
+            f"{args.run_id}-warmup",
+            {
+                "engine_profiles": warmup_engine_profiles,
+                "engine_timelines": warmup_engine_timelines,
+                "route_selections": [],
+                "wall_spans": [],
+                "profile_snapshots": [],
+            },
+            index,
+        )
+    with (args.output_dir / "warmup-expert-trace.jsonl").open(
+        "w", encoding="utf-8"
+    ) as stream:
+        for event in warmup_expert_events:
+            stream.write(json.dumps(event, sort_keys=True) + "\n")
 
     # Milestone 3: flush the path-proof counters accumulated by
     # run_ornith_generation.HybridExperts.forward.  device_path_calls /
@@ -1176,6 +1274,7 @@ def main() -> None:
             "profile_enabled": args.profile,
             "trace_requests": args.trace_requests,
             "profile_timeline": args.profile_timeline,
+            "debug_validate_cache": args.debug_validate_cache,
             "reference_parity": args.reference_parity,
             "warmup_generation": args.warmup_generation,
         },
@@ -1206,11 +1305,14 @@ def main() -> None:
             "bookkeeping_ms": timing["instrumentation_bookkeeping_ms"],
             "torch_profiler": timing["torch_profiler"],
             "expert_event_count": len(expert_events),
+            "warmup_expert_event_count": len(warmup_expert_events),
         },
         "artifacts": {
             "memory_timeline": "memory-timeline.json",
             "layer_timing": "layer-timing.json",
             "expert_trace": "expert-trace.jsonl",
+            "warmup_expert_trace": "warmup-expert-trace.jsonl",
+            "cache_invariants": "cache-invariants.json",
             "timing_raw": "timing-raw.json",
             "gpu_utilization_summary": "gpu-utilization-summary.json",
         },

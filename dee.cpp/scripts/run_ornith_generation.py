@@ -646,6 +646,7 @@ def tensor_tree_inventory(root, max_objects: int = 100_000):
 def load_runtime(model_dir: Path, gpu_count: int, split_layer: int, cache_experts: int,
                  *, profile_stages: bool = False, trace_requests: bool = False,
                  profile_timeline: bool = False,
+                 debug_validate_cache: bool = False,
                  allow_diagnostic_sub_topk_cache: bool = False,
                  phase_recorder=None):
     import_started = time.perf_counter()
@@ -770,6 +771,7 @@ def load_runtime(model_dir: Path, gpu_count: int, split_layer: int, cache_expert
         cfg.profile_stages = profile_stages
         cfg.trace_requests = trace_requests
         cfg.profile_timeline = profile_timeline
+        cfg.debug_validate_cache = debug_validate_cache
         engine = pydee.Engine()
         if not engine.init(cfg):
             raise RuntimeError(f"dee.cpp Engine::init failed for layer {layer}")
@@ -1067,7 +1069,8 @@ def engine_stats(runtime):
     by_layer = []
     numeric_keys = (
         "cache_hits", "cache_loads", "cold_loads", "resident_hits", "inflight_hits",
-        "evictions", "h2d_bytes", "h2d_copies", "peak_vram", "current_vram",
+        "evictions", "fallbacks", "prefetch_issued", "prefetch_fallbacks",
+        "duplicate_requests", "h2d_bytes", "h2d_copies", "peak_vram", "current_vram",
         "resident_experts", "host_pinned_expert_staging_bytes",
         "host_pageable_expert_staging_bytes", "host_router_weight_bytes",
         "host_hidden_buffer_bytes", "host_prefetch_ring_bytes",

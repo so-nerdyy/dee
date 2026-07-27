@@ -161,6 +161,75 @@ int main() {
           prefetcher.stats().cold_loads == 0);
     check("preloaded resident does not reload", cache.stats().hits == 1 && cache.stats().loads == 0);
 
+    // --- Transfer-ledger lifecycle foundation. ---
+    // A one-block cache makes the eviction ordering deterministic. The first
+    // transfer is consumed before eviction; the second is deliberately not.
+    dee::StageProfiler ledger_profiler;
+    ledger_profiler.configure(true, true, BLK, 3);
+    dee::VramCacheManager ledger_cache;
+    check("init ledger cache", ledger_cache.init(BLK, host_backend()));
+    ledger_cache.set_debug_validation(true);
+    ledger_cache.set_profiler(&ledger_profiler);
+    dee::AsyncPrefetcher ledger_prefetcher(ledger_cache);
+    check("init ledger prefetcher", ledger_prefetcher.init(false));
+    ledger_prefetcher.set_profiler(&ledger_profiler);
+
+    ledger_prefetcher.begin_batch();
+    check("ledger cold transfer E0",
+          ledger_prefetcher.prefetch(0, 0, v.data, v.nbytes, 0, 1, 7) >= 0);
+    const uint64_t ledger_e0_generation = ledger_cache.generation_of(0, 0);
+    check("ledger generation nonzero", ledger_e0_generation != 0);
+    check("ledger wait E0", ledger_prefetcher.wait(0, 0));
+    ledger_prefetcher.mark_consumed(0, 0);
+
+    ledger_prefetcher.begin_batch();
+    check("ledger cold transfer E1",
+          ledger_prefetcher.prefetch(0, 1, v1.data, v1.nbytes, 0, 2, 7) >= 0);
+    check("ledger wait E1", ledger_prefetcher.wait(0, 1));
+    ledger_prefetcher.begin_batch();
+    check("ledger cold transfer E2",
+          ledger_prefetcher.prefetch(0, 2, v2.data, v2.nbytes, 0, 3, 7) >= 0);
+    check("ledger wait E2", ledger_prefetcher.wait(0, 2));
+    std::string ledger_invariant_error;
+    check("ledger cache and prefetch metadata remain consistent after eviction",
+          ledger_cache.validate_invariants(&ledger_invariant_error) &&
+          ledger_prefetcher.validate_invariants(&ledger_invariant_error));
+
+    const auto& ledger_stats = ledger_prefetcher.stats();
+    dee::StageProfile ledger_profile = ledger_profiler.finish(
+        0.0, ledger_stats.resident_hits, ledger_stats.inflight_hits,
+        ledger_stats.cold_loads, ledger_stats.duplicate_requests,
+        ledger_cache.stats().evictions,
+        ledger_cache.stats().pinned_blocks_skipped);
+    check("ledger trace has three requests", ledger_profile.trace.size() == 3);
+    if (ledger_profile.trace.size() == 3) {
+        const auto& first = ledger_profile.trace[0];
+        const auto& second = ledger_profile.trace[1];
+        check("cold trace exposes before/after cache entries",
+              first.cache_entries_before == 0 && first.cache_entries_after == 1);
+        check("cold trace exposes generation and held pin",
+              first.generation == ledger_e0_generation && first.pin_count == 1);
+        check("cold trace marks a launched transfer", first.transfer_launched);
+        check("consumed transfer remains consumed after eviction",
+              first.consumed && !first.evicted_before_use);
+        check("unused transfer is marked evicted before use",
+              second.transfer_launched && !second.consumed && second.evicted_before_use);
+        check("reload generations are monotonic",
+              first.generation < second.generation &&
+              second.generation < ledger_profile.trace[2].generation);
+    }
+    const std::string ledger_json = dee::stage_profile_json(ledger_profile, true);
+    check("ledger JSON exposes generation and lifecycle fields",
+          ledger_json.find("\"cache_bytes_after\":") != std::string::npos &&
+          ledger_json.find("\"cache_entries_after\":") != std::string::npos &&
+          ledger_json.find("\"generation\":") != std::string::npos &&
+          ledger_json.find("\"pin_count\":") != std::string::npos &&
+          ledger_json.find("\"transfer_launched\":true") != std::string::npos &&
+          ledger_json.find("\"consumed\":true") != std::string::npos &&
+          ledger_json.find("\"evicted_before_use\":true") != std::string::npos);
+    ledger_prefetcher.set_profiler(nullptr);
+    ledger_cache.set_profiler(nullptr);
+
     printf("=== %s ===\n", g_fail == 0 ? "ALL PASS" : "FAILURES");
     return g_fail == 0 ? 0 : 1;
 }

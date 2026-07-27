@@ -89,7 +89,8 @@ PYBIND11_MODULE(pydee_core, m) {
         .def_readwrite("prefetch_depth", &dee::EngineConfig::prefetch_depth)
         .def_readwrite("profile_stages", &dee::EngineConfig::profile_stages)
         .def_readwrite("trace_requests", &dee::EngineConfig::trace_requests)
-        .def_readwrite("profile_timeline", &dee::EngineConfig::profile_timeline);
+        .def_readwrite("profile_timeline", &dee::EngineConfig::profile_timeline)
+        .def_readwrite("debug_validate_cache", &dee::EngineConfig::debug_validate_cache);
 
     py::class_<dee::Engine>(m, "Engine")
         .def(py::init<>())
@@ -98,6 +99,11 @@ PYBIND11_MODULE(pydee_core, m) {
         .def("inter_dim", &dee::Engine::inter_dim)
         .def("reset_runtime_cache", &dee::Engine::reset_runtime_cache,
              "Evict all streamed experts and reset live cache/transfer counters.")
+        .def("validate_cache_invariants", [](const dee::Engine& self) {
+            std::string error;
+            const bool valid = self.validate_cache_invariants(&error);
+            return py::make_tuple(valid, error);
+        }, "Return (valid, error) for cache pointer/range/generation/pin invariants.")
         .def("reset_external_profile", &dee::Engine::reset_external_profile,
              "Reset measurement counters without evicting resident experts.")
         .def("set_external_token", &dee::Engine::set_external_token,
@@ -293,6 +299,10 @@ PYBIND11_MODULE(pydee_core, m) {
                << ",\"resident_hits\":" << s.resident_hits
                << ",\"inflight_hits\":" << s.inflight_hits
                << ",\"evictions\":" << s.evictions
+               << ",\"fallbacks\":" << s.fallbacks
+               << ",\"prefetch_issued\":" << s.prefetch_issued
+               << ",\"prefetch_fallbacks\":" << s.prefetch_fallbacks
+               << ",\"duplicate_requests\":" << s.duplicate_requests
                << ",\"h2d_bytes\":" << s.h2d_bytes
                << ",\"h2d_copies\":" << s.h2d_copies
                << ",\"hidden_finite\":" << (s.hidden_finite ? "true" : "false")
@@ -320,6 +330,8 @@ PYBIND11_MODULE(pydee_core, m) {
                << s.device_moe_batch_buffer_bytes
                << ",\"device_oracle_scratch_bytes\":"
                << s.device_oracle_scratch_bytes
+               << ",\"cuda_total\":" << s.cuda_total
+               << ",\"cuda_free\":" << s.cuda_free
                << "}";
             return ss.str();
         });

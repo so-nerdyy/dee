@@ -96,6 +96,7 @@ struct EngineConfig {
     bool        profile_stages = false;
     bool        trace_requests = false;
     bool        profile_timeline = false;
+    bool        debug_validate_cache = false;
     bool        prepack_quantized_source = true;
     BenchmarkScenario scenario = BenchmarkScenario::EndToEnd;
     float       oracle_strict_margin = 0.0f; // <=0=raw GPU; >0=boundary fallback
@@ -172,6 +173,7 @@ public:
     const EngineStats& stats() const { return stats_; }
     EngineStats runtime_stats() const;
     bool reset_runtime_cache();
+    bool validate_cache_invariants(std::string* error = nullptr) const;
 
     // Measurement-only controls for the Python-owned full-model path.  They
     // reset counters/timing without evicting resident experts, attach the

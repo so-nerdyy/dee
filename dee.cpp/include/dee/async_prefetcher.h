@@ -48,6 +48,7 @@ struct Transfer {
     bool      active_counted = false;
     int       token = -1;
     int       logical_layer = -1;
+    uint64_t  generation = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -114,6 +115,10 @@ public:
     // an in-flight transfer; only the GPU waits.
     bool wait_on_stream(int layer, int expert, void* compute_stream);
 
+    // Mark the current residency generation as scheduled for expert compute.
+    // This updates only forensic trace state; it does not change cache policy.
+    void mark_consumed(int layer, int expert);
+
     // Drain all in-flight transfers (e.g. between sequences). Real CUDA path
     // calls cudaStreamSynchronize; mock drains the queue in order.
     void synchronize_all();
@@ -142,6 +147,7 @@ public:
     bool accounting_valid() const {
         return stats_.requests == stats_.resident_hits + stats_.inflight_hits + stats_.cold_loads;
     }
+    bool validate_invariants(std::string* error = nullptr) const;
     void reset_stats() { stats_ = Stats{}; batch_keys_.clear(); }
     void set_profiler(StageProfiler* profiler) { profiler_ = profiler; }
     bool set_ring_size(size_t ring_size) {
@@ -210,15 +216,22 @@ private:
     bool   cuda_wait(long idx, HostWaitReason reason);  // guarded real event sync
     void   release_staging(Transfer& transfer);
     bool   release_transfer(Transfer& transfer);
+    long   validate_request_result(long transfer_id, const char* context);
     void   record_request(RequestKind kind, int token, int logical_layer,
                            int resolved_layer, int expert, int priority,
                            int evicted_layer = -1, int evicted_expert = -1,
                            size_t cache_bytes_before = 0,
                            size_t cache_entries_before = 0,
+                           size_t cache_bytes_after = 0,
+                           size_t cache_entries_after = 0,
                            size_t source_bytes = 0,
                            size_t destination_bytes = 0,
                            uint64_t transfer_id = 0,
-                           bool source_pinned = false);
+                           bool source_pinned = false,
+                           uint64_t generation = 0,
+                           uint32_t pin_count = 0,
+                           bool transfer_launched = false,
+                           uint64_t evicted_generation = 0);
 };
 
 } // namespace dee

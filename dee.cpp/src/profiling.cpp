@@ -291,14 +291,20 @@ void StageProfiler::add_oracle_ms(OracleStage stage, double milliseconds) {
 }
 
 void StageProfiler::note_request(int token, int logical_layer, int resolved_layer,
-                                 int expert, RequestKind kind, size_t cache_bytes_used,
+                                 int expert, RequestKind kind,
                                  int evicted_layer, int evicted_expert, int priority,
                                  size_t cache_bytes_before,
                                  size_t cache_entries_before,
+                                 size_t cache_bytes_after,
+                                 size_t cache_entries_after,
                                  size_t source_bytes,
                                  size_t destination_bytes,
                                  uint64_t transfer_id,
-                                 bool source_pinned) {
+                                 bool source_pinned,
+                                 uint64_t generation,
+                                 uint32_t pin_count,
+                                 bool transfer_launched,
+                                 uint64_t evicted_generation) {
     if (!enabled_) return;
     const uint64_t key = physical_key(resolved_layer, expert);
     unique_requested_.insert(key);
@@ -326,18 +332,47 @@ void StageProfiler::note_request(int token, int logical_layer, int resolved_laye
         record.kind = kind;
         record.cache_bytes_before = cache_bytes_before;
         record.cache_entries_before = cache_entries_before;
-        record.cache_bytes_used = cache_bytes_used;
+        record.cache_bytes_after = cache_bytes_after;
+        record.cache_entries_after = cache_entries_after;
         record.evicted_layer = evicted_layer;
         record.evicted_expert = evicted_expert;
+        record.evicted_generation = evicted_generation;
+        record.generation = generation;
+        record.pin_count = pin_count;
         record.reuse_distance = reuse_distance;
         record.priority = priority;
         record.source_bytes = source_bytes;
         record.destination_bytes = destination_bytes;
         record.transfer_id = transfer_id;
         record.source_pinned = source_pinned;
+        record.transfer_launched = transfer_launched;
         trace_.push_back(record);
     }
     ++request_index_;
+}
+
+void StageProfiler::note_generation_evicted(int resolved_layer, int expert,
+                                            uint64_t generation) {
+    if (!trace_enabled_ || generation == 0) return;
+    for (auto it = trace_.rbegin(); it != trace_.rend(); ++it) {
+        if (it->resolved_layer == resolved_layer && it->expert == expert &&
+            it->generation == generation && it->transfer_launched) {
+            if (!it->consumed) it->evicted_before_use = true;
+            return;
+        }
+    }
+}
+
+void StageProfiler::note_transfer_consumed(int resolved_layer, int expert,
+                                           uint64_t generation) {
+    if (!trace_enabled_ || generation == 0) return;
+    for (auto it = trace_.rbegin(); it != trace_.rend(); ++it) {
+        if (it->resolved_layer == resolved_layer && it->expert == expert &&
+            it->generation == generation && it->transfer_launched) {
+            it->consumed = true;
+            return;
+        }
+    }
 }
 
 void StageProfiler::note_prediction(int, int, int resolved_layer,
@@ -1115,9 +1150,14 @@ std::string stage_profile_json(const StageProfile& profile, bool include_trace) 
                 << ",\"kind\":\"" << request_kind_name(record.kind) << '\"'
                 << ",\"cache_bytes_before\":" << record.cache_bytes_before
                 << ",\"cache_entries_before\":" << record.cache_entries_before
-                << ",\"cache_bytes_used\":" << record.cache_bytes_used
+                << ",\"cache_bytes_after\":" << record.cache_bytes_after
+                << ",\"cache_entries_after\":" << record.cache_entries_after
+                << ",\"cache_bytes_used\":" << record.cache_bytes_after
                 << ",\"evicted_layer\":" << record.evicted_layer
                 << ",\"evicted_expert\":" << record.evicted_expert
+                << ",\"evicted_generation\":" << record.evicted_generation
+                << ",\"generation\":" << record.generation
+                << ",\"pin_count\":" << record.pin_count
                 << ",\"reuse_distance\":" << record.reuse_distance
                 << ",\"distinct_reuse_distance\":" << record.distinct_reuse_distance
                 << ",\"theoretical_min_cache_bytes\":" << record.theoretical_min_cache_bytes
@@ -1126,6 +1166,10 @@ std::string stage_profile_json(const StageProfile& profile, bool include_trace) 
                 << ",\"destination_bytes\":" << record.destination_bytes
                 << ",\"transfer_id\":" << record.transfer_id
                 << ",\"source_pinned\":" << (record.source_pinned ? "true" : "false")
+                << ",\"transfer_launched\":" << (record.transfer_launched ? "true" : "false")
+                << ",\"consumed\":" << (record.consumed ? "true" : "false")
+                << ",\"evicted_before_use\":"
+                << (record.evicted_before_use ? "true" : "false")
                 << ",\"eviction_reason\":"
                 << (record.evicted_expert >= 0 ? "\"capacity_lru\"" : "null")
                 << '}';
