@@ -107,6 +107,9 @@ def test_exact_categories_reconcile_and_belady_separates_policy():
     assert report["categories"]["policy miss"]["transfers"] == 1
     assert report["totals"]["classified_transfers"] == 4
     assert report["totals"]["classified_bytes"] == 400
+    assert report["by_phase"]["warmup"]["totals"]["transfers"] == 2
+    assert report["by_phase"]["measured"]["totals"]["transfers"] == 2
+    assert report["totals"]["safe_cache_reducible_transfers"] == 1
 
 
 def test_precedence_classifies_wrong_gpu_and_never_consumed_once():

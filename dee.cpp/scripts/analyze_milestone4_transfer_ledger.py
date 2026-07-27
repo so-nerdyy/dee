@@ -21,7 +21,8 @@ CATEGORIES = (
     "transfer caused by cache metadata inconsistency",
     "transfer that was never consumed",
 )
-AVOIDABLE_CATEGORIES = set(CATEGORIES[2:])
+FIXED_CAPACITY_AVOIDABLE_CATEGORIES = set(CATEGORIES[2:])
+LARGER_SAFE_CACHE_REDUCIBLE_CATEGORIES = set(CATEGORIES[1:])
 REQUIRED_TRANSFER_FIELDS = (
     "token_step",
     "logical_layer",
@@ -335,31 +336,86 @@ def analyze(
             resident.add(expert)
         seen_experts[domain].add(expert)
 
-    category_totals = {
-        category: {"transfers": 0, "bytes": 0}
-        for category in CATEGORIES
-    }
-    for row in ledger:
-        total = category_totals[row["category"]]
-        total["transfers"] += 1
-        total["bytes"] += row["byte_count"]
-    total_transfers = len(ledger)
-    total_bytes = sum(row["byte_count"] for row in ledger)
-    for total in category_totals.values():
-        total["transfer_fraction"] = (
-            total["transfers"] / total_transfers if total_transfers else 0.0
+    def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        category_totals = {
+            category: {"transfers": 0, "bytes": 0}
+            for category in CATEGORIES
+        }
+        for row in rows:
+            total = category_totals[row["category"]]
+            total["transfers"] += 1
+            total["bytes"] += row["byte_count"]
+        total_transfers = len(rows)
+        total_bytes = sum(row["byte_count"] for row in rows)
+        for total in category_totals.values():
+            total["transfer_fraction"] = (
+                total["transfers"] / total_transfers if total_transfers else 0.0
+            )
+            total["byte_fraction"] = (
+                total["bytes"] / total_bytes if total_bytes else 0.0
+            )
+        fixed_avoidable_transfers = sum(
+            category_totals[name]["transfers"]
+            for name in FIXED_CAPACITY_AVOIDABLE_CATEGORIES
         )
-        total["byte_fraction"] = total["bytes"] / total_bytes if total_bytes else 0.0
-    avoidable_transfers = sum(
-        category_totals[name]["transfers"] for name in AVOIDABLE_CATEGORIES
-    )
-    avoidable_bytes = sum(
-        category_totals[name]["bytes"] for name in AVOIDABLE_CATEGORIES
-    )
-    reconciled_transfers = sum(item["transfers"] for item in category_totals.values())
-    reconciled_bytes = sum(item["bytes"] for item in category_totals.values())
-    if reconciled_transfers != total_transfers or reconciled_bytes != total_bytes:
-        raise AssertionError("category totals do not reconcile")
+        fixed_avoidable_bytes = sum(
+            category_totals[name]["bytes"]
+            for name in FIXED_CAPACITY_AVOIDABLE_CATEGORIES
+        )
+        safe_cache_reducible_transfers = sum(
+            category_totals[name]["transfers"]
+            for name in LARGER_SAFE_CACHE_REDUCIBLE_CATEGORIES
+        )
+        safe_cache_reducible_bytes = sum(
+            category_totals[name]["bytes"]
+            for name in LARGER_SAFE_CACHE_REDUCIBLE_CATEGORIES
+        )
+        reconciled_transfers = sum(
+            item["transfers"] for item in category_totals.values()
+        )
+        reconciled_bytes = sum(
+            item["bytes"] for item in category_totals.values()
+        )
+        if (
+            reconciled_transfers != total_transfers
+            or reconciled_bytes != total_bytes
+        ):
+            raise AssertionError("category totals do not reconcile")
+        return {
+            "totals": {
+                "transfers": total_transfers,
+                "bytes": total_bytes,
+                "classified_transfers": reconciled_transfers,
+                "classified_bytes": reconciled_bytes,
+                "avoidable_transfers": fixed_avoidable_transfers,
+                "avoidable_bytes": fixed_avoidable_bytes,
+                "avoidable_transfer_fraction": (
+                    fixed_avoidable_transfers / total_transfers
+                    if total_transfers else 0.0
+                ),
+                "avoidable_byte_fraction": (
+                    fixed_avoidable_bytes / total_bytes if total_bytes else 0.0
+                ),
+                "safe_cache_reducible_transfers": safe_cache_reducible_transfers,
+                "safe_cache_reducible_bytes": safe_cache_reducible_bytes,
+                "safe_cache_reducible_transfer_fraction": (
+                    safe_cache_reducible_transfers / total_transfers
+                    if total_transfers else 0.0
+                ),
+                "safe_cache_reducible_byte_fraction": (
+                    safe_cache_reducible_bytes / total_bytes
+                    if total_bytes else 0.0
+                ),
+            },
+            "categories": category_totals,
+        }
+
+    aggregate = summarize(ledger)
+    phase_summaries = {
+        phase: summarize([row for row in ledger if row["phase"] == phase])
+        for phase in ("warmup", "measured")
+    }
+    total_transfers = aggregate["totals"]["transfers"]
     if len(transfer_events) != total_transfers:
         raise ValueError(
             f"expert transfer event mismatch: {len(transfer_events)} events, "
@@ -372,21 +428,17 @@ def analyze(
         "capacity_experts_per_layer": capacity,
         "split_layer": split_layer,
         "coverage": coverage,
-        "totals": {
-            "transfers": total_transfers,
-            "bytes": total_bytes,
-            "classified_transfers": reconciled_transfers,
-            "classified_bytes": reconciled_bytes,
-            "avoidable_transfers": avoidable_transfers,
-            "avoidable_bytes": avoidable_bytes,
-            "avoidable_transfer_fraction": (
-                avoidable_transfers / total_transfers if total_transfers else 0.0
+        "totals": aggregate["totals"],
+        "categories": aggregate["categories"],
+        "by_phase": phase_summaries,
+        "avoidability_semantics": {
+            "avoidable": (
+                "policy and implementation waste at the observed fixed capacity"
             ),
-            "avoidable_byte_fraction": (
-                avoidable_bytes / total_bytes if total_bytes else 0.0
+            "safe_cache_reducible": (
+                "all non-compulsory traffic if a larger measured-safe cache fits"
             ),
         },
-        "categories": category_totals,
         "ledger": ledger,
     }
 
