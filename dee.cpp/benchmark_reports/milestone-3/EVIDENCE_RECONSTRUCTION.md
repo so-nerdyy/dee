@@ -150,3 +150,49 @@ files, suppresses only routine successful trace lines from notebook stdout,
 periodically syncs batches of 256 records, and immediately flushes/fsyncs trace
 aborts, glibc/Python fatals, and sanitizer reports. The seven matrix variants
 and native runtime remain unchanged.
+
+## Version 17 final dual-T4 verification
+
+Run `20260727T003223Z-4ec6d17d`, Kaggle version 17, executed commit
+`f8e6f79e43cbff419e86052d91358828e85d4d40`. The fresh extension SHA-256 is
+`0a6c01538a8df31157caae2b7af7e12348cf5acbb76b4b2ac7920a0bf0fba0ae`;
+the force-rebuild, four marker strings, startup self-test, and a real
+22-allocation dual-device probe all passed.
+
+Kaggle reached `COMPLETE` after 4,596 seconds. The exact seven selected variants
+all passed, including long-prompt token IDs `[198, 760]`. Router parity,
+layer-0 parity, all-40-layer correctness, and 100% device-path share passed.
+The representative path proof records 160 device calls and zero host
+fallbacks.
+
+Lifetime analysis scanned 57,309 allocation and 58,078 free markers across the
+combined logs/trace, found zero invalid operations, and classified the run
+`NO_TRACE_ABORT`. There was no trace abort, glibc heap-corruption signature,
+Fatal Python abort, or AddressSanitizer fatal.
+
+The strict M3-v4 performance gate passed:
+
+- warm-control decode: `2.8138867608 TPS` versus `2.9922951631 TPS`
+  (`-5.96%`, within the 10% limit);
+- representative profiled model wall: `403.608263 ms` versus
+  `372.449266 ms` (`+8.37%`, within the 10% limit);
+- warm TTFT: `609.278467 ms`;
+- device path share: `1.0`;
+- canonical cache hit rate: `0.2125`;
+- simultaneous dual-GPU NVML sample share: `0.4`;
+- measured copy/compute overlap: `1.599365 ms`.
+
+The download contained 131 files and 224,933,126 bytes. Kernel artifact hashes,
+run/commit/nonce identity, required paths, and the compressed expert trace all
+validated. The first host validation returned a false lifetime failure because
+Windows wrote post-download manifest paths with backslashes while the validator
+compared POSIX separators. The lifetime report and its own hash manifest were
+already clean. Normalizing manifest paths cross-platform and rerunning the gate
+against the unchanged bundle produced PASS with no missing files or hash
+errors; a focused regression test covers the separator case.
+
+The remaining residency limitation is quantified separately in
+`CACHE_POLICY_RESEARCH.md`. It is partially fixed, not fundamental: capacity 8
+reaches 21.25% hits on the short canonical trace, while long-prompt median/p95
+distinct reuse distance is 23.5/40 and hundreds of short post-eviction reuses
+remain.

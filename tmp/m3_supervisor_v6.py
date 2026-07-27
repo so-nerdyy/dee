@@ -397,6 +397,15 @@ EXPECTED_RUN_IDS = [
 ]
 
 
+def normalize_manifest_path(value):
+    """Return a safe, portable POSIX relative path for a manifest entry."""
+    relative = str(value).replace("\\", "/")
+    path = PurePosixPath(relative)
+    if path.is_absolute() or ".." in path.parts or relative != path.as_posix():
+        raise ValueError("unsafe manifest path: " + str(value))
+    return path.as_posix()
+
+
 def find_evidence_root(evidence_dir, run_id):
     candidates = [
         p for p in evidence_dir.rglob("ornith-milestone3-evidence-" + run_id)
@@ -571,7 +580,7 @@ def validate_artifacts(
                 )
             )
             post_entries = {
-                item["path"]: item
+                normalize_manifest_path(item["path"]): item
                 for item in post_manifest.get("artifacts", [])
             }
             post_required = {
@@ -666,7 +675,7 @@ def run_analyzer(evidence_dir, output_dir):
                 "result": "PASS" if safe else "FAIL",
                 "artifacts": [
                     {
-                        "path": str(path.relative_to(evidence_dir)),
+                        "path": path.relative_to(evidence_dir).as_posix(),
                         "bytes": path.stat().st_size,
                         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                     }

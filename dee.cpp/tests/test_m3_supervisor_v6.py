@@ -15,6 +15,16 @@ SPEC.loader.exec_module(SUPERVISOR)
 
 
 class SupervisorRegressionTests(unittest.TestCase):
+    def test_manifest_paths_are_normalized_across_platforms(self):
+        self.assertEqual(
+            SUPERVISOR.normalize_manifest_path(
+                r"lifetime-analysis\lifetime_report.json"
+            ),
+            "lifetime-analysis/lifetime_report.json",
+        )
+        with self.assertRaises(ValueError):
+            SUPERVISOR.normalize_manifest_path(r"..\outside.json")
+
     def test_prefixed_kaggle_error_is_terminal_error(self):
         raw = (
             'nivind/dee-cpp-ornith-milestone-3-forensics has status '
