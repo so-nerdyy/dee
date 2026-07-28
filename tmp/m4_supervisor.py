@@ -83,7 +83,7 @@ except Exception:
 
 
 ROOT = Path(__file__).resolve().parent.parent  # dynamic_expert_eviction/
-SLUG_DEFAULT = "nivind/dee-cpp-ornith-milestone-4-capacity-sweep"
+SLUG_DEFAULT = "nivind/dee-cpp-ornith-milestone-4-phase-2-cap-32-matrix"
 KERNEL_DIR_DEFAULT = ROOT / "dee.cpp" / "kaggle" / "ornith-milestone4"
 EVIDENCE_DIR_DEFAULT = ROOT / "tmp" / "m4_ledger_seal_redo"
 SEAL_HARNESS_PATH = (
@@ -660,7 +660,7 @@ def run_local_seal_harness(
     return rc
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--slug", default=SLUG_DEFAULT)
     p.add_argument("--kernel-dir", type=Path, default=KERNEL_DIR_DEFAULT)
@@ -684,11 +684,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-seal", action="store_true",
                    help="Skip running the local seal harness after download.")
     p.add_argument("--run-id", default=None)
-    return p.parse_args()
+    return p.parse_args(argv)
 
 
 def _main_unlocked(argv: list[str]) -> int:
-    args = parse_args()
+    args = parse_args(argv)
     global RUN_ID
     if args.run_id:
         RUN_ID = args.run_id
@@ -819,7 +819,28 @@ def _main_unlocked(argv: list[str]) -> int:
                     )
                 if state_v in OK_STATES and download_ok:
                     root = find_evidence_root(args.evidence_dir, RUN_ID)
-                    if root is not None and not args.no_seal:
+                    if root is None:
+                        log(
+                            "evidence root not found in download; exits 5",
+                            "SUP",
+                        )
+                        return 5
+                    if args.no_seal:
+                        save_state({
+                            "elapsed_sec": elapsed,
+                            "last_kaggle_state": state_v,
+                            "complete": True,
+                            "completed_at": stamp(),
+                            "download_ok": download_ok,
+                            "seal_rc": None,
+                        })
+                        log(
+                            "Phase 2 COMPLETE; artifacts downloaded; "
+                            "Phase 1 seal harness intentionally skipped; exits 0",
+                            "SUP",
+                        )
+                        return 0
+                    if root is not None:
                         seal_rc = run_local_seal_harness(
                             downloaded_evidence_dir=root,
                             model_dir=args.model_dir,
@@ -845,12 +866,6 @@ def _main_unlocked(argv: list[str]) -> int:
                             "SUP",
                         )
                         return 5
-                    log(
-                        "evidence root not found in download; "
-                        "skipping seal harness; exits 5",
-                        "SUP",
-                    )
-                    return 5
                 log(
                     "terminal state %s but download ok=%s; exits 2"
                     % (state_v, download_ok),
