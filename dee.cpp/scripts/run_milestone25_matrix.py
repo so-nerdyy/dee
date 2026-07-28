@@ -52,6 +52,12 @@ def parse_args() -> argparse.Namespace:
         default=8,
         help="Cache capacity for matrix rows without an explicit diagnostic override.",
     )
+    parser.add_argument(
+        "--router-backend",
+        choices=("native-host", "torch-device"),
+        default="native-host",
+        help="Router backend forwarded to every selected forensic row.",
+    )
     parser.add_argument("--skip-aggregate", action="store_true")
     parser.add_argument("--layer0-regression", type=Path)
     parser.add_argument("--router-parity", type=Path)
@@ -168,6 +174,7 @@ def main() -> None:
         sys.executable, "-u", "-X", "faulthandler",
         str(REPO_ROOT / "scripts/run_ornith_forensics.py"),
         "--model-dir", str(args.model_dir),
+        "--router-backend", args.router_backend,
     ]
     dual = ["--require-dual-gpu"] if args.require_dual_gpu else []
     experiments = [
@@ -246,6 +253,7 @@ def main() -> None:
     summary = {
         "schema_version": 2,
         "default_cache_experts": args.default_cache_experts,
+        "router_backend": args.router_backend,
         "selected_run_ids": [item["run_id"] for item in experiments],
         "experiments": [],
     }

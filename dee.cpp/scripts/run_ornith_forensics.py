@@ -48,6 +48,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-new-tokens", type=int, default=4)
     parser.add_argument("--split-layer", type=int, default=20)
     parser.add_argument("--cache-experts", type=int, default=8)
+    parser.add_argument(
+        "--router-backend",
+        choices=("native-host", "torch-device"),
+        default="native-host",
+        help=(
+            "native-host reproduces the sealed baseline; torch-device keeps the "
+            "official checkpoint router on the layer GPU"
+        ),
+    )
     parser.add_argument("--cache-disabled", action="store_true")
     parser.add_argument("--allow-sub-topk-cache", action="store_true")
     parser.add_argument("--classification", choices=("cold", "warm", "diagnostic"),
@@ -964,6 +973,7 @@ def main() -> None:
         profile_timeline=args.profile_timeline,
         debug_validate_cache=args.debug_validate_cache,
         allow_diagnostic_sub_topk_cache=args.allow_sub_topk_cache,
+        router_backend=args.router_backend,
         phase_recorder=bridge,
     )
     runtime["context"].cache_disabled = args.cache_disabled
@@ -1198,6 +1208,7 @@ def main() -> None:
     path_proof["schema_version"] = 2
     path_proof["run_id"] = args.run_id
     path_proof["git_commit"] = git_revision()
+    path_proof["router_backend"] = args.router_backend
     # Aggregates that let the analyzer prove the device path was the
     # dominant execution route.  device_share=1.0 means every hybrid
     # forward routed through moe_forward_batch_device; 0.0 means every
@@ -1272,6 +1283,7 @@ def main() -> None:
             "prompt_token_ids": generation["prompt_token_ids"],
             "max_new_tokens": args.max_new_tokens,
             "execution_mode": "hybrid_transformers_dense_deecpp_experts",
+            "router_backend": args.router_backend,
             "classification": args.classification,
             "split_layer": args.split_layer,
             "cache_experts_per_layer": args.cache_experts,

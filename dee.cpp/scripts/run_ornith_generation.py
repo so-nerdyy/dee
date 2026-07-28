@@ -186,6 +186,13 @@ class ExecutionContext:
         self.current_phase = "unclassified"
         self.cache_disabled = False
         self.executed_router_layers: set[int] = set()
+        # Keep the accepted native-host router as the default for sealed
+        # baseline reproduction.  The opt-in torch-device backend executes
+        # the checkpoint's already-resident official router module directly
+        # on the layer GPU, eliminating the measured hidden D2H, logits H2D,
+        # duplicate softmax/top-k, and scalar synchronization.  dee.cpp still
+        # owns every routed expert forward.
+        self.router_backend = "native-host"
         # Milestone 3 audit counters.  These are the only M3-deliverable
         # counters that the existing M2.5 forensic schema cannot infer, and
         # they prove that the device-resident MoE forward path actually ran
@@ -207,6 +214,11 @@ def fresh_engine_path_proof() -> dict:
         "expert_ids_d2h_total_bytes": 0,
         "expert_native_device_calls_total_ms": 0.0,
         "expert_native_host_calls_total_ms": 0.0,
+        "router_native_host_calls": 0,
+        "router_torch_device_calls": 0,
+        "router_hidden_d2h_total_bytes": 0,
+        "router_outputs_h2d_total_bytes": 0,
+        "router_scalar_sync_calls": 0,
         # Milestone 3 forensic: precise native diagnostic captured from
         # pydee.Engine.last_error_message() at each device attempt and at
         # any host-fallback RuntimeError.  Empty or "<none>/<empty: ...>"
@@ -349,7 +361,22 @@ class HybridRouter:
         if self.context.mode == "reference":
             with forensic_span(self.context, "reference_router", self.layer):
                 logits, weights, experts = self.module.reference(flattened)
+        elif self.context.router_backend == "torch-device":
+            # This is the exact official checkpoint router module which was
+            # retained when HybridRouter replaced block.mlp.gate.  Its
+            # parameters are already assigned from the real checkpoint on the
+            # layer GPU.  Keeping the entire equation on-device removes four
+            # host orchestration points per layer while preserving the
+            # Transformers routing contract.
+            with forensic_span(self.context, "router_torch_device", self.layer):
+                logits, weights, experts = self.module.reference(flattened)
+            self.context.engine_path_proof["router_torch_device_calls"] += 1
         else:
+            if self.context.router_backend != "native-host":
+                raise RuntimeError(
+                    f"unsupported router backend: {self.context.router_backend}"
+                )
+            self.context.engine_path_proof["router_native_host_calls"] += 1
             if hasattr(self.engine, "set_external_token"):
                 self.engine.set_external_token(self.context.current_step)
             router_input_transfer = {
@@ -360,6 +387,9 @@ class HybridRouter:
             with forensic_span(self.context, "router_hidden_gpu_to_cpu", self.layer,
                                router_input_transfer):
                 flattened_cpu = flattened.detach().float().cpu().numpy()
+            self.context.engine_path_proof[
+                "router_hidden_d2h_total_bytes"
+            ] += router_input_transfer["bytes"]
             with forensic_span(self.context, "router_native", self.layer):
                 logits_np, weights_np, experts_np = self.engine.route_topk_batch(
                     self.layer, flattened_cpu
@@ -380,6 +410,9 @@ class HybridRouter:
                 native_experts = torch.from_numpy(np.asarray(experts_np).astype(np.int64)).to(
                     flattened.device, dtype=torch.long
                 )
+            self.context.engine_path_proof[
+                "router_outputs_h2d_total_bytes"
+            ] += router_output_transfer["bytes"]
             # torch.topk does not promise a stable order for exact ties. The
             # native route is authoritative except for rows where its expert
             # IDs differ from torch despite selecting the exact same logit
@@ -394,6 +427,7 @@ class HybridRouter:
                     canonical_weights / canonical_weights.sum(dim=-1, keepdim=True)
                 ).to(flattened.dtype)
                 mismatch = torch.any(native_experts != canonical_experts, dim=-1)
+                self.context.engine_path_proof["router_scalar_sync_calls"] += 1
                 if bool(mismatch.any().item()):
                     native_selected = probabilities.gather(1, native_experts)
                     native_selected = (
@@ -648,6 +682,7 @@ def load_runtime(model_dir: Path, gpu_count: int, split_layer: int, cache_expert
                  profile_timeline: bool = False,
                  debug_validate_cache: bool = False,
                  allow_diagnostic_sub_topk_cache: bool = False,
+                 router_backend: str = "native-host",
                  phase_recorder=None):
     import_started = time.perf_counter()
     import torch
@@ -673,6 +708,9 @@ def load_runtime(model_dir: Path, gpu_count: int, split_layer: int, cache_expert
     record_elapsed(phase_recorder, "model_structure_construction", structure_started)
 
     context = ExecutionContext()
+    if router_backend not in {"native-host", "torch-device"}:
+        raise ValueError(f"unsupported router backend: {router_backend}")
+    context.router_backend = router_backend
     pool = CheckpointPool(model_dir, phase_recorder)
     reference_experts = []
     reference_expert_caches = []
@@ -1124,6 +1162,16 @@ def parse_args():
     parser.add_argument("--require-dual-gpu", action="store_true")
     parser.add_argument("--split-layer", type=int, default=20)
     parser.add_argument("--cache-experts", type=int, default=8)
+    parser.add_argument(
+        "--router-backend",
+        choices=("native-host", "torch-device"),
+        default="native-host",
+        help=(
+            "native-host reproduces the sealed baseline; torch-device runs the "
+            "official checkpoint router on the layer GPU while dee.cpp retains "
+            "all expert execution"
+        ),
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("ornith_generation_output"))
     return parser.parse_args()
 
@@ -1171,7 +1219,8 @@ def main():
     )
     tokenizer = AutoTokenizer.from_pretrained(args.model_dir, local_files_only=True)
     runtime = load_runtime(
-        args.model_dir, effective_gpu_count, args.split_layer, args.cache_experts
+        args.model_dir, effective_gpu_count, args.split_layer, args.cache_experts,
+        router_backend=args.router_backend,
     )
 
     report: dict[str, Any] = {
@@ -1192,6 +1241,7 @@ def main():
             "pipeline_transfer": "hidden, position embeddings, attention mask, and position ids at layer 20",
             "expert_cache_capacity_per_layer": args.cache_experts,
             "expert_cache_budget_per_layer_bytes": runtime["expert_cache_budget_per_layer"],
+            "router_backend": args.router_backend,
             "dense_loaded_bytes": runtime["dense_loaded_bytes"],
         },
         "runtime_load_seconds": runtime["load_seconds"],
