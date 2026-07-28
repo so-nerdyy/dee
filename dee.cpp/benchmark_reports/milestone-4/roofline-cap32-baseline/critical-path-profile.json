@@ -1,0 +1,295 @@
+{
+  "schema_version": 1,
+  "result": "PASS",
+  "sources": {
+    "profiled_report": {
+      "path": "tmp/m4_ledger_seal_redo/ornith-milestone4-evidence-20260728T183337Z-phase1-redo/runs/capacity-32-profiled/run-report.json",
+      "sha256": "0e5e23074d69de7f1bb39ee57af3282f56c9dfb673c16ae1ac4b4d7e104e4ed1",
+      "bytes": 327522
+    },
+    "layer_timing": {
+      "path": "tmp/m4_ledger_seal_redo/ornith-milestone4-evidence-20260728T183337Z-phase1-redo/runs/capacity-32-profiled/layer-timing.json",
+      "sha256": "824a5609f8db53a2795409d54c95b70b924332e1be487e04bf9004cc6af53a76",
+      "bytes": 223831
+    },
+    "torch_trace": {
+      "path": "tmp/m4_ledger_seal_redo/ornith-milestone4-evidence-20260728T183337Z-phase1-redo/runs/capacity-32-profiled/torch-profiler-trace.json.gz",
+      "sha256": "a1ee56c82b17691b65492cd2d5d78882ae74de18aec8107e1f802ed17e884f1a",
+      "bytes": 1298797
+    }
+  },
+  "profiler_slowdown": {
+    "profiled_tps": 0.5972870815793735,
+    "unprofiled_tps": 6.487701068292484,
+    "profiled_over_unprofiled_ratio": 0.092065,
+    "qualification": "Use the profiled run for ranking only; use the unprofiled control for throughput."
+  },
+  "critical_path": {
+    "evidence_class": "measured_layer_timer_with_labelled_differential",
+    "selected_phase": "decode",
+    "selected_step": 3,
+    "layer_count": 40,
+    "layer_type_counts": {
+      "full_attention": 10,
+      "linear_attention": 30
+    },
+    "total_layer_wall_ms": 202.612295,
+    "measured_field_sums_ms": {
+      "full_attention": 14.288052,
+      "router": 25.085966,
+      "expert_lookup": 0.017533,
+      "expert_compute": 23.562208,
+      "expert_output_combination": 15.727816,
+      "shared_expert_gate": 4.934421,
+      "shared_expert": 9.000235,
+      "normalization": 21.158768,
+      "inter_device_transfer": 4.506199,
+      "explicit_synchronization": 0.19853,
+      "residual_and_unattributed": 79.610256
+    },
+    "expert_h2d_bytes": 0,
+    "derived_ranked_critical_path": [
+      {
+        "component": "linear_attention_inferred",
+        "milliseconds": 47.074148,
+        "percent_of_layer_wall": 23.233609,
+        "evidence_class": "inferred_differential"
+      },
+      {
+        "component": "remaining_residual_and_unattributed",
+        "milliseconds": 32.536108,
+        "percent_of_layer_wall": 16.058309,
+        "evidence_class": "derived_residual"
+      },
+      {
+        "component": "router",
+        "milliseconds": 25.085966,
+        "percent_of_layer_wall": 12.381265,
+        "evidence_class": "measured_layer_timer"
+      },
+      {
+        "component": "expert_compute",
+        "milliseconds": 23.562208,
+        "percent_of_layer_wall": 11.629209,
+        "evidence_class": "measured_layer_timer"
+      },
+      {
+        "component": "normalization",
+        "milliseconds": 21.158768,
+        "percent_of_layer_wall": 10.442983,
+        "evidence_class": "measured_layer_timer"
+      },
+      {
+        "component": "expert_output_combination",
+        "milliseconds": 15.727816,
+        "percent_of_layer_wall": 7.762518,
+        "evidence_class": "measured_layer_timer"
+      },
+      {
+        "component": "full_attention",
+        "milliseconds": 14.288052,
+        "percent_of_layer_wall": 7.051918,
+        "evidence_class": "measured_layer_timer"
+      },
+      {
+        "component": "shared_expert",
+        "milliseconds": 9.000235,
+        "percent_of_layer_wall": 4.442097,
+        "evidence_class": "measured_layer_timer"
+      },
+      {
+        "component": "shared_expert_gate",
+        "milliseconds": 4.934421,
+        "percent_of_layer_wall": 2.435401,
+        "evidence_class": "measured_layer_timer"
+      },
+      {
+        "component": "inter_device_transfer",
+        "milliseconds": 4.506199,
+        "percent_of_layer_wall": 2.22405,
+        "evidence_class": "measured_layer_timer"
+      },
+      {
+        "component": "explicit_synchronization",
+        "milliseconds": 0.19853,
+        "percent_of_layer_wall": 0.097985,
+        "evidence_class": "measured_layer_timer"
+      },
+      {
+        "component": "expert_lookup",
+        "milliseconds": 0.017533,
+        "percent_of_layer_wall": 0.008653,
+        "evidence_class": "measured_layer_timer"
+      }
+    ],
+    "linear_attention_differential": {
+      "evidence_class": "inferred_differential",
+      "full_attention_layer_residual_average_ms": 0.813403,
+      "linear_attention_layer_residual_total_ms": 71.476229,
+      "inferred_linear_attention_ms": 47.074148,
+      "method": "Subtract the average full-attention-layer residual from each linear-attention-layer residual. This is a ranking estimate, not a direct timer."
+    }
+  },
+  "cuda_trace": {
+    "evidence_class": "measured_torch_cuda_trace",
+    "trace_event_count": 70476,
+    "kernel_count": 6166,
+    "gpu_memcpy_count": 1321,
+    "cuda_runtime_call_counts": {
+      "cudaLaunchKernel": 6166,
+      "cudaStreamSynchronize": 409,
+      "cudaDeviceSynchronize": 1,
+      "cudaStreamWaitEvent": 132,
+      "cudaEventRecord": 2640,
+      "cudaEventRecordWithFlags": 558
+    },
+    "gpu_timeline": {
+      "span_ms": 330.221776,
+      "busy_ms": 62.08759,
+      "idle_ms": 268.134186,
+      "busy_percent": 18.801786,
+      "positive_gap_count": 7486,
+      "gaps_over_10us": 5244,
+      "median_positive_gap_us": 22.751953,
+      "max_positive_gap_us": 598.268066
+    },
+    "by_device": {
+      "cuda:0": {
+        "event_count": 3775,
+        "kernel_count": 3110,
+        "memcpy_count": 665,
+        "span_ms": 318.733762,
+        "busy_ms": 30.516853,
+        "busy_percent": 9.574402
+      },
+      "cuda:1": {
+        "event_count": 3712,
+        "kernel_count": 3056,
+        "memcpy_count": 656,
+        "span_ms": 143.297759,
+        "busy_ms": 31.570737,
+        "busy_percent": 22.031564
+      }
+    },
+    "memcpy_groups": {
+      "Memcpy DtoD (Device -> Device)": {
+        "count": 780,
+        "bytes": 67502120,
+        "duration_ms": 2.403952
+      },
+      "Memcpy DtoH (Device -> Device)": {
+        "count": 66,
+        "bytes": 9396,
+        "duration_ms": 0.113055
+      },
+      "Memcpy DtoH (Device -> Pageable)": {
+        "count": 200,
+        "bytes": 354560,
+        "duration_ms": 0.354106
+      },
+      "Memcpy DtoH (Device -> Pinned)": {
+        "count": 48,
+        "bytes": 74,
+        "duration_ms": 0.083039
+      },
+      "Memcpy HtoD (Device -> Device)": {
+        "count": 66,
+        "bytes": 9396,
+        "duration_ms": 0.176927
+      },
+      "Memcpy HtoD (Pageable -> Device)": {
+        "count": 161,
+        "bytes": 351362,
+        "duration_ms": 0.13843
+      }
+    },
+    "top_kernel_families": [
+      {
+        "family": "cublas_gemvx",
+        "count": 901,
+        "duration_ms": 27.673724
+      },
+      {
+        "family": "elementwise",
+        "count": 3084,
+        "duration_ms": 13.458336
+      },
+      {
+        "family": "cublas_gemv2t",
+        "count": 370,
+        "duration_ms": 6.247275
+      },
+      {
+        "family": "aten_direct_copy",
+        "count": 649,
+        "duration_ms": 3.883264
+      },
+      {
+        "family": "reduction",
+        "count": 441,
+        "duration_ms": 3.783013
+      },
+      {
+        "family": "dee_swiglu_activation",
+        "count": 320,
+        "duration_ms": 1.026774
+      },
+      {
+        "family": "index_gather_topk",
+        "count": 41,
+        "duration_ms": 0.646008
+      },
+      {
+        "family": "cublas_dot",
+        "count": 100,
+        "duration_ms": 0.563772
+      },
+      {
+        "family": "aten_cat_copy",
+        "count": 91,
+        "duration_ms": 0.508572
+      },
+      {
+        "family": "aten_bitonic_sort",
+        "count": 40,
+        "duration_ms": 0.465662
+      },
+      {
+        "family": "void (anonymous namespace)::softmax_warp_forward<c10::Half, float, float, 8, false, false>(float*, c10::Half const*, int, int, int, bool const*, int, bool)",
+        "count": 40,
+        "duration_ms": 0.206751
+      },
+      {
+        "family": "void cudnn::cnn::conv2d_grouped_direct_kernel<false, true, false, false, false, false, 1, 0, int, float, __half, __half, __half, float, __half>(cudnn::cnn::Grou",
+        "count": 30,
+        "duration_ms": 0.179514
+      },
+      {
+        "family": "__nv_static_37__a6b4d9a4_15_cuda_convert_cu_d0d3fee9__ZN3dee48_GLOBAL__N__a6b4d9a4_15_cuda_convert_cu_d0d3fee917f32_to_f16_kernelEPKfP6__halfm",
+        "count": 40,
+        "duration_ms": 0.112832
+      },
+      {
+        "family": "void (anonymous namespace)::softmax_warp_forward<c10::Half, float, float, 1, false, false>(float*, c10::Half const*, int, int, int, bool const*, int, bool)",
+        "count": 10,
+        "duration_ms": 0.032319
+      },
+      {
+        "family": "void at_cuda_detail::cub::DeviceSelectSweepKernel<at_cuda_detail::cub::detail::device_select_policy_hub<long, bool, int, false, false>::Policy900, at_cuda_detai",
+        "count": 4,
+        "duration_ms": 0.017216
+      },
+      {
+        "family": "void at_cuda_detail::cub::DeviceCompactInitKernel<at_cuda_detail::cub::ScanTileState<int, true>, int*>(at_cuda_detail::cub::ScanTileState<int, true>, int, int*)",
+        "count": 4,
+        "duration_ms": 0.009504
+      },
+      {
+        "family": "cublas_gemmk1",
+        "count": 1,
+        "duration_ms": 0.003552
+      }
+    ],
+    "interpretation": "The trace is launch/GEMV-fragmentation dominated when thousands of launches coexist with low union busy time and negligible expert H2D. Trace overhead means its wall time is not the unprofiled throughput."
+  }
+}
