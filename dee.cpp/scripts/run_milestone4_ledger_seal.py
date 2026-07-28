@@ -351,11 +351,20 @@ def validate_row(output_dir: Path, run_id: str) -> dict[str, Any]:
         status = "FAIL"
         terminal_reason = f"{run_id}: timing_events_dropped={dropped} (must be 0)"
 
-    if expert_trace.stat().st_size == 0 if expert_trace.is_file() else True:
+    # Bug B fix: gate the two empty-trace checks on `profiled`. Control rows
+    # intentionally have 0-byte expert-trace.jsonl and warmup-expert-trace.jsonl
+    # because the Kaggle-side capacity sweep's `if experiment["profiled"]:` block
+    # skips the profiler entirely for non-profiled rows. Failing control rows
+    # on empty traces was the SECOND harness bug, masked by the path-resolution
+    # bug in commit 60bfb52. After this 2-line gate, control rows correctly
+    # PASS through to the per-row correctness/lifetime gates (validated via
+    # run-report.json fields), and profiled rows continue to fail closed if their
+    # traces are unexpectedly missing/empty.
+    if profiled and (expert_trace.stat().st_size == 0 if expert_trace.is_file() else True):
         if status == "PASS":
             status = "FAIL"
             terminal_reason = f"{run_id}: expert-trace.jsonl missing or empty"
-    if (warmup_trace.stat().st_size == 0 if warmup_trace.is_file() else True) and status == "PASS":
+    if profiled and (warmup_trace.stat().st_size == 0 if warmup_trace.is_file() else True) and status == "PASS":
         status = "FAIL"
         terminal_reason = f"{run_id}: warmup-expert-trace.jsonl missing or empty"
 
@@ -629,9 +638,19 @@ def assemble_gates(per_row: list[dict[str, Any]], output_dir: Path) -> dict[str,
 
 
 def assemble_manifest(output_dir: Path) -> dict[str, Any]:
+    # Mirror the artifact_perrow split that assemble_gates() applies to
+    # EXPECTED_PERROW_FILES vs COMMON_PERROW_FILES: profiled rows include
+    # PROFILED_ONLY_FILES (transfer-ledger.json); control rows do not.
+    # The previous loop listed transfer-ledger.json for control rows where
+    # it never exists on disk because the orchestrator's analyzer is gated
+    # on `if experiment["profiled"]:` (control rows skip the ledger
+    # analyzer), producing sha256=None for those entries and consequently
+    # false manifest_validation_passes / hash_validation_passes gates.
     entries: list[dict[str, Any]] = []
     for run_id in REQUIRED_RUN_IDS:
-        for fname in EXPECTED_PERROW_FILES:
+        is_profiled = run_id.endswith("-profiled")
+        file_set = EXPECTED_PERROW_FILES if is_profiled else COMMON_PERROW_FILES
+        for fname in file_set:
             entries.append(sha256_file(output_dir / "runs" / run_id / fname))
     return {"schema_version": 1, "artifacts": entries}
 
