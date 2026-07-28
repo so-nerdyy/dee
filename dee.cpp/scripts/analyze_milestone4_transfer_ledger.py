@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import sys
+import traceback
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -527,27 +529,57 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
+def main() -> int:
     args = parse_args()
-    report = analyze(
-        read_jsonl(args.warmup_trace),
-        read_jsonl(args.measured_trace),
-        capacity=args.capacity,
-        split_layer=args.split_layer,
-        allow_missing_warmup_timing=args.allow_missing_warmup_timing,
-    )
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    print(json.dumps({
-        "result": "PASS",
-        "output": str(args.output),
-        "transfers": report["totals"]["transfers"],
-        "bytes": report["totals"]["bytes"],
-    }, sort_keys=True))
+    try:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        report = analyze(
+            read_jsonl(args.warmup_trace),
+            read_jsonl(args.measured_trace),
+            capacity=args.capacity,
+            split_layer=args.split_layer,
+            allow_missing_warmup_timing=args.allow_missing_warmup_timing,
+        )
+        args.output.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        print(json.dumps({
+            "result": "PASS",
+            "output": str(args.output),
+            "transfers": report["totals"]["transfers"],
+            "bytes": report["totals"]["bytes"],
+        }, sort_keys=True), flush=True)
+        return 0
+    except Exception as exc:
+        args_snapshot = {
+            key: (str(value) if isinstance(value, Path) else value)
+            for key, value in vars(args).items()
+        }
+        fail_payload = {
+            "result": "FAIL",
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+            "args": args_snapshot,
+            "traceback_tail": traceback.format_exc(limit=24).splitlines(),
+        }
+        try:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(
+                json.dumps(fail_payload, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            print(json.dumps(fail_payload, sort_keys=True), flush=True)
+        except Exception as write_exc:
+            print(
+                json.dumps(
+                    dict(fail_payload, secondary_write_error=str(write_exc)),
+                    sort_keys=True,
+                ),
+                file=sys.stderr,
+            )
+        return 2
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
