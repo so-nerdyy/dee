@@ -25,7 +25,14 @@ from typing import Any
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parent
+# REPO_ROOT must walk TWO levels up from this file: this script lives at
+# <repo>/dee.cpp/scripts/run_milestone4_ledger_seal.py, so .parent is
+# <repo>/dee.cpp and .parent.parent is <repo>. The previous one-level walk
+# double-prefixed `dee.cpp/` into every downstream path (orchestrator,
+# v1 baseline, phase-2 skeleton), causing the host-side SEAL harness to
+# invoke a non-existent orchestrator and fail closed with exit=2 even
+# when the on-Kaggle run produced a clean 6-row evidence archive.
+REPO_ROOT = SCRIPT_DIR.parent.parent
 
 REQUIRED_RUN_IDS = (
     "capacity-8-control",
