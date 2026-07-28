@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Authoritative dual-T4 Milestone 4 cache-capacity sweep."""
+"""Authoritative dual-T4 Milestone 4 Phase 2 cap-32 lifecycle matrix."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ import torch
 RUN_ID = "20260727T024309Z-capacity-sweep"
 EXPECTED_COMMIT = "726fbfce22d676e9c86e1af1e1cb197d21ea8612"
 ROOT = Path("/kaggle/temp/dee-source")
-EVIDENCE = Path(f"/kaggle/working/ornith-milestone4-evidence-{RUN_ID}")
+EVIDENCE = Path(f"/kaggle/working/ornith-milestone4-phase2-evidence-{RUN_ID}")
 
 
 def run_tee(command: list[str], log_path: Path, cwd: Path) -> None:
@@ -112,6 +112,7 @@ environment = {
     "schema_version": 1,
     "run_id": RUN_ID,
     "commit": commit,
+    "harness_nonce": globals().get("HARNESS_NONCE", "unstaged"),
     "packages": packages,
     "model_dir": str(MODEL),
     "model_shards": len(shards),
@@ -145,7 +146,8 @@ subprocess.run(
 subprocess.run([
     sys.executable, "-m", "pytest",
     str(DEE / "tests/test_analyze_milestone25_expert_trace.py"),
-    str(DEE / "tests/test_run_milestone4_capacity_sweep.py"),
+    str(DEE / "tests/test_milestone25_matrix_driver.py"),
+    str(DEE / "tests/test_milestone4_seven_variant_cap32_matrix.py"),
     str(DEE / "tests/test_run_ornith_forensics.py"),
     "-q",
 ], cwd=DEE, check=True)
@@ -163,6 +165,7 @@ extension_sha256 = hashlib.sha256(extensions[0].read_bytes()).hexdigest()
     "schema_version": 1,
     "run_id": RUN_ID,
     "commit": commit,
+    "harness_nonce": globals().get("HARNESS_NONCE", "unstaged"),
     "cuda_architectures": "75",
     "extension": str(extensions[0]),
     "extension_sha256": extension_sha256,
@@ -170,29 +173,49 @@ extension_sha256 = hashlib.sha256(extensions[0].read_bytes()).hexdigest()
 
 run_tee([
     sys.executable, "-u", "-X", "faulthandler",
-    str(DEE / "scripts/run_milestone4_capacity_sweep.py"),
+    str(DEE / "scripts/run_milestone4_seven_variant_cap32_matrix.py"),
+    "--seal-dir", str(DEE / "benchmark_reports/milestone-4/phase1-seal"),
     "--model-dir", str(MODEL),
     "--output-dir", str(EVIDENCE),
-    "--require-dual-gpu",
-], EVIDENCE / "logs/capacity-sweep-driver.log", DEE)
+    "--launch-engine",
+], EVIDENCE / "logs/phase2-driver.log", DEE)
 
 summary = json.loads(
-    (EVIDENCE / "capacity-sweep-summary.json").read_text(encoding="utf-8")
+    (EVIDENCE / "matrix-summary.json").read_text(encoding="utf-8")
 )
 expected_runs = [
-    f"capacity-{capacity}-{mode}"
-    for capacity in (8, 16, 32)
-    for mode in ("control", "profiled")
+    "dual-cold-primary",
+    "dual-warm-profiled",
+    "dual-warm-control",
+    "dual-warm-reference-present",
+    "dual-cache-disabled",
+    "dual-cache-capacity-4",
+    "dual-long-prompt",
 ]
 assert summary["selected_run_ids"] == expected_runs
-assert len(summary["experiments"]) == 6
+assert len(summary["experiments"]) == 7
 assert all(item.get("result") == "PASS" for item in summary["experiments"])
+phase2 = json.loads(
+    (EVIDENCE / "phase2-final-report.json").read_text(encoding="utf-8")
+)
+assert phase2["result"] == "PASS"
+assert phase2["selected_run_ids"] == expected_runs
+assert phase2["configuration_fingerprints_unique"] is True
+assert len({row["configuration_fingerprint_sha256"] for row in phase2["rows"]}) == 7
+assert all(row["lifetime"]["result"] == "NO_TRACE_ABORT" for row in phase2["rows"])
+assert all(
+    max(row["peak_process_vram_per_gpu_bytes"].values()) <= 8 * 1024**3
+    for row in phase2["rows"]
+)
 
 required = [
     EVIDENCE / "environment.json",
     EVIDENCE / "build-manifest.json",
-    EVIDENCE / "capacity-sweep-summary.json",
-    EVIDENCE / "capacity-sweep-progress.jsonl",
+    EVIDENCE / "phase2-contract.json",
+    EVIDENCE / "matrix-summary.json",
+    EVIDENCE / "matrix-progress.jsonl",
+    EVIDENCE / "phase2-final-report.json",
+    EVIDENCE / "phase2-artifact-manifest.json",
     EVIDENCE / "raw-allocation-trace.log",
 ]
 for run_id in expected_runs:
@@ -207,17 +230,18 @@ for run_id in expected_runs:
         run_dir / "overlap-analysis.json",
         run_dir / "multi-gpu-timeline.json",
         run_dir / "path-proof.json",
+        run_dir / "configuration-fingerprint.json",
         run_dir / "expert-trace.jsonl",
+        run_dir / "warmup-expert-trace.jsonl",
     ])
-    if run_id.endswith("-profiled"):
+    if run_id != "dual-warm-control":
         required.extend([
             run_dir / "expert-cache-analysis.json",
             run_dir / "transfer-analysis.json",
         ])
 empty_allowed = {
-    EVIDENCE / "runs" / run_id / "expert-trace.jsonl"
-    for run_id in expected_runs
-    if run_id.endswith("-control")
+    EVIDENCE / "runs" / "dual-warm-control" / "expert-trace.jsonl",
+    EVIDENCE / "runs" / "dual-warm-control" / "warmup-expert-trace.jsonl",
 }
 missing = [
     str(path.relative_to(EVIDENCE))
@@ -249,7 +273,7 @@ manifest = {
     json.dumps(manifest, indent=2, sort_keys=True) + "\n"
 )
 archive = shutil.make_archive(
-    "/kaggle/working/ornith-milestone4-capacity-sweep",
+    "/kaggle/working/ornith-milestone4-phase2-evidence",
     "gztar",
     root_dir=EVIDENCE.parent,
     base_dir=EVIDENCE.name,

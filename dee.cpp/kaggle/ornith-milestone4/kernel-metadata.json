@@ -1,6 +1,6 @@
 {
   "id": "nivind/dee-cpp-ornith-milestone-4-capacity-sweep",
-  "title": "dee.cpp Ornith Milestone 4 Capacity Sweep",
+  "title": "dee.cpp Ornith Milestone 4 Phase 2 Cap-32 Matrix",
   "code_file": "ornith_milestone4.py",
   "language": "python",
   "kernel_type": "script",
@@ -24,7 +24,8 @@
     "ornith",
     "moe",
     "milestone-4",
-    "capacity-sweep",
+    "phase-2",
+    "cap-32",
     "dual-t4"
   ]
 }
