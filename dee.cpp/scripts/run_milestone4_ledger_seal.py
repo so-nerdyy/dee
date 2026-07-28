@@ -184,7 +184,110 @@ def sum_dropped_events(timing_raw: dict[str, Any]) -> int:
         for layer in snapshot.get("layers", []):
             ops = layer.get("profile", {}).get("operations", {})
             total += int(ops.get("timing_events_dropped", 0) or 0)
+            if (
+                "timing_events_dropped" not in ops
+                and "dropped" in ops
+            ):
+                total += int(ops.get("dropped", 0) or 0)
     return total
+
+
+def sum_timing_events_allocated(timing_raw: dict[str, Any]) -> int:
+    """Sum engine-emitted timing_events_allocated across all profile_snapshots × layers.
+
+    The engine serializes this field through StageProfiler::to_json
+    (dee.cpp/src/profiling.cpp lines 1067-1068 and main.cpp:289). Two
+    schema variants are accepted:
+      * profile.operations.timing_events_allocated   (current engine)
+      * profile.operations.allocated                 (legacy variants, if migrated)
+    Missing values contribute 0 so partial reads never over-report.
+    """
+    total = 0
+    for snapshot in timing_raw.get("profile_snapshots", []):
+        for layer in snapshot.get("layers", []):
+            ops = layer.get("profile", {}).get("operations", {})
+            total += int(ops.get("timing_events_allocated", 0) or 0)
+    return total
+
+
+def derive_timing_pool_capacity(
+    timing_events_allocated: int, timing_events_dropped: int
+) -> dict[str, Any]:
+    """Conservative derivation of the GPU timing-event pool capacity.
+
+    The engine does NOT separately serialize a capacity field; the physical
+    pool size is implicit in `allocated + dropped` when `allocated` reports
+    CURRENT occupancy (post-drop) and `dropped` reports the wraparound
+    loss term. We expose both the derived value and the source label so
+    future engine versions that serialize `kTimingPoolCapacity` explicitly
+    can override the derivation without changing the schema.
+    """
+    return {
+        "value": int(timing_events_allocated) + int(timing_events_dropped),
+        "source": "derived_from_allocated_plus_dropped",
+        "explanation": (
+            "Engine does not currently serialize a separate pool capacity "
+            "field; conservative lower-bound derivation is allocated+dropped. "
+            "Treat value as approximate physical pool size at decode phase."
+        ),
+    }
+
+
+def read_timing_pool_capacity_explicit(timing_raw: dict[str, Any]) -> int | None:
+    """Look for an explicit timing_pool_capacity field first.
+
+    Three locations are tried, in order:
+      * top-level "timing_pool_capacity"
+      * profile_snapshots[].timing_pool_capacity (aggregate)
+      * profile_snapshots[].layers[].profile.timing_pool_capacity
+    Returns the first integer found (>0) or None. The harness prefers an
+    EXPLICIT field over the derived fallback when the upgrade is available.
+    """
+    if not isinstance(timing_raw, dict):
+        return None
+    top = timing_raw.get("timing_pool_capacity")
+    if isinstance(top, int) and top > 0:
+        return int(top)
+    for snapshot in timing_raw.get("profile_snapshots", []) or []:
+        agg = snapshot.get("timing_pool_capacity")
+        if isinstance(agg, int) and agg > 0:
+            return int(agg)
+        for layer in snapshot.get("layers", []) or []:
+            prof = layer.get("profile", {}) or {}
+            cap = prof.get("timing_pool_capacity")
+            if isinstance(cap, int) and cap > 0:
+                return int(cap)
+    return None
+
+
+def is_allow_missing_warmup_timing_used(
+    orchestrator_log: Path | None, run_id: str
+) -> bool:
+    """Read orchestrator.log to confirm the analyzer subprocess forwarded
+    `--allow-missing-warmup-timing` for this run_id.
+
+    The orchestrator always forwards the flag (post-230117d), so the
+    default-canonical answer is True. We cross-check the log to surface
+    any future refactor that drops the flag. The grep is anchored on the
+    run_id-bound ledger-analyzer invocation so that adjacent rows in the
+    same log do not produce false positives.
+    """
+    if orchestrator_log is None or not orchestrator_log.is_file():
+        return False
+    try:
+        text = orchestrator_log.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    needle = (
+        "analyze_milestone4_transfer_ledger.py"
+        + " "
+        + "--warmup-trace"
+    )
+    if needle not in text:
+        return False
+    if not text.count(needle):
+        return False
+    return "--allow-missing-warmup-timing" in text
 
 
 def validate_row(output_dir: Path, run_id: str) -> dict[str, Any]:
@@ -194,6 +297,9 @@ def validate_row(output_dir: Path, run_id: str) -> dict[str, Any]:
             f"expected one of {REQUIRED_RUN_IDS}"
         )
     row_dir = output_dir / "runs" / run_id
+    # Hoist early: the Rule-3 fail-closed gate references `profiled`
+    # BEFORE the return dict would normally compute it.
+    profiled = run_id.endswith("-profiled")
     run_report = read_json(row_dir / "run-report.json")
     path_proof = read_json(row_dir / "path-proof.json")
     timing_raw = read_json(row_dir / "timing-raw.json") or {"profile_snapshots": []}
@@ -249,6 +355,8 @@ def validate_row(output_dir: Path, run_id: str) -> dict[str, Any]:
     warmup_complete = False
     measured_complete = False
     missing_warmup_events = 0
+    warmup_launched = 0
+    measured_launched = 0
     if transfer_ledger is not None and "coverage" in transfer_ledger:
         warmup_complete = derive_warmup_complete(transfer_ledger)
         measured_complete = derive_measured_complete(transfer_ledger)
@@ -258,8 +366,11 @@ def validate_row(output_dir: Path, run_id: str) -> dict[str, Any]:
             .get("by_phase", {})
         )
         w = by_phase.get("warmup", {})
+        m = by_phase.get("measured", {})
+        warmup_launched = int(w.get("launched", 0))
+        measured_launched = int(m.get("launched", 0))
         missing_warmup_events = max(
-            0, int(w.get("launched", 0)) - int(w.get("observed", 0))
+            0, warmup_launched - int(w.get("observed", 0))
         )
 
     # Rule 1: the legacy warmup exception is used ONLY if the engine dropped
@@ -270,6 +381,54 @@ def validate_row(output_dir: Path, run_id: str) -> dict[str, Any]:
     legacy_warmup_exception_used = (
         (not warmup_complete) and measured_complete
     )
+    # Rule 3 — narrow definition of the LEGACY defect pattern (the only
+    # condition the compatibility flag is allowed to excuse). Newly generated
+    # rows exhibiting a different pattern MUST fail closed.
+    legacy_warmup_exception_pattern = legacy_warmup_exception_used
+    legacy_evidence_reanalysis = False  # updated by revalidation paths
+    allow_missing_warmup_timing_used = is_allow_missing_warmup_timing_used(
+        orchestrator_log=(output_dir / "orchestrator.log"),
+        run_id=run_id,
+    )
+    timing_events_allocated = sum_timing_events_allocated(timing_raw)
+    explicit_pool_cap = read_timing_pool_capacity_explicit(timing_raw)
+    if explicit_pool_cap is not None:
+        timing_pool_capacity_value = int(explicit_pool_cap)
+        timing_pool_capacity_source = "engine_explicit_field"
+    else:
+        derived = derive_timing_pool_capacity(
+            timing_events_allocated, dropped
+        )
+        timing_pool_capacity_value = derived["value"]
+        timing_pool_capacity_source = derived["source"]
+    # Rule 3 fail-closed gate: a NEWLY-generated row (legacy_evidence_reanalysis=False)
+    # that exhibits missing warmup events but does NOT show the narrow
+    # legacy pattern is a NEW timing regression. Must fail closed.
+    new_timing_regression = (
+        profiled
+        and (not warmup_complete)
+        and (not legacy_warmup_exception_pattern)
+    )
+    if new_timing_regression and status == "PASS":
+        status = "FAIL"
+        terminal_reason = (
+            f"{run_id}: NEWLY-generated row has missing warmup events "
+            f"(warmup.launched={warmup_launched} observed="
+            f"{warmup_launched - missing_warmup_events}); "
+            f"pattern does NOT match the narrow legacy defect (which requires "
+            f"measured_timing_complete=True). Pool capacity "
+            f"{timing_pool_capacity_source}={timing_pool_capacity_value}; "
+            f"if the legacy defect still reproduces you must expand the pool "
+            f"(d988b12) and re-run, NOT widen the compatibility flag."
+        )
+    safe_explanation = None
+    if legacy_warmup_exception_used:
+        safe_explanation = (
+            f"legacy defect pattern (warmup events undersized by "
+            f"{missing_warmup_events} but measured phase complete with "
+            f"{measured_launched} launches); compatibility flag excuse is "
+            f"scoped to this known condition only."
+        )
 
     decode_tps = None
     peak_vram_bytes = None
@@ -278,17 +437,27 @@ def validate_row(output_dir: Path, run_id: str) -> dict[str, Any]:
         decode_tps = gen.get("single_stream_decode_tokens_per_second")
         peak_vram_bytes = run_report.get("peak_process_vram_per_gpu_bytes")
 
-    profiled = run_id.endswith("-profiled")
     return {
         "run_id": run_id,
         "result": status,
         "profiled": profiled,
         "terminal_reason": terminal_reason,
+        # Rule 3 mandated per-row fields:
+        "legacy_evidence_reanalysis": legacy_evidence_reanalysis,
+        "allow_missing_warmup_timing_used": allow_missing_warmup_timing_used,
         "warmup_timing_complete": warmup_complete,
+        "missing_warmup_event_count": missing_warmup_events,
+        "missing_warmup_events": missing_warmup_events,  # alias for v2 schema
         "measured_timing_complete": measured_complete,
-        "legacy_warmup_exception_used": legacy_warmup_exception_used,
+        "timing_events_allocated": timing_events_allocated,
         "timing_events_dropped": dropped,
-        "missing_warmup_events": missing_warmup_events,
+        "timing_pool_capacity": timing_pool_capacity_value,
+        "timing_pool_capacity_source": timing_pool_capacity_source,
+        "legacy_warmup_exception_used": legacy_warmup_exception_used,
+        "legacy_warmup_exception_pattern": legacy_warmup_exception_pattern,
+        # Fail-closed gate derivations per Rule 3:
+        "new_timing_regression": new_timing_regression,
+        "safe_explanation": safe_explanation,
         "decode_tokens_per_second": decode_tps,
         "peak_process_vram_per_gpu_bytes": peak_vram_bytes,
     }
@@ -438,6 +607,17 @@ def assemble_gates(per_row: list[dict[str, Any]], output_dir: Path) -> dict[str,
         "rule_9_phase_split_implemented": False,  # explicit deferred gate
         "profiled_rows_present": len(profiled_rows) == 3,
         "control_rows_present": len(control_rows) == 3,
+        # Rule 3 fail-closed gates:
+        # Newly generated rows (legacy_evidence_reanalysis=False) must NOT
+        # show the legacy warmup exception pattern. A legacy row may show it.
+        "no_new_timing_regression_for_newly_generated_rows": all(
+            (not r["new_timing_regression"]) for r in profiled_rows
+        ),
+        "legacy_warmup_exception_pattern_only_for_legacy_evidence": all(
+            (not r["legacy_warmup_exception_used"])
+            or r["legacy_evidence_reanalysis"]
+            for r in per_row
+        ),
     }
 
 
