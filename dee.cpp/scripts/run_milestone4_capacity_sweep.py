@@ -224,6 +224,7 @@ def main() -> None:
                         "--warmup-trace", str(warmup_trace_path),
                         "--measured-trace", str(trace_path),
                         "--capacity", str(capacity),
+                        "--allow-missing-warmup-timing",
                         "--output", str(output / "transfer-ledger.json"),
                     ],
                     args.output_dir / "logs" / f"{run_id}-ledger.log",
