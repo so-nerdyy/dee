@@ -250,6 +250,17 @@ public:
         void* d_output_f16, void* d_raw_trace_out,
         void* external_stream);
 
+    // M5E: graph-safe, allocation-free normalization launches on the caller's
+    // current CUDA stream. Buffers and weights are contiguous FP16 tensors.
+    bool qwen_rms_norm_device(
+        const void* d_input_f16, const void* d_weight_f16,
+        void* d_output_f16, int rows, int dim, float epsilon,
+        void* external_stream);
+    bool qwen_rms_norm_gated_device(
+        const void* d_input_f16, const void* d_weight_f16,
+        const void* d_gate_f16, void* d_output_f16,
+        int rows, int dim, float epsilon, void* external_stream);
+
     // Genuine checkpoint router: logits = W_router * hidden using the active
     // runtime dtype (FP16 CUDA for Ornith), then FP32 softmax, ordered top-K,
     // and top-K probability renormalization.

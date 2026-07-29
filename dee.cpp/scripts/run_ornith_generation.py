@@ -47,6 +47,7 @@ from scripts.ornith_support import (  # noqa: E402
 
 
 TRACE_LAYERS = set(range(40))
+FUSED_NORM_EXECUTION_MODE = "native-combined-direct-fused-norm"
 EXECUTION_MODES = (
     "production",
     "parity",
@@ -54,6 +55,7 @@ EXECUTION_MODES = (
     "debug-full-logit",
     "native-combined",
     "native-combined-direct",
+    FUSED_NORM_EXECUTION_MODE,
 )
 TOLERANCES = {
     "embedding_output": (0.0, 0.0),
@@ -352,6 +354,10 @@ def fresh_engine_path_proof() -> dict:
         "last_native_error_combined_attempt": "",
         "native_direct_calls": 0,
         "native_direct_fallback_calls": 0,
+        "fused_rms_norm_calls": 0,
+        "fused_rms_norm_gated_calls": 0,
+        "fused_norm_output_allocations": 0,
+        "fused_norm_failures": 0,
         "router_native_host_calls": 0,
         "router_torch_device_calls": 0,
         "router_hidden_d2h_total_bytes": 0,
@@ -594,6 +600,160 @@ class HybridRouter:
         return logits, weights, experts
 
 
+class HybridRMSNorm:
+    """Fail-closed Qwen RMSNorm CUDA launch for the M5E execution mode."""
+
+    def __init__(self, module, engine, layer: int, context: ExecutionContext,
+                 label: str):
+        self.module = module
+        self.reference_forward = module.forward
+        self.engine = engine
+        self.layer = layer
+        self.context = context
+        self.label = label
+        module.forward = self.forward
+
+    def forward(self, hidden_states):
+        if (
+            self.context.mode == "reference"
+            or self.context.execution_mode != FUSED_NORM_EXECUTION_MODE
+        ):
+            return self.reference_forward(hidden_states)
+        import torch
+
+        weight = self.module.weight
+        supported = (
+            hidden_states.is_cuda
+            and hidden_states.dtype == torch.float16
+            and hidden_states.is_contiguous()
+            and weight.is_cuda
+            and weight.dtype == torch.float16
+            and weight.is_contiguous()
+            and hidden_states.shape[-1] == weight.numel()
+        )
+        if (
+            not supported
+            or not hasattr(self.engine, "qwen_rms_norm_device")
+        ):
+            self.context.engine_path_proof["fused_norm_failures"] += 1
+            raise RuntimeError(
+                f"fused Qwen RMSNorm unsupported at {self.label}, "
+                f"layer={self.layer}"
+            )
+        output = torch.empty_like(hidden_states)
+        proof = self.context.engine_path_proof
+        proof["fused_norm_output_allocations"] += 1
+        dim = int(hidden_states.shape[-1])
+        rows = int(hidden_states.numel() // dim)
+        with forensic_span(
+            self.context, "fused_qwen_rms_norm", self.layer,
+            {"component": self.label, "rows": rows, "dim": dim},
+        ):
+            ok = self.engine.qwen_rms_norm_device(
+                hidden_states.data_ptr(),
+                weight.data_ptr(),
+                output.data_ptr(),
+                rows,
+                dim,
+                float(self.module.eps),
+                torch.cuda.current_stream(
+                    hidden_states.device
+                ).cuda_stream,
+            )
+        if not ok:
+            proof["fused_norm_failures"] += 1
+            detail = (
+                self.engine.last_error_message()
+                if hasattr(self.engine, "last_error_message")
+                else ""
+            )
+            raise RuntimeError(
+                f"fused Qwen RMSNorm failed at {self.label}, "
+                f"layer={self.layer}: {detail or '<no native detail>'}"
+            )
+        proof["fused_rms_norm_calls"] += 1
+        return output
+
+
+class HybridRMSNormGated:
+    """Fail-closed Qwen linear-attention gated RMSNorm CUDA launch."""
+
+    def __init__(self, module, engine, layer: int, context: ExecutionContext):
+        self.module = module
+        self.reference_forward = module.forward
+        self.engine = engine
+        self.layer = layer
+        self.context = context
+        module.forward = self.forward
+
+    def forward(self, hidden_states, gate=None):
+        if (
+            self.context.mode == "reference"
+            or self.context.execution_mode != FUSED_NORM_EXECUTION_MODE
+        ):
+            return self.reference_forward(hidden_states, gate)
+        import torch
+
+        weight = self.module.weight
+        supported = (
+            gate is not None
+            and hidden_states.is_cuda
+            and gate.is_cuda
+            and hidden_states.dtype == torch.float16
+            and gate.dtype == torch.float16
+            and hidden_states.is_contiguous()
+            and gate.is_contiguous()
+            and hidden_states.shape == gate.shape
+            and weight.is_cuda
+            and weight.dtype == torch.float16
+            and weight.is_contiguous()
+            and hidden_states.shape[-1] == weight.numel()
+        )
+        if (
+            not supported
+            or not hasattr(self.engine, "qwen_rms_norm_gated_device")
+        ):
+            self.context.engine_path_proof["fused_norm_failures"] += 1
+            raise RuntimeError(
+                "fused Qwen gated RMSNorm unsupported at "
+                f"layer={self.layer}"
+            )
+        output = torch.empty_like(hidden_states)
+        proof = self.context.engine_path_proof
+        proof["fused_norm_output_allocations"] += 1
+        dim = int(hidden_states.shape[-1])
+        rows = int(hidden_states.numel() // dim)
+        with forensic_span(
+            self.context, "fused_qwen_rms_norm_gated", self.layer,
+            {"rows": rows, "dim": dim},
+        ):
+            ok = self.engine.qwen_rms_norm_gated_device(
+                hidden_states.data_ptr(),
+                weight.data_ptr(),
+                gate.data_ptr(),
+                output.data_ptr(),
+                rows,
+                dim,
+                float(self.module.variance_epsilon),
+                torch.cuda.current_stream(
+                    hidden_states.device
+                ).cuda_stream,
+            )
+        if not ok:
+            proof["fused_norm_failures"] += 1
+            detail = (
+                self.engine.last_error_message()
+                if hasattr(self.engine, "last_error_message")
+                else ""
+            )
+            raise RuntimeError(
+                "fused Qwen gated RMSNorm failed at "
+                f"layer={self.layer}: {detail or '<no native detail>'}"
+            )
+        proof["fused_rms_norm_gated_calls"] += 1
+        return output
+
+
 def stable_combine_selected_experts(
         output, raw, top_k_weights, expert_ids_np: np.ndarray,
         *, legacy_accumulator: bool):
@@ -657,9 +817,13 @@ class HybridExperts:
         if self.context.execution_mode in (
             "native-combined",
             "native-combined-direct",
+            FUSED_NORM_EXECUTION_MODE,
         ):
             direct_mode = (
-                self.context.execution_mode == "native-combined-direct"
+                self.context.execution_mode in (
+                    "native-combined-direct",
+                    FUSED_NORM_EXECUTION_MODE,
+                )
             )
             method_name = (
                 "moe_forward_combined_direct_device"
@@ -1108,6 +1272,12 @@ def load_runtime(model_dir: Path, gpu_count: int, split_layer: int, cache_expert
     record_elapsed(phase_recorder, "kernel_and_rotary_initialization", kernel_started)
 
     engines = []
+    fused_norm_wrappers = []
+    fused_norm_inventory = {
+        "wrapped_regular": [],
+        "wrapped_gated": [],
+        "intentionally_unwrapped_full_attention_head_norms": [],
+    }
     expert_bytes = 3 * text_config.hidden_size * text_config.moe_intermediate_size * 2
     budget_bytes = cache_experts * expert_bytes
     if allow_diagnostic_sub_topk_cache:
@@ -1158,8 +1328,58 @@ def load_runtime(model_dir: Path, gpu_count: int, split_layer: int, cache_expert
         block.mlp.experts = HybridExperts(
             nn, reference_expert, engine, layer, context
         ).module
+
+        input_norm_wrapper = HybridRMSNorm(
+            block.input_layernorm,
+            engine,
+            layer,
+            context,
+            "input_layernorm",
+        )
+        post_norm_wrapper = HybridRMSNorm(
+            block.post_attention_layernorm,
+            engine,
+            layer,
+            context,
+            "post_attention_layernorm",
+        )
+        fused_norm_wrappers.extend([
+            input_norm_wrapper,
+            post_norm_wrapper,
+        ])
+        fused_norm_inventory["wrapped_regular"].extend([
+            f"layer={layer}:input_layernorm",
+            f"layer={layer}:post_attention_layernorm",
+        ])
+        if hasattr(block, "linear_attn"):
+            fused_norm_wrappers.append(
+                HybridRMSNormGated(
+                    block.linear_attn.norm, engine, layer, context
+                )
+            )
+            fused_norm_inventory["wrapped_gated"].append(
+                f"layer={layer}:linear_attn.norm"
+            )
+        if hasattr(block, "self_attn"):
+            fused_norm_inventory[
+                "intentionally_unwrapped_full_attention_head_norms"
+            ].extend([
+                f"layer={layer}:self_attn.q_norm",
+                f"layer={layer}:self_attn.k_norm",
+            ])
     record_elapsed(phase_recorder, "initial_mmap_and_engine_setup", mmap_started,
                    engines=len(engines), cache_experts=cache_experts)
+
+    fused_norm_wrappers.append(
+        HybridRMSNorm(
+            model.model.norm,
+            engines[-1],
+            text_config.num_hidden_layers,
+            context,
+            "final_norm",
+        )
+    )
+    fused_norm_inventory["wrapped_regular"].append("final_norm")
 
     # Move layer inputs and kwargs at the exact 19->20 pipeline boundary.
     for layer, block in enumerate(model.model.layers):
@@ -1221,6 +1441,8 @@ def load_runtime(model_dir: Path, gpu_count: int, split_layer: int, cache_expert
         "engines": engines,
         "reference_experts": reference_experts,
         "reference_expert_caches": reference_expert_caches,
+        "fused_norm_wrappers": fused_norm_wrappers,
+        "fused_norm_inventory": fused_norm_inventory,
         "load_seconds": time.perf_counter() - started,
         "dense_loaded_bytes": {f"cuda:{i}": value for i, value in enumerate(loaded_bytes)},
         "expert_cache_budget_per_layer": budget_bytes,
@@ -1574,7 +1796,11 @@ def parse_args():
             "comparison; profiler enables measurement hooks; debug-full-logit "
             "also retains full vocabulary logits on host; native-combined "
             "uses the exact M5C C++ weighted-combine and stream handoff; "
-            "native-combined-direct additionally bypasses one-row D2D copies"
+            "native-combined-direct additionally bypasses one-row D2D copies; "
+            "native-combined-direct-fused-norm also replaces layer input/post, "
+            "final, and linear-attention gated Qwen RMSNorm kernels with the "
+            "explicit M5E CUDA contract (full-attention q/k head norms remain "
+            "eager and are separately inventoried)"
         ),
     )
     parser.add_argument("--reference-parity", action="store_true")

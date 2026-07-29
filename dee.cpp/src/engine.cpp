@@ -23,6 +23,7 @@
 #include <cuda_runtime.h>
 #include "dee/cuda_check.h"
 #include "dee/cuda_convert.h"
+#include "dee/rmsnorm_cuda.h"
 #include "dee/swiglu_cuda.h"
 #endif
 
@@ -1015,6 +1016,80 @@ bool Engine::moe_forward_combined_direct_device(
     return moe_forward_combined_device_impl(
         layer, d_h_in, tokens, d_expert_ids, topk, d_weights_f32,
         d_output_f16, d_raw_trace_out, external_stream, true);
+}
+
+bool Engine::qwen_rms_norm_device(
+        const void* d_input_f16, const void* d_weight_f16,
+        void* d_output_f16, int rows, int dim, float epsilon,
+        void* external_stream) {
+    clear_last_error();
+    if (!d_input_f16 || !d_weight_f16 || !d_output_f16 ||
+        rows <= 0 || dim <= 0 || dim > 4096 ||
+        !std::isfinite(epsilon) || epsilon < 0.0f) {
+        set_last_error("invalid qwen_rms_norm_device arguments");
+        return false;
+    }
+#ifdef DEE_CUDA
+    if (!cfg_.use_cuda) {
+        set_last_error("Qwen RMSNorm device path requires CUDA");
+        return false;
+    }
+    if (!DEE_CUDA_CHECK_NAMED(
+            cudaSetDevice(cfg_.device_id),
+            "cudaSetDevice(Qwen RMSNorm)")) {
+        set_last_error("cudaSetDevice failed for Qwen RMSNorm");
+        return false;
+    }
+    if (!qwen_rms_norm_fp16_cuda(
+            d_input_f16, d_weight_f16, d_output_f16,
+            rows, dim, epsilon,
+            static_cast<cudaStream_t>(external_stream))) {
+        set_last_error("Qwen RMSNorm CUDA launch failed");
+        return false;
+    }
+    return true;
+#else
+    (void)external_stream;
+    set_last_error("Qwen RMSNorm device path unavailable without CUDA");
+    return false;
+#endif
+}
+
+bool Engine::qwen_rms_norm_gated_device(
+        const void* d_input_f16, const void* d_weight_f16,
+        const void* d_gate_f16, void* d_output_f16,
+        int rows, int dim, float epsilon, void* external_stream) {
+    clear_last_error();
+    if (!d_input_f16 || !d_weight_f16 || !d_gate_f16 || !d_output_f16 ||
+        rows <= 0 || dim <= 0 || dim > 4096 ||
+        !std::isfinite(epsilon) || epsilon < 0.0f) {
+        set_last_error("invalid qwen_rms_norm_gated_device arguments");
+        return false;
+    }
+#ifdef DEE_CUDA
+    if (!cfg_.use_cuda) {
+        set_last_error("Qwen gated RMSNorm device path requires CUDA");
+        return false;
+    }
+    if (!DEE_CUDA_CHECK_NAMED(
+            cudaSetDevice(cfg_.device_id),
+            "cudaSetDevice(Qwen gated RMSNorm)")) {
+        set_last_error("cudaSetDevice failed for Qwen gated RMSNorm");
+        return false;
+    }
+    if (!qwen_rms_norm_gated_fp16_cuda(
+            d_input_f16, d_weight_f16, d_gate_f16, d_output_f16,
+            rows, dim, epsilon,
+            static_cast<cudaStream_t>(external_stream))) {
+        set_last_error("Qwen gated RMSNorm CUDA launch failed");
+        return false;
+    }
+    return true;
+#else
+    (void)external_stream;
+    set_last_error("Qwen gated RMSNorm device path unavailable without CUDA");
+    return false;
+#endif
 }
 
 bool Engine::moe_forward_combined_device_impl(

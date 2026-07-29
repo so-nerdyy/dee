@@ -363,6 +363,61 @@ PYBIND11_MODULE(pydee_core, m) {
                 for single-row expert groups. Multi-row and duplicate groups
                 retain the established copy path.
             )pbdoc")
+        .def("qwen_rms_norm_device", [](
+                dee::Engine& self,
+                uintptr_t d_input_ptr,
+                uintptr_t d_weight_ptr,
+                uintptr_t d_output_ptr,
+                int rows,
+                int dim,
+                float epsilon,
+                uintptr_t external_stream_ptr) -> bool {
+            bool ok = false;
+            {
+                py::gil_scoped_release release;
+                ok = self.qwen_rms_norm_device(
+                    reinterpret_cast<const void*>(d_input_ptr),
+                    reinterpret_cast<const void*>(d_weight_ptr),
+                    reinterpret_cast<void*>(d_output_ptr),
+                    rows,
+                    dim,
+                    epsilon,
+                    reinterpret_cast<void*>(external_stream_ptr));
+            }
+            return ok;
+        }, py::arg("d_input_ptr"), py::arg("d_weight_ptr"),
+           py::arg("d_output_ptr"), py::arg("rows"), py::arg("dim"),
+           py::arg("epsilon"), py::arg("external_stream_ptr"),
+           "Launch Qwen RMSNorm on contiguous FP16 device tensors.")
+        .def("qwen_rms_norm_gated_device", [](
+                dee::Engine& self,
+                uintptr_t d_input_ptr,
+                uintptr_t d_weight_ptr,
+                uintptr_t d_gate_ptr,
+                uintptr_t d_output_ptr,
+                int rows,
+                int dim,
+                float epsilon,
+                uintptr_t external_stream_ptr) -> bool {
+            bool ok = false;
+            {
+                py::gil_scoped_release release;
+                ok = self.qwen_rms_norm_gated_device(
+                    reinterpret_cast<const void*>(d_input_ptr),
+                    reinterpret_cast<const void*>(d_weight_ptr),
+                    reinterpret_cast<const void*>(d_gate_ptr),
+                    reinterpret_cast<void*>(d_output_ptr),
+                    rows,
+                    dim,
+                    epsilon,
+                    reinterpret_cast<void*>(external_stream_ptr));
+            }
+            return ok;
+        }, py::arg("d_input_ptr"), py::arg("d_weight_ptr"),
+           py::arg("d_gate_ptr"), py::arg("d_output_ptr"),
+           py::arg("rows"), py::arg("dim"), py::arg("epsilon"),
+           py::arg("external_stream_ptr"),
+           "Launch Qwen gated RMSNorm on contiguous FP16 device tensors.")
         .def("compute_stream_handle", &dee::Engine::compute_stream_handle,
              "Return the native compute-stream handle for allocator lifetime tracking.")
         .def("last_error_message", [](const dee::Engine& self) -> std::string {

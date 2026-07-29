@@ -47,7 +47,10 @@ find_package(ZLIB REQUIRED)
 target_link_libraries(dee_core PUBLIC ZLIB::ZLIB)
 
 if(DEE_CUDA)
-    target_sources(dee_core PRIVATE src/cuda_convert.cu src/swiglu_cuda.cu)
+    target_sources(dee_core PRIVATE
+        src/cuda_convert.cu
+        src/rmsnorm_cuda.cu
+        src/swiglu_cuda.cu)
     target_compile_definitions(dee_core PUBLIC DEE_CUDA=1)
     if(DEE_CUDA_VALIDATE)
         target_compile_definitions(dee_core PUBLIC DEE_CUDA_VALIDATE=1)
@@ -100,6 +103,7 @@ if(DEE_BUILD_TESTS)
     if(DEE_CUDA)
         list(APPEND DEE_TEST_SOURCES
             tests/test_swiglu_cuda.cpp
+            tests/test_rmsnorm_cuda.cpp
             tests/test_router_cuda.cpp
             tests/test_expert_batch_cuda.cpp
             tests/test_profiling_cuda.cpp)
