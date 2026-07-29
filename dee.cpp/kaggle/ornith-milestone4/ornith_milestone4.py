@@ -240,6 +240,7 @@ for run_id in expected_runs:
             run_dir / "transfer-analysis.json",
         ])
 empty_allowed = {
+    EVIDENCE / "runs" / "dual-cold-primary" / "warmup-expert-trace.jsonl",
     EVIDENCE / "runs" / "dual-warm-control" / "expert-trace.jsonl",
     EVIDENCE / "runs" / "dual-warm-control" / "warmup-expert-trace.jsonl",
 }

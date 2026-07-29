@@ -1,0 +1,87 @@
+{
+  "evidence_dir": "tmp\\m4_phase2_output\\ornith-milestone4-phase2-evidence-20260728T232556Z-phase2-cap32",
+  "evidence_dir_name": "ornith-milestone4-phase2-evidence-20260728T232556Z-phase2-cap32",
+  "expected_commit": "17e32c9f462ace4d416d330181a6efad716f00bd",
+  "expected_run_id": "20260728T232556Z-phase2-cap32",
+  "kaggle_terminal_state": "ERROR",
+  "manifest_checks": {
+    "notebook": {
+      "artifact_count": 128,
+      "path": "recovered-artifact-manifest.json",
+      "sha256": "259e104df68493aa42a38be3011da005ae16c46580aec1b77af6a812e059897b",
+      "verified_paths": 128
+    },
+    "phase2": {
+      "artifact_count": 32,
+      "path": "phase2-artifact-manifest.json",
+      "sha256": "9b800fb68d501889cf27c2db156231c919054b3232e5b36238024fe5089dbe64",
+      "verified_paths": 32
+    }
+  },
+  "manifest_provenance": "HOST_RECOVERED_AFTER_NOTEBOOK_PACKAGING_ERROR",
+  "matrix_result": "PASS",
+  "notebook_result": "ERROR",
+  "packaging_recovery_reason": "cold-primary correctly has no warmup trace, but the notebook packaging gate omitted that path from its expected-empty allowlist",
+  "raw_allocation_trace": {
+    "critical_markers": [],
+    "result": "NO_TRACE_ABORT"
+  },
+  "report_summary": {
+    "maximum_full_token_tps": 5.984249252506747,
+    "maximum_peak_process_vram_bytes": 7053639680,
+    "minimum_full_token_tps": 0.002794007710693421,
+    "row_count": 7,
+    "run_ids": [
+      "dual-cold-primary",
+      "dual-warm-profiled",
+      "dual-warm-control",
+      "dual-warm-reference-present",
+      "dual-cache-disabled",
+      "dual-cache-capacity-4",
+      "dual-long-prompt"
+    ],
+    "unique_fingerprint_count": 7
+  },
+  "result": "PASS",
+  "schema_version": 1,
+  "sealed_phase1_ancestor": "b98696395b51006f71a85c328acacffbf65d29d2",
+  "source_hashes": {
+    "build-manifest.json": {
+      "bytes": 401,
+      "sha256": "d6e584deb00a63f3c533377b2bbd951566ef677b4281167d060f779ca3d732b0"
+    },
+    "environment.json": {
+      "bytes": 672,
+      "sha256": "9457b715aac8551db1d52aa32950415162498b95f5d5597014d15281b9a04bcc"
+    },
+    "matrix-progress.jsonl": {
+      "bytes": 2545,
+      "sha256": "230264ea059309d2f224db5c6040e63d1a01dd494955f8c08ad3a60222b349b1"
+    },
+    "matrix-summary.json": {
+      "bytes": 2608,
+      "sha256": "a353e0aedac65f59ce0c41b902e8a4bb6ded133810cb2d75e4919bfb75f8cd0f"
+    },
+    "phase2-artifact-manifest.json": {
+      "bytes": 5869,
+      "sha256": "9b800fb68d501889cf27c2db156231c919054b3232e5b36238024fe5089dbe64"
+    },
+    "phase2-contract.json": {
+      "bytes": 5336,
+      "sha256": "3b696d1aa20e4069afd7d1ddb3d2041333ad72346014469fec6a19d69bd35f60"
+    },
+    "phase2-final-report.json": {
+      "bytes": 20604,
+      "sha256": "d98438f5d53a5c697252e866a0c4c2c12ecc0206fe322f1473b1911929e362c1"
+    },
+    "raw-allocation-trace.log": {
+      "bytes": 31384431,
+      "sha256": "48041f4feedd0d9f937dc0f5dc51a1a720e4c98a7334c9943053a64d54b0f7fd"
+    },
+    "recovered-artifact-manifest.json": {
+      "bytes": 30226,
+      "sha256": "259e104df68493aa42a38be3011da005ae16c46580aec1b77af6a812e059897b"
+    }
+  },
+  "terminal_reason": "DOWNLOADED_PHASE2_ALL_SEVEN_ROWS_REVALIDATED_AFTER_POST_MATRIX_PACKAGING_ERROR"
+}

@@ -114,3 +114,47 @@ def test_final_report_checks_all_seven_semantic_fingerprints() -> None:
     rows[0]["configuration_fingerprint_sha256"] = "bad"
     with pytest.raises(RuntimeError, match="fingerprint changed"):
         MODULE.validate_final_report(report, commit)
+
+
+def test_notebook_required_paths_accept_known_empty_signature(
+    tmp_path: Path,
+) -> None:
+    for relative in MODULE.notebook_required_paths():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}\n", encoding="utf-8")
+    for relative in MODULE.EXPECTED_EMPTY_REQUIRED_PATHS:
+        (tmp_path / relative).write_text("", encoding="utf-8")
+
+    result = MODULE.validate_notebook_required_paths(tmp_path)
+    assert set(result["expected_empty_required_paths"]) == (
+        MODULE.EXPECTED_EMPTY_REQUIRED_PATHS
+    )
+
+    unexpected = tmp_path / "runs/dual-long-prompt/path-proof.json"
+    unexpected.write_text("", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="unexpected_empty"):
+        MODULE.validate_notebook_required_paths(tmp_path)
+
+
+def test_recovery_requires_recorded_error_and_no_original_manifest(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(RuntimeError, match="terminal state ERROR"):
+        MODULE.build_recovered_notebook_manifest(
+            tmp_path,
+            expected_run_id="run",
+            expected_commit="1" * 40,
+            terminal_state="COMPLETE",
+        )
+
+    (tmp_path / "artifact-manifest.json").write_text(
+        "{}\n", encoding="utf-8"
+    )
+    with pytest.raises(RuntimeError, match="forbidden"):
+        MODULE.build_recovered_notebook_manifest(
+            tmp_path,
+            expected_run_id="run",
+            expected_commit="1" * 40,
+            terminal_state="ERROR",
+        )

@@ -1,0 +1,774 @@
+{
+  "artifacts": [
+    {
+      "bytes": 401,
+      "path": "build-manifest.json",
+      "sha256": "d6e584deb00a63f3c533377b2bbd951566ef677b4281167d060f779ca3d732b0"
+    },
+    {
+      "bytes": 672,
+      "path": "environment.json",
+      "sha256": "9457b715aac8551db1d52aa32950415162498b95f5d5597014d15281b9a04bcc"
+    },
+    {
+      "bytes": 0,
+      "path": "logs/dual-cache-capacity-4-analysis.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 3810880,
+      "path": "logs/dual-cache-capacity-4.log",
+      "sha256": "ec865034fd1504c31e816f119745ddb1405cd504b6bc5407ee0c296c75d17034"
+    },
+    {
+      "bytes": 0,
+      "path": "logs/dual-cache-disabled-analysis.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 2306274,
+      "path": "logs/dual-cache-disabled.log",
+      "sha256": "a3e0f8e4504177e6d9c9dd1a8a6d6997c7058ff12ee6b5e1ab5c73557c21e9fd"
+    },
+    {
+      "bytes": 0,
+      "path": "logs/dual-cold-primary-analysis.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 4326939,
+      "path": "logs/dual-cold-primary.log",
+      "sha256": "677301b0e54b5bef945da5d4e4c78adc3c0ecf66d2cdf7ca43b9fd2039bc7cdf"
+    },
+    {
+      "bytes": 0,
+      "path": "logs/dual-long-prompt-analysis.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 9312650,
+      "path": "logs/dual-long-prompt.log",
+      "sha256": "a81fb94882c3c7187f4a2b1c2e3e2ad020a1be4a41a7a8ba47b926ea1411729f"
+    },
+    {
+      "bytes": 1065122,
+      "path": "logs/dual-warm-control.log",
+      "sha256": "7922315095926756d24eab36ae2b35a042824ffca27d59cef6abe3fc97a0aea7"
+    },
+    {
+      "bytes": 0,
+      "path": "logs/dual-warm-profiled-analysis.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 5527987,
+      "path": "logs/dual-warm-profiled.log",
+      "sha256": "268f62f1339ebd242076e06b652790b7fa5c0fc1742868331f2fa3e10caf7469"
+    },
+    {
+      "bytes": 0,
+      "path": "logs/dual-warm-reference-present-analysis.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 5544739,
+      "path": "logs/dual-warm-reference-present.log",
+      "sha256": "84e091ddc31496b2adce03023ed46124a9221f1af14ff7137b23ad83cb523e7a"
+    },
+    {
+      "bytes": 528807,
+      "path": "logs/phase2-driver.log",
+      "sha256": "41996a9d084b4881852c0e21acd467a4b67894ea3ab70110c2a374e3019a830c"
+    },
+    {
+      "bytes": 2545,
+      "path": "matrix-progress.jsonl",
+      "sha256": "230264ea059309d2f224db5c6040e63d1a01dd494955f8c08ad3a60222b349b1"
+    },
+    {
+      "bytes": 2608,
+      "path": "matrix-summary.json",
+      "sha256": "a353e0aedac65f59ce0c41b902e8a4bb6ded133810cb2d75e4919bfb75f8cd0f"
+    },
+    {
+      "bytes": 5869,
+      "path": "phase2-artifact-manifest.json",
+      "sha256": "9b800fb68d501889cf27c2db156231c919054b3232e5b36238024fe5089dbe64"
+    },
+    {
+      "bytes": 5336,
+      "path": "phase2-contract.json",
+      "sha256": "3b696d1aa20e4069afd7d1ddb3d2041333ad72346014469fec6a19d69bd35f60"
+    },
+    {
+      "bytes": 20604,
+      "path": "phase2-final-report.json",
+      "sha256": "d98438f5d53a5c697252e866a0c4c2c12ecc0206fe322f1473b1911929e362c1"
+    },
+    {
+      "bytes": 31384431,
+      "path": "raw-allocation-trace.log",
+      "sha256": "48041f4feedd0d9f937dc0f5dc51a1a720e4c98a7334c9943053a64d54b0f7fd"
+    },
+    {
+      "bytes": 4019,
+      "path": "runs/dual-cache-capacity-4/cache-invariants.json",
+      "sha256": "ea322e7f77dfd21dabe91fe32937a04d663ea3facb25b8b0ecf681ec521d63a2"
+    },
+    {
+      "bytes": 1138,
+      "path": "runs/dual-cache-capacity-4/configuration-fingerprint.json",
+      "sha256": "3ac6222f85dc8d19d6f8361bb4892b1a2ab272a84dbbb3f12c3fbd0bcf27c5bd"
+    },
+    {
+      "bytes": 1258972,
+      "path": "runs/dual-cache-capacity-4/expert-cache-analysis.json",
+      "sha256": "24113beb1aae2e6e5e6aa85ddbfcd1943806f63afa5227b95aab4d4a47911cf8"
+    },
+    {
+      "bytes": 1679614,
+      "path": "runs/dual-cache-capacity-4/expert-trace.jsonl",
+      "sha256": "f6d3a1af18298a18745be6760061a1c50fe8eaf907920c4e9ea267070a3104e7"
+    },
+    {
+      "bytes": 837,
+      "path": "runs/dual-cache-capacity-4/gpu-utilization-summary.json",
+      "sha256": "fcd9ddbe6ce09885322adf412ce1581195f7ce755a5a0207c48d1028c18cad05"
+    },
+    {
+      "bytes": 113179,
+      "path": "runs/dual-cache-capacity-4/layer-timing.json",
+      "sha256": "f5182c2e2ea103057c6246bb21485f1dd603985882a79d6b1a9a2641ae6ce2a2"
+    },
+    {
+      "bytes": 372031,
+      "path": "runs/dual-cache-capacity-4/memory-timeline.json",
+      "sha256": "6c6cd867e680273bd5deeecb23abb99b27a0caa669efb57bfb026964e962c4be"
+    },
+    {
+      "bytes": 5251,
+      "path": "runs/dual-cache-capacity-4/multi-gpu-timeline.json",
+      "sha256": "11b6ec55b8015973df5fd3a18b05fe5ebefed34af7ecfcd81847abf67b6c13d4"
+    },
+    {
+      "bytes": 463,
+      "path": "runs/dual-cache-capacity-4/overlap-analysis.json",
+      "sha256": "7b5aef0fa58cb0fa3e7d25fce9b760dc7dd27e3518e5ee5bc424181cd50f57b4"
+    },
+    {
+      "bytes": 608,
+      "path": "runs/dual-cache-capacity-4/path-proof.json",
+      "sha256": "337f9815f62893f3013995d43a531d434a8171528d4d6abd9b5effcde682a235"
+    },
+    {
+      "bytes": 229203,
+      "path": "runs/dual-cache-capacity-4/run-report.json",
+      "sha256": "4c9db282132005aa5598c3e39d995e59db1b67842d5130d192328cf2e40e80c4"
+    },
+    {
+      "bytes": 3364,
+      "path": "runs/dual-cache-capacity-4/synchronization-analysis.json",
+      "sha256": "3e2e432f4456450bcbe0380789d480e0fa56f05e45c50564cd1181bc7fdb752e"
+    },
+    {
+      "bytes": 7861021,
+      "path": "runs/dual-cache-capacity-4/timing-raw.json",
+      "sha256": "93fae761d15fa5c7d9961fc64204cbf400a95b7719877fad113cfae62204abd8"
+    },
+    {
+      "bytes": 489296,
+      "path": "runs/dual-cache-capacity-4/transfer-analysis.json",
+      "sha256": "5d951414ad8ec14bc5e993f943ee79f5e17d925e94b7c95ddcf9ff66568eeb8d"
+    },
+    {
+      "bytes": 1328819,
+      "path": "runs/dual-cache-capacity-4/warmup-expert-trace.jsonl",
+      "sha256": "e68ca9eb9d50751f08e4710dc58ac1c8ae8cc1f32eeb23c6c83e9e2ddf0a1382"
+    },
+    {
+      "bytes": 4019,
+      "path": "runs/dual-cache-disabled/cache-invariants.json",
+      "sha256": "ea322e7f77dfd21dabe91fe32937a04d663ea3facb25b8b0ecf681ec521d63a2"
+    },
+    {
+      "bytes": 1137,
+      "path": "runs/dual-cache-disabled/configuration-fingerprint.json",
+      "sha256": "e58c700477df015bdf0626f71cd5c4d8f2d2d6546f5ffc3d632eac7f2a084937"
+    },
+    {
+      "bytes": 1056667,
+      "path": "runs/dual-cache-disabled/expert-cache-analysis.json",
+      "sha256": "dc9786b77cca91d9bc8d95a3bc39feec5f810b627ae2e3b5857baed4a8297e11"
+    },
+    {
+      "bytes": 1493944,
+      "path": "runs/dual-cache-disabled/expert-trace.jsonl",
+      "sha256": "dd38e1dfd037e1dc0090b9af3a517b8d87697ecc0f690433acc120acfa4dc481"
+    },
+    {
+      "bytes": 837,
+      "path": "runs/dual-cache-disabled/gpu-utilization-summary.json",
+      "sha256": "644d64bc7670e9cfa62e189a47d45c9f6eb821aa5bfb9c5bc9b1d89174d0e0d7"
+    },
+    {
+      "bytes": 113343,
+      "path": "runs/dual-cache-disabled/layer-timing.json",
+      "sha256": "cc4b533985ade56b68fa21c0cf0524b6e6fc62c578c207c07bb17ce5c9e8c1e7"
+    },
+    {
+      "bytes": 372065,
+      "path": "runs/dual-cache-disabled/memory-timeline.json",
+      "sha256": "296dca56284a3b6aa8265d98631827b9408d1fa7d4b7d5d7312a921648252f74"
+    },
+    {
+      "bytes": 5281,
+      "path": "runs/dual-cache-disabled/multi-gpu-timeline.json",
+      "sha256": "682a11cd19c7eb96ee6257ad50ea21ec485f5fb0a9a387e23f65d9a6f013cc09"
+    },
+    {
+      "bytes": 463,
+      "path": "runs/dual-cache-disabled/overlap-analysis.json",
+      "sha256": "b5f5147bc728b81d65ca18e7a73dc70c251097764ee005169742deb5bd85d31e"
+    },
+    {
+      "bytes": 606,
+      "path": "runs/dual-cache-disabled/path-proof.json",
+      "sha256": "9e7595347ad4d204ae140a1f6f5a8417ffd81b6409415fdf77ee3707f6c33de7"
+    },
+    {
+      "bytes": 228999,
+      "path": "runs/dual-cache-disabled/run-report.json",
+      "sha256": "bda42cc2b80084ac28d6b226c30c3d626802f68d22be60f35dae153962721086"
+    },
+    {
+      "bytes": 3366,
+      "path": "runs/dual-cache-disabled/synchronization-analysis.json",
+      "sha256": "ddf2d840c2dfb86df8e76bcf27325620e447805f364ec516916cfcc983fbe171"
+    },
+    {
+      "bytes": 7934373,
+      "path": "runs/dual-cache-disabled/timing-raw.json",
+      "sha256": "f804bd8464806baff33d7610f05a97239c0c17b61410acc28722f0465349103f"
+    },
+    {
+      "bytes": 487704,
+      "path": "runs/dual-cache-disabled/transfer-analysis.json",
+      "sha256": "e1fb4cee44d28293369af4bb553613524cd6f4ba7d20d1072c6ff867b0ae7a23"
+    },
+    {
+      "bytes": 1184309,
+      "path": "runs/dual-cache-disabled/warmup-expert-trace.jsonl",
+      "sha256": "0c1ca0ae60b4af06ae05418384c360003fe95f65ba556b9e05786722282d1e42"
+    },
+    {
+      "bytes": 4019,
+      "path": "runs/dual-cold-primary/cache-invariants.json",
+      "sha256": "ea322e7f77dfd21dabe91fe32937a04d663ea3facb25b8b0ecf681ec521d63a2"
+    },
+    {
+      "bytes": 1121,
+      "path": "runs/dual-cold-primary/configuration-fingerprint.json",
+      "sha256": "2b14c5af0aee9b9d3be6e3de66c8c578ce4bf90404e4f2adf96e3a2a07611b29"
+    },
+    {
+      "bytes": 1771091,
+      "path": "runs/dual-cold-primary/expert-cache-analysis.json",
+      "sha256": "9464615b91d905939615af1773315784214f58a2cb2d111ba97a3648d192dd1e"
+    },
+    {
+      "bytes": 2837277,
+      "path": "runs/dual-cold-primary/expert-trace.jsonl",
+      "sha256": "6fbbae3acdc4e827266363bfbecfaa4b865e0e84cfa859cf33256f53325fa085"
+    },
+    {
+      "bytes": 851,
+      "path": "runs/dual-cold-primary/gpu-utilization-summary.json",
+      "sha256": "1532ba14cd09d79986954b54c7cb4a34868fe3314582bdb8b664e360bcc31f48"
+    },
+    {
+      "bytes": 234198,
+      "path": "runs/dual-cold-primary/layer-timing.json",
+      "sha256": "30cb6b657cd3e6de1484b54cb8181f0d1cd402e7558621013f7083cc5a9618e4"
+    },
+    {
+      "bytes": 504395,
+      "path": "runs/dual-cold-primary/memory-timeline.json",
+      "sha256": "6c08e94cf8113fe508c1869d61272feba302379c9720d5dd1059bf904c292f51"
+    },
+    {
+      "bytes": 5714,
+      "path": "runs/dual-cold-primary/multi-gpu-timeline.json",
+      "sha256": "dd5a7a12d24e6f29a27961a702ef97602f86c38856ed911ae79831e0e18036cb"
+    },
+    {
+      "bytes": 498,
+      "path": "runs/dual-cold-primary/overlap-analysis.json",
+      "sha256": "2e15a55d61f011db0a5a27fc7c962e6d846679aae5f1bbcd8c76fe30a309d629"
+    },
+    {
+      "bytes": 607,
+      "path": "runs/dual-cold-primary/path-proof.json",
+      "sha256": "04e2e9ba5f560005cb3fbd8ab4fc6ffeb0b76d598c7e9b071009d1aae44bc1ec"
+    },
+    {
+      "bytes": 642342,
+      "path": "runs/dual-cold-primary/run-report.json",
+      "sha256": "56c20129513a06b3d62167c78a35deeb7c52a10f3d5ff681a0aa46bdef0e3e8d"
+    },
+    {
+      "bytes": 4735,
+      "path": "runs/dual-cold-primary/synchronization-analysis.json",
+      "sha256": "0a552fe9b5a84061be7784330048b2c3e8241538d1fa2b7661982cb8302781db"
+    },
+    {
+      "bytes": 12980885,
+      "path": "runs/dual-cold-primary/tensor-map.json",
+      "sha256": "791f1669879067f0aacd85e4cef608ae3ac8c749aec2adb51afbee0c257a928c"
+    },
+    {
+      "bytes": 26575663,
+      "path": "runs/dual-cold-primary/timing-raw.json",
+      "sha256": "9a38a51ac7613c6a4efbf7abddb33fe307a60a49a362a2541530cd28ecadc34e"
+    },
+    {
+      "bytes": 1871891,
+      "path": "runs/dual-cold-primary/torch-profiler-trace.json.gz",
+      "sha256": "9340166fbd58bc4a662ece5814b3f858b015cf7afdc84aa1529c049170e55911"
+    },
+    {
+      "bytes": 928434,
+      "path": "runs/dual-cold-primary/transfer-analysis.json",
+      "sha256": "83b82a32eef03ac6e5b7fe1c67be733bd678848a83582db0420e4cf06458f078"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/dual-cold-primary/warmup-expert-trace.jsonl",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 4019,
+      "path": "runs/dual-long-prompt/cache-invariants.json",
+      "sha256": "ea322e7f77dfd21dabe91fe32937a04d663ea3facb25b8b0ecf681ec521d63a2"
+    },
+    {
+      "bytes": 1321,
+      "path": "runs/dual-long-prompt/configuration-fingerprint.json",
+      "sha256": "e1d6ec5a6229f3ffc113b1a5fb45291b57fd1210bfd6158d4ea0ca40dd8128da"
+    },
+    {
+      "bytes": 3381590,
+      "path": "runs/dual-long-prompt/expert-cache-analysis.json",
+      "sha256": "956133506f245b77bdfa4c7a513bcd667ec70f9c1e7c2dd32060078b9dbfb859"
+    },
+    {
+      "bytes": 4527466,
+      "path": "runs/dual-long-prompt/expert-trace.jsonl",
+      "sha256": "1f116276b89c3e38fa5360120dcdc797e4fbfb27afbb0e2672cd828fc238379e"
+    },
+    {
+      "bytes": 848,
+      "path": "runs/dual-long-prompt/gpu-utilization-summary.json",
+      "sha256": "58ce5716dfd972674e5b25d1daade2374a3803c7c8dabf9f9e886493d2cbfab6"
+    },
+    {
+      "bytes": 115675,
+      "path": "runs/dual-long-prompt/layer-timing.json",
+      "sha256": "2e5070f7eac76e548d16c60c0ef7d125afdc9958334104f4089148182d1fec3c"
+    },
+    {
+      "bytes": 372579,
+      "path": "runs/dual-long-prompt/memory-timeline.json",
+      "sha256": "afb9f563da8b4c55d5d017a26961a3a9e3f7a324856a697f483af6f46c03cd37"
+    },
+    {
+      "bytes": 5586,
+      "path": "runs/dual-long-prompt/multi-gpu-timeline.json",
+      "sha256": "04835ea604e91fdcc6a9f52f13bc05cf798641f204d74ee95f636a94f68c4b0f"
+    },
+    {
+      "bytes": 483,
+      "path": "runs/dual-long-prompt/overlap-analysis.json",
+      "sha256": "a7d18ac51bbe2a6d4cc834b7a2f51d48c73a14498f790a478f0b13e7fcf4edbc"
+    },
+    {
+      "bytes": 604,
+      "path": "runs/dual-long-prompt/path-proof.json",
+      "sha256": "16febf4760fa015cc8d05221b1272967199182eab9896c84e76aad1565d0e646"
+    },
+    {
+      "bytes": 230135,
+      "path": "runs/dual-long-prompt/run-report.json",
+      "sha256": "0eefd66139cd5e2aa8125b183196eb0962a12cc2a68c3e1de96278fad8d20413"
+    },
+    {
+      "bytes": 3357,
+      "path": "runs/dual-long-prompt/synchronization-analysis.json",
+      "sha256": "68c02fd76e454a9491a333b821b47a1768c78868a4a4345d5cc79b3bca17e92a"
+    },
+    {
+      "bytes": 33814012,
+      "path": "runs/dual-long-prompt/timing-raw.json",
+      "sha256": "89b230476b4d59b2e1a1d62506e84c292a82b08ec7e045848223073d0c0175b3"
+    },
+    {
+      "bytes": 649522,
+      "path": "runs/dual-long-prompt/transfer-analysis.json",
+      "sha256": "0792c8867fab8009515b0ff21da6b41a96d9cbd1f19921a3ec0d001e7eb737d6"
+    },
+    {
+      "bytes": 3618343,
+      "path": "runs/dual-long-prompt/warmup-expert-trace.jsonl",
+      "sha256": "bbfd4313e53e65d8ef05f48bfec7eb72b8f410024b7d8ea72e9db17bdc23abc2"
+    },
+    {
+      "bytes": 4019,
+      "path": "runs/dual-warm-control/cache-invariants.json",
+      "sha256": "ea322e7f77dfd21dabe91fe32937a04d663ea3facb25b8b0ecf681ec521d63a2"
+    },
+    {
+      "bytes": 1131,
+      "path": "runs/dual-warm-control/configuration-fingerprint.json",
+      "sha256": "82658b2742d5494345a850677fb1e4750f34b04a03f1642b7e95ed4af4c19a8b"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/dual-warm-control/expert-trace.jsonl",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 836,
+      "path": "runs/dual-warm-control/gpu-utilization-summary.json",
+      "sha256": "135c1dd918ae5ae6cc79af28e9c49d96e9f5eab734e55b9953e945bcff6779a4"
+    },
+    {
+      "bytes": 82,
+      "path": "runs/dual-warm-control/layer-timing.json",
+      "sha256": "b100d73056fe39ca32ae60b82b64ea9a58f7d3b8e196025b7f79f008db38c0f1"
+    },
+    {
+      "bytes": 339837,
+      "path": "runs/dual-warm-control/memory-timeline.json",
+      "sha256": "c5d83fe73300e22ee505ed20af6a236f985552da4f4c57095f51e8765c04d822"
+    },
+    {
+      "bytes": 89,
+      "path": "runs/dual-warm-control/multi-gpu-timeline.json",
+      "sha256": "8f84b1688cef74d153da8da8aa8f792d0ef403fe0c804dfdf95d29a5b4ae553f"
+    },
+    {
+      "bytes": 429,
+      "path": "runs/dual-warm-control/overlap-analysis.json",
+      "sha256": "ef7fee05f6b27abec3c44487b84404adfb965e9658c4af6135141e4a11f3bf77"
+    },
+    {
+      "bytes": 606,
+      "path": "runs/dual-warm-control/path-proof.json",
+      "sha256": "73cfec4259c4e756be0bcbc33412ac2546a6dd15f87d09ea3dbcbbbb3677222f"
+    },
+    {
+      "bytes": 229182,
+      "path": "runs/dual-warm-control/run-report.json",
+      "sha256": "bfbe717ea8bda9fbbab4d8ec7e8ac5e1716421eedf2e95784dbe86e6c0388542"
+    },
+    {
+      "bytes": 454,
+      "path": "runs/dual-warm-control/synchronization-analysis.json",
+      "sha256": "85634de257edc5c77f0386c8bfc426a50029e740d0211dff80c1c502d072985e"
+    },
+    {
+      "bytes": 105704,
+      "path": "runs/dual-warm-control/timing-raw.json",
+      "sha256": "700de2514537bb2623395dfd98db182f84968a6a9eabe9e455ecc9e4fe4e1d46"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/dual-warm-control/warmup-expert-trace.jsonl",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 4019,
+      "path": "runs/dual-warm-profiled/cache-invariants.json",
+      "sha256": "ea322e7f77dfd21dabe91fe32937a04d663ea3facb25b8b0ecf681ec521d63a2"
+    },
+    {
+      "bytes": 1123,
+      "path": "runs/dual-warm-profiled/configuration-fingerprint.json",
+      "sha256": "93d5a312dc68f3453a83d2c1a3310816bff880608f29c66afe39b6c5ede79a36"
+    },
+    {
+      "bytes": 1772599,
+      "path": "runs/dual-warm-profiled/expert-cache-analysis.json",
+      "sha256": "951bc2289aec10098364a7526502538d804ad086a816a8a0e2c46c6441fb471a"
+    },
+    {
+      "bytes": 2393190,
+      "path": "runs/dual-warm-profiled/expert-trace.jsonl",
+      "sha256": "b3d4a62a5dd8ba833cc49717dae773a826d07ab3a4735986985ab8edc724f1c5"
+    },
+    {
+      "bytes": 837,
+      "path": "runs/dual-warm-profiled/gpu-utilization-summary.json",
+      "sha256": "543f65c4d615344a8335f6d34c7e5c274cdde8bb6314507f8db589a287f4de60"
+    },
+    {
+      "bytes": 223883,
+      "path": "runs/dual-warm-profiled/layer-timing.json",
+      "sha256": "51c38af2ca5383401efe8f1387be79afbec5646fc1ba7e3bb14b21b796c1099c"
+    },
+    {
+      "bytes": 404784,
+      "path": "runs/dual-warm-profiled/memory-timeline.json",
+      "sha256": "3ee6e4a4c667cdbe402eeb939ab8e88dda49db03c1d946ab88c84c66ef9acca7"
+    },
+    {
+      "bytes": 89,
+      "path": "runs/dual-warm-profiled/multi-gpu-timeline.json",
+      "sha256": "8f84b1688cef74d153da8da8aa8f792d0ef403fe0c804dfdf95d29a5b4ae553f"
+    },
+    {
+      "bytes": 463,
+      "path": "runs/dual-warm-profiled/overlap-analysis.json",
+      "sha256": "5cdf8e4f1f56c45da71671d11a10b479229b1333399c36e55422393f61181880"
+    },
+    {
+      "bytes": 608,
+      "path": "runs/dual-warm-profiled/path-proof.json",
+      "sha256": "2faa395aa3f77439206e28be25c7b72bf59ede8cd540937f46be0e564faf7cc2"
+    },
+    {
+      "bytes": 327160,
+      "path": "runs/dual-warm-profiled/run-report.json",
+      "sha256": "91412dbf157291ed5aa0381c98dcee16fc5431fc5c11c89373eccca561f7e732"
+    },
+    {
+      "bytes": 4760,
+      "path": "runs/dual-warm-profiled/synchronization-analysis.json",
+      "sha256": "b387ebf9cfbc5f080f1be8f232c068226a8b1c7ea1cea2bda8673fd7cc53783e"
+    },
+    {
+      "bytes": 13196051,
+      "path": "runs/dual-warm-profiled/timing-raw.json",
+      "sha256": "2a113dd044f5a03f6a1ffb7c1de5dad7b2f2132ea5809ae92311ed6461744dd0"
+    },
+    {
+      "bytes": 1297713,
+      "path": "runs/dual-warm-profiled/torch-profiler-trace.json.gz",
+      "sha256": "6d5e7f64624c61e19e80f0acc58a2b2c1bd21321f5df65282f87a4e7b5a7f407"
+    },
+    {
+      "bytes": 472451,
+      "path": "runs/dual-warm-profiled/transfer-analysis.json",
+      "sha256": "ac6bb6ab5306729396f6a430beaff61941773169bd34ea76e26fb12c5fb5ba0b"
+    },
+    {
+      "bytes": 2191427,
+      "path": "runs/dual-warm-profiled/warmup-expert-trace.jsonl",
+      "sha256": "e85079238ab0cf5875480465de708226f1c7406a9e26ef5800991d38fb9b5ada"
+    },
+    {
+      "bytes": 4019,
+      "path": "runs/dual-warm-reference-present/cache-invariants.json",
+      "sha256": "ea322e7f77dfd21dabe91fe32937a04d663ea3facb25b8b0ecf681ec521d63a2"
+    },
+    {
+      "bytes": 1133,
+      "path": "runs/dual-warm-reference-present/configuration-fingerprint.json",
+      "sha256": "d31bb3901f0f039e5cc8986189cb0a38102186c109484438ded67ccc0b2c6933"
+    },
+    {
+      "bytes": 1799806,
+      "path": "runs/dual-warm-reference-present/expert-cache-analysis.json",
+      "sha256": "c29440a58c2d3b95f5f9af2c8a41538b5c338c92a6e73776c61eb0b9c4fb5f1b"
+    },
+    {
+      "bytes": 2421771,
+      "path": "runs/dual-warm-reference-present/expert-trace.jsonl",
+      "sha256": "42fe05f19094dde1679da42093b2709edb8a4b7f0e14cfeb258c7434008e2689"
+    },
+    {
+      "bytes": 837,
+      "path": "runs/dual-warm-reference-present/gpu-utilization-summary.json",
+      "sha256": "81127b29cdadde5081600cec8f4514a8f384845789d064c87790483b2e910510"
+    },
+    {
+      "bytes": 223726,
+      "path": "runs/dual-warm-reference-present/layer-timing.json",
+      "sha256": "1fae64662885c915cad35176df0fd40ed8399d75d7c244431009e31f553b975c"
+    },
+    {
+      "bytes": 554419,
+      "path": "runs/dual-warm-reference-present/memory-timeline.json",
+      "sha256": "74f95e99df634f0abef72f6fe74011234f55ee08d7c994a44f37cbda1be548e6"
+    },
+    {
+      "bytes": 89,
+      "path": "runs/dual-warm-reference-present/multi-gpu-timeline.json",
+      "sha256": "8f84b1688cef74d153da8da8aa8f792d0ef403fe0c804dfdf95d29a5b4ae553f"
+    },
+    {
+      "bytes": 463,
+      "path": "runs/dual-warm-reference-present/overlap-analysis.json",
+      "sha256": "6238cf7a1d973978c94a58c8f4d43605280e10e0215efbd5637a06719602d375"
+    },
+    {
+      "bytes": 618,
+      "path": "runs/dual-warm-reference-present/path-proof.json",
+      "sha256": "a67e8173ed4352038f332fa9840e4106c962b8c8a1ebd7dbd9e50da67a9408f4"
+    },
+    {
+      "bytes": 540983,
+      "path": "runs/dual-warm-reference-present/run-report.json",
+      "sha256": "9d88188bab12545c78879e82477a877c3e6fa66e2b160577d6daf3adaae4e08e"
+    },
+    {
+      "bytes": 4762,
+      "path": "runs/dual-warm-reference-present/synchronization-analysis.json",
+      "sha256": "6898251aed24174c0c58dc34f47c9233de4b5403213973cbdac2b1345823bfa4"
+    },
+    {
+      "bytes": 13091970,
+      "path": "runs/dual-warm-reference-present/timing-raw.json",
+      "sha256": "46a522e12477ddf11b82f60dd31b3fa594665e36a3570cc11f5cdfd30ffca537"
+    },
+    {
+      "bytes": 478888,
+      "path": "runs/dual-warm-reference-present/transfer-analysis.json",
+      "sha256": "dbbbdfdfe105c8d3fae1b4464d2eac479712b1a4bc08cc6951e16b9b1d884819"
+    },
+    {
+      "bytes": 2209424,
+      "path": "runs/dual-warm-reference-present/warmup-expert-trace.jsonl",
+      "sha256": "1d1978f5910c0fc0c76bd24efbcbb5127bb741c2084dd8c189ed84163f9762e9"
+    }
+  ],
+  "commit": "17e32c9f462ace4d416d330181a6efad716f00bd",
+  "expected_empty_required_paths": [
+    "runs/dual-cold-primary/warmup-expert-trace.jsonl",
+    "runs/dual-warm-control/expert-trace.jsonl",
+    "runs/dual-warm-control/warmup-expert-trace.jsonl"
+  ],
+  "expected_runs": [
+    "dual-cold-primary",
+    "dual-warm-profiled",
+    "dual-warm-control",
+    "dual-warm-reference-present",
+    "dual-cache-disabled",
+    "dual-cache-capacity-4",
+    "dual-long-prompt"
+  ],
+  "kaggle_terminal_state": "ERROR",
+  "manifest_kind": "HOST_RECOVERED_AFTER_NOTEBOOK_PACKAGING_ERROR",
+  "matrix_result": "PASS",
+  "notebook_result": "ERROR",
+  "recovery_reason": "cold-primary correctly has no warmup trace, but the notebook packaging gate omitted that path from its expected-empty allowlist",
+  "required_path_count": 104,
+  "required_paths": [
+    "environment.json",
+    "build-manifest.json",
+    "phase2-contract.json",
+    "matrix-summary.json",
+    "matrix-progress.jsonl",
+    "phase2-final-report.json",
+    "phase2-artifact-manifest.json",
+    "raw-allocation-trace.log",
+    "runs/dual-cold-primary/run-report.json",
+    "runs/dual-cold-primary/memory-timeline.json",
+    "runs/dual-cold-primary/layer-timing.json",
+    "runs/dual-cold-primary/timing-raw.json",
+    "runs/dual-cold-primary/gpu-utilization-summary.json",
+    "runs/dual-cold-primary/synchronization-analysis.json",
+    "runs/dual-cold-primary/overlap-analysis.json",
+    "runs/dual-cold-primary/multi-gpu-timeline.json",
+    "runs/dual-cold-primary/path-proof.json",
+    "runs/dual-cold-primary/configuration-fingerprint.json",
+    "runs/dual-cold-primary/expert-trace.jsonl",
+    "runs/dual-cold-primary/warmup-expert-trace.jsonl",
+    "runs/dual-cold-primary/expert-cache-analysis.json",
+    "runs/dual-cold-primary/transfer-analysis.json",
+    "runs/dual-warm-profiled/run-report.json",
+    "runs/dual-warm-profiled/memory-timeline.json",
+    "runs/dual-warm-profiled/layer-timing.json",
+    "runs/dual-warm-profiled/timing-raw.json",
+    "runs/dual-warm-profiled/gpu-utilization-summary.json",
+    "runs/dual-warm-profiled/synchronization-analysis.json",
+    "runs/dual-warm-profiled/overlap-analysis.json",
+    "runs/dual-warm-profiled/multi-gpu-timeline.json",
+    "runs/dual-warm-profiled/path-proof.json",
+    "runs/dual-warm-profiled/configuration-fingerprint.json",
+    "runs/dual-warm-profiled/expert-trace.jsonl",
+    "runs/dual-warm-profiled/warmup-expert-trace.jsonl",
+    "runs/dual-warm-profiled/expert-cache-analysis.json",
+    "runs/dual-warm-profiled/transfer-analysis.json",
+    "runs/dual-warm-control/run-report.json",
+    "runs/dual-warm-control/memory-timeline.json",
+    "runs/dual-warm-control/layer-timing.json",
+    "runs/dual-warm-control/timing-raw.json",
+    "runs/dual-warm-control/gpu-utilization-summary.json",
+    "runs/dual-warm-control/synchronization-analysis.json",
+    "runs/dual-warm-control/overlap-analysis.json",
+    "runs/dual-warm-control/multi-gpu-timeline.json",
+    "runs/dual-warm-control/path-proof.json",
+    "runs/dual-warm-control/configuration-fingerprint.json",
+    "runs/dual-warm-control/expert-trace.jsonl",
+    "runs/dual-warm-control/warmup-expert-trace.jsonl",
+    "runs/dual-warm-reference-present/run-report.json",
+    "runs/dual-warm-reference-present/memory-timeline.json",
+    "runs/dual-warm-reference-present/layer-timing.json",
+    "runs/dual-warm-reference-present/timing-raw.json",
+    "runs/dual-warm-reference-present/gpu-utilization-summary.json",
+    "runs/dual-warm-reference-present/synchronization-analysis.json",
+    "runs/dual-warm-reference-present/overlap-analysis.json",
+    "runs/dual-warm-reference-present/multi-gpu-timeline.json",
+    "runs/dual-warm-reference-present/path-proof.json",
+    "runs/dual-warm-reference-present/configuration-fingerprint.json",
+    "runs/dual-warm-reference-present/expert-trace.jsonl",
+    "runs/dual-warm-reference-present/warmup-expert-trace.jsonl",
+    "runs/dual-warm-reference-present/expert-cache-analysis.json",
+    "runs/dual-warm-reference-present/transfer-analysis.json",
+    "runs/dual-cache-disabled/run-report.json",
+    "runs/dual-cache-disabled/memory-timeline.json",
+    "runs/dual-cache-disabled/layer-timing.json",
+    "runs/dual-cache-disabled/timing-raw.json",
+    "runs/dual-cache-disabled/gpu-utilization-summary.json",
+    "runs/dual-cache-disabled/synchronization-analysis.json",
+    "runs/dual-cache-disabled/overlap-analysis.json",
+    "runs/dual-cache-disabled/multi-gpu-timeline.json",
+    "runs/dual-cache-disabled/path-proof.json",
+    "runs/dual-cache-disabled/configuration-fingerprint.json",
+    "runs/dual-cache-disabled/expert-trace.jsonl",
+    "runs/dual-cache-disabled/warmup-expert-trace.jsonl",
+    "runs/dual-cache-disabled/expert-cache-analysis.json",
+    "runs/dual-cache-disabled/transfer-analysis.json",
+    "runs/dual-cache-capacity-4/run-report.json",
+    "runs/dual-cache-capacity-4/memory-timeline.json",
+    "runs/dual-cache-capacity-4/layer-timing.json",
+    "runs/dual-cache-capacity-4/timing-raw.json",
+    "runs/dual-cache-capacity-4/gpu-utilization-summary.json",
+    "runs/dual-cache-capacity-4/synchronization-analysis.json",
+    "runs/dual-cache-capacity-4/overlap-analysis.json",
+    "runs/dual-cache-capacity-4/multi-gpu-timeline.json",
+    "runs/dual-cache-capacity-4/path-proof.json",
+    "runs/dual-cache-capacity-4/configuration-fingerprint.json",
+    "runs/dual-cache-capacity-4/expert-trace.jsonl",
+    "runs/dual-cache-capacity-4/warmup-expert-trace.jsonl",
+    "runs/dual-cache-capacity-4/expert-cache-analysis.json",
+    "runs/dual-cache-capacity-4/transfer-analysis.json",
+    "runs/dual-long-prompt/run-report.json",
+    "runs/dual-long-prompt/memory-timeline.json",
+    "runs/dual-long-prompt/layer-timing.json",
+    "runs/dual-long-prompt/timing-raw.json",
+    "runs/dual-long-prompt/gpu-utilization-summary.json",
+    "runs/dual-long-prompt/synchronization-analysis.json",
+    "runs/dual-long-prompt/overlap-analysis.json",
+    "runs/dual-long-prompt/multi-gpu-timeline.json",
+    "runs/dual-long-prompt/path-proof.json",
+    "runs/dual-long-prompt/configuration-fingerprint.json",
+    "runs/dual-long-prompt/expert-trace.jsonl",
+    "runs/dual-long-prompt/warmup-expert-trace.jsonl",
+    "runs/dual-long-prompt/expert-cache-analysis.json",
+    "runs/dual-long-prompt/transfer-analysis.json"
+  ],
+  "result": "PASS",
+  "run_id": "20260728T232556Z-phase2-cap32",
+  "schema_version": 1
+}

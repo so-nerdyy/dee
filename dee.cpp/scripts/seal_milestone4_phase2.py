@@ -35,6 +35,34 @@ CRITICAL_MARKERS = (
     "AddressSanitizer",
 )
 
+RUN_REQUIRED_ARTIFACTS = (
+    "run-report.json",
+    "memory-timeline.json",
+    "layer-timing.json",
+    "timing-raw.json",
+    "gpu-utilization-summary.json",
+    "synchronization-analysis.json",
+    "overlap-analysis.json",
+    "multi-gpu-timeline.json",
+    "path-proof.json",
+    "configuration-fingerprint.json",
+    "expert-trace.jsonl",
+    "warmup-expert-trace.jsonl",
+)
+ANALYZED_RUN_ARTIFACTS = (
+    "expert-cache-analysis.json",
+    "transfer-analysis.json",
+)
+EXPECTED_EMPTY_REQUIRED_PATHS = {
+    "runs/dual-cold-primary/warmup-expert-trace.jsonl",
+    "runs/dual-warm-control/expert-trace.jsonl",
+    "runs/dual-warm-control/warmup-expert-trace.jsonl",
+}
+PACKAGING_RECOVERY_REASON = (
+    "cold-primary correctly has no warmup trace, but the notebook packaging "
+    "gate omitted that path from its expected-empty allowlist"
+)
+
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
@@ -99,6 +127,103 @@ def verify_manifest(
         "sha256": sha256_file(manifest_path),
         "artifact_count": len(rows),
         "verified_paths": len(seen),
+    }
+
+
+def notebook_required_paths() -> list[str]:
+    paths = [
+        "environment.json",
+        "build-manifest.json",
+        "phase2-contract.json",
+        "matrix-summary.json",
+        "matrix-progress.jsonl",
+        "phase2-final-report.json",
+        "phase2-artifact-manifest.json",
+        "raw-allocation-trace.log",
+    ]
+    for run_id in SEVEN_VARIANTS:
+        paths.extend(
+            f"runs/{run_id}/{name}" for name in RUN_REQUIRED_ARTIFACTS
+        )
+        if run_id != "dual-warm-control":
+            paths.extend(
+                f"runs/{run_id}/{name}" for name in ANALYZED_RUN_ARTIFACTS
+            )
+    return paths
+
+
+def validate_notebook_required_paths(evidence_dir: Path) -> dict[str, Any]:
+    required_paths = notebook_required_paths()
+    missing: list[str] = []
+    unexpected_empty: list[str] = []
+    observed_expected_empty: list[str] = []
+    for relative in required_paths:
+        path = evidence_dir / relative
+        if not path.is_file():
+            missing.append(relative)
+        elif path.stat().st_size == 0:
+            if relative in EXPECTED_EMPTY_REQUIRED_PATHS:
+                observed_expected_empty.append(relative)
+            else:
+                unexpected_empty.append(relative)
+    if missing or unexpected_empty:
+        raise RuntimeError(
+            "downloaded notebook-required artifacts are incomplete: "
+            f"missing={missing}, unexpected_empty={unexpected_empty}"
+        )
+    if set(observed_expected_empty) != EXPECTED_EMPTY_REQUIRED_PATHS:
+        raise RuntimeError(
+            "post-matrix packaging recovery did not reproduce the expected "
+            "empty-path signature: "
+            f"{sorted(observed_expected_empty)}"
+        )
+    return {
+        "required_path_count": len(required_paths),
+        "required_paths": required_paths,
+        "expected_empty_required_paths": sorted(observed_expected_empty),
+    }
+
+
+def build_recovered_notebook_manifest(
+    evidence_dir: Path,
+    *,
+    expected_run_id: str,
+    expected_commit: str,
+    terminal_state: str,
+) -> dict[str, Any]:
+    if terminal_state != "ERROR":
+        raise RuntimeError(
+            "post-matrix packaging recovery requires the recorded Kaggle "
+            f"terminal state ERROR, got {terminal_state!r}"
+        )
+    if (evidence_dir / "artifact-manifest.json").exists():
+        raise RuntimeError(
+            "post-matrix packaging recovery is forbidden when the original "
+            "notebook artifact-manifest.json exists"
+        )
+    required_check = validate_notebook_required_paths(evidence_dir)
+    artifacts = []
+    for path in sorted(item for item in evidence_dir.rglob("*") if item.is_file()):
+        artifacts.append(
+            {
+                "path": path.relative_to(evidence_dir).as_posix(),
+                "bytes": path.stat().st_size,
+                "sha256": sha256_file(path),
+            }
+        )
+    return {
+        "schema_version": 1,
+        "result": "PASS",
+        "manifest_kind": "HOST_RECOVERED_AFTER_NOTEBOOK_PACKAGING_ERROR",
+        "run_id": expected_run_id,
+        "commit": expected_commit,
+        "kaggle_terminal_state": terminal_state,
+        "matrix_result": "PASS",
+        "notebook_result": "ERROR",
+        "recovery_reason": PACKAGING_RECOVERY_REASON,
+        "expected_runs": list(SEVEN_VARIANTS),
+        **required_check,
+        "artifacts": artifacts,
     }
 
 
@@ -208,7 +333,15 @@ def locate_evidence_dir(download_root: Path) -> Path:
     return matches[0].parent
 
 
-def validate(download_root: Path, expected_commit: str, expected_run_id: str) -> dict:
+def validate(
+    download_root: Path,
+    expected_commit: str,
+    expected_run_id: str,
+    *,
+    recover_post_matrix_packaging_error: bool = False,
+    notebook_terminal_state: str | None = None,
+    recovered_manifest_path: Path | None = None,
+) -> dict:
     evidence_dir = locate_evidence_dir(download_root)
     required = {
         name: evidence_dir / name
@@ -220,10 +353,31 @@ def validate(download_root: Path, expected_commit: str, expected_run_id: str) ->
             "matrix-progress.jsonl",
             "phase2-final-report.json",
             "phase2-artifact-manifest.json",
-            "artifact-manifest.json",
             "raw-allocation-trace.log",
         )
     }
+    original_notebook_manifest_path = evidence_dir / "artifact-manifest.json"
+    if original_notebook_manifest_path.is_file():
+        required["artifact-manifest.json"] = original_notebook_manifest_path
+        notebook_manifest_path = original_notebook_manifest_path
+        manifest_provenance = "ORIGINAL_NOTEBOOK"
+    elif recover_post_matrix_packaging_error:
+        if recovered_manifest_path is None:
+            raise RuntimeError("recovered manifest output path was not provided")
+        recovered_manifest = build_recovered_notebook_manifest(
+            evidence_dir,
+            expected_run_id=expected_run_id,
+            expected_commit=expected_commit,
+            terminal_state=str(notebook_terminal_state),
+        )
+        write_json(recovered_manifest_path, recovered_manifest)
+        notebook_manifest_path = recovered_manifest_path
+        required["recovered-artifact-manifest.json"] = recovered_manifest_path
+        manifest_provenance = "HOST_RECOVERED_AFTER_NOTEBOOK_PACKAGING_ERROR"
+    else:
+        required["artifact-manifest.json"] = original_notebook_manifest_path
+        notebook_manifest_path = original_notebook_manifest_path
+        manifest_provenance = "MISSING"
     missing = [
         name
         for name, path in required.items()
@@ -237,7 +391,7 @@ def validate(download_root: Path, expected_commit: str, expected_run_id: str) ->
     contract = read_json(required["phase2-contract.json"])
     summary = read_json(required["matrix-summary.json"])
     report = read_json(required["phase2-final-report.json"])
-    notebook_manifest = read_json(required["artifact-manifest.json"])
+    notebook_manifest = read_json(notebook_manifest_path)
     for name, value in (
         ("environment run_id", environment.get("run_id")),
         ("notebook manifest run_id", notebook_manifest.get("run_id")),
@@ -270,7 +424,7 @@ def validate(download_root: Path, expected_commit: str, expected_run_id: str) ->
     )
     notebook_manifest_check = verify_manifest(
         evidence_dir,
-        required["artifact-manifest.json"],
+        notebook_manifest_path,
         path_key="path",
         size_key="bytes",
     )
@@ -304,9 +458,31 @@ def validate(download_root: Path, expected_commit: str, expected_run_id: str) ->
     return {
         "schema_version": 1,
         "result": "PASS",
-        "terminal_reason": "DOWNLOADED_PHASE2_ALL_SEVEN_ROWS_REVALIDATED",
+        "terminal_reason": (
+            "DOWNLOADED_PHASE2_ALL_SEVEN_ROWS_REVALIDATED"
+            if manifest_provenance == "ORIGINAL_NOTEBOOK"
+            else "DOWNLOADED_PHASE2_ALL_SEVEN_ROWS_REVALIDATED_AFTER_"
+            "POST_MATRIX_PACKAGING_ERROR"
+        ),
         "expected_run_id": expected_run_id,
         "expected_commit": expected_commit,
+        "kaggle_terminal_state": (
+            "COMPLETE"
+            if manifest_provenance == "ORIGINAL_NOTEBOOK"
+            else notebook_terminal_state
+        ),
+        "matrix_result": "PASS",
+        "notebook_result": (
+            "PASS"
+            if manifest_provenance == "ORIGINAL_NOTEBOOK"
+            else "ERROR"
+        ),
+        "manifest_provenance": manifest_provenance,
+        "packaging_recovery_reason": (
+            None
+            if manifest_provenance == "ORIGINAL_NOTEBOOK"
+            else PACKAGING_RECOVERY_REASON
+        ),
         "sealed_phase1_ancestor": SEALED_PHASE1_INTEGRATION,
         "evidence_dir": str(evidence_dir),
         "evidence_dir_name": evidence_dir.name,
@@ -335,6 +511,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-commit", required=True)
     parser.add_argument("--expected-run-id", required=True)
     parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument(
+        "--recover-post-matrix-packaging-error",
+        action="store_true",
+        help=(
+            "Recover only the known expected-empty cold-primary warmup-trace "
+            "packaging failure after a seven-row PASS."
+        ),
+    )
+    parser.add_argument(
+        "--notebook-terminal-state",
+        choices=("ERROR",),
+        help="Recorded Kaggle terminal state; required for packaging recovery.",
+    )
     return parser.parse_args()
 
 
@@ -344,7 +533,18 @@ def main() -> int:
     seal_path = args.output_dir / "SEAL.json"
     try:
         seal = validate(
-            args.download_root, args.expected_commit, args.expected_run_id
+            args.download_root,
+            args.expected_commit,
+            args.expected_run_id,
+            recover_post_matrix_packaging_error=(
+                args.recover_post_matrix_packaging_error
+            ),
+            notebook_terminal_state=args.notebook_terminal_state,
+            recovered_manifest_path=(
+                args.output_dir / "recovered-artifact-manifest.json"
+                if args.recover_post_matrix_packaging_error
+                else None
+            ),
         )
         write_json(seal_path, seal)
         manifest = {
@@ -357,6 +557,12 @@ def main() -> int:
                 }
             },
         }
+        recovered_path = args.output_dir / "recovered-artifact-manifest.json"
+        if recovered_path.is_file():
+            manifest["artifacts"]["recovered-artifact-manifest.json"] = {
+                "bytes": recovered_path.stat().st_size,
+                "sha256": sha256_file(recovered_path),
+            }
         write_json(args.output_dir / "seal-manifest.json", manifest)
         print(
             json.dumps(
