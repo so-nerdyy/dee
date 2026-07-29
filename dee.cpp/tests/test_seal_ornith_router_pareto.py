@@ -67,15 +67,13 @@ def valid_report() -> dict:
         },
         "configuration": {
             "cache_experts_per_layer": 32,
+            "split_layer": 20,
             "trials_per_backend": 3,
-            "measurement_order": [
-                "native-host",
-                "torch-device",
-                "torch-device",
-                "native-host",
-                "native-host",
-                "torch-device",
-            ],
+            "measurement_order": MODULE.EXPECTED_MEASUREMENT_ORDER,
+            "prompt": "Hello",
+            "greedy": True,
+            "load_once": True,
+            "warmup_per_backend": 1,
         },
         "correctness": {
             "native_tokens": MODULE.EXPECTED_TOKENS,
@@ -103,6 +101,8 @@ def test_router_pareto_report_passes_all_gates() -> None:
     result = MODULE.validate_report(report, "a" * 40)
     assert result["speedup_ratio"] > 1.02
     assert result["trial_count_per_backend"] == 3
+    assert result["generated_token_ids"] == MODULE.EXPECTED_TOKENS
+    assert result["optimized_torch_device"]["router_scalar_sync_calls"] == 0
 
 
 def test_router_pareto_report_rejects_optimized_host_sync() -> None:

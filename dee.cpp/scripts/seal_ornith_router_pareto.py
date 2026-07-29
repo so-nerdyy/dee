@@ -14,6 +14,14 @@ from typing import Any
 
 MAX_PROCESS_VRAM_BYTES = 8 * 1024**3
 EXPECTED_TOKENS = [11, 271, 40, 1044]
+EXPECTED_MEASUREMENT_ORDER = [
+    "native-host",
+    "torch-device",
+    "torch-device",
+    "native-host",
+    "native-host",
+    "torch-device",
+]
 
 
 def sha256_file(path: Path) -> str:
@@ -96,11 +104,29 @@ def validate_report(report: dict[str, Any], expected_commit: str) -> dict[str, A
     if config.get("trials_per_backend", 0) < 3:
         raise RuntimeError("router benchmark has fewer than three trials/backend")
     order = config.get("measurement_order")
-    if not isinstance(order, list) or any(
+    if order != EXPECTED_MEASUREMENT_ORDER or any(
         order.count(backend) != config["trials_per_backend"]
         for backend in ("native-host", "torch-device")
     ):
         raise RuntimeError("router benchmark trial order/count is invalid")
+    expected_configuration = {
+        "cache_experts_per_layer": 32,
+        "split_layer": 20,
+        "trials_per_backend": 3,
+        "prompt": "Hello",
+        "greedy": True,
+        "load_once": True,
+        "warmup_per_backend": 1,
+    }
+    changed_configuration = {
+        key: {"expected": expected, "observed": config.get(key)}
+        for key, expected in expected_configuration.items()
+        if config.get(key) != expected
+    }
+    if changed_configuration:
+        raise RuntimeError(
+            f"router benchmark configuration changed: {changed_configuration}"
+        )
 
     environment = report.get("environment", {})
     gpus = environment.get("gpus")
@@ -195,6 +221,50 @@ def validate_report(report: dict[str, Any], expected_commit: str) -> dict[str, A
         "optimized_torch_device_median_tps": optimized_tps,
         "speedup_ratio": speedup,
         "speedup_percent": pareto.get("speedup_percent"),
+        "generated_token_ids": EXPECTED_TOKENS,
+        "trace_categories": sorted(
+            key
+            for key in correctness.get("comparisons", {})
+            if key != "all_categories_passed"
+        ),
+        "native_host": {
+            "trial_tps": native["tokens_per_second"]["all"],
+            "median_decode_seconds": native.get("decode_seconds", {}).get(
+                "median"
+            ),
+            "peak_process_vram_per_gpu_bytes": native[
+                "peak_process_vram_per_gpu_bytes"
+            ],
+            "router_native_host_calls": native["router_native_host_calls"],
+            "router_hidden_d2h_total_bytes": native[
+                "router_hidden_d2h_total_bytes"
+            ],
+            "router_outputs_h2d_total_bytes": native[
+                "router_outputs_h2d_total_bytes"
+            ],
+            "router_scalar_sync_calls": native["router_scalar_sync_calls"],
+        },
+        "optimized_torch_device": {
+            "trial_tps": optimized["tokens_per_second"]["all"],
+            "median_decode_seconds": optimized.get("decode_seconds", {}).get(
+                "median"
+            ),
+            "peak_process_vram_per_gpu_bytes": optimized[
+                "peak_process_vram_per_gpu_bytes"
+            ],
+            "router_torch_device_calls": optimized[
+                "router_torch_device_calls"
+            ],
+            "router_hidden_d2h_total_bytes": optimized[
+                "router_hidden_d2h_total_bytes"
+            ],
+            "router_outputs_h2d_total_bytes": optimized[
+                "router_outputs_h2d_total_bytes"
+            ],
+            "router_scalar_sync_calls": optimized[
+                "router_scalar_sync_calls"
+            ],
+        },
         "optimized_peak_process_vram_per_gpu_bytes": optimized[
             "peak_process_vram_per_gpu_bytes"
         ],

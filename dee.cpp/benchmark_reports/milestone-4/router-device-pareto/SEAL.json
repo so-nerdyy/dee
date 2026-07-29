@@ -1,0 +1,103 @@
+{
+  "evidence_dir": "tmp\\m4_router_pareto_output\\ornith-m4-router-pareto-evidence-20260728T235600Z-router-pareto",
+  "expected_commit": "9aaf727873cd63198c03f76492ade98f32b5d75c",
+  "expected_run_id": "20260728T235600Z-router-pareto",
+  "manifest_checks": {
+    "benchmark": {
+      "report_sha256": "dd5f3256d083ab72a42e9c60570b0984366d4e2e140281e4c623494583a01b24",
+      "sha256": "076d23cab7cc151e7dcfb9ff9663485b3f7e835a81b5447ac303718f0d2542f0"
+    },
+    "root": {
+      "artifact_count": 9,
+      "sha256": "4e44de287588ab46b19d0589604c5cf79e3ce74ff7bbdffa81e25facf6b090ae"
+    }
+  },
+  "report_summary": {
+    "baseline_native_host_median_tps": 6.9630043163301805,
+    "generated_token_ids": [
+      11,
+      271,
+      40,
+      1044
+    ],
+    "native_host": {
+      "median_decode_seconds": 0.1443584280000323,
+      "peak_process_vram_per_gpu_bytes": {
+        "cuda:0": 7036862464,
+        "cuda:1": 7036862464
+      },
+      "router_hidden_d2h_total_bytes": 3932160,
+      "router_native_host_calls": 480,
+      "router_outputs_h2d_total_bytes": 537600,
+      "router_scalar_sync_calls": 480,
+      "trial_tps": [
+        6.973971497165232,
+        6.562278777378742,
+        6.9630043163301805
+      ]
+    },
+    "optimized_peak_process_vram_per_gpu_bytes": {
+      "cuda:0": 7036862464,
+      "cuda:1": 7036862464
+    },
+    "optimized_torch_device": {
+      "median_decode_seconds": 0.12586781999971208,
+      "peak_process_vram_per_gpu_bytes": {
+        "cuda:0": 7036862464,
+        "cuda:1": 7036862464
+      },
+      "router_hidden_d2h_total_bytes": 0,
+      "router_outputs_h2d_total_bytes": 0,
+      "router_scalar_sync_calls": 0,
+      "router_torch_device_calls": 480,
+      "trial_tps": [
+        7.951658032829214,
+        7.948849956022915,
+        7.943850513206602
+      ]
+    },
+    "optimized_torch_device_median_tps": 7.948849956022915,
+    "speedup_percent": 14.15833733408225,
+    "speedup_ratio": 1.1415833733408225,
+    "trace_categories": [
+      "embedding_output",
+      "expert_ids",
+      "final_hidden_state",
+      "intermediate_hidden_states",
+      "lm_head_logits",
+      "router_logits",
+      "routing_weights",
+      "selected_expert_outputs"
+    ],
+    "trial_count_per_backend": 3
+  },
+  "result": "PASS",
+  "schema_version": 1,
+  "source_hashes": {
+    "artifact-manifest.json": {
+      "bytes": 1902,
+      "sha256": "4e44de287588ab46b19d0589604c5cf79e3ce74ff7bbdffa81e25facf6b090ae"
+    },
+    "benchmark/artifact-manifest.json": {
+      "bytes": 215,
+      "sha256": "076d23cab7cc151e7dcfb9ff9663485b3f7e835a81b5447ac303718f0d2542f0"
+    },
+    "benchmark/router-backend-benchmark.json": {
+      "bytes": 164775,
+      "sha256": "dd5f3256d083ab72a42e9c60570b0984366d4e2e140281e4c623494583a01b24"
+    },
+    "build-manifest.json": {
+      "bytes": 376,
+      "sha256": "0bc33382a40532d5b2bcdd4a9a5af3d90c8c3bfc298dd9a86de340cb6269c00e"
+    },
+    "environment.json": {
+      "bytes": 1301,
+      "sha256": "5fd44daad4c889290f5e662100d83307ba8561cf151d7ec006110e8c2a0183e9"
+    },
+    "logs/router-backend-benchmark.log": {
+      "bytes": 1062495,
+      "sha256": "7410231b61d7f83cc642f9fef32ebcf3b43f37a746e04eca56f18ce3bda0442b"
+    }
+  },
+  "terminal_reason": "DOWNLOADED_DEVICE_ROUTER_PARETO_REVALIDATED"
+}
