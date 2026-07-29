@@ -19,8 +19,8 @@ import psutil
 import torch
 
 
-RUN_ID = "20260729T202936Z-m5c"
-EXPECTED_COMMIT = "2db5c9a78a0d419cbbea20965c68150fa497b37f"
+RUN_ID = "20260729T210900Z-m5c-v2"
+EXPECTED_COMMIT = "4f5417addfe4dceedcf54159326884411980a45d"
 BRANCH = "codex/phase2-cap32-matrix"
 ROOT = Path("/kaggle/temp/dee-source")
 EVIDENCE = Path(f"/kaggle/working/ornith-m5c-evidence-{RUN_ID}")
