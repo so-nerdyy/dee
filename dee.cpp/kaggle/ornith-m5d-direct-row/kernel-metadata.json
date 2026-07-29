@@ -1,0 +1,29 @@
+{
+  "id": "nivind/dee-cpp-ornith-m5d-direct-row",
+  "title": "dee.cpp Ornith M5D Direct Row",
+  "code_file": "ornith_m5d_direct_row.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "enable_network": true,
+  "accelerator": "NvidiaTeslaT4",
+  "machine_shape": "NvidiaTeslaT4",
+  "machine_spec": {
+    "accelerator": "NvidiaTeslaT4",
+    "gpu_count": 2,
+    "is_shared_vm": false,
+    "container_size": "medium"
+  },
+  "dataset_sources": [
+    "nivind/ornith-1-0-35b"
+  ],
+  "keywords": [
+    "dee.cpp",
+    "ornith",
+    "moe",
+    "direct-row",
+    "dual-t4"
+  ]
+}
