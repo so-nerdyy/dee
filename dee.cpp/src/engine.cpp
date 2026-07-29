@@ -996,6 +996,173 @@ bool Engine::ensure_combined_raw_capacity(size_t selections) {
     moe_raw_capacity_selections_ = selections;
     return true;
 }
+
+bool Engine::ensure_pointer_batch_capacity(size_t selections) {
+    constexpr size_t kPointerArrays = 8;
+    if (moe_pointer_batch_capacity_selections_ >= selections) {
+        return d_moe_pointer_batch_gate_half_ &&
+            d_moe_pointer_batch_up_half_ &&
+            d_moe_pointer_batch_activation_half_ &&
+            d_moe_pointer_table_ &&
+            h_moe_pointer_table_ &&
+            pointer_batch_complete_event_;
+    }
+    // top-k is immutable after init, so allocate the maximum selection count
+    // once. This avoids resizing a workspace that may still be referenced by
+    // the internal stream and makes the multi-allocation update transactional.
+    if (moe_pointer_batch_capacity_selections_ != 0 ||
+        d_moe_pointer_batch_gate_half_ ||
+        d_moe_pointer_batch_up_half_ ||
+        d_moe_pointer_batch_activation_half_ ||
+        d_moe_pointer_table_ ||
+        h_moe_pointer_table_) {
+        return false;
+    }
+
+    const size_t capacity = std::max(
+        selections, static_cast<size_t>(cfg_.topk));
+    const size_t inter_elements =
+        capacity * static_cast<size_t>(inter_);
+    const size_t pointer_bytes =
+        kPointerArrays * capacity * sizeof(void*);
+    void* new_gate = nullptr;
+    void* new_up = nullptr;
+    void* new_activation = nullptr;
+    void** new_device_table = nullptr;
+    void* new_host_table = nullptr;
+    const auto rollback = [&]() {
+        if (new_gate) {
+            DEE_CUDA_CHECK_NAMED(
+                DEE_TA_FREE(new_gate, "d_moe_pointer_batch_gate_half_"),
+                "cudaFree(pointer batch gate rollback)");
+            new_gate = nullptr;
+        }
+        if (new_up) {
+            DEE_CUDA_CHECK_NAMED(
+                DEE_TA_FREE(new_up, "d_moe_pointer_batch_up_half_"),
+                "cudaFree(pointer batch up rollback)");
+            new_up = nullptr;
+        }
+        if (new_activation) {
+            DEE_CUDA_CHECK_NAMED(
+                DEE_TA_FREE(
+                    new_activation,
+                    "d_moe_pointer_batch_activation_half_"),
+                "cudaFree(pointer batch activation rollback)");
+            new_activation = nullptr;
+        }
+        if (new_device_table) {
+            DEE_CUDA_CHECK_NAMED(
+                DEE_TA_FREE(new_device_table, "d_moe_pointer_table_"),
+                "cudaFree(pointer batch table rollback)");
+            new_device_table = nullptr;
+        }
+        if (new_host_table) {
+            DEE_CUDA_CHECK_NAMED(
+                DEE_TA_FREE_HOST(new_host_table, "h_moe_pointer_table_"),
+                "cudaFreeHost(pointer batch table rollback)");
+            new_host_table = nullptr;
+        }
+    };
+    if (!DEE_CUDA_CHECK_NAMED(
+            DEE_TA_MALLOC(
+                &new_gate,
+                inter_elements * sizeof(uint16_t),
+                "d_moe_pointer_batch_gate_half_"),
+            "cudaMalloc(pointer batch gate)")) {
+        rollback();
+        return false;
+    }
+    if (!DEE_CUDA_CHECK_NAMED(
+            DEE_TA_MALLOC(
+                &new_up,
+                inter_elements * sizeof(uint16_t),
+                "d_moe_pointer_batch_up_half_"),
+            "cudaMalloc(pointer batch up)")) {
+        rollback();
+        return false;
+    }
+    if (!DEE_CUDA_CHECK_NAMED(
+            DEE_TA_MALLOC(
+                &new_activation,
+                inter_elements * sizeof(uint16_t),
+                "d_moe_pointer_batch_activation_half_"),
+            "cudaMalloc(pointer batch activation)")) {
+        rollback();
+        return false;
+    }
+    if (!DEE_CUDA_CHECK_NAMED(
+            DEE_TA_MALLOC(
+                reinterpret_cast<void**>(&new_device_table),
+                pointer_bytes,
+                "d_moe_pointer_table_"),
+            "cudaMalloc(pointer batch table)")) {
+        rollback();
+        return false;
+    }
+    if (!DEE_CUDA_CHECK_NAMED(
+            DEE_TA_HOST_ALLOC(
+                &new_host_table, pointer_bytes, cudaHostAllocDefault,
+                "h_moe_pointer_table_"),
+            "cudaHostAlloc(pointer batch table)")) {
+        rollback();
+        return false;
+    }
+    if (!pointer_batch_complete_event_ &&
+        !DEE_CUDA_CHECK_NAMED(
+            DEE_TA_EVENT_CREATE_FLAGS(
+                &pointer_batch_complete_event_,
+                cudaEventDisableTiming,
+                "pointer_batch_complete_event_"),
+            "cudaEventCreate(pointer batch complete)")) {
+        pointer_batch_complete_event_ = nullptr;
+        rollback();
+        return false;
+    }
+
+    d_moe_pointer_batch_gate_half_ = new_gate;
+    d_moe_pointer_batch_up_half_ = new_up;
+    d_moe_pointer_batch_activation_half_ = new_activation;
+    d_moe_pointer_table_ = new_device_table;
+    h_moe_pointer_table_ = static_cast<void**>(new_host_table);
+    moe_pointer_batch_capacity_selections_ = capacity;
+    return true;
+}
+
+bool Engine::drain_pointer_batch_pending(bool compute_stream_synchronized) {
+    if (pointer_batch_retirement_poisoned_ &&
+        !compute_stream_synchronized) {
+        return false;
+    }
+    if (pointer_batch_pending_pins_.empty()) {
+        if (compute_stream_synchronized) {
+            pointer_batch_completion_event_valid_ = false;
+            pointer_batch_retirement_poisoned_ = false;
+        }
+        return !pointer_batch_retirement_poisoned_;
+    }
+    if (!compute_stream_synchronized) {
+        if (!pointer_batch_complete_event_ ||
+            !pointer_batch_completion_event_valid_ ||
+            !DEE_CUDA_CHECK_NAMED(
+                cudaEventSynchronize(pointer_batch_complete_event_),
+                "cudaEventSynchronize(pointer batch complete)")) {
+            pointer_batch_retirement_poisoned_ = true;
+            return false;
+        }
+    }
+    bool unpinned = true;
+    for (int expert : pointer_batch_pending_pins_) {
+        if (!cache_.unpin(pointer_batch_pending_source_layer_, expert)) {
+            unpinned = false;
+        }
+    }
+    pointer_batch_pending_pins_.clear();
+    pointer_batch_pending_source_layer_ = -1;
+    pointer_batch_completion_event_valid_ = false;
+    pointer_batch_retirement_poisoned_ = !unpinned;
+    return unpinned;
+}
 #endif
 
 bool Engine::moe_forward_combined_device(
@@ -1005,7 +1172,7 @@ bool Engine::moe_forward_combined_device(
         void* d_raw_trace_out, void* external_stream) {
     return moe_forward_combined_device_impl(
         layer, d_h_in, tokens, d_expert_ids, topk, d_weights_f32,
-        d_output_f16, d_raw_trace_out, external_stream, false);
+        d_output_f16, d_raw_trace_out, external_stream, false, false);
 }
 
 bool Engine::moe_forward_combined_direct_device(
@@ -1015,7 +1182,17 @@ bool Engine::moe_forward_combined_direct_device(
         void* d_raw_trace_out, void* external_stream) {
     return moe_forward_combined_device_impl(
         layer, d_h_in, tokens, d_expert_ids, topk, d_weights_f32,
-        d_output_f16, d_raw_trace_out, external_stream, true);
+        d_output_f16, d_raw_trace_out, external_stream, true, false);
+}
+
+bool Engine::moe_forward_combined_pointer_batched_device(
+        int layer, const void* d_h_in, int tokens,
+        const int64_t* d_expert_ids, int topk,
+        const float* d_weights_f32, void* d_output_f16,
+        void* d_raw_trace_out, void* external_stream) {
+    return moe_forward_combined_device_impl(
+        layer, d_h_in, tokens, d_expert_ids, topk, d_weights_f32,
+        d_output_f16, d_raw_trace_out, external_stream, true, true);
 }
 
 bool Engine::qwen_rms_norm_device(
@@ -1092,12 +1269,182 @@ bool Engine::qwen_rms_norm_gated_device(
 #endif
 }
 
+#ifdef DEE_CUDA
+bool Engine::moe_forward_pointer_batched_device_impl(
+        int layer, const void* d_h_in, int tokens,
+        const int* h_expert_ids, int topk, float* d_raw_output) {
+    constexpr size_t kPointerArrays = 8;
+    if (!d_h_in || !h_expert_ids || !d_raw_output ||
+        tokens != 1 || topk <= 0 || topk > cfg_.topk) {
+        set_last_error(
+            "pointer-batched expert path requires one token and valid top-k");
+        return false;
+    }
+    const size_t selections = static_cast<size_t>(topk);
+    std::vector<uint8_t> seen(static_cast<size_t>(cfg_.num_experts), 0);
+    for (size_t position = 0; position < selections; ++position) {
+        const int expert = h_expert_ids[position];
+        if (expert < 0 || expert >= cfg_.num_experts ||
+            seen[static_cast<size_t>(expert)] != 0) {
+            set_last_error(
+                "pointer-batched expert path requires unique in-range IDs");
+            return false;
+        }
+        seen[static_cast<size_t>(expert)] = 1;
+    }
+    if (!ensure_pointer_batch_capacity(selections)) {
+        set_last_error("failed to allocate pointer-batched expert workspace");
+        return false;
+    }
+
+    const int source_layer = avail_layer(layer);
+    prefetcher_.begin_batch();
+    for (size_t position = 0; position < selections; ++position) {
+        if (!stage_expert(
+                layer, source_layer, h_expert_ids[position],
+                static_cast<int>(selections - position))) {
+            set_last_error("pointer-batched expert staging failed");
+            return false;
+        }
+    }
+
+    std::vector<int> pinned;
+    pinned.reserve(selections);
+    const auto unpin_all = [&]() -> bool {
+        bool unpinned = true;
+        for (int expert : pinned) {
+            if (!cache_.unpin(source_layer, expert)) {
+                unpinned = false;
+            }
+        }
+        pinned.clear();
+        if (!unpinned) {
+            pointer_batch_retirement_poisoned_ = true;
+        }
+        return unpinned;
+    };
+    const auto synchronize_and_unpin = [&]() -> bool {
+        if (DEE_CUDA_CHECK_NAMED(
+                cudaStreamSynchronize(compute_stream_),
+                "cudaStreamSynchronize(pointer batch failure cleanup)")) {
+            return unpin_all();
+        }
+        // No current event can prove completion after a failed stream
+        // synchronization. Preserve any pins and poison reuse until a later
+        // full stream synchronization (reset/teardown) succeeds.
+        pointer_batch_completion_event_valid_ = false;
+        pointer_batch_retirement_poisoned_ = true;
+        pointer_batch_pending_source_layer_ = source_layer;
+        pointer_batch_pending_pins_.swap(pinned);
+        return false;
+    };
+    const size_t projection =
+        static_cast<size_t>(inter_) * static_cast<size_t>(hidden_);
+    auto* gate_output = static_cast<uint16_t*>(
+        d_moe_pointer_batch_gate_half_);
+    auto* up_output = static_cast<uint16_t*>(
+        d_moe_pointer_batch_up_half_);
+    auto* activation = static_cast<uint16_t*>(
+        d_moe_pointer_batch_activation_half_);
+    for (size_t position = 0; position < selections; ++position) {
+        const int expert = h_expert_ids[position];
+        if (!prefetcher_.wait_on_stream(
+                source_layer, expert, compute_stream_) &&
+            !prefetcher_.wait(source_layer, expert)) {
+            synchronize_and_unpin();
+            set_last_error("pointer-batched expert cache wait failed");
+            return false;
+        }
+        if (!cache_.pin(source_layer, expert)) {
+            synchronize_and_unpin();
+            set_last_error("pointer-batched expert cache pin failed");
+            return false;
+        }
+        pinned.push_back(expert);
+        auto* blob = static_cast<uint16_t*>(
+            cache_.data(source_layer, expert));
+        if (!blob) {
+            synchronize_and_unpin();
+            set_last_error(
+                "pointer-batched expert cache pointer is null");
+            return false;
+        }
+        h_moe_pointer_table_[0 * selections + position] = blob;
+        h_moe_pointer_table_[1 * selections + position] =
+            blob + projection;
+        h_moe_pointer_table_[2 * selections + position] =
+            blob + 2 * projection;
+        h_moe_pointer_table_[3 * selections + position] =
+            const_cast<void*>(d_h_in);
+        h_moe_pointer_table_[4 * selections + position] =
+            gate_output + position * static_cast<size_t>(inter_);
+        h_moe_pointer_table_[5 * selections + position] =
+            up_output + position * static_cast<size_t>(inter_);
+        h_moe_pointer_table_[6 * selections + position] =
+            activation + position * static_cast<size_t>(inter_);
+        h_moe_pointer_table_[7 * selections + position] =
+            d_raw_output + position * static_cast<size_t>(hidden_);
+    }
+    const size_t pointer_bytes =
+        kPointerArrays * selections * sizeof(void*);
+    if (!DEE_CUDA_CHECK_NAMED(
+            cudaMemcpyAsync(
+                d_moe_pointer_table_, h_moe_pointer_table_,
+                pointer_bytes, cudaMemcpyHostToDevice, compute_stream_),
+            "cudaMemcpyAsync(pointer-batched expert table)")) {
+        synchronize_and_unpin();
+        set_last_error("pointer-batched expert pointer upload failed");
+        return false;
+    }
+
+    void** table = d_moe_pointer_table_;
+    const bool computed = swiglu_expert_pointer_batch_fp16_cuda(
+        cublas_handle_,
+        table + 0 * selections,
+        table + 1 * selections,
+        table + 2 * selections,
+        table + 3 * selections,
+        table + 4 * selections,
+        table + 5 * selections,
+        table + 6 * selections,
+        table + 7 * selections,
+        d_moe_pointer_batch_gate_half_,
+        d_moe_pointer_batch_up_half_,
+        d_moe_pointer_batch_activation_half_,
+        static_cast<int>(selections), inter_, hidden_, compute_stream_,
+        profiler_.enabled() ? &profiler_ : nullptr);
+    if (!computed) {
+        synchronize_and_unpin();
+        set_last_error("pointer-batched expert projection failed");
+        return false;
+    }
+    for (int expert : pinned) {
+        prefetcher_.mark_consumed(source_layer, expert);
+    }
+    if (!DEE_CUDA_CHECK_NAMED(
+            cudaEventRecord(pointer_batch_complete_event_, compute_stream_),
+            "cudaEventRecord(pointer batch complete)")) {
+        synchronize_and_unpin();
+        set_last_error("pointer-batched completion event record failed");
+        return false;
+    }
+    pointer_batch_completion_event_valid_ = true;
+    pointer_batch_pending_source_layer_ = source_layer;
+    pointer_batch_pending_pins_.swap(pinned);
+    ++stats_.pointer_batched_expert_calls;
+    stats_.pointer_batched_experts += selections;
+    release_transient_f32_sources();
+    stats_.peak_vram = std::max(stats_.peak_vram, cache_.used_bytes());
+    return true;
+}
+#endif
+
 bool Engine::moe_forward_combined_device_impl(
         int layer, const void* d_h_in, int tokens,
         const int64_t* d_expert_ids, int topk,
         const float* d_weights_f32, void* d_output_f16,
         void* d_raw_trace_out, void* external_stream,
-        bool direct_single_row_io) {
+        bool direct_single_row_io, bool pointer_batched_experts) {
     clear_last_error();
     if (!d_h_in || !d_expert_ids || !d_weights_f32 || !d_output_f16 ||
         tokens <= 0 || topk <= 0 || topk > cfg_.topk) {
@@ -1173,6 +1520,14 @@ bool Engine::moe_forward_combined_device_impl(
             current_token_,
             layer);
     }
+    // The pointer table is pinned host memory and expert cache blocks are
+    // shared across calls. Retire their previous compute-stream use after the
+    // current ID copy has had a chance to overlap it, but before any cache
+    // staging or pointer-table overwrite.
+    if (!drain_pointer_batch_pending()) {
+        set_last_error("failed to retire prior pointer-batched expert work");
+        return false;
+    }
 
     std::vector<int> host_ids(selections);
     for (size_t index = 0; index < selections; ++index) {
@@ -1190,7 +1545,10 @@ bool Engine::moe_forward_combined_device_impl(
         set_last_error("failed to allocate combined raw workspace");
         return false;
     }
-    if (!moe_forward_batch_device_impl(
+    const bool experts_ok = pointer_batched_experts
+        ? moe_forward_pointer_batched_device_impl(
+            layer, d_h_in, tokens, host_ids.data(), topk, d_moe_raw_f32_)
+        : moe_forward_batch_device_impl(
             layer,
             d_h_in,
             tokens,
@@ -1198,7 +1556,8 @@ bool Engine::moe_forward_combined_device_impl(
             topk,
             d_moe_raw_f32_,
             false,
-            direct_single_row_io)) {
+            direct_single_row_io);
+    if (!experts_ok) {
         if (last_error_message_.empty()) {
             set_last_error("raw expert stage failed inside combined path");
         }
@@ -1250,6 +1609,7 @@ bool Engine::moe_forward_combined_device_impl(
     (void)d_raw_trace_out;
     (void)external_stream;
     (void)direct_single_row_io;
+    (void)pointer_batched_experts;
     return false;
 #endif
 }
@@ -1299,6 +1659,9 @@ EngineStats Engine::runtime_stats() const {
     if (cfg_.use_cuda) {
         result.host_moe_dispatch_bytes = h_moe_expert_ids_i64_
             ? h_moe_expert_ids_capacity_ * sizeof(int64_t) : 0;
+        result.host_moe_pointer_table_bytes = h_moe_pointer_table_
+            ? 8 * moe_pointer_batch_capacity_selections_ * sizeof(void*)
+            : 0;
         if (d_h_in_) result.device_fixed_work_buffer_bytes +=
             static_cast<size_t>(hidden_) * sizeof(float);
         if (d_h_out_) result.device_fixed_work_buffer_bytes +=
@@ -1347,6 +1710,28 @@ EngineStats Engine::runtime_stats() const {
                 moe_raw_capacity_selections_ *
                 static_cast<size_t>(hidden_) * sizeof(float);
         }
+        if (moe_pointer_batch_capacity_selections_ > 0) {
+            const size_t inter_elements =
+                moe_pointer_batch_capacity_selections_ *
+                static_cast<size_t>(inter_);
+            if (d_moe_pointer_batch_gate_half_) {
+                result.device_moe_pointer_batch_workspace_bytes +=
+                    inter_elements * sizeof(uint16_t);
+            }
+            if (d_moe_pointer_batch_up_half_) {
+                result.device_moe_pointer_batch_workspace_bytes +=
+                    inter_elements * sizeof(uint16_t);
+            }
+            if (d_moe_pointer_batch_activation_half_) {
+                result.device_moe_pointer_batch_workspace_bytes +=
+                    inter_elements * sizeof(uint16_t);
+            }
+            if (d_moe_pointer_table_) {
+                result.device_moe_pointer_batch_workspace_bytes +=
+                    8 * moe_pointer_batch_capacity_selections_ *
+                    sizeof(void*);
+            }
+        }
         if (d_oracle_scratch_) result.device_oracle_scratch_bytes =
             static_cast<size_t>(256 + 256) * sizeof(float);
     }
@@ -1371,6 +1756,7 @@ bool Engine::reset_runtime_cache() {
         if (compute_stream_ &&
             !DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(compute_stream_),
                                   "cudaStreamSynchronize(reset runtime cache)")) return false;
+        if (!drain_pointer_batch_pending(true)) return false;
     }
 #endif
     prefetcher_.reset();
@@ -1977,6 +2363,14 @@ bool Engine::prepack_quantized_sources() {
 }
 
 bool Engine::stage_expert(int logical_layer, int source_layer, int expert, int priority) {
+#ifdef DEE_CUDA
+    // Central cache-staging boundary: any execution mode may follow the public
+    // pointer-batched API. Release its completed cache pins before a different
+    // path attempts eviction, including preload and legacy host entrypoints.
+    if (cfg_.use_cuda && !drain_pointer_batch_pending()) {
+        return false;
+    }
+#endif
     if (cfg_.use_cuda) {
         if (cfg_.transfer_dtype == WeightTransferDType::Int4) {
             const QuantizedExpert* quantized = get_staging_int4(source_layer, expert);
@@ -2498,6 +2892,17 @@ bool Engine::generate() {
 
 #ifdef DEE_CUDA
 void Engine::cuda_cleanup() {
+    if (!pointer_batch_pending_pins_.empty()) {
+        bool compute_stream_synchronized = false;
+        if (compute_stream_) {
+            compute_stream_synchronized = DEE_CUDA_CHECK_NAMED(
+                cudaStreamSynchronize(compute_stream_),
+                "cudaStreamSynchronize(pointer batch teardown)");
+        }
+        if (compute_stream_synchronized) {
+            drain_pointer_batch_pending(true);
+        }
+    }
     if (d_h_in_)  { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_h_in_, "d_h_in_"), "cudaFree(d_h_in)");  d_h_in_  = nullptr; }
     if (d_h_out_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_h_out_, "d_h_out_"), "cudaFree(d_h_out)"); d_h_out_ = nullptr; }
     if (d_hbuf_)  { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_hbuf_, "d_hbuf_"), "cudaFree(d_hbuf)");  d_hbuf_  = nullptr; }
@@ -2520,6 +2925,15 @@ void Engine::cuda_cleanup() {
     moe_batch_capacity_tokens_ = 0;
     if (d_moe_raw_f32_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_raw_f32_, "d_moe_raw_f32_"), "cudaFree(combined raw workspace)"); d_moe_raw_f32_ = nullptr; }
     moe_raw_capacity_selections_ = 0;
+    if (d_moe_pointer_batch_gate_half_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_pointer_batch_gate_half_, "d_moe_pointer_batch_gate_half_"), "cudaFree(pointer batch gate)"); d_moe_pointer_batch_gate_half_ = nullptr; }
+    if (d_moe_pointer_batch_up_half_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_pointer_batch_up_half_, "d_moe_pointer_batch_up_half_"), "cudaFree(pointer batch up)"); d_moe_pointer_batch_up_half_ = nullptr; }
+    if (d_moe_pointer_batch_activation_half_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_pointer_batch_activation_half_, "d_moe_pointer_batch_activation_half_"), "cudaFree(pointer batch activation)"); d_moe_pointer_batch_activation_half_ = nullptr; }
+    if (d_moe_pointer_table_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_pointer_table_, "d_moe_pointer_table_"), "cudaFree(pointer batch table)"); d_moe_pointer_table_ = nullptr; }
+    if (h_moe_pointer_table_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE_HOST(h_moe_pointer_table_, "h_moe_pointer_table_"), "cudaFreeHost(pointer batch table)"); h_moe_pointer_table_ = nullptr; }
+    moe_pointer_batch_capacity_selections_ = 0;
+    if (pointer_batch_complete_event_) { DEE_CUDA_CHECK_NAMED(DEE_TA_EVENT_DESTROY(pointer_batch_complete_event_, "pointer_batch_complete_event_"), "cudaEventDestroy(pointer batch complete)"); pointer_batch_complete_event_ = nullptr; }
+    pointer_batch_completion_event_valid_ = false;
+    pointer_batch_retirement_poisoned_ = false;
     if (h_moe_expert_ids_i64_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE_HOST(h_moe_expert_ids_i64_, "h_moe_expert_ids_i64_"), "cudaFreeHost(combined expert IDs)"); h_moe_expert_ids_i64_ = nullptr; }
     h_moe_expert_ids_capacity_ = 0;
     if (combined_output_ready_event_) { DEE_CUDA_CHECK_NAMED(DEE_TA_EVENT_DESTROY(combined_output_ready_event_, "combined_output_ready_event_"), "cudaEventDestroy(combined output ready)"); combined_output_ready_event_ = nullptr; }
@@ -2534,6 +2948,12 @@ void Engine::cuda_cleanup() {
 // gates each kernel launch on prefetcher.wait() (cudaEventSynchronize of that
 // expert's copy), so the compute stream only blocks when a weight isn't ready.
 bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
+    if (!DEE_CUDA_CHECK_NAMED(
+            cudaSetDevice(cfg_.device_id),
+            "cudaSetDevice(forward layer)") ||
+        !drain_pointer_batch_pending()) {
+        return false;
+    }
     const auto host_scheduling_begin = profiler_.enabled()
         ? StageProfiler::now() : StageProfiler::TimePoint{};
     const auto finish_host_scheduling = [&]() {

@@ -293,6 +293,179 @@ int main() {
                 before_unique_direct.d2d_scatter_bytes == 0,
         "one-token all-unique path bypasses every row copy");
 
+    const dee::EngineStats before_pointer_batch = engine.runtime_stats();
+    std::vector<uint16_t> pointer_batch_bits(4);
+    std::vector<float> pointer_batch_raw(8);
+    bool pointer_batch_ok =
+        engine.moe_forward_combined_pointer_batched_device(
+            5, d_hidden, 1, d_expert_ids, 2, d_weights,
+            d_combined, d_raw_trace, external_stream) &&
+        cudaMemcpyAsync(
+            pointer_batch_bits.data(), d_combined,
+            pointer_batch_bits.size() * sizeof(uint16_t),
+            cudaMemcpyDeviceToHost, external_stream) == cudaSuccess &&
+        cudaMemcpyAsync(
+            pointer_batch_raw.data(), d_raw_trace,
+            pointer_batch_raw.size() * sizeof(float),
+            cudaMemcpyDeviceToHost, external_stream) == cudaSuccess &&
+        cudaStreamSynchronize(external_stream) == cudaSuccess;
+    const dee::EngineStats after_pointer_batch = engine.runtime_stats();
+    CHECK(
+        pointer_batch_ok &&
+            pointer_batch_bits == unique_baseline_bits &&
+            pointer_batch_raw == unique_baseline_raw,
+        "one-token pointer-batched projections are bitwise exact");
+    CHECK(
+        after_pointer_batch.pointer_batched_expert_calls -
+                before_pointer_batch.pointer_batched_expert_calls == 1 &&
+            after_pointer_batch.pointer_batched_experts -
+                before_pointer_batch.pointer_batched_experts == 2 &&
+            after_pointer_batch.host_moe_pointer_table_bytes ==
+                8 * 2 * sizeof(void*) &&
+            after_pointer_batch.device_moe_pointer_batch_workspace_bytes ==
+                3 * 2 * 2 * sizeof(uint16_t) +
+                8 * 2 * sizeof(void*),
+        "pointer-batched path reports exact call and workspace counters");
+
+    // Exercise the persistent pointer table and cache pins across different
+    // caller streams without synchronizing the first call. The second expert
+    // set forces cache churn under the exact two-expert budget.
+    const int64_t churn_ids[2] = {0, 1};
+    const float churn_weights[2] = {0.60f, 0.40f};
+    int64_t* d_churn_ids = nullptr;
+    float* d_churn_weights = nullptr;
+    __half* d_churn_combined = nullptr;
+    float* d_churn_raw = nullptr;
+    bool churn_alloc_ok =
+        cudaMalloc(
+            reinterpret_cast<void**>(&d_churn_ids),
+            sizeof(churn_ids)) == cudaSuccess &&
+        cudaMalloc(
+            reinterpret_cast<void**>(&d_churn_weights),
+            sizeof(churn_weights)) == cudaSuccess &&
+        cudaMalloc(
+            reinterpret_cast<void**>(&d_churn_combined),
+            4 * sizeof(uint16_t)) == cudaSuccess &&
+        cudaMalloc(
+            reinterpret_cast<void**>(&d_churn_raw),
+            8 * sizeof(float)) == cudaSuccess;
+    CHECK(churn_alloc_ok, "cross-stream pointer-batch buffers allocate");
+
+    std::vector<uint16_t> churn_baseline_bits(4);
+    std::vector<float> churn_baseline_raw(8);
+    bool churn_baseline_ok = churn_alloc_ok &&
+        cudaMemcpyAsync(
+            d_churn_ids, churn_ids, sizeof(churn_ids),
+            cudaMemcpyHostToDevice, nullptr) == cudaSuccess &&
+        cudaMemcpyAsync(
+            d_churn_weights, churn_weights, sizeof(churn_weights),
+            cudaMemcpyHostToDevice, nullptr) == cudaSuccess &&
+        engine.moe_forward_combined_device(
+            5, d_hidden, 1, d_churn_ids, 2, d_churn_weights,
+            d_churn_combined, d_churn_raw, nullptr) &&
+        cudaMemcpyAsync(
+            churn_baseline_bits.data(), d_churn_combined,
+            churn_baseline_bits.size() * sizeof(uint16_t),
+            cudaMemcpyDeviceToHost, nullptr) == cudaSuccess &&
+        cudaMemcpyAsync(
+            churn_baseline_raw.data(), d_churn_raw,
+            churn_baseline_raw.size() * sizeof(float),
+            cudaMemcpyDeviceToHost, nullptr) == cudaSuccess &&
+        cudaStreamSynchronize(nullptr) == cudaSuccess;
+    CHECK(churn_baseline_ok, "cache-churn exact baseline executes");
+
+    std::vector<uint16_t> cross_stream_first_bits(4);
+    std::vector<float> cross_stream_first_raw(8);
+    std::vector<uint16_t> cross_stream_second_bits(4);
+    std::vector<float> cross_stream_second_raw(8);
+    bool cross_stream_ok = churn_baseline_ok &&
+        cudaMemcpyAsync(
+            d_expert_ids, unique_ids, sizeof(unique_ids),
+            cudaMemcpyHostToDevice, external_stream) == cudaSuccess &&
+        cudaMemcpyAsync(
+            d_weights, combined_weights, 2 * sizeof(float),
+            cudaMemcpyHostToDevice, external_stream) == cudaSuccess &&
+        engine.moe_forward_combined_pointer_batched_device(
+            5, d_hidden, 1, d_expert_ids, 2, d_weights,
+            d_combined, d_raw_trace, external_stream) &&
+        engine.moe_forward_combined_pointer_batched_device(
+            5, d_hidden, 1, d_churn_ids, 2, d_churn_weights,
+            d_churn_combined, d_churn_raw, nullptr) &&
+        cudaMemcpyAsync(
+            cross_stream_first_bits.data(), d_combined,
+            cross_stream_first_bits.size() * sizeof(uint16_t),
+            cudaMemcpyDeviceToHost, external_stream) == cudaSuccess &&
+        cudaMemcpyAsync(
+            cross_stream_first_raw.data(), d_raw_trace,
+            cross_stream_first_raw.size() * sizeof(float),
+            cudaMemcpyDeviceToHost, external_stream) == cudaSuccess &&
+        cudaMemcpyAsync(
+            cross_stream_second_bits.data(), d_churn_combined,
+            cross_stream_second_bits.size() * sizeof(uint16_t),
+            cudaMemcpyDeviceToHost, nullptr) == cudaSuccess &&
+        cudaMemcpyAsync(
+            cross_stream_second_raw.data(), d_churn_raw,
+            cross_stream_second_raw.size() * sizeof(float),
+            cudaMemcpyDeviceToHost, nullptr) == cudaSuccess &&
+        cudaStreamSynchronize(external_stream) == cudaSuccess &&
+        cudaStreamSynchronize(nullptr) == cudaSuccess;
+    CHECK(
+        cross_stream_ok &&
+            cross_stream_first_bits == unique_baseline_bits &&
+            cross_stream_first_raw == unique_baseline_raw &&
+            cross_stream_second_bits == churn_baseline_bits &&
+            cross_stream_second_raw == churn_baseline_raw,
+        "pointer table and cache pins survive nondefault-to-default stream churn");
+
+    bool reset_pending_ok =
+        cudaMemcpyAsync(
+            d_expert_ids, unique_ids, sizeof(unique_ids),
+            cudaMemcpyHostToDevice, external_stream) == cudaSuccess &&
+        engine.moe_forward_combined_pointer_batched_device(
+            5, d_hidden, 1, d_expert_ids, 2, d_weights,
+            d_combined, d_raw_trace, external_stream) &&
+        engine.reset_runtime_cache();
+    std::vector<uint16_t> reset_pointer_bits(4);
+    std::vector<float> reset_pointer_raw(8);
+    reset_pending_ok = reset_pending_ok &&
+        engine.moe_forward_combined_pointer_batched_device(
+            5, d_hidden, 1, d_expert_ids, 2, d_weights,
+            d_combined, d_raw_trace, external_stream) &&
+        cudaMemcpyAsync(
+            reset_pointer_bits.data(), d_combined,
+            reset_pointer_bits.size() * sizeof(uint16_t),
+            cudaMemcpyDeviceToHost, external_stream) == cudaSuccess &&
+        cudaMemcpyAsync(
+            reset_pointer_raw.data(), d_raw_trace,
+            reset_pointer_raw.size() * sizeof(float),
+            cudaMemcpyDeviceToHost, external_stream) == cudaSuccess &&
+        cudaStreamSynchronize(external_stream) == cudaSuccess;
+    CHECK(
+        reset_pending_ok &&
+            reset_pointer_bits == unique_baseline_bits &&
+            reset_pointer_raw == unique_baseline_raw,
+        "runtime cache reset retires unsynchronized pointer-batch pins");
+
+    const int churn_batch_ids[2] = {0, 1};
+    std::vector<float> mode_switch_raw(8);
+    bool mode_switch_ok =
+        engine.moe_forward_batch_device(
+            5, d_hidden, 1, churn_batch_ids, 2, d_churn_raw) &&
+        cudaMemcpyAsync(
+            mode_switch_raw.data(), d_churn_raw,
+            mode_switch_raw.size() * sizeof(float),
+            cudaMemcpyDeviceToHost, external_stream) == cudaSuccess &&
+        cudaStreamSynchronize(external_stream) == cudaSuccess;
+    CHECK(
+        mode_switch_ok && mode_switch_raw == churn_baseline_raw,
+        "ordinary device path drains pointer pins before cache churn");
+
+    CHECK(
+        !engine.moe_forward_combined_pointer_batched_device(
+            5, d_hidden, 2, d_expert_ids, 2, d_weights,
+            d_combined, d_raw_trace, external_stream),
+        "pointer-batched path fails closed for multi-token input");
+
     std::vector<uint16_t> default_stream_bits(8);
     bool default_stream_ok =
         cudaMemcpyAsync(
@@ -356,6 +529,10 @@ int main() {
     if (d_weights) cudaFree(d_weights);
     if (d_combined) cudaFree(d_combined);
     if (d_raw_trace) cudaFree(d_raw_trace);
+    if (d_churn_ids) cudaFree(d_churn_ids);
+    if (d_churn_weights) cudaFree(d_churn_weights);
+    if (d_churn_combined) cudaFree(d_churn_combined);
+    if (d_churn_raw) cudaFree(d_churn_raw);
     if (external_stream) cudaStreamDestroy(external_stream);
 
     if (failures) std::printf("### %d FAILED ###\n", failures);

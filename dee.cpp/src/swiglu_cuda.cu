@@ -196,6 +196,35 @@ bool gemm_fp16_row_major_batch_to_fp32(
            profiler->cuda_end(ticket, static_cast<void*>(stream));
 }
 
+bool gemm_fp16_pointer_batch(
+        cublasHandle_t handle, const void* d_matrix_ptrs,
+        int rows, int cols, const void* d_input_ptrs,
+        void* d_output_ptrs, cudaDataType_t output_type, int batch,
+        cudaStream_t stream, GpuStage stage, StageProfiler* profiler) {
+    constexpr float alpha = 1.0f;
+    constexpr float beta = 0.0f;
+    const size_t ticket = profiler && profiler->enabled()
+        ? profiler->cuda_begin(stage, static_cast<void*>(stream))
+        : static_cast<size_t>(-1);
+    if (profiler && profiler->enabled()) profiler->note_cublas_call();
+    const bool ok = DEE_CUBLAS_CHECK_NAMED(
+        cublasGemmBatchedEx(
+            handle, CUBLAS_OP_T, CUBLAS_OP_N,
+            rows, 1, cols, &alpha,
+            reinterpret_cast<const void* const*>(d_matrix_ptrs),
+            CUDA_R_16F, cols,
+            reinterpret_cast<const void* const*>(d_input_ptrs),
+            CUDA_R_16F, cols,
+            &beta,
+            reinterpret_cast<void* const*>(d_output_ptrs),
+            output_type, rows,
+            batch, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP),
+        "cublasGemmBatchedEx(FP16 pointer-batched experts)");
+    if (!ok) return false;
+    return !profiler || !profiler->enabled() ||
+           profiler->cuda_end(ticket, static_cast<void*>(stream));
+}
+
 bool gemv_row_major(cublasHandle_t handle, const float* matrix, int rows, int cols,
                     const float* input, float* output, cudaStream_t stream,
                     GpuStage stage, StageProfiler* profiler) {
@@ -331,6 +360,73 @@ bool swiglu_expert_batch_fp16_cuda(
 #ifdef DEE_CUDA_VALIDATE
     return DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(stream),
                                 "cudaStreamSynchronize(FP16 batched SwiGLU validation)");
+#else
+    return true;
+#endif
+}
+
+bool swiglu_expert_pointer_batch_fp16_cuda(
+        cublasHandle_t handle,
+        const void* d_gate_weight_ptrs, const void* d_up_weight_ptrs,
+        const void* d_down_weight_ptrs, const void* d_input_ptrs,
+        const void* d_gate_output_ptrs, const void* d_up_output_ptrs,
+        const void* d_activation_ptrs, const void* d_raw_output_ptrs,
+        void* d_gate, void* d_up, void* d_activation,
+        int experts, int inter, int hidden, cudaStream_t stream,
+        StageProfiler* profiler) {
+    if (!handle || !d_gate_weight_ptrs || !d_up_weight_ptrs ||
+        !d_down_weight_ptrs || !d_input_ptrs || !d_gate_output_ptrs ||
+        !d_up_output_ptrs || !d_activation_ptrs || !d_raw_output_ptrs ||
+        !d_gate || !d_up || !d_activation || experts <= 0 ||
+        inter <= 0 || hidden <= 0 || !stream) {
+        std::fprintf(
+            stderr,
+            "[cuda] invalid pointer-batched SwiGLU arguments "
+            "(experts=%d inter=%d hidden=%d)\n",
+            experts, inter, hidden);
+        return false;
+    }
+    if (!gemm_fp16_pointer_batch(
+            handle, d_gate_weight_ptrs, inter, hidden, d_input_ptrs,
+            const_cast<void*>(d_gate_output_ptrs), CUDA_R_16F, experts,
+            stream, GpuStage::GateProjection, profiler) ||
+        !gemm_fp16_pointer_batch(
+            handle, d_up_weight_ptrs, inter, hidden, d_input_ptrs,
+            const_cast<void*>(d_up_output_ptrs), CUDA_R_16F, experts,
+            stream, GpuStage::UpProjection, profiler)) {
+        return false;
+    }
+    const int activation_elements = experts * inter;
+    const size_t activation_ticket = profiler && profiler->enabled()
+        ? profiler->cuda_begin(
+            GpuStage::SiluMultiply, static_cast<void*>(stream))
+        : static_cast<size_t>(-1);
+    swiglu_activation_batch_fp16_kernel<<<
+        grid_for(activation_elements), kThreads, 0, stream>>>(
+            static_cast<const __half*>(d_gate),
+            static_cast<const __half*>(d_up),
+            static_cast<__half*>(d_activation),
+            activation_elements);
+    if (profiler && profiler->enabled()) profiler->note_kernel_launch();
+    if (!DEE_CUDA_CHECK_LAUNCH(
+            "swiglu_activation_pointer_batch_fp16_kernel launch")) {
+        return false;
+    }
+    if (profiler && profiler->enabled() &&
+        !profiler->cuda_end(
+            activation_ticket, static_cast<void*>(stream))) {
+        return false;
+    }
+    if (!gemm_fp16_pointer_batch(
+            handle, d_down_weight_ptrs, hidden, inter, d_activation_ptrs,
+            const_cast<void*>(d_raw_output_ptrs), CUDA_R_32F, experts,
+            stream, GpuStage::DownProjection, profiler)) {
+        return false;
+    }
+#ifdef DEE_CUDA_VALIDATE
+    return DEE_CUDA_CHECK_NAMED(
+        cudaStreamSynchronize(stream),
+        "cudaStreamSynchronize(pointer-batched FP16 SwiGLU validation)");
 #else
     return true;
 #endif

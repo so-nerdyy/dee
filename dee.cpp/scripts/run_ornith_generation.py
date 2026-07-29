@@ -48,6 +48,7 @@ from scripts.ornith_support import (  # noqa: E402
 
 TRACE_LAYERS = set(range(40))
 FUSED_NORM_EXECUTION_MODE = "native-combined-direct-fused-norm"
+POINTER_BATCHED_EXECUTION_MODE = "native-combined-pointer-batched"
 EXECUTION_MODES = (
     "production",
     "parity",
@@ -56,6 +57,7 @@ EXECUTION_MODES = (
     "native-combined",
     "native-combined-direct",
     FUSED_NORM_EXECUTION_MODE,
+    POINTER_BATCHED_EXECUTION_MODE,
 )
 TOLERANCES = {
     "embedding_output": (0.0, 0.0),
@@ -354,6 +356,8 @@ def fresh_engine_path_proof() -> dict:
         "last_native_error_combined_attempt": "",
         "native_direct_calls": 0,
         "native_direct_fallback_calls": 0,
+        "native_pointer_batched_calls": 0,
+        "native_pointer_batched_fallback_calls": 0,
         "fused_rms_norm_calls": 0,
         "fused_rms_norm_gated_calls": 0,
         "fused_norm_output_allocations": 0,
@@ -818,22 +822,34 @@ class HybridExperts:
             "native-combined",
             "native-combined-direct",
             FUSED_NORM_EXECUTION_MODE,
+            POINTER_BATCHED_EXECUTION_MODE,
         ):
+            pointer_batched_mode = (
+                self.context.execution_mode
+                == POINTER_BATCHED_EXECUTION_MODE
+            )
             direct_mode = (
                 self.context.execution_mode in (
                     "native-combined-direct",
                     FUSED_NORM_EXECUTION_MODE,
+                    POINTER_BATCHED_EXECUTION_MODE,
                 )
             )
             method_name = (
-                "moe_forward_combined_direct_device"
-                if direct_mode
-                else "moe_forward_combined_device"
+                "moe_forward_combined_pointer_batched_device"
+                if pointer_batched_mode
+                else (
+                    "moe_forward_combined_direct_device"
+                    if direct_mode
+                    else "moe_forward_combined_device"
+                )
             )
             if not hasattr(self.engine, method_name):
                 proof["native_combined_fallback_calls"] += 1
                 if direct_mode:
                     proof["native_direct_fallback_calls"] += 1
+                if pointer_batched_mode:
+                    proof["native_pointer_batched_fallback_calls"] += 1
                 proof["last_native_error_combined_attempt"] = (
                     f"<{method_name} binding unavailable>"
                 )
@@ -852,6 +868,8 @@ class HybridExperts:
                 proof["native_combined_fallback_calls"] += 1
                 if direct_mode:
                     proof["native_direct_fallback_calls"] += 1
+                if pointer_batched_mode:
+                    proof["native_pointer_batched_fallback_calls"] += 1
                 proof["last_native_error_combined_attempt"] = (
                     "<combined path unsupported tensor contract>"
                 )
@@ -952,6 +970,8 @@ class HybridExperts:
                 proof["native_combined_calls"] += 1
                 if direct_mode:
                     proof["native_direct_calls"] += 1
+                if pointer_batched_mode:
+                    proof["native_pointer_batched_calls"] += 1
                 proof["native_combined_ids_d2h_total_bytes"] += (
                     expert_ids_bytes
                 )
@@ -968,6 +988,8 @@ class HybridExperts:
             proof["native_combined_fallback_calls"] += 1
             if direct_mode:
                 proof["native_direct_fallback_calls"] += 1
+            if pointer_batched_mode:
+                proof["native_pointer_batched_fallback_calls"] += 1
             proof["last_native_error_combined_attempt"] = (
                 self.engine.last_error_message()
                 if hasattr(self.engine, "last_error_message")
@@ -1737,15 +1759,18 @@ def engine_stats(runtime):
         "resident_experts", "host_pinned_expert_staging_bytes",
         "host_pageable_expert_staging_bytes", "host_router_weight_bytes",
         "host_hidden_buffer_bytes", "host_moe_dispatch_bytes",
+        "host_moe_pointer_table_bytes",
         "host_prefetch_ring_bytes",
         "host_prefetch_ring_slots", "peak_transient_host_bytes",
         "device_expert_cache_reserved_bytes", "device_prefetch_staging_bytes",
         "device_fixed_work_buffer_bytes", "device_router_weight_bytes",
         "device_router_dynamic_bytes", "device_moe_batch_buffer_bytes",
         "device_moe_raw_workspace_bytes",
+        "device_moe_pointer_batch_workspace_bytes",
         "d2d_gather_copies", "d2d_gather_bytes",
         "d2d_scatter_copies", "d2d_scatter_bytes",
         "direct_row_gather_bypasses", "direct_row_scatter_bypasses",
+        "pointer_batched_expert_calls", "pointer_batched_experts",
         "device_oracle_scratch_bytes",
     )
     for layer, engine in enumerate(runtime["engines"]):
@@ -1800,7 +1825,9 @@ def parse_args():
             "native-combined-direct-fused-norm also replaces layer input/post, "
             "final, and linear-attention gated Qwen RMSNorm kernels with the "
             "explicit M5E CUDA contract (full-attention q/k head norms remain "
-            "eager and are separately inventoried)"
+            "eager and are separately inventoried); native-combined-pointer-"
+            "batched executes the token-1 selected experts with three pointer-"
+            "batched cuBLAS projections and one activation launch"
         ),
     )
     parser.add_argument("--reference-parity", action="store_true")

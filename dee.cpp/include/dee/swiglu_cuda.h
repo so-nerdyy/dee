@@ -42,6 +42,21 @@ bool swiglu_expert_batch_fp16_cuda(
     int tokens, int inter, int hidden, cudaStream_t stream,
     StageProfiler* profiler = nullptr);
 
+// M5F token-1 pointer-batched path. Each pointer-array argument is a
+// device-resident array of `experts` pointers. It executes all selected
+// experts with three cublasGemmBatchedEx calls and one contiguous activation
+// launch while preserving the established FP16 gate/up/activation and FP32
+// down-projection output boundaries.
+bool swiglu_expert_pointer_batch_fp16_cuda(
+    cublasHandle_t handle,
+    const void* d_gate_weight_ptrs, const void* d_up_weight_ptrs,
+    const void* d_down_weight_ptrs, const void* d_input_ptrs,
+    const void* d_gate_output_ptrs, const void* d_up_output_ptrs,
+    const void* d_activation_ptrs, const void* d_raw_output_ptrs,
+    void* d_gate, void* d_up, void* d_activation,
+    int experts, int inter, int hidden, cudaStream_t stream,
+    StageProfiler* profiler = nullptr);
+
 // Match torch.nn.functional.linear for an FP16 [tokens, hidden] input and
 // FP16 [experts, hidden] router matrix. Output is row-major [tokens, experts].
 bool router_logits_fp16_cuda(cublasHandle_t handle, const void* d_weights,
