@@ -149,16 +149,19 @@ def paired_trial_analysis(sequence: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def thermal_clock_analysis(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    devices: dict[str, list[dict[str, Any]]] = {}
+    devices: dict[str, list[tuple[str, dict[str, Any]]]] = {}
     errors = []
     for row in rows:
         thermal = row.get("thermal_clock", {})
         if thermal.get("nvml_error"):
             errors.append(thermal["nvml_error"])
         for device, values in thermal.get("by_device", {}).items():
-            devices.setdefault(device, []).append(values)
+            devices.setdefault(device, []).append(
+                (str(row.get("execution_mode", "<unspecified>")), values)
+            )
     summary = {}
-    for device, values in sorted(devices.items()):
+    for device, mode_values in sorted(devices.items()):
+        values = [item[1] for item in mode_values]
         sample_count = sum(int(item.get("sample_count", 0)) for item in values)
         maximum_temperature = max(
             (
@@ -173,29 +176,86 @@ def thermal_clock_analysis(rows: list[dict[str, Any]]) -> dict[str, Any]:
             for item in values
             if item.get("median_sm_clock_mhz") is not None
         ]
+        clocks_by_mode: dict[str, list[float]] = {}
+        temperatures_by_mode: dict[str, list[float]] = {}
+        for mode, item in mode_values:
+            if item.get("median_sm_clock_mhz") is not None:
+                clocks_by_mode.setdefault(mode, []).append(
+                    float(item["median_sm_clock_mhz"])
+                )
+            if item.get("median_temperature_c") is not None:
+                temperatures_by_mode.setdefault(mode, []).append(
+                    float(item["median_temperature_c"])
+                )
+        mode_median_clocks = {
+            mode: float(np.median(mode_clocks))
+            for mode, mode_clocks in clocks_by_mode.items()
+        }
+        mode_median_temperatures = {
+            mode: float(np.median(mode_temperatures))
+            for mode, mode_temperatures in temperatures_by_mode.items()
+        }
+        clock_values = list(mode_median_clocks.values())
+        temperature_values = list(mode_median_temperatures.values())
+        expected_modes = {mode for mode, _item in mode_values}
+        clock_parity_ratio = (
+            min(clock_values) / max(clock_values)
+            if len(clock_values) >= 2 and max(clock_values) > 0
+            else None
+        )
+        temperature_parity_delta = (
+            max(temperature_values) - min(temperature_values)
+            if len(temperature_values) >= 2
+            else None
+        )
         summary[device] = {
             "sample_count": sample_count,
             "maximum_temperature_c": maximum_temperature,
             "minimum_trial_median_sm_clock_mhz": (
                 min(median_clocks) if median_clocks else None
             ),
+            "mode_median_sm_clock_mhz": mode_median_clocks,
+            "mode_median_temperature_c": mode_median_temperatures,
+            "clock_parity_ratio": clock_parity_ratio,
+            "temperature_parity_delta_c": temperature_parity_delta,
             "temperature_anomaly": (
                 maximum_temperature is None or maximum_temperature > 85.0
             ),
-            "clock_anomaly": (
-                not median_clocks or min(median_clocks) < 900.0
+            "clock_floor_below_900_mhz_warning": (
+                bool(median_clocks) and min(median_clocks) < 900.0
+            ),
+            "clock_samples_missing": (
+                not median_clocks
+                or len(mode_median_clocks) != len(expected_modes)
+            ),
+            "clock_parity_anomaly": (
+                clock_parity_ratio is not None
+                and clock_parity_ratio < 0.95
+            ),
+            "temperature_parity_anomaly": (
+                temperature_parity_delta is not None
+                and temperature_parity_delta > 5.0
             ),
         }
+    samples_present = bool(summary) and all(
+        item["sample_count"] > 0 for item in summary.values()
+    )
     return {
         "nvml_errors": sorted(set(errors)),
         "by_device": summary,
-        "samples_present": bool(summary) and all(
-            item["sample_count"] > 0 for item in summary.values()
+        "samples_present": samples_present,
+        "absolute_clock_floor_warning_observed": any(
+            item["clock_floor_below_900_mhz_warning"]
+            for item in summary.values()
         ),
         "anomaly_detected": (
-            not summary
+            bool(errors)
+            or not samples_present
             or any(
-                item["temperature_anomaly"] or item["clock_anomaly"]
+                item["temperature_anomaly"]
+                or item["clock_samples_missing"]
+                or item["clock_parity_anomaly"]
+                or item["temperature_parity_anomaly"]
                 for item in summary.values()
             )
         ),

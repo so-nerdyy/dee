@@ -178,6 +178,41 @@ def test_m5b_thermal_clock_analysis_is_fail_closed() -> None:
     result = M5B_MODULE.thermal_clock_analysis(rows)
     assert result["samples_present"]
     assert not result["anomaly_detected"]
+    assert not result["absolute_clock_floor_warning_observed"]
+
+
+def test_m5b_thermal_clock_analysis_separates_floor_warning_from_parity() -> None:
+    rows = []
+    for mode in ("production", "debug-full-logit"):
+        rows.append({
+            "execution_mode": mode,
+            "thermal_clock": {
+                "nvml_error": None,
+                "by_device": {
+                    "cuda:0": {
+                        "sample_count": 8,
+                        "maximum_temperature_c": 52,
+                        "median_temperature_c": 51,
+                        "median_sm_clock_mhz": 585,
+                    },
+                    "cuda:1": {
+                        "sample_count": 8,
+                        "maximum_temperature_c": 49,
+                        "median_temperature_c": 48,
+                        "median_sm_clock_mhz": 585,
+                    },
+                },
+            },
+        })
+    result = M5B_MODULE.thermal_clock_analysis(rows)
+    assert result["absolute_clock_floor_warning_observed"]
+    assert not result["anomaly_detected"]
+    rows[1]["thermal_clock"]["by_device"]["cuda:0"][
+        "median_sm_clock_mhz"
+    ] = 1000
+    result = M5B_MODULE.thermal_clock_analysis(rows)
+    assert result["anomaly_detected"]
+    assert result["by_device"]["cuda:0"]["clock_parity_anomaly"]
 
 
 def test_m5c_balanced_order_is_paired_and_bounded() -> None:
