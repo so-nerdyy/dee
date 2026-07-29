@@ -520,4 +520,3 @@ finally:
 
 if fatal_error is not None or validation_failures:
     raise SystemExit(1)
-
