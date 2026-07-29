@@ -1598,6 +1598,11 @@ def main() -> int:
         False, "dee", trace=False,
         execution_mode=("profiler" if args.profile else "production"),
     )
+    # Freeze the measured run's path counters before optional reference
+    # validation executes another candidate pass through the same runtime.
+    # Otherwise the later parity candidate silently doubles the pybind/device
+    # boundary counts reported as representative M5A evidence.
+    primary_path_proof = dict(runtime["context"].engine_path_proof)
     if args.profile:
         recorder.capture_final_engine_evidence(
             generation["total_generation_seconds"] * 1000.0
@@ -1761,7 +1766,7 @@ def main() -> int:
     # fp32_to_fp16_conversion_ms_total measures the residual .to() cost
     # the device path still incurs because the C++ tensor contract is
     # FP32 even when the surrounding model is FP16.
-    path_proof = dict(runtime["context"].engine_path_proof)
+    path_proof = primary_path_proof
     path_proof["schema_version"] = 2
     path_proof["run_id"] = args.run_id
     path_proof["git_commit"] = git_revision()
