@@ -90,7 +90,8 @@ int main() {
         __float2half(16.0f), __float2half(16.0f),
     };
     const std::vector<float> gated_expected = {
-        0.0f, 0.0f, 0.0f, 0.0f,
+        // Negative weighted input times SiLU(+0) preserves IEEE -0.
+        0.0f, 0.0f, 0.0f, -0.0f,
         -16.0f, -32.0f, -8.0f, 16.0f,
     };
 
