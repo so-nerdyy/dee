@@ -27,6 +27,18 @@ assert M5B_SPEC and M5B_SPEC.loader
 M5B_MODULE = importlib.util.module_from_spec(M5B_SPEC)
 M5B_SPEC.loader.exec_module(M5B_MODULE)
 
+M5C_SCRIPT = (
+    Path(__file__).resolve().parents[1]
+    / "scripts"
+    / "run_ornith_m5c_combined_benchmark.py"
+)
+M5C_SPEC = importlib.util.spec_from_file_location(
+    "m5c_combined_benchmark", M5C_SCRIPT
+)
+assert M5C_SPEC and M5C_SPEC.loader
+M5C_MODULE = importlib.util.module_from_spec(M5C_SPEC)
+M5C_SPEC.loader.exec_module(M5C_MODULE)
+
 
 def row(rate: float, device_calls: int = 160) -> dict:
     return {
@@ -154,3 +166,57 @@ def test_m5b_thermal_clock_analysis_is_fail_closed() -> None:
     result = M5B_MODULE.thermal_clock_analysis(rows)
     assert result["samples_present"]
     assert not result["anomaly_detected"]
+
+
+def test_m5c_balanced_order_is_paired_and_bounded() -> None:
+    order = M5C_MODULE.balanced_order(3)
+    assert order == [
+        "production",
+        "native-combined",
+        "native-combined",
+        "production",
+        "production",
+        "native-combined",
+    ]
+    assert order.count("production") == 3
+    assert order.count("native-combined") == 3
+
+
+def test_m5c_paired_analysis_handles_reversed_pair_order() -> None:
+    sequence = [
+        {"execution_mode": "production", "tokens_per_second": 8.0},
+        {"execution_mode": "native-combined", "tokens_per_second": 8.4},
+        {"execution_mode": "native-combined", "tokens_per_second": 8.2},
+        {"execution_mode": "production", "tokens_per_second": 8.0},
+    ]
+    result = M5C_MODULE.paired_trial_analysis(sequence)
+    assert result["pair_count"] == 2
+    assert result["candidate_wins"] == 2
+    assert result["minimum_speedup_ratio"] == 8.2 / 8.0
+
+
+def test_m5c_workspace_proof_is_exact_and_fail_closed() -> None:
+    stats = {
+        "aggregate": {
+            "host_moe_dispatch_bytes": 128,
+            "device_moe_raw_workspace_bytes": 256,
+        },
+        "by_layer": [
+            {
+                "host_moe_dispatch_bytes": 64,
+                "device_moe_raw_workspace_bytes": 128,
+            },
+            {
+                "host_moe_dispatch_bytes": 64,
+                "device_moe_raw_workspace_bytes": 128,
+            },
+        ],
+    }
+    proof = M5C_MODULE.analyze_workspace(
+        stats, layers=2, topk=8, hidden=4
+    )
+    assert proof["passed"]
+    stats["by_layer"][1]["device_moe_raw_workspace_bytes"] += 4
+    assert not M5C_MODULE.analyze_workspace(
+        stats, layers=2, topk=8, hidden=4
+    )["passed"]

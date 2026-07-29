@@ -281,6 +281,50 @@ PYBIND11_MODULE(pydee_core, m) {
                 Returns True on success; caller must sync the compute stream before
                 reading d_experts_out.
             )pbdoc")
+        .def("moe_forward_combined_device", [](
+                dee::Engine& self,
+                int layer,
+                uintptr_t d_h_in_ptr,
+                int tokens,
+                uintptr_t d_expert_ids_ptr,
+                int topk,
+                uintptr_t d_weights_ptr,
+                uintptr_t d_output_ptr,
+                uintptr_t d_raw_trace_ptr,
+                uintptr_t external_stream_ptr) -> bool {
+            if (topk != self.config().topk) {
+                throw std::runtime_error(
+                    "expert_ids topk does not match EngineConfig.topk");
+            }
+            bool ok = false;
+            {
+                py::gil_scoped_release release;
+                ok = self.moe_forward_combined_device(
+                    layer,
+                    reinterpret_cast<const void*>(d_h_in_ptr),
+                    tokens,
+                    reinterpret_cast<const int64_t*>(d_expert_ids_ptr),
+                    topk,
+                    reinterpret_cast<const float*>(d_weights_ptr),
+                    reinterpret_cast<void*>(d_output_ptr),
+                    reinterpret_cast<void*>(d_raw_trace_ptr),
+                    reinterpret_cast<void*>(external_stream_ptr));
+            }
+            return ok;
+        }, py::arg("layer"), py::arg("d_h_in_ptr"), py::arg("tokens"),
+           py::arg("d_expert_ids_ptr"), py::arg("topk"),
+           py::arg("d_weights_ptr"), py::arg("d_output_ptr"),
+           py::arg("d_raw_trace_ptr"),
+           py::arg("external_stream_ptr"),
+           R"pbdoc(
+                Run exact combined MoE on device tensors.
+                Hidden/output are FP16, weights are FP32, expert IDs are int64.
+                Completion is handed from the engine compute stream to the
+                supplied PyTorch CUDA stream. Optional raw trace output is
+                FP32 [tokens, topk, hidden].
+            )pbdoc")
+        .def("compute_stream_handle", &dee::Engine::compute_stream_handle,
+             "Return the native compute-stream handle for allocator lifetime tracking.")
         .def("last_error_message", [](const dee::Engine& self) -> std::string {
             return self.last_error_message();
         }, "Return the most recent native diagnostic captured by the failure "
@@ -315,6 +359,7 @@ PYBIND11_MODULE(pydee_core, m) {
                << s.host_pageable_expert_staging_bytes
                << ",\"host_router_weight_bytes\":" << s.host_router_weight_bytes
                << ",\"host_hidden_buffer_bytes\":" << s.host_hidden_buffer_bytes
+               << ",\"host_moe_dispatch_bytes\":" << s.host_moe_dispatch_bytes
                << ",\"host_prefetch_ring_bytes\":" << s.host_prefetch_ring_bytes
                << ",\"host_prefetch_ring_slots\":" << s.host_prefetch_ring_slots
                << ",\"peak_transient_host_bytes\":" << s.peak_transient_host_bytes
@@ -328,6 +373,8 @@ PYBIND11_MODULE(pydee_core, m) {
                << ",\"device_router_dynamic_bytes\":" << s.device_router_dynamic_bytes
                << ",\"device_moe_batch_buffer_bytes\":"
                << s.device_moe_batch_buffer_bytes
+               << ",\"device_moe_raw_workspace_bytes\":"
+               << s.device_moe_raw_workspace_bytes
                << ",\"device_oracle_scratch_bytes\":"
                << s.device_oracle_scratch_bytes
                << ",\"cuda_total\":" << s.cuda_total

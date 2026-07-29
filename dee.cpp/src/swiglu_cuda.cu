@@ -4,6 +4,7 @@
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#include <cstdint>
 #include <cmath>
 #include <cstdio>
 
@@ -45,6 +46,55 @@ __global__ void combine_kernel(const float* ybuf, float* output, int experts, in
     float sum = 0.0f;
     for (int expert = 0; expert < experts; ++expert) sum += ybuf[static_cast<size_t>(expert) * hidden + value];
     output[value] = sum / static_cast<float>(experts);
+}
+
+__device__ int stable_position_for_rank(
+        const int64_t* expert_ids, int topk, int rank) {
+    for (int position = 0; position < topk; ++position) {
+        int stable_rank = 0;
+        const int64_t expert = expert_ids[position];
+        for (int other = 0; other < topk; ++other) {
+            const int64_t other_expert = expert_ids[other];
+            if (other_expert < expert ||
+                (other_expert == expert && other < position)) {
+                ++stable_rank;
+            }
+        }
+        if (stable_rank == rank) return position;
+    }
+    return -1;
+}
+
+__global__ void weighted_combine_fp16_kernel(
+        const float* raw_f32, const float* weights,
+        const int64_t* expert_ids, __half* output,
+        int tokens, int topk, int hidden) {
+    const int value = blockIdx.x * blockDim.x + threadIdx.x;
+    const int elements = tokens * hidden;
+    if (value >= elements) return;
+    const int token = value / hidden;
+    const int feature = value - token * hidden;
+    const size_t token_selection = static_cast<size_t>(token) * topk;
+    const int64_t* token_experts = expert_ids + token_selection;
+    __half accumulator = __float2half_rn(0.0f);
+    for (int rank = 0; rank < topk; ++rank) {
+        const int position = stable_position_for_rank(
+            token_experts, topk, rank);
+        if (position < 0) return;
+        const size_t selection = token_selection +
+            static_cast<size_t>(position);
+        const __half raw = __float2half_rn(
+            raw_f32[selection * hidden + feature]);
+        // Eager PyTorch materializes the mixed FP16-vector/FP32-scalar
+        // multiplication as FP16 before output.add_ performs a second FP16
+        // rounding. Keep both boundaries explicit; one fused float expression
+        // is observably different for adversarial values.
+        const __half weighted = __float2half_rn(
+            __half2float(raw) * weights[selection]);
+        accumulator = __float2half_rn(
+            __half2float(accumulator) + __half2float(weighted));
+    }
+    output[value] = accumulator;
 }
 
 int grid_for(int count) { return (count + kThreads - 1) / kThreads; }
@@ -334,6 +384,50 @@ bool combine_cuda(const float* d_ybuf, float* d_output, int experts, int hidden,
     if (profiler && profiler->enabled() && !profiler->cuda_end(ticket, static_cast<void*>(stream))) return false;
 #ifdef DEE_CUDA_VALIDATE
     return DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(stream), "cudaStreamSynchronize(combine validation)");
+#else
+    return true;
+#endif
+}
+
+bool weighted_combine_fp16_cuda(
+        const float* d_raw_f32, const float* d_weights_f32,
+        const int64_t* d_expert_ids_i64, void* d_output_f16,
+        int tokens, int topk, int hidden, cudaStream_t stream,
+        StageProfiler* profiler) {
+    if (!d_raw_f32 || !d_weights_f32 || !d_expert_ids_i64 ||
+        !d_output_f16 || tokens <= 0 || topk <= 0 ||
+        hidden <= 0) {
+        std::fprintf(
+            stderr,
+            "[cuda] invalid weighted combine arguments "
+            "(tokens=%d topk=%d hidden=%d)\n",
+            tokens, topk, hidden);
+        return false;
+    }
+    const size_t ticket = profiler && profiler->enabled()
+        ? profiler->cuda_begin(
+            GpuStage::Combine, static_cast<void*>(stream))
+        : static_cast<size_t>(-1);
+    weighted_combine_fp16_kernel<<<
+        grid_for(tokens * hidden), kThreads, 0, stream>>>(
+            d_raw_f32,
+            d_weights_f32,
+            d_expert_ids_i64,
+            static_cast<__half*>(d_output_f16),
+            tokens,
+            topk,
+            hidden);
+    if (profiler && profiler->enabled()) profiler->note_kernel_launch();
+    if (!DEE_CUDA_CHECK_LAUNCH(
+            "weighted_combine_fp16_kernel launch")) return false;
+    if (profiler && profiler->enabled() &&
+        !profiler->cuda_end(ticket, static_cast<void*>(stream))) {
+        return false;
+    }
+#ifdef DEE_CUDA_VALIDATE
+    return DEE_CUDA_CHECK_NAMED(
+        cudaStreamSynchronize(stream),
+        "cudaStreamSynchronize(weighted combine validation)");
 #else
     return true;
 #endif

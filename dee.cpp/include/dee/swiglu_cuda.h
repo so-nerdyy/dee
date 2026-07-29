@@ -54,5 +54,16 @@ bool router_logits_fp16_cuda(cublasHandle_t handle, const void* d_weights,
 bool combine_cuda(const float* d_ybuf, float* d_out, int K, int hidden,
                   cudaStream_t stream, StageProfiler* profiler = nullptr);
 
+// Exact eager-compatible weighted combine for routed expert rows. Raw FP32
+// down-projection outputs are rounded to FP16; each multiplication by an FP32
+// router scalar is rounded to FP16; then every in-place addition is separately
+// rounded to FP16. Expert positions are visited in stable ascending expert-ID
+// order. A null stream handle denotes CUDA's valid default stream.
+bool weighted_combine_fp16_cuda(
+    const float* d_raw_f32, const float* d_weights_f32,
+    const int64_t* d_expert_ids_i64, void* d_output_f16,
+    int tokens, int topk, int hidden, cudaStream_t stream,
+    StageProfiler* profiler = nullptr);
+
 } // namespace dee
 #endif

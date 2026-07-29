@@ -52,6 +52,7 @@ EXECUTION_MODES = (
     "parity",
     "profiler",
     "debug-full-logit",
+    "native-combined",
 )
 TOLERANCES = {
     "embedding_output": (0.0, 0.0),
@@ -340,6 +341,12 @@ def fresh_engine_path_proof() -> dict:
         "pybind_host_fallback_calls": 0,
         "python_combine_calls": 0,
         "raw_output_allocations": 0,
+        "native_combined_calls": 0,
+        "native_combined_fallback_calls": 0,
+        "native_combined_ids_d2h_total_bytes": 0,
+        "native_combined_raw_trace_allocations": 0,
+        "native_combined_stream_handoffs": 0,
+        "last_native_error_combined_attempt": "",
         "router_native_host_calls": 0,
         "router_torch_device_calls": 0,
         "router_hidden_d2h_total_bytes": 0,
@@ -618,6 +625,7 @@ class HybridExperts:
         self.engine = engine
         self.layer = layer
         self.context = context
+        self.engine_stream = None
         self.module.forward = self.forward
         self.module.clear_cache = reference.clear_cache
 
@@ -626,7 +634,6 @@ class HybridExperts:
             return self.module.reference(hidden_states, top_k_index, top_k_weights)
         import torch
 
-        output = torch.zeros_like(hidden_states)
         if self.context.cache_disabled and not self.engine.reset_runtime_cache():
             raise RuntimeError(f"failed to reset diagnostic cache at layer {self.layer}")
         if hasattr(self.engine, "set_external_token"):
@@ -642,6 +649,123 @@ class HybridExperts:
         #   (b) the device path returned false and the silent fallback took
         #       over (which is observable as host_path_fallback_calls > 0).
         proof = self.context.engine_path_proof
+        if self.context.execution_mode == "native-combined":
+            if not hasattr(self.engine, "moe_forward_combined_device"):
+                proof["native_combined_fallback_calls"] += 1
+                proof["last_native_error_combined_attempt"] = (
+                    "<native-combined binding unavailable>"
+                )
+                raise RuntimeError(
+                    "native-combined execution requested but the loaded "
+                    "pydee binary has no combined-device binding"
+                )
+            combined_supported = (
+                hidden_states.is_cuda
+                and hidden_states.dtype == torch.float16
+                and hidden_states.is_contiguous()
+                and top_k_index.is_cuda
+                and top_k_index.dtype == torch.int64
+                and top_k_index.is_contiguous()
+                and top_k_weights.is_cuda
+                and top_k_weights.dtype == torch.float32
+                and top_k_weights.is_contiguous()
+            )
+            if not combined_supported:
+                proof["native_combined_fallback_calls"] += 1
+                proof["last_native_error_combined_attempt"] = (
+                    "<combined path unsupported tensor contract>"
+                )
+                raise RuntimeError(
+                    "native-combined execution requires contiguous CUDA "
+                    "FP16 hidden, int64 expert IDs, and FP32 routing weights"
+                )
+            combined_output = torch.empty_like(hidden_states)
+            raw_trace = None
+            if self.context.collector is not None and self.layer in TRACE_LAYERS:
+                raw_trace = torch.empty(
+                    hidden_states.shape[0],
+                    top_k_index.shape[1],
+                    hidden_states.shape[1],
+                    dtype=torch.float32,
+                    device=hidden_states.device,
+                )
+                proof["native_combined_raw_trace_allocations"] += 1
+            combined_ok = False
+            if self.engine_stream is None:
+                stream_handle = int(self.engine.compute_stream_handle())
+                if stream_handle == 0:
+                    raise RuntimeError(
+                        "native-combined engine has no CUDA compute stream"
+                    )
+                self.engine_stream = torch.cuda.ExternalStream(
+                    stream_handle, device=hidden_states.device
+                )
+            combined_start = time.perf_counter()
+            with forensic_span(
+                self.context, "expert_native_combined", self.layer
+            ):
+                proof["pybind_device_calls"] += 1
+                combined_ok = self.engine.moe_forward_combined_device(
+                    self.layer,
+                    hidden_states.data_ptr(),
+                    hidden_states.shape[0],
+                    top_k_index.data_ptr(),
+                    top_k_index.shape[1],
+                    top_k_weights.data_ptr(),
+                    combined_output.data_ptr(),
+                    raw_trace.data_ptr() if raw_trace is not None else 0,
+                    torch.cuda.current_stream(
+                        hidden_states.device
+                    ).cuda_stream,
+                )
+            # The engine uses these PyTorch-owned allocations from its
+            # non-default compute stream. Recording that stream prevents
+            # the caching allocator from recycling storage before native
+            # work reaches the completion event handed back above.
+            for tensor in (
+                hidden_states,
+                top_k_index,
+                top_k_weights,
+                combined_output,
+                raw_trace,
+            ):
+                if tensor is not None:
+                    tensor.record_stream(self.engine_stream)
+            proof["expert_native_device_calls_total_ms"] += (
+                (time.perf_counter() - combined_start) * 1000.0
+            )
+            if combined_ok:
+                expert_ids_bytes = (
+                    int(top_k_index.numel())
+                    * int(top_k_index.element_size())
+                )
+                proof["native_combined_calls"] += 1
+                proof["native_combined_ids_d2h_total_bytes"] += (
+                    expert_ids_bytes
+                )
+                proof["expert_ids_d2h_total_bytes"] += expert_ids_bytes
+                proof["native_combined_stream_handoffs"] += 1
+                proof["device_path_calls"] += 1
+                if raw_trace is not None:
+                    self.context.collector.add(
+                        "selected_expert_outputs",
+                        f"layer={self.layer}",
+                        raw_trace.to(dtype=hidden_states.dtype),
+                    )
+                return combined_output
+            proof["native_combined_fallback_calls"] += 1
+            proof["last_native_error_combined_attempt"] = (
+                self.engine.last_error_message()
+                if hasattr(self.engine, "last_error_message")
+                else ""
+            ) or "<combined path returned false>"
+            raise RuntimeError(
+                "native-combined execution failed at "
+                f"layer {self.layer}: "
+                f"{proof['last_native_error_combined_attempt']}"
+            )
+
+        output = torch.zeros_like(hidden_states)
         expert_ids_bytes = int(top_k_index.numel()) * int(top_k_index.element_size())
         with forensic_span(self.context, "expert_ids_gpu_to_cpu", self.layer,
                            {"direction": "d2h", "component": "expert_ids_only",
@@ -1340,11 +1464,13 @@ def engine_stats(runtime):
         "duplicate_requests", "h2d_bytes", "h2d_copies", "peak_vram", "current_vram",
         "resident_experts", "host_pinned_expert_staging_bytes",
         "host_pageable_expert_staging_bytes", "host_router_weight_bytes",
-        "host_hidden_buffer_bytes", "host_prefetch_ring_bytes",
+        "host_hidden_buffer_bytes", "host_moe_dispatch_bytes",
+        "host_prefetch_ring_bytes",
         "host_prefetch_ring_slots", "peak_transient_host_bytes",
         "device_expert_cache_reserved_bytes", "device_prefetch_staging_bytes",
         "device_fixed_work_buffer_bytes", "device_router_weight_bytes",
         "device_router_dynamic_bytes", "device_moe_batch_buffer_bytes",
+        "device_moe_raw_workspace_bytes",
         "device_oracle_scratch_bytes",
     )
     for layer, engine in enumerate(runtime["engines"]):
@@ -1393,7 +1519,8 @@ def parse_args():
         help=(
             "production removes evidence-only host copies; parity enables trace "
             "comparison; profiler enables measurement hooks; debug-full-logit "
-            "also retains full vocabulary logits on host"
+            "also retains full vocabulary logits on host; native-combined "
+            "uses the exact M5C C++ weighted-combine and stream handoff"
         ),
     )
     parser.add_argument("--reference-parity", action="store_true")

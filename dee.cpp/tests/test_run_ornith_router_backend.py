@@ -75,6 +75,18 @@ def test_native_host_remains_the_default_backend() -> None:
     assert proof["pybind_device_calls"] == 0
     assert proof["python_combine_calls"] == 0
     assert proof["raw_output_allocations"] == 0
+    assert proof["native_combined_calls"] == 0
+    assert proof["native_combined_stream_handoffs"] == 0
+
+
+def test_native_combined_mode_attempts_native_api_before_python_d2h() -> None:
+    source = inspect.getsource(MODULE.HybridExperts.forward)
+    combined = source.index("self.engine.moe_forward_combined_device(")
+    python_d2h = source.index(
+        'with forensic_span(self.context, "expert_ids_gpu_to_cpu"'
+    )
+    assert combined < python_d2h
+    assert "native_combined_stream_handoffs" in source
 
 
 def test_unknown_execution_mode_fails_before_runtime_access() -> None:
@@ -107,7 +119,7 @@ def test_stable_fp16_combine_matches_legacy_with_duplicate_ids() -> None:
         dtype=torch.float16,
     )
     weights = torch.tensor(
-        [[0.125, 0.375, 0.25, 0.25]], dtype=torch.float16
+        [[0.125, 0.375, 0.25, 0.25]], dtype=torch.float32
     )
     # Duplicate expert 3 verifies stable order among equal IDs: positions
     # [1, 3, 0, 2] for expert IDs [1, 2, 3, 3].
@@ -127,3 +139,26 @@ def test_stable_fp16_combine_matches_legacy_with_duplicate_ids() -> None:
         legacy_accumulator=False,
     )
     assert torch.equal(production, legacy)
+
+
+def test_eager_mixed_dtype_combine_rounds_product_before_add() -> None:
+    raw = torch.tensor([[[-3.041015625], [3.09765625]]], dtype=torch.float16)
+    weights = torch.tensor(
+        [[1.0, 0.891144335269928]], dtype=torch.float32
+    )
+    ids = MODULE.np.asarray([[0, 1]], dtype=MODULE.np.int32)
+    actual = MODULE.stable_combine_selected_experts(
+        torch.zeros((1, 1), dtype=torch.float16),
+        raw,
+        weights,
+        ids,
+        legacy_accumulator=False,
+    )
+    assert actual.item() == -0.28125
+    assert actual.view(torch.int16).item() == -19328
+
+
+def test_native_combined_mode_is_fail_closed() -> None:
+    source = inspect.getsource(MODULE.HybridExperts.forward)
+    assert "native-combined binding unavailable" in source
+    assert "native-combined execution failed" in source

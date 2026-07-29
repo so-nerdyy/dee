@@ -621,7 +621,7 @@ bool Engine::moe_forward_batch(int layer, const float* h_in, int tokens,
 
 // Milestone 3 fix (defect #6): device-resident MoE forward path.
 // Accepts FP16 device hidden (d_h_in) + host expert IDs (h_expert_ids,
-// small, host-side only for grouping) and writes FP16 per-(token,position)
+// small, host-side only for grouping) and writes FP32 per-(token,position)
 // expert outputs to d_experts_out (both device-resident).  Eliminates the
 // measured Python d2h->call->h2d round-trips (router_hidden_gpu_to_cpu,
 // expert_inputs_gpu_to_cpu, expert_outputs_cpu_to_gpu) by keeping the
@@ -632,6 +632,14 @@ bool Engine::moe_forward_batch(int layer, const float* h_in, int tokens,
 bool Engine::moe_forward_batch_device(int layer, const void* d_h_in, int tokens,
                                        const int* h_expert_ids, int topk,
                                        void* d_experts_out) {
+    return moe_forward_batch_device_impl(
+        layer, d_h_in, tokens, h_expert_ids, topk, d_experts_out, true);
+}
+
+bool Engine::moe_forward_batch_device_impl(
+        int layer, const void* d_h_in, int tokens,
+        const int* h_expert_ids, int topk, void* d_experts_out,
+        bool synchronize_output) {
     if (!d_h_in || !h_expert_ids || !d_experts_out || tokens <= 0 || topk <= 0 ||
         topk > cfg_.topk) return false;
 
@@ -852,28 +860,255 @@ bool Engine::moe_forward_batch_device(int layer, const void* d_h_in, int tokens,
     // No D2H, no host output scatter.  Output is already on-device.
     // Synchronize the compute stream so the Python caller can safely read
     // d_experts_out without needing access to the engine's internal stream.
-    const auto output_sync_begin = profiler_.enabled()
-        ? StageProfiler::now() : StageProfiler::TimePoint{};
-    if (!DEE_CUDA_CHECK_NAMED(
-            cudaStreamSynchronize(compute_stream_),
-            "cudaStreamSynchronize(device MoE batch)")) return false;
-    if (profiler_.enabled()) {
-        const auto output_sync_end = StageProfiler::now();
-        profiler_.add_cpu_ms(
-            CpuStage::Synchronization,
-            std::chrono::duration<double, std::milli>(
-                output_sync_end - output_sync_begin).count());
-        profiler_.note_host_synchronization();
-        profiler_.note_host_wait(
-            HostWaitReason::LayerOutput, output_sync_begin, output_sync_end,
-            current_token_, layer);
+    if (synchronize_output) {
+        const auto output_sync_begin = profiler_.enabled()
+            ? StageProfiler::now() : StageProfiler::TimePoint{};
+        if (!DEE_CUDA_CHECK_NAMED(
+                cudaStreamSynchronize(compute_stream_),
+                "cudaStreamSynchronize(device MoE batch)")) return false;
+        if (profiler_.enabled()) {
+            const auto output_sync_end = StageProfiler::now();
+            profiler_.add_cpu_ms(
+                CpuStage::Synchronization,
+                std::chrono::duration<double, std::milli>(
+                    output_sync_end - output_sync_begin).count());
+            profiler_.note_host_synchronization();
+            profiler_.note_host_wait(
+                HostWaitReason::LayerOutput, output_sync_begin,
+                output_sync_end, current_token_, layer);
+        }
     }
     release_transient_f32_sources();
     stats_.peak_vram = std::max(stats_.peak_vram, cache_.used_bytes());
-    if (profiler_.enabled()) profiler_.add_layer_latency(external_layer_begin);
+    if (profiler_.enabled() && synchronize_output) {
+        profiler_.add_layer_latency(external_layer_begin);
+    }
     return true;
 #else
     (void)layer;
+    (void)synchronize_output;
+    return false;
+#endif
+}
+
+#ifdef DEE_CUDA
+bool Engine::ensure_combined_dispatch_capacity(size_t selections) {
+    if (!combined_output_ready_event_) {
+        if (!DEE_CUDA_CHECK_NAMED(
+                DEE_TA_EVENT_CREATE_FLAGS(
+                    &combined_output_ready_event_,
+                    cudaEventDisableTiming,
+                    "combined_output_ready_event_"),
+                "cudaEventCreate(combined output ready)")) {
+            combined_output_ready_event_ = nullptr;
+            return false;
+        }
+    }
+    if (h_moe_expert_ids_capacity_ >= selections) return true;
+    if (h_moe_expert_ids_i64_) {
+        if (!DEE_CUDA_CHECK_NAMED(
+                DEE_TA_FREE_HOST(
+                    h_moe_expert_ids_i64_, "h_moe_expert_ids_i64_"),
+                "cudaFreeHost(combined expert IDs)")) {
+            return false;
+        }
+        h_moe_expert_ids_i64_ = nullptr;
+        h_moe_expert_ids_capacity_ = 0;
+    }
+    void* allocation = nullptr;
+    if (!DEE_CUDA_CHECK_NAMED(
+            DEE_TA_HOST_ALLOC(
+                &allocation,
+                selections * sizeof(int64_t),
+                cudaHostAllocDefault,
+                "h_moe_expert_ids_i64_"),
+            "cudaHostAlloc(combined expert IDs)")) {
+        return false;
+    }
+    h_moe_expert_ids_i64_ = static_cast<int64_t*>(allocation);
+    h_moe_expert_ids_capacity_ = selections;
+    return true;
+}
+
+bool Engine::ensure_combined_raw_capacity(size_t selections) {
+    if (moe_raw_capacity_selections_ >= selections) return true;
+    if (d_moe_raw_f32_) {
+        if (!DEE_CUDA_CHECK_NAMED(
+                DEE_TA_FREE(d_moe_raw_f32_, "d_moe_raw_f32_"),
+                "cudaFree(combined raw workspace)")) {
+            return false;
+        }
+        d_moe_raw_f32_ = nullptr;
+        moe_raw_capacity_selections_ = 0;
+    }
+    if (!DEE_CUDA_CHECK_NAMED(
+            DEE_TA_MALLOC(
+                reinterpret_cast<void**>(&d_moe_raw_f32_),
+                selections * static_cast<size_t>(hidden_) * sizeof(float),
+                "d_moe_raw_f32_"),
+            "cudaMalloc(combined raw workspace)")) {
+        return false;
+    }
+    moe_raw_capacity_selections_ = selections;
+    return true;
+}
+#endif
+
+bool Engine::moe_forward_combined_device(
+        int layer, const void* d_h_in, int tokens,
+        const int64_t* d_expert_ids, int topk,
+        const float* d_weights_f32, void* d_output_f16,
+        void* d_raw_trace_out, void* external_stream) {
+    clear_last_error();
+    if (!d_h_in || !d_expert_ids || !d_weights_f32 || !d_output_f16 ||
+        tokens <= 0 || topk <= 0 || topk > cfg_.topk) {
+        set_last_error("invalid moe_forward_combined_device arguments");
+        return false;
+    }
+#ifdef DEE_CUDA
+    if (!cfg_.use_cuda || cfg_.cache_dtype != DeviceCacheDType::Fp16) {
+        set_last_error("combined device path requires FP16 CUDA cache");
+        return false;
+    }
+    if (!DEE_CUDA_CHECK_NAMED(
+            cudaSetDevice(cfg_.device_id),
+            "cudaSetDevice(combined device MoE)")) {
+        set_last_error("cudaSetDevice failed for combined device MoE");
+        return false;
+    }
+    // A null CUDA stream handle is the valid legacy/default stream. PyTorch
+    // may expose it as integer 0, so it must not be rejected as a null pointer.
+    auto stream = static_cast<cudaStream_t>(external_stream);
+    const size_t selections = static_cast<size_t>(tokens) * topk;
+    const size_t id_bytes = selections * sizeof(int64_t);
+    const auto combined_layer_begin = profiler_.enabled()
+        ? StageProfiler::now() : StageProfiler::TimePoint{};
+    if (!ensure_combined_dispatch_capacity(selections)) {
+        set_last_error("failed to allocate combined dispatch workspace");
+        return false;
+    }
+
+    if (profiler_.enabled()) {
+        profiler_.set_cuda_context(
+            current_token_, layer, -1, id_bytes);
+    }
+    const size_t ids_ticket = profiler_.enabled()
+        ? profiler_.cuda_begin(
+            GpuStage::D2H, static_cast<void*>(stream))
+        : static_cast<size_t>(-1);
+    if (!DEE_CUDA_CHECK_NAMED(
+            cudaMemcpyAsync(
+                h_moe_expert_ids_i64_,
+                d_expert_ids,
+                id_bytes,
+                cudaMemcpyDeviceToHost,
+                stream),
+            "cudaMemcpyAsync(combined expert IDs D2H)")) {
+        set_last_error("combined expert ID D2H submission failed");
+        return false;
+    }
+    if (profiler_.enabled() &&
+        !profiler_.cuda_end(ids_ticket, static_cast<void*>(stream))) {
+        set_last_error("combined expert ID timing event failed");
+        return false;
+    }
+    const auto ids_wait_begin = profiler_.enabled()
+        ? StageProfiler::now() : StageProfiler::TimePoint{};
+    if (!DEE_CUDA_CHECK_NAMED(
+            cudaStreamSynchronize(stream),
+            "cudaStreamSynchronize(combined expert IDs)")) {
+        set_last_error("combined expert ID synchronization failed");
+        return false;
+    }
+    if (profiler_.enabled()) {
+        const auto ids_wait_end = StageProfiler::now();
+        profiler_.add_cpu_ms(
+            CpuStage::Synchronization,
+            std::chrono::duration<double, std::milli>(
+                ids_wait_end - ids_wait_begin).count());
+        profiler_.note_host_synchronization();
+        profiler_.note_host_wait(
+            HostWaitReason::ComputeBatch,
+            ids_wait_begin,
+            ids_wait_end,
+            current_token_,
+            layer);
+    }
+
+    std::vector<int> host_ids(selections);
+    for (size_t index = 0; index < selections; ++index) {
+        const int64_t expert = h_moe_expert_ids_i64_[index];
+        if (expert < 0 || expert >= cfg_.num_experts) {
+            set_last_error(
+                "combined device expert ID outside configured range");
+            return false;
+        }
+        host_ids[index] = static_cast<int>(expert);
+    }
+    // The external-stream synchronization above also proves the previous use
+    // of this persistent raw workspace is complete before a capacity growth.
+    if (!ensure_combined_raw_capacity(selections)) {
+        set_last_error("failed to allocate combined raw workspace");
+        return false;
+    }
+    if (!moe_forward_batch_device_impl(
+            layer,
+            d_h_in,
+            tokens,
+            host_ids.data(),
+            topk,
+            d_moe_raw_f32_,
+            false)) {
+        if (last_error_message_.empty()) {
+            set_last_error("raw expert stage failed inside combined path");
+        }
+        return false;
+    }
+    if (!weighted_combine_fp16_cuda(
+            d_moe_raw_f32_,
+            d_weights_f32,
+            d_expert_ids,
+            d_output_f16,
+            tokens,
+            topk,
+            hidden_,
+            compute_stream_,
+            profiler_.enabled() ? &profiler_ : nullptr)) {
+        set_last_error("exact FP16 weighted combine launch failed");
+        return false;
+    }
+    if (d_raw_trace_out &&
+        !DEE_CUDA_CHECK_NAMED(
+            cudaMemcpyAsync(
+                d_raw_trace_out,
+                d_moe_raw_f32_,
+                selections * static_cast<size_t>(hidden_) * sizeof(float),
+                cudaMemcpyDeviceToDevice,
+                compute_stream_),
+            "cudaMemcpyAsync(combined raw trace)")) {
+        set_last_error("combined raw trace copy failed");
+        return false;
+    }
+    if (!DEE_CUDA_CHECK_NAMED(
+            cudaEventRecord(
+                combined_output_ready_event_, compute_stream_),
+            "cudaEventRecord(combined output ready)") ||
+        !DEE_CUDA_CHECK_NAMED(
+            cudaStreamWaitEvent(
+                stream, combined_output_ready_event_, 0),
+            "cudaStreamWaitEvent(combined output ready)")) {
+        set_last_error("combined output stream handoff failed");
+        return false;
+    }
+    if (profiler_.enabled()) {
+        profiler_.note_stream_wait();
+        profiler_.add_layer_latency(combined_layer_begin);
+    }
+    return true;
+#else
+    (void)layer;
+    (void)d_raw_trace_out;
+    (void)external_stream;
     return false;
 #endif
 }
@@ -921,6 +1156,8 @@ EngineStats Engine::runtime_stats() const {
     result.device_prefetch_staging_bytes = prefetcher_.device_staging_bytes();
 #ifdef DEE_CUDA
     if (cfg_.use_cuda) {
+        result.host_moe_dispatch_bytes = h_moe_expert_ids_i64_
+            ? h_moe_expert_ids_capacity_ * sizeof(int64_t) : 0;
         if (d_h_in_) result.device_fixed_work_buffer_bytes +=
             static_cast<size_t>(hidden_) * sizeof(float);
         if (d_h_out_) result.device_fixed_work_buffer_bytes +=
@@ -964,11 +1201,24 @@ EngineStats Engine::runtime_stats() const {
             if (d_moe_batch_output_) result.device_moe_batch_buffer_bytes +=
                 input_elements * sizeof(float);
         }
+        if (d_moe_raw_f32_) {
+            result.device_moe_raw_workspace_bytes =
+                moe_raw_capacity_selections_ *
+                static_cast<size_t>(hidden_) * sizeof(float);
+        }
         if (d_oracle_scratch_) result.device_oracle_scratch_bytes =
             static_cast<size_t>(256 + 256) * sizeof(float);
     }
 #endif
     return result;
+}
+
+uintptr_t Engine::compute_stream_handle() const {
+#ifdef DEE_CUDA
+    return reinterpret_cast<uintptr_t>(compute_stream_);
+#else
+    return 0;
+#endif
 }
 
 bool Engine::reset_runtime_cache() {
@@ -2127,6 +2377,11 @@ void Engine::cuda_cleanup() {
     if (d_moe_batch_activation_half_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_batch_activation_half_, "d_moe_batch_activation_half_"), "cudaFree(MoE batch activation)"); d_moe_batch_activation_half_ = nullptr; }
     if (d_moe_batch_output_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_batch_output_, "d_moe_batch_output_"), "cudaFree(MoE batch output)"); d_moe_batch_output_ = nullptr; }
     moe_batch_capacity_tokens_ = 0;
+    if (d_moe_raw_f32_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_moe_raw_f32_, "d_moe_raw_f32_"), "cudaFree(combined raw workspace)"); d_moe_raw_f32_ = nullptr; }
+    moe_raw_capacity_selections_ = 0;
+    if (h_moe_expert_ids_i64_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE_HOST(h_moe_expert_ids_i64_, "h_moe_expert_ids_i64_"), "cudaFreeHost(combined expert IDs)"); h_moe_expert_ids_i64_ = nullptr; }
+    h_moe_expert_ids_capacity_ = 0;
+    if (combined_output_ready_event_) { DEE_CUDA_CHECK_NAMED(DEE_TA_EVENT_DESTROY(combined_output_ready_event_, "combined_output_ready_event_"), "cudaEventDestroy(combined output ready)"); combined_output_ready_event_ = nullptr; }
     if (d_oracle_scratch_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_oracle_scratch_, "d_oracle_scratch_"), "cudaFree(oracle_scratch)"); d_oracle_scratch_ = nullptr; }
     oracle_.free_gpu();
     if (cublas_handle_) { DEE_CUBLAS_CHECK_NAMED(DEE_TA_CUBLAS_DESTROY(cublas_handle_, "cublas_handle_"), "cublasDestroy"); cublas_handle_ = nullptr; }

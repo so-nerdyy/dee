@@ -135,6 +135,7 @@ struct EngineStats {
     size_t host_pageable_expert_staging_bytes = 0;
     size_t host_router_weight_bytes = 0;
     size_t host_hidden_buffer_bytes = 0;
+    size_t host_moe_dispatch_bytes = 0;
     size_t host_prefetch_ring_bytes = 0;
     size_t host_prefetch_ring_slots = 0;
     size_t peak_transient_host_bytes = 0;
@@ -144,6 +145,7 @@ struct EngineStats {
     size_t device_router_weight_bytes = 0;
     size_t device_router_dynamic_bytes = 0;
     size_t device_moe_batch_buffer_bytes = 0;
+    size_t device_moe_raw_workspace_bytes = 0;
     size_t device_oracle_scratch_bytes = 0;
     bool   hidden_finite = true;   // output hidden all-finite at the end
     std::vector<float> final_hidden; // final normalized hidden for validation
@@ -221,6 +223,18 @@ public:
                                    const int* h_expert_ids, int topk,
                                    void* d_experts_out);
 
+    // M5C: fused device API. Expert IDs and weights remain PyTorch device
+    // tensors; the engine performs the small ID dispatch D2H internally,
+    // computes raw expert rows into persistent workspace, applies the exact
+    // stable FP16 weighted combine, and hands completion back to the caller's
+    // CUDA stream. d_raw_trace_out may be null outside parity/profiler runs;
+    // a null external_stream denotes CUDA's valid default stream.
+    bool moe_forward_combined_device(
+        int layer, const void* d_h_in, int tokens,
+        const int64_t* d_expert_ids, int topk, const float* d_weights_f32,
+        void* d_output_f16, void* d_raw_trace_out,
+        void* external_stream);
+
     // Genuine checkpoint router: logits = W_router * hidden using the active
     // runtime dtype (FP16 CUDA for Ornith), then FP32 softmax, ordered top-K,
     // and top-K probability renormalization.
@@ -232,6 +246,7 @@ public:
 
     int hidden_dim() const { return hidden_; }
     int inter_dim()  const { return inter_; }
+    uintptr_t compute_stream_handle() const;
 
     ~Engine();
 
@@ -288,13 +303,24 @@ private:
     void* d_moe_batch_activation_half_ = nullptr; // [moe_batch_capacity_tokens, inter]
     float* d_moe_batch_output_ = nullptr;      // [moe_batch_capacity_tokens, hidden]
     size_t moe_batch_capacity_tokens_ = 0;
+    float* d_moe_raw_f32_ = nullptr;           // [tokens * topk, hidden]
+    size_t moe_raw_capacity_selections_ = 0;
+    int64_t* h_moe_expert_ids_i64_ = nullptr;  // pinned [tokens * topk]
+    size_t h_moe_expert_ids_capacity_ = 0;
+    cudaEvent_t combined_output_ready_event_ = nullptr;
     cublasHandle_t cublas_handle_ = nullptr;
     float* d_oracle_scratch_ = nullptr; // GPU Oracle scratch (H_ + E_ floats)
     bool gpu_oracle_ready_ = false;
     size_t cuda_total_ = 0, cuda_free_ = 0;  // from cudaMemGetInfo
     void cuda_cleanup();
     bool forward_layer_cuda(int layer, const float* h_in, float* h_out);
+    bool ensure_combined_dispatch_capacity(size_t selections);
+    bool ensure_combined_raw_capacity(size_t selections);
 #endif
+    bool moe_forward_batch_device_impl(
+        int layer, const void* d_h_in, int tokens,
+        const int* h_expert_ids, int topk, void* d_experts_out,
+        bool synchronize_output);
 
     // host staging: resolved shard (layer, expert) -> F32 blob
     // [gate|up|down].  Synthetic single-layer shards intentionally map every
