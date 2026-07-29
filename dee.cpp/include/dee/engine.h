@@ -146,6 +146,12 @@ struct EngineStats {
     size_t device_router_dynamic_bytes = 0;
     size_t device_moe_batch_buffer_bytes = 0;
     size_t device_moe_raw_workspace_bytes = 0;
+    size_t d2d_gather_copies = 0;
+    size_t d2d_gather_bytes = 0;
+    size_t d2d_scatter_copies = 0;
+    size_t d2d_scatter_bytes = 0;
+    size_t direct_row_gather_bypasses = 0;
+    size_t direct_row_scatter_bypasses = 0;
     size_t device_oracle_scratch_bytes = 0;
     bool   hidden_finite = true;   // output hidden all-finite at the end
     std::vector<float> final_hidden; // final normalized hidden for validation
@@ -230,6 +236,15 @@ public:
     // CUDA stream. d_raw_trace_out may be null outside parity/profiler runs;
     // a null external_stream denotes CUDA's valid default stream.
     bool moe_forward_combined_device(
+        int layer, const void* d_h_in, int tokens,
+        const int64_t* d_expert_ids, int topk, const float* d_weights_f32,
+        void* d_output_f16, void* d_raw_trace_out,
+        void* external_stream);
+
+    // M5D candidate: identical combined contract, but one-row expert groups
+    // consume their source hidden row and write their raw destination slot
+    // directly. Multi-row/duplicate groups retain the exact indexed copy path.
+    bool moe_forward_combined_direct_device(
         int layer, const void* d_h_in, int tokens,
         const int64_t* d_expert_ids, int topk, const float* d_weights_f32,
         void* d_output_f16, void* d_raw_trace_out,
@@ -320,7 +335,12 @@ private:
     bool moe_forward_batch_device_impl(
         int layer, const void* d_h_in, int tokens,
         const int* h_expert_ids, int topk, void* d_experts_out,
-        bool synchronize_output);
+        bool synchronize_output, bool direct_single_row_io);
+    bool moe_forward_combined_device_impl(
+        int layer, const void* d_h_in, int tokens,
+        const int64_t* d_expert_ids, int topk, const float* d_weights_f32,
+        void* d_output_f16, void* d_raw_trace_out,
+        void* external_stream, bool direct_single_row_io);
 
     // host staging: resolved shard (layer, expert) -> F32 blob
     // [gate|up|down].  Synthetic single-layer shards intentionally map every

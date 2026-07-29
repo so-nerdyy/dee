@@ -53,6 +53,7 @@ EXECUTION_MODES = (
     "profiler",
     "debug-full-logit",
     "native-combined",
+    "native-combined-direct",
 )
 TOLERANCES = {
     "embedding_output": (0.0, 0.0),
@@ -347,6 +348,8 @@ def fresh_engine_path_proof() -> dict:
         "native_combined_raw_trace_allocations": 0,
         "native_combined_stream_handoffs": 0,
         "last_native_error_combined_attempt": "",
+        "native_direct_calls": 0,
+        "native_direct_fallback_calls": 0,
         "router_native_host_calls": 0,
         "router_torch_device_calls": 0,
         "router_hidden_d2h_total_bytes": 0,
@@ -649,16 +652,30 @@ class HybridExperts:
         #   (b) the device path returned false and the silent fallback took
         #       over (which is observable as host_path_fallback_calls > 0).
         proof = self.context.engine_path_proof
-        if self.context.execution_mode == "native-combined":
-            if not hasattr(self.engine, "moe_forward_combined_device"):
+        if self.context.execution_mode in (
+            "native-combined",
+            "native-combined-direct",
+        ):
+            direct_mode = (
+                self.context.execution_mode == "native-combined-direct"
+            )
+            method_name = (
+                "moe_forward_combined_direct_device"
+                if direct_mode
+                else "moe_forward_combined_device"
+            )
+            if not hasattr(self.engine, method_name):
                 proof["native_combined_fallback_calls"] += 1
+                if direct_mode:
+                    proof["native_direct_fallback_calls"] += 1
                 proof["last_native_error_combined_attempt"] = (
-                    "<native-combined binding unavailable>"
+                    f"<{method_name} binding unavailable>"
                 )
                 raise RuntimeError(
-                    "native-combined execution requested but the loaded "
-                    "pydee binary has no combined-device binding"
+                    f"{self.context.execution_mode} execution requested but "
+                    f"the loaded pydee binary has no {method_name} binding"
                 )
+            combined_method = getattr(self.engine, method_name)
             combined_supported = (
                 hidden_states.is_cuda
                 and hidden_states.dtype == torch.float16
@@ -672,6 +689,8 @@ class HybridExperts:
             )
             if not combined_supported:
                 proof["native_combined_fallback_calls"] += 1
+                if direct_mode:
+                    proof["native_direct_fallback_calls"] += 1
                 proof["last_native_error_combined_attempt"] = (
                     "<combined path unsupported tensor contract>"
                 )
@@ -705,7 +724,7 @@ class HybridExperts:
                 self.context, "expert_native_combined", self.layer
             ):
                 proof["pybind_device_calls"] += 1
-                combined_ok = self.engine.moe_forward_combined_device(
+                combined_ok = combined_method(
                     self.layer,
                     hidden_states.data_ptr(),
                     hidden_states.shape[0],
@@ -740,6 +759,8 @@ class HybridExperts:
                     * int(top_k_index.element_size())
                 )
                 proof["native_combined_calls"] += 1
+                if direct_mode:
+                    proof["native_direct_calls"] += 1
                 proof["native_combined_ids_d2h_total_bytes"] += (
                     expert_ids_bytes
                 )
@@ -754,6 +775,8 @@ class HybridExperts:
                     )
                 return combined_output
             proof["native_combined_fallback_calls"] += 1
+            if direct_mode:
+                proof["native_direct_fallback_calls"] += 1
             proof["last_native_error_combined_attempt"] = (
                 self.engine.last_error_message()
                 if hasattr(self.engine, "last_error_message")
@@ -1471,6 +1494,9 @@ def engine_stats(runtime):
         "device_fixed_work_buffer_bytes", "device_router_weight_bytes",
         "device_router_dynamic_bytes", "device_moe_batch_buffer_bytes",
         "device_moe_raw_workspace_bytes",
+        "d2d_gather_copies", "d2d_gather_bytes",
+        "d2d_scatter_copies", "d2d_scatter_bytes",
+        "direct_row_gather_bypasses", "direct_row_scatter_bypasses",
         "device_oracle_scratch_bytes",
     )
     for layer, engine in enumerate(runtime["engines"]):
@@ -1520,7 +1546,8 @@ def parse_args():
             "production removes evidence-only host copies; parity enables trace "
             "comparison; profiler enables measurement hooks; debug-full-logit "
             "also retains full vocabulary logits on host; native-combined "
-            "uses the exact M5C C++ weighted-combine and stream handoff"
+            "uses the exact M5C C++ weighted-combine and stream handoff; "
+            "native-combined-direct additionally bypasses one-row D2D copies"
         ),
     )
     parser.add_argument("--reference-parity", action="store_true")

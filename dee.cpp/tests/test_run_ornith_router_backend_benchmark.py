@@ -39,6 +39,18 @@ assert M5C_SPEC and M5C_SPEC.loader
 M5C_MODULE = importlib.util.module_from_spec(M5C_SPEC)
 M5C_SPEC.loader.exec_module(M5C_MODULE)
 
+M5D_SCRIPT = (
+    Path(__file__).resolve().parents[1]
+    / "scripts"
+    / "run_ornith_m5d_direct_row_benchmark.py"
+)
+M5D_SPEC = importlib.util.spec_from_file_location(
+    "m5d_direct_row_benchmark", M5D_SCRIPT
+)
+assert M5D_SPEC and M5D_SPEC.loader
+M5D_MODULE = importlib.util.module_from_spec(M5D_SPEC)
+M5D_SPEC.loader.exec_module(M5D_MODULE)
+
 
 def row(rate: float, device_calls: int = 160) -> dict:
     return {
@@ -220,3 +232,25 @@ def test_m5c_workspace_proof_is_exact_and_fail_closed() -> None:
     assert not M5C_MODULE.analyze_workspace(
         stats, layers=2, topk=8, hidden=4
     )["passed"]
+
+
+def test_m5d_balanced_order_and_paired_analysis() -> None:
+    order = M5D_MODULE.balanced_order(3)
+    assert order == [
+        "native-combined",
+        "native-combined-direct",
+        "native-combined-direct",
+        "native-combined",
+        "native-combined",
+        "native-combined-direct",
+    ]
+    sequence = [
+        {"execution_mode": order[0], "tokens_per_second": 8.0},
+        {"execution_mode": order[1], "tokens_per_second": 8.1},
+        {"execution_mode": order[2], "tokens_per_second": 8.2},
+        {"execution_mode": order[3], "tokens_per_second": 8.0},
+    ]
+    result = M5D_MODULE.paired_trial_analysis(sequence)
+    assert result["pair_count"] == 2
+    assert result["candidate_wins"] == 2
+    assert result["minimum_speedup_ratio"] == 8.1 / 8.0

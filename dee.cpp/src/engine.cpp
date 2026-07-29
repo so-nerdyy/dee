@@ -633,13 +633,14 @@ bool Engine::moe_forward_batch_device(int layer, const void* d_h_in, int tokens,
                                        const int* h_expert_ids, int topk,
                                        void* d_experts_out) {
     return moe_forward_batch_device_impl(
-        layer, d_h_in, tokens, h_expert_ids, topk, d_experts_out, true);
+        layer, d_h_in, tokens, h_expert_ids, topk, d_experts_out,
+        true, false);
 }
 
 bool Engine::moe_forward_batch_device_impl(
         int layer, const void* d_h_in, int tokens,
         const int* h_expert_ids, int topk, void* d_experts_out,
-        bool synchronize_output) {
+        bool synchronize_output, bool direct_single_row_io) {
     if (!d_h_in || !h_expert_ids || !d_experts_out || tokens <= 0 || topk <= 0 ||
         topk > cfg_.topk) return false;
 
@@ -766,34 +767,61 @@ bool Engine::moe_forward_batch_device_impl(
             const int expert = active_experts[i];
             const auto& positions = groups[static_cast<size_t>(expert)];
             const size_t group_tokens = positions.size();
+            const bool direct_single_row =
+                direct_single_row_io && group_tokens == 1;
+            const size_t direct_position =
+                direct_single_row ? positions[0] : 0;
+            const size_t direct_token =
+                direct_single_row
+                ? direct_position / static_cast<size_t>(topk)
+                : 0;
+            const void* expert_input_half = d_moe_batch_input_half_;
 
             // Device-to-device gather: pull each token's hidden row from
             // d_h_in_half into d_moe_batch_input_half_.  No host staging.
-            if (profiler_.enabled()) {
-                profiler_.set_cuda_context(
-                    current_token_, layer, expert, group_tokens * hidden_half);
-            }
-            const size_t gather_ticket = profiler_.enabled()
-                ? profiler_.cuda_begin(
-                    GpuStage::D2DGather, static_cast<void*>(compute_stream_))
-                : static_cast<size_t>(-1);
-            for (size_t row = 0; row < group_tokens; ++row) {
-                const size_t token = positions[row] / static_cast<size_t>(topk);
-                if (!DEE_CUDA_CHECK_NAMED(
-                        cudaMemcpyAsync(
-                            static_cast<uint16_t*>(d_moe_batch_input_half_) +
-                                row * static_cast<size_t>(hidden_),
-                            d_h_in_half + token * static_cast<size_t>(hidden_),
-                             hidden_half, cudaMemcpyDeviceToDevice, compute_stream_),
-                         "cudaMemcpyAsync(MoE batch D2D gather)")) return false;
+            if (direct_single_row) {
+                expert_input_half =
+                    d_h_in_half + direct_token * static_cast<size_t>(hidden_);
+                ++stats_.direct_row_gather_bypasses;
+            } else {
                 if (profiler_.enabled()) {
-                    profiler_.note_d2d_gather_copy(hidden_half);
+                    profiler_.set_cuda_context(
+                        current_token_, layer, expert,
+                        group_tokens * hidden_half);
                 }
-            }
-            if (profiler_.enabled() &&
-                !profiler_.cuda_end(
-                    gather_ticket, static_cast<void*>(compute_stream_))) {
-                return false;
+                const size_t gather_ticket = profiler_.enabled()
+                    ? profiler_.cuda_begin(
+                        GpuStage::D2DGather,
+                        static_cast<void*>(compute_stream_))
+                    : static_cast<size_t>(-1);
+                for (size_t row = 0; row < group_tokens; ++row) {
+                    const size_t token =
+                        positions[row] / static_cast<size_t>(topk);
+                    if (!DEE_CUDA_CHECK_NAMED(
+                            cudaMemcpyAsync(
+                                static_cast<uint16_t*>(
+                                    d_moe_batch_input_half_) +
+                                    row * static_cast<size_t>(hidden_),
+                                d_h_in_half +
+                                    token * static_cast<size_t>(hidden_),
+                                hidden_half,
+                                cudaMemcpyDeviceToDevice,
+                                compute_stream_),
+                            "cudaMemcpyAsync(MoE batch D2D gather)")) {
+                        return false;
+                    }
+                    ++stats_.d2d_gather_copies;
+                    stats_.d2d_gather_bytes += hidden_half;
+                    if (profiler_.enabled()) {
+                        profiler_.note_d2d_gather_copy(hidden_half);
+                    }
+                }
+                if (profiler_.enabled() &&
+                    !profiler_.cuda_end(
+                        gather_ticket,
+                        static_cast<void*>(compute_stream_))) {
+                    return false;
+                }
             }
 
             // Arm device-side wait for expert weight transfer.
@@ -805,10 +833,14 @@ bool Engine::moe_forward_batch_device_impl(
             if (profiler_.enabled()) {
                 profiler_.set_cuda_context(current_token_, layer, expert);
             }
+            float* expert_output = direct_single_row
+                ? d_experts_out_f32 +
+                    direct_position * static_cast<size_t>(hidden_)
+                : d_moe_batch_output_;
             const bool computed = d_blob && swiglu_expert_batch_fp16_cuda(
-                cublas_handle_, d_blob, d_moe_batch_input_half_,
+                cublas_handle_, d_blob, expert_input_half,
                 d_moe_batch_gate_half_, d_moe_batch_up_half_,
-                d_moe_batch_activation_half_, d_moe_batch_output_,
+                d_moe_batch_activation_half_, expert_output,
                 static_cast<int>(group_tokens), inter_, hidden_, compute_stream_,
                 profiler_.enabled() ? &profiler_ : nullptr);
             if (!computed) {
@@ -821,37 +853,47 @@ bool Engine::moe_forward_batch_device_impl(
             // d_moe_batch_output_ to d_experts_out position.  FP32 output
             // matches the host-path moe_forward_batch contract; Python caller
             // converts to FP16 on-device via .to(dtype=hidden_states.dtype).
-            if (profiler_.enabled()) {
-                profiler_.set_cuda_context(
-                    current_token_, layer, expert, group_tokens * hidden_float);
-            }
-            const size_t scatter_ticket = profiler_.enabled()
-                ? profiler_.cuda_begin(
-                    GpuStage::D2DScatter, static_cast<void*>(compute_stream_))
-                : static_cast<size_t>(-1);
-            for (size_t row = 0; row < group_tokens; ++row) {
-                const size_t position = positions[row];
-                if (!DEE_CUDA_CHECK_NAMED(
-                        cudaMemcpyAsync(
-                            d_experts_out_f32 +
-                                position * static_cast<size_t>(hidden_),
-                            static_cast<float*>(d_moe_batch_output_) +
-                                row * static_cast<size_t>(hidden_),
-                            hidden_float,
-                            cudaMemcpyDeviceToDevice, compute_stream_),
-                        "cudaMemcpyAsync(MoE batch D2D scatter)")) {
+            if (direct_single_row) {
+                ++stats_.direct_row_scatter_bypasses;
+            } else {
+                if (profiler_.enabled()) {
+                    profiler_.set_cuda_context(
+                        current_token_, layer, expert,
+                        group_tokens * hidden_float);
+                }
+                const size_t scatter_ticket = profiler_.enabled()
+                    ? profiler_.cuda_begin(
+                        GpuStage::D2DScatter,
+                        static_cast<void*>(compute_stream_))
+                    : static_cast<size_t>(-1);
+                for (size_t row = 0; row < group_tokens; ++row) {
+                    const size_t position = positions[row];
+                    if (!DEE_CUDA_CHECK_NAMED(
+                            cudaMemcpyAsync(
+                                d_experts_out_f32 +
+                                    position * static_cast<size_t>(hidden_),
+                                static_cast<float*>(d_moe_batch_output_) +
+                                    row * static_cast<size_t>(hidden_),
+                                hidden_float,
+                                cudaMemcpyDeviceToDevice,
+                                compute_stream_),
+                            "cudaMemcpyAsync(MoE batch D2D scatter)")) {
+                        cache_.unpin(source_layer, expert);
+                        return false;
+                    }
+                    ++stats_.d2d_scatter_copies;
+                    stats_.d2d_scatter_bytes += hidden_float;
+                    if (profiler_.enabled()) {
+                        profiler_.note_d2d_scatter_copy(hidden_float);
+                    }
+                }
+                if (profiler_.enabled() &&
+                    !profiler_.cuda_end(
+                        scatter_ticket,
+                        static_cast<void*>(compute_stream_))) {
                     cache_.unpin(source_layer, expert);
                     return false;
                 }
-                if (profiler_.enabled()) {
-                    profiler_.note_d2d_scatter_copy(hidden_float);
-                }
-            }
-            if (profiler_.enabled() &&
-                !profiler_.cuda_end(
-                    scatter_ticket, static_cast<void*>(compute_stream_))) {
-                cache_.unpin(source_layer, expert);
-                return false;
             }
             cache_.unpin(source_layer, expert);
         }
@@ -887,6 +929,7 @@ bool Engine::moe_forward_batch_device_impl(
 #else
     (void)layer;
     (void)synchronize_output;
+    (void)direct_single_row_io;
     return false;
 #endif
 }
@@ -959,6 +1002,27 @@ bool Engine::moe_forward_combined_device(
         const int64_t* d_expert_ids, int topk,
         const float* d_weights_f32, void* d_output_f16,
         void* d_raw_trace_out, void* external_stream) {
+    return moe_forward_combined_device_impl(
+        layer, d_h_in, tokens, d_expert_ids, topk, d_weights_f32,
+        d_output_f16, d_raw_trace_out, external_stream, false);
+}
+
+bool Engine::moe_forward_combined_direct_device(
+        int layer, const void* d_h_in, int tokens,
+        const int64_t* d_expert_ids, int topk,
+        const float* d_weights_f32, void* d_output_f16,
+        void* d_raw_trace_out, void* external_stream) {
+    return moe_forward_combined_device_impl(
+        layer, d_h_in, tokens, d_expert_ids, topk, d_weights_f32,
+        d_output_f16, d_raw_trace_out, external_stream, true);
+}
+
+bool Engine::moe_forward_combined_device_impl(
+        int layer, const void* d_h_in, int tokens,
+        const int64_t* d_expert_ids, int topk,
+        const float* d_weights_f32, void* d_output_f16,
+        void* d_raw_trace_out, void* external_stream,
+        bool direct_single_row_io) {
     clear_last_error();
     if (!d_h_in || !d_expert_ids || !d_weights_f32 || !d_output_f16 ||
         tokens <= 0 || topk <= 0 || topk > cfg_.topk) {
@@ -1058,7 +1122,8 @@ bool Engine::moe_forward_combined_device(
             host_ids.data(),
             topk,
             d_moe_raw_f32_,
-            false)) {
+            false,
+            direct_single_row_io)) {
         if (last_error_message_.empty()) {
             set_last_error("raw expert stage failed inside combined path");
         }
@@ -1109,6 +1174,7 @@ bool Engine::moe_forward_combined_device(
     (void)layer;
     (void)d_raw_trace_out;
     (void)external_stream;
+    (void)direct_single_row_io;
     return false;
 #endif
 }

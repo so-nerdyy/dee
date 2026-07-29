@@ -323,6 +323,46 @@ PYBIND11_MODULE(pydee_core, m) {
                 supplied PyTorch CUDA stream. Optional raw trace output is
                 FP32 [tokens, topk, hidden].
             )pbdoc")
+        .def("moe_forward_combined_direct_device", [](
+                dee::Engine& self,
+                int layer,
+                uintptr_t d_h_in_ptr,
+                int tokens,
+                uintptr_t d_expert_ids_ptr,
+                int topk,
+                uintptr_t d_weights_ptr,
+                uintptr_t d_output_ptr,
+                uintptr_t d_raw_trace_ptr,
+                uintptr_t external_stream_ptr) -> bool {
+            if (topk != self.config().topk) {
+                throw std::runtime_error(
+                    "expert_ids topk does not match EngineConfig.topk");
+            }
+            bool ok = false;
+            {
+                py::gil_scoped_release release;
+                ok = self.moe_forward_combined_direct_device(
+                    layer,
+                    reinterpret_cast<const void*>(d_h_in_ptr),
+                    tokens,
+                    reinterpret_cast<const int64_t*>(d_expert_ids_ptr),
+                    topk,
+                    reinterpret_cast<const float*>(d_weights_ptr),
+                    reinterpret_cast<void*>(d_output_ptr),
+                    reinterpret_cast<void*>(d_raw_trace_ptr),
+                    reinterpret_cast<void*>(external_stream_ptr));
+            }
+            return ok;
+        }, py::arg("layer"), py::arg("d_h_in_ptr"), py::arg("tokens"),
+           py::arg("d_expert_ids_ptr"), py::arg("topk"),
+           py::arg("d_weights_ptr"), py::arg("d_output_ptr"),
+           py::arg("d_raw_trace_ptr"),
+           py::arg("external_stream_ptr"),
+           R"pbdoc(
+                Run exact combined MoE while bypassing gather/scatter copies
+                for single-row expert groups. Multi-row and duplicate groups
+                retain the established copy path.
+            )pbdoc")
         .def("compute_stream_handle", &dee::Engine::compute_stream_handle,
              "Return the native compute-stream handle for allocator lifetime tracking.")
         .def("last_error_message", [](const dee::Engine& self) -> std::string {
@@ -375,6 +415,14 @@ PYBIND11_MODULE(pydee_core, m) {
                << s.device_moe_batch_buffer_bytes
                << ",\"device_moe_raw_workspace_bytes\":"
                << s.device_moe_raw_workspace_bytes
+               << ",\"d2d_gather_copies\":" << s.d2d_gather_copies
+               << ",\"d2d_gather_bytes\":" << s.d2d_gather_bytes
+               << ",\"d2d_scatter_copies\":" << s.d2d_scatter_copies
+               << ",\"d2d_scatter_bytes\":" << s.d2d_scatter_bytes
+               << ",\"direct_row_gather_bypasses\":"
+               << s.direct_row_gather_bypasses
+               << ",\"direct_row_scatter_bypasses\":"
+               << s.direct_row_scatter_bypasses
                << ",\"device_oracle_scratch_bytes\":"
                << s.device_oracle_scratch_bytes
                << ",\"cuda_total\":" << s.cuda_total

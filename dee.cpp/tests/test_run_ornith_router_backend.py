@@ -77,16 +77,19 @@ def test_native_host_remains_the_default_backend() -> None:
     assert proof["raw_output_allocations"] == 0
     assert proof["native_combined_calls"] == 0
     assert proof["native_combined_stream_handoffs"] == 0
+    assert proof["native_direct_calls"] == 0
+    assert proof["native_direct_fallback_calls"] == 0
 
 
 def test_native_combined_mode_attempts_native_api_before_python_d2h() -> None:
     source = inspect.getsource(MODULE.HybridExperts.forward)
-    combined = source.index("self.engine.moe_forward_combined_device(")
+    combined = source.index("combined_method(")
     python_d2h = source.index(
         'with forensic_span(self.context, "expert_ids_gpu_to_cpu"'
     )
     assert combined < python_d2h
     assert "native_combined_stream_handoffs" in source
+    assert "moe_forward_combined_direct_device" in source
 
 
 def test_unknown_execution_mode_fails_before_runtime_access() -> None:
@@ -160,5 +163,6 @@ def test_eager_mixed_dtype_combine_rounds_product_before_add() -> None:
 
 def test_native_combined_mode_is_fail_closed() -> None:
     source = inspect.getsource(MODULE.HybridExperts.forward)
-    assert "native-combined binding unavailable" in source
+    assert "binding unavailable" in source
     assert "native-combined execution failed" in source
+    assert "native-combined-direct" in MODULE.EXECUTION_MODES

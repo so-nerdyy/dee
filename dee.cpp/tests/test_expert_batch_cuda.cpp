@@ -170,6 +170,129 @@ int main() {
         combine_exact,
         "combined output preserves stable expert order and two-stage FP16 rounding");
 
+    const int64_t offset_ids[4] = {1, 1, 1, 2};
+    std::vector<uint16_t> offset_baseline_bits(8);
+    std::vector<float> offset_baseline_raw(16);
+    bool offset_baseline_ok =
+        cudaMemcpyAsync(
+            d_hidden, hidden_f16, sizeof(hidden_f16),
+            cudaMemcpyHostToDevice, external_stream) == cudaSuccess &&
+        cudaMemcpyAsync(
+            d_expert_ids, offset_ids, sizeof(offset_ids),
+            cudaMemcpyHostToDevice, external_stream) == cudaSuccess &&
+        cudaMemcpyAsync(
+            d_weights, combined_weights, sizeof(combined_weights),
+            cudaMemcpyHostToDevice, external_stream) == cudaSuccess &&
+        engine.moe_forward_combined_device(
+            5, d_hidden, 2, d_expert_ids, 2, d_weights,
+            d_combined, d_raw_trace, external_stream) &&
+        cudaMemcpyAsync(
+            offset_baseline_bits.data(), d_combined,
+            offset_baseline_bits.size() * sizeof(uint16_t),
+            cudaMemcpyDeviceToHost, external_stream) == cudaSuccess &&
+        cudaMemcpyAsync(
+            offset_baseline_raw.data(), d_raw_trace,
+            offset_baseline_raw.size() * sizeof(float),
+            cudaMemcpyDeviceToHost, external_stream) == cudaSuccess &&
+        cudaStreamSynchronize(external_stream) == cudaSuccess;
+    CHECK(offset_baseline_ok, "nonzero-offset combined baseline executes");
+
+    const dee::EngineStats before_direct = engine.runtime_stats();
+    std::vector<uint16_t> direct_bits(8);
+    std::vector<float> direct_raw(16);
+    bool direct_ok =
+        engine.moe_forward_combined_direct_device(
+            5, d_hidden, 2, d_expert_ids, 2, d_weights,
+            d_combined, d_raw_trace, external_stream) &&
+        cudaMemcpyAsync(
+            direct_bits.data(), d_combined,
+            direct_bits.size() * sizeof(uint16_t),
+            cudaMemcpyDeviceToHost, external_stream) == cudaSuccess &&
+        cudaMemcpyAsync(
+            direct_raw.data(), d_raw_trace,
+            direct_raw.size() * sizeof(float),
+            cudaMemcpyDeviceToHost, external_stream) == cudaSuccess &&
+        cudaStreamSynchronize(external_stream) == cudaSuccess;
+    const dee::EngineStats after_direct = engine.runtime_stats();
+    CHECK(
+        direct_ok && direct_bits == offset_baseline_bits &&
+            direct_raw == offset_baseline_raw,
+        "direct row at nonzero token/selection is bitwise exact");
+    CHECK(
+        after_direct.direct_row_gather_bypasses -
+                before_direct.direct_row_gather_bypasses == 1 &&
+            after_direct.direct_row_scatter_bypasses -
+                before_direct.direct_row_scatter_bypasses == 1 &&
+            after_direct.d2d_gather_copies -
+                before_direct.d2d_gather_copies == 3 &&
+            after_direct.d2d_gather_bytes -
+                before_direct.d2d_gather_bytes ==
+                3 * 4 * sizeof(uint16_t) &&
+            after_direct.d2d_scatter_copies -
+                before_direct.d2d_scatter_copies == 3 &&
+            after_direct.d2d_scatter_bytes -
+                before_direct.d2d_scatter_bytes ==
+                3 * 4 * sizeof(float),
+        "direct-row path bypasses only singleton groups");
+
+    const int64_t unique_ids[2] = {2, 1};
+    std::vector<uint16_t> unique_baseline_bits(4);
+    std::vector<float> unique_baseline_raw(8);
+    bool unique_baseline_ok =
+        cudaMemcpyAsync(
+            d_expert_ids, unique_ids, sizeof(unique_ids),
+            cudaMemcpyHostToDevice, external_stream) == cudaSuccess &&
+        engine.moe_forward_combined_device(
+            5, d_hidden, 1, d_expert_ids, 2, d_weights,
+            d_combined, d_raw_trace, external_stream) &&
+        cudaMemcpyAsync(
+            unique_baseline_bits.data(), d_combined,
+            unique_baseline_bits.size() * sizeof(uint16_t),
+            cudaMemcpyDeviceToHost, external_stream) == cudaSuccess &&
+        cudaMemcpyAsync(
+            unique_baseline_raw.data(), d_raw_trace,
+            unique_baseline_raw.size() * sizeof(float),
+            cudaMemcpyDeviceToHost, external_stream) == cudaSuccess &&
+        cudaStreamSynchronize(external_stream) == cudaSuccess;
+    CHECK(unique_baseline_ok, "one-token all-unique baseline executes");
+
+    const dee::EngineStats before_unique_direct = engine.runtime_stats();
+    std::vector<uint16_t> unique_direct_bits(4);
+    std::vector<float> unique_direct_raw(8);
+    bool unique_direct_ok =
+        engine.moe_forward_combined_direct_device(
+            5, d_hidden, 1, d_expert_ids, 2, d_weights,
+            d_combined, d_raw_trace, external_stream) &&
+        cudaMemcpyAsync(
+            unique_direct_bits.data(), d_combined,
+            unique_direct_bits.size() * sizeof(uint16_t),
+            cudaMemcpyDeviceToHost, external_stream) == cudaSuccess &&
+        cudaMemcpyAsync(
+            unique_direct_raw.data(), d_raw_trace,
+            unique_direct_raw.size() * sizeof(float),
+            cudaMemcpyDeviceToHost, external_stream) == cudaSuccess &&
+        cudaStreamSynchronize(external_stream) == cudaSuccess;
+    const dee::EngineStats after_unique_direct = engine.runtime_stats();
+    CHECK(
+        unique_direct_ok &&
+            unique_direct_bits == unique_baseline_bits &&
+            unique_direct_raw == unique_baseline_raw,
+        "one-token all-unique direct path is bitwise exact");
+    CHECK(
+        after_unique_direct.direct_row_gather_bypasses -
+                before_unique_direct.direct_row_gather_bypasses == 2 &&
+            after_unique_direct.direct_row_scatter_bypasses -
+                before_unique_direct.direct_row_scatter_bypasses == 2 &&
+            after_unique_direct.d2d_gather_copies -
+                before_unique_direct.d2d_gather_copies == 0 &&
+            after_unique_direct.d2d_gather_bytes -
+                before_unique_direct.d2d_gather_bytes == 0 &&
+            after_unique_direct.d2d_scatter_copies -
+                before_unique_direct.d2d_scatter_copies == 0 &&
+            after_unique_direct.d2d_scatter_bytes -
+                before_unique_direct.d2d_scatter_bytes == 0,
+        "one-token all-unique path bypasses every row copy");
+
     std::vector<uint16_t> default_stream_bits(8);
     bool default_stream_ok =
         cudaMemcpyAsync(
