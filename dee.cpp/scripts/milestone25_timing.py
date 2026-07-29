@@ -259,7 +259,10 @@ class ForensicTimingRecorder:
             )
             self.torch_profiler_summary = {
                 "enabled": True, "captured_step": step,
-                "operators": operators[:200], "error": None,
+                # key_averages already collapses individual events. Retain all
+                # rows so CUDA API/kernel counts cannot disappear behind an
+                # arbitrary top-N cutoff.
+                "operators": operators, "error": None,
             }
             if self.profiler_trace_path is not None:
                 raw_path = self.profiler_trace_path.with_suffix("")
@@ -278,17 +281,23 @@ class ForensicTimingRecorder:
             }
             raise
 
-    def end_step(self, step: int, phase: str, measured_seconds: float) -> None:
+    def end_step(
+            self, step: int, phase: str, model_seconds: float,
+            full_token_seconds: float | None = None) -> None:
         ended = time.perf_counter_ns()
         row = self.step_records[-1]
         row.update({
             "end_monotonic_ns": ended,
-            "model_wall_ms": measured_seconds * 1000.0,
+            "model_wall_ms": model_seconds * 1000.0,
+            "full_token_wall_ms": (
+                (full_token_seconds if full_token_seconds is not None
+                 else model_seconds) * 1000.0
+            ),
         })
         overhead_begin = time.perf_counter_ns()
         snapshots = []
         for layer, engine in enumerate(self._engines):
-            profile = json.loads(engine.external_profile_json(measured_seconds * 1000.0))
+            profile = json.loads(engine.external_profile_json(model_seconds * 1000.0))
             snapshots.append({"layer": layer, "profile": profile})
         self.profile_snapshots.append({
             "step": int(step), "phase": phase, "layers": snapshots,
@@ -299,7 +308,11 @@ class ForensicTimingRecorder:
                 f"after_{phase}_step_{step}", include_smaps=False,
                 include_cuda=True, include_nvml=True,
                 metadata={"step": step, "phase": phase,
-                          "model_wall_ms": measured_seconds * 1000.0},
+                          "model_wall_ms": model_seconds * 1000.0,
+                          "full_token_wall_ms": (
+                              (full_token_seconds if full_token_seconds is not None
+                               else model_seconds) * 1000.0
+                          )},
             )
 
     def record_routes(self, layer: int, step: int, phase: str,
@@ -401,15 +414,62 @@ class ForensicTimingRecorder:
             self._register(block, "layer_total", layer, context)
             self._register(getattr(block, "input_layernorm", None),
                            "normalization_input", layer, context)
-            self._register(getattr(block, "self_attn", None),
-                           "attention_or_linear_attention", layer, context)
+            # Qwen3.5-MoE exposes the 30 recurrent mixers as ``linear_attn``
+            # and only the 10 quadratic mixers as ``self_attn``. The original
+            # M2.5 hook only checked self_attn, so most of the reported
+            # "residual and unattributed" time included the entire recurrent
+            # mixer. Keep the compatibility aggregate name while attaching it
+            # to the module that actually exists.
+            linear_attn = getattr(block, "linear_attn", None)
+            self_attn = getattr(block, "self_attn", None)
+            mixer = linear_attn if linear_attn is not None else self_attn
+            self._register(mixer, "attention_or_linear_attention", layer, context)
+            if linear_attn is not None:
+                for name in ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a"):
+                    self._register(
+                        getattr(linear_attn, name, None),
+                        f"linear_attention_{name}",
+                        layer,
+                        context,
+                    )
+                self._register(getattr(linear_attn, "conv1d", None),
+                               "linear_attention_convolution", layer, context)
+                self._register(getattr(linear_attn, "norm", None),
+                               "linear_attention_gated_norm", layer, context)
+                self._register(getattr(linear_attn, "out_proj", None),
+                               "linear_attention_out_proj", layer, context)
+            if self_attn is not None:
+                for name in ("q_proj", "k_proj", "v_proj", "o_proj"):
+                    self._register(
+                        getattr(self_attn, name, None),
+                        f"full_attention_{name}",
+                        layer,
+                        context,
+                    )
+                self._register(getattr(self_attn, "q_norm", None),
+                               "full_attention_q_norm", layer, context)
+                self._register(getattr(self_attn, "k_norm", None),
+                               "full_attention_k_norm", layer, context)
             self._register(getattr(block, "post_attention_layernorm", None),
                            "normalization_post_attention", layer, context)
             mlp = getattr(block, "mlp", None)
+            self._register(mlp, "moe_block_total", layer, context)
+            self._register(getattr(mlp, "gate", None),
+                           "router_module_total", layer, context)
+            self._register(getattr(mlp, "experts", None),
+                           "routed_experts_total", layer, context)
             self._register(getattr(mlp, "shared_expert", None),
                            "shared_expert", layer, context)
             self._register(getattr(mlp, "shared_expert_gate", None),
                            "shared_expert_gate", layer, context)
+            shared = getattr(mlp, "shared_expert", None)
+            for name in ("gate_proj", "up_proj", "down_proj"):
+                self._register(
+                    getattr(shared, name, None),
+                    f"shared_expert_{name}",
+                    layer,
+                    context,
+                )
         self._register(getattr(model.model, "embed_tokens", None),
                        "embedding", 0, context)
         self._register(getattr(model.model, "norm", None),

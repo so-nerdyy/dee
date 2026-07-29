@@ -116,7 +116,9 @@ def proof_with_shares(context) -> dict[str, Any]:
     return proof
 
 
-def run_once(runtime, tokenizer, backend: str, *, trace: bool) -> tuple[dict, dict]:
+def run_once(
+        runtime, tokenizer, backend: str, *, trace: bool,
+        execution_mode: str | None = None) -> tuple[dict, dict]:
     context = runtime["context"]
     context.router_backend = backend
     context.engine_path_proof = fresh_engine_path_proof()
@@ -128,10 +130,12 @@ def run_once(runtime, tokenizer, backend: str, *, trace: bool) -> tuple[dict, di
         False,
         "dee",
         trace=trace,
+        execution_mode=execution_mode or ("parity" if trace else "production"),
     )
     proof = proof_with_shares(context)
     serializable = {
         "backend": backend,
+        "execution_mode": result["execution_mode"],
         "generated_token_ids": result["generated_token_ids"],
         "generated_text": result["generated_text"],
         "tokens_exact": result["generated_token_ids"] == EXPECTED_TOKENS,
@@ -142,6 +146,8 @@ def run_once(runtime, tokenizer, backend: str, *, trace: bool) -> tuple[dict, di
         "total_generation_seconds": result["total_generation_seconds"],
         "peak_vram_bytes": result["resources"]["peak_vram_bytes"],
         "peak_host_rss_bytes": result["resources"]["peak_host_rss_bytes"],
+        "thermal_clock": result["resources"].get("thermal_clock", {}),
+        "full_logits_host_records": len(result["logits_records"]),
         "path_proof": proof,
     }
     if not serializable["tokens_exact"]:

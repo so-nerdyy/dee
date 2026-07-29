@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 from pathlib import Path
 
+import pytest
 import torch
 
 
@@ -66,6 +68,62 @@ def test_torch_device_router_uses_official_resident_module() -> None:
 def test_native_host_remains_the_default_backend() -> None:
     context = MODULE.ExecutionContext()
     assert context.router_backend == "native-host"
+    assert context.execution_mode == "production"
     proof = MODULE.fresh_engine_path_proof()
     assert proof["router_native_host_calls"] == 0
     assert proof["router_torch_device_calls"] == 0
+    assert proof["pybind_device_calls"] == 0
+    assert proof["python_combine_calls"] == 0
+    assert proof["raw_output_allocations"] == 0
+
+
+def test_unknown_execution_mode_fails_before_runtime_access() -> None:
+    with pytest.raises(ValueError, match="unsupported execution mode"):
+        MODULE.run_generation(
+            {}, None, "Hello", 4, False, "dee", False,
+            execution_mode="not-a-mode",
+        )
+
+
+def test_decode_timer_includes_m5b_post_model_work() -> None:
+    source = inspect.getsource(MODULE.run_generation)
+    elapsed = source.index(
+        "full_token_elapsed = time.perf_counter() - step_start"
+    )
+    assert elapsed > source.index("logits_records.append")
+    assert elapsed > source.index("torch.argmax(logits")
+    assert elapsed > source.index("next_token_buffer.fill_")
+    assert elapsed > source.index("attention_mask = torch.cat")
+
+
+def test_stable_fp16_combine_matches_legacy_with_duplicate_ids() -> None:
+    raw = torch.tensor(
+        [[
+            [0.3333, -1.25, 2.0],
+            [1.5, 0.25, -0.75],
+            [-2.0, 0.5, 0.125],
+            [0.75, -0.5, 1.25],
+        ]],
+        dtype=torch.float16,
+    )
+    weights = torch.tensor(
+        [[0.125, 0.375, 0.25, 0.25]], dtype=torch.float16
+    )
+    # Duplicate expert 3 verifies stable order among equal IDs: positions
+    # [1, 3, 0, 2] for expert IDs [1, 2, 3, 3].
+    ids = MODULE.np.asarray([[3, 1, 3, 2]], dtype=MODULE.np.int32)
+    legacy = MODULE.stable_combine_selected_experts(
+        torch.zeros((1, 3), dtype=torch.float16),
+        raw,
+        weights,
+        ids,
+        legacy_accumulator=True,
+    )
+    production = MODULE.stable_combine_selected_experts(
+        torch.zeros((1, 3), dtype=torch.float16),
+        raw,
+        weights,
+        ids,
+        legacy_accumulator=False,
+    )
+    assert torch.equal(production, legacy)

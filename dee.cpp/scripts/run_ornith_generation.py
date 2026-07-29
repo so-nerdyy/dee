@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import platform
+import statistics
 import subprocess
 import sys
 import threading
@@ -46,6 +47,12 @@ from scripts.ornith_support import (  # noqa: E402
 
 
 TRACE_LAYERS = set(range(40))
+EXECUTION_MODES = (
+    "production",
+    "parity",
+    "profiler",
+    "debug-full-logit",
+)
 TOLERANCES = {
     "embedding_output": (0.0, 0.0),
     "router_logits": (2.0e-2, 2.0e-2),
@@ -88,6 +95,21 @@ class ResourceMonitor:
         self.thread = None
         self.peak_host_rss = 0
         self.peak_vram = [0] * gpu_count
+        self.nvml = None
+        self.nvml_handles = []
+        self.nvml_error = None
+        self.thermal_samples: list[list[dict[str, Any]]] = []
+        try:
+            import pynvml
+
+            pynvml.nvmlInit()
+            self.nvml = pynvml
+            self.nvml_handles = [
+                pynvml.nvmlDeviceGetHandleByIndex(device)
+                for device in range(gpu_count)
+            ]
+        except Exception as exc:
+            self.nvml_error = f"{type(exc).__name__}: {exc}"
 
     def _sample(self):
         try:
@@ -102,6 +124,40 @@ class ResourceMonitor:
                 self.peak_vram[device] = max(self.peak_vram[device], total_bytes - free_bytes)
             except Exception:
                 pass
+        if self.nvml is not None:
+            sample = []
+            for device, handle in enumerate(self.nvml_handles):
+                row: dict[str, Any] = {"device": device}
+                for key, query in (
+                    (
+                        "temperature_c",
+                        lambda: self.nvml.nvmlDeviceGetTemperature(
+                            handle, self.nvml.NVML_TEMPERATURE_GPU
+                        ),
+                    ),
+                    (
+                        "sm_clock_mhz",
+                        lambda: self.nvml.nvmlDeviceGetClockInfo(
+                            handle, self.nvml.NVML_CLOCK_SM
+                        ),
+                    ),
+                    (
+                        "memory_clock_mhz",
+                        lambda: self.nvml.nvmlDeviceGetClockInfo(
+                            handle, self.nvml.NVML_CLOCK_MEM
+                        ),
+                    ),
+                    (
+                        "power_mw",
+                        lambda: self.nvml.nvmlDeviceGetPowerUsage(handle),
+                    ),
+                ):
+                    try:
+                        row[key] = int(query())
+                    except Exception:
+                        pass
+                sample.append(row)
+            self.thermal_samples.append(sample)
 
     def _run(self):
         while not self.stop_event.wait(self.interval):
@@ -118,10 +174,75 @@ class ResourceMonitor:
         if self.thread is not None:
             self.thread.join(timeout=5)
         self._sample()
-        return {
+        thermal_by_device = {}
+        for device in range(self.gpu_count):
+            rows = [
+                sample[device]
+                for sample in self.thermal_samples
+                if device < len(sample)
+            ]
+            thermal_by_device[f"cuda:{device}"] = {
+                "sample_count": len(rows),
+                "minimum_temperature_c": min(
+                    (row["temperature_c"] for row in rows
+                     if "temperature_c" in row),
+                    default=None,
+                ),
+                "maximum_temperature_c": max(
+                    (row["temperature_c"] for row in rows
+                     if "temperature_c" in row),
+                    default=None,
+                ),
+                "median_temperature_c": (
+                    statistics.median([
+                        row["temperature_c"] for row in rows
+                        if "temperature_c" in row
+                    ])
+                    if any("temperature_c" in row for row in rows) else None
+                ),
+                "minimum_sm_clock_mhz": min(
+                    (row["sm_clock_mhz"] for row in rows
+                     if "sm_clock_mhz" in row),
+                    default=None,
+                ),
+                "maximum_sm_clock_mhz": max(
+                    (row["sm_clock_mhz"] for row in rows
+                     if "sm_clock_mhz" in row),
+                    default=None,
+                ),
+                "median_sm_clock_mhz": (
+                    statistics.median([
+                        row["sm_clock_mhz"] for row in rows
+                        if "sm_clock_mhz" in row
+                    ])
+                    if any("sm_clock_mhz" in row for row in rows) else None
+                ),
+                "minimum_memory_clock_mhz": min(
+                    (row["memory_clock_mhz"] for row in rows
+                     if "memory_clock_mhz" in row),
+                    default=None,
+                ),
+                "maximum_power_mw": max(
+                    (row["power_mw"] for row in rows if "power_mw" in row),
+                    default=None,
+                ),
+            }
+        result = {
             "peak_host_rss_bytes": self.peak_host_rss,
             "peak_vram_bytes": {f"cuda:{i}": value for i, value in enumerate(self.peak_vram)},
+            "thermal_clock": {
+                "nvml_error": self.nvml_error,
+                "sample_interval_seconds": self.interval,
+                "by_device": thermal_by_device,
+            },
         }
+        if self.nvml is not None:
+            try:
+                self.nvml.nvmlShutdown()
+            except Exception:
+                pass
+            self.nvml = None
+        return result
 
 
 class CheckpointPool:
@@ -179,6 +300,7 @@ class TraceCollector:
 class ExecutionContext:
     def __init__(self):
         self.mode = "dee"
+        self.execution_mode = "production"
         self.collector: TraceCollector | None = None
         self.router_tie_fallback_rows = 0
         self.forensics = None
@@ -214,6 +336,10 @@ def fresh_engine_path_proof() -> dict:
         "expert_ids_d2h_total_bytes": 0,
         "expert_native_device_calls_total_ms": 0.0,
         "expert_native_host_calls_total_ms": 0.0,
+        "pybind_device_calls": 0,
+        "pybind_host_fallback_calls": 0,
+        "python_combine_calls": 0,
+        "raw_output_allocations": 0,
         "router_native_host_calls": 0,
         "router_torch_device_calls": 0,
         "router_hidden_d2h_total_bytes": 0,
@@ -358,6 +484,11 @@ class HybridRouter:
         torch = __import__("torch")
         self.context.executed_router_layers.add(self.layer)
         flattened = hidden_states.reshape(-1, hidden_states.shape[-1])
+        if (
+            self.context.mode != "reference"
+            and hasattr(self.engine, "set_external_token")
+        ):
+            self.engine.set_external_token(self.context.current_step)
         if self.context.mode == "reference":
             with forensic_span(self.context, "reference_router", self.layer):
                 logits, weights, experts = self.module.reference(flattened)
@@ -377,8 +508,6 @@ class HybridRouter:
                     f"unsupported router backend: {self.context.router_backend}"
                 )
             self.context.engine_path_proof["router_native_host_calls"] += 1
-            if hasattr(self.engine, "set_external_token"):
-                self.engine.set_external_token(self.context.current_step)
             router_input_transfer = {
                 "direction": "d2h",
                 "bytes": int(flattened.numel()) * np.dtype(np.float32).itemsize,
@@ -453,6 +582,31 @@ class HybridRouter:
         return logits, weights, experts
 
 
+def stable_combine_selected_experts(
+        output, raw, top_k_weights, expert_ids_np: np.ndarray,
+        *, legacy_accumulator: bool):
+    """Combine raw expert rows in exact eager ascending-expert order."""
+    import torch
+
+    for token in range(raw.shape[0]):
+        positions = np.argsort(
+            expert_ids_np[token], kind="stable"
+        ).tolist()
+        if legacy_accumulator:
+            accumulator = torch.zeros_like(output[token])
+            for position in positions:
+                accumulator.add_(
+                    raw[token, position] * top_k_weights[token, position]
+                )
+            output[token] = accumulator
+        else:
+            for position in positions:
+                output[token].add_(
+                    raw[token, position] * top_k_weights[token, position]
+                )
+    return output
+
+
 class HybridExperts:
     def __init__(self, nn_module, reference, engine, layer: int,
                  context: ExecutionContext):
@@ -501,8 +655,10 @@ class HybridExperts:
             hidden_states.shape[0], top_k_index.shape[1], hidden_states.shape[1],
             dtype=torch.float32, device=hidden_states.device
         )
+        proof["raw_output_allocations"] += 1
         native_device_start = time.perf_counter()
         with forensic_span(self.context, "expert_native_device", self.layer):
+            proof["pybind_device_calls"] += 1
             device_ok = self.engine.moe_forward_batch_device(
                 self.layer,
                 hidden_states.data_ptr(), hidden_states.shape[0],
@@ -556,6 +712,7 @@ class HybridExperts:
                 hidden_cpu = hidden_states.detach().float().cpu().numpy()
             with forensic_span(self.context, "expert_native", self.layer):
                 try:
+                    proof["pybind_host_fallback_calls"] += 1
                     expert_outputs = self.engine.moe_forward_batch(
                         self.layer, hidden_cpu, expert_ids_np,
                     )
@@ -604,13 +761,16 @@ class HybridExperts:
                 f"{tuple(raw.shape)}"
             )
         with forensic_span(self.context, "expert_output_combination", self.layer):
-            for token in range(hidden_states.shape[0]):
-                # Official eager implementation accumulates contributions in
-                # ascending expert id order, not router top-k order.
-                accumulator = torch.zeros_like(hidden_states[token])
-                for position in np.argsort(expert_ids_np[token], kind="stable").tolist():
-                    accumulator.add_(raw[token, position] * top_k_weights[token, position])
-                output[token] = accumulator
+            proof["python_combine_calls"] += 1
+            stable_combine_selected_experts(
+                output,
+                raw,
+                top_k_weights,
+                expert_ids_np,
+                legacy_accumulator=(
+                    self.context.execution_mode == "debug-full-logit"
+                ),
+            )
         if self.context.collector is not None and self.layer in TRACE_LAYERS:
             self.context.collector.add(
                 "selected_expert_outputs", f"layer={self.layer}", raw
@@ -907,14 +1067,27 @@ def tokenize_prompt(tokenizer, prompt: str, chat_template: bool):
 
 
 def run_generation(runtime, tokenizer, prompt: str, max_new_tokens: int,
-                   chat_template: bool, mode: str, trace: bool):
+                   chat_template: bool, mode: str, trace: bool,
+                   execution_mode: str = "production"):
     import torch
 
+    if execution_mode not in EXECUTION_MODES:
+        raise ValueError(
+            f"unsupported execution mode {execution_mode!r}; "
+            f"expected one of {EXECUTION_MODES}"
+        )
     model = runtime["model"]
     config = runtime["config"]
     context = runtime["context"]
+    if execution_mode == "parity" and not trace:
+        raise ValueError("parity execution mode requires trace=True")
+    if execution_mode == "profiler" and context.forensics is None:
+        raise ValueError(
+            "profiler execution mode requires an attached forensic recorder"
+        )
     gpu_count = torch.cuda.device_count()
     context.mode = mode
+    context.execution_mode = execution_mode
     context.executed_router_layers = set()
     tie_fallback_start = context.router_tie_fallback_rows
     collector = TraceCollector() if trace else None
@@ -931,10 +1104,35 @@ def run_generation(runtime, tokenizer, prompt: str, max_new_tokens: int,
     }
     with forensic_span(context, "prompt_input_cpu_to_gpu", -1, prompt_transfer):
         prompt_ids = prompt_ids_cpu.to("cuda:0")
-    attention_mask = torch.ones_like(prompt_ids, device="cuda:0")
+    prompt_tokens = int(prompt_ids.shape[1])
+    capture_full_logits = execution_mode == "debug-full-logit"
+    if capture_full_logits:
+        # Evidence/debug mode intentionally retains the historical allocation
+        # behavior, making it a same-session A/B control for the exact M5B
+        # production-path changes.
+        attention_mask_storage = None
+        next_token_buffer = None
+        attention_mask = torch.ones_like(prompt_ids, device="cuda:0")
+    else:
+        # M5B production path: allocate token/mask storage once. The model
+        # still receives the exact growing attention-mask shape through a
+        # view, but no per-token tensor construction or torch.cat allocation
+        # occurs.
+        attention_mask_storage = torch.ones(
+            (prompt_ids.shape[0], prompt_tokens + max_new_tokens),
+            dtype=prompt_ids.dtype,
+            device="cuda:0",
+        )
+        attention_mask = attention_mask_storage[:, :prompt_tokens]
+        next_token_buffer = torch.empty(
+            (prompt_ids.shape[0], 1), dtype=torch.long, device="cuda:0"
+        )
     current_input = prompt_ids
     past_key_values = None
     generated: list[int] = []
+    # Full vocabulary copies are evidence/debug-only. Parity already captures
+    # lm_head_logits through TraceCollector; production and profiler modes
+    # must not unconditionally copy every logits row to host.
     logits_records = []
     step_seconds = []
     cache_lengths = []
@@ -985,14 +1183,12 @@ def run_generation(runtime, tokenizer, prompt: str, max_new_tokens: int,
             with forensic_span(context, "step_post_synchronize", -1,
                                {"barrier": "removed_for_overlap"}):
                 pass
-            elapsed = time.perf_counter() - step_start
-            step_seconds.append(elapsed)
-            if context.forensics is not None:
-                context.forensics.end_step(step, context.current_phase, elapsed)
+            model_call_elapsed = time.perf_counter() - step_start
             logits = outputs.logits[:, -1, :]
             if collector is not None:
                 collector.add("lm_head_logits", f"step={step}", logits)
-            logits_records.append(logits.detach().float().cpu().numpy())
+            if capture_full_logits:
+                logits_records.append(logits.detach().float().cpu().numpy())
             with forensic_span(context, "token_selection_and_item_sync", -1,
                                {"barrier": "cuda_scalar_to_host"}):
                 next_token = int(torch.argmax(logits, dim=-1).item())
@@ -1002,18 +1198,48 @@ def run_generation(runtime, tokenizer, prompt: str, max_new_tokens: int,
                 cache_lengths.append(int(past_key_values.get_seq_length()))
             except Exception:
                 cache_lengths.append(prompt_ids.shape[1] + step)
-            if next_token in eos_ids:
+            stopped = next_token in eos_ids
+            if not stopped:
+                if capture_full_logits:
+                    current_input = torch.tensor(
+                        [[next_token]], dtype=torch.long, device="cuda:0"
+                    )
+                    attention_mask = torch.cat(
+                        [
+                            attention_mask,
+                            torch.ones(
+                                (1, 1),
+                                dtype=attention_mask.dtype,
+                                device="cuda:0",
+                            ),
+                        ],
+                        dim=1,
+                    )
+                else:
+                    next_token_buffer.fill_(next_token)
+                    current_input = next_token_buffer
+                    attention_mask = attention_mask_storage[
+                        :, :prompt_tokens + step + 1
+                    ]
+            # Full-token latency includes model execution, any evidence-only
+            # logits D2H, greedy selection/item synchronization, and token/mask
+            # maintenance. The forensic snapshot below is deliberately outside
+            # the measured interval.
+            full_token_elapsed = time.perf_counter() - step_start
+            step_seconds.append(full_token_elapsed)
+            if context.forensics is not None:
+                context.forensics.end_step(
+                    step,
+                    context.current_phase,
+                    model_call_elapsed,
+                    full_token_seconds=full_token_elapsed,
+                )
+            if stopped:
                 break
-            current_input = torch.tensor([[next_token]], dtype=torch.long, device="cuda:0")
-            attention_mask = torch.cat(
-                [attention_mask, torch.ones((1, 1), dtype=attention_mask.dtype, device="cuda:0")],
-                dim=1,
-            )
     synchronize_all(torch, gpu_count)
     total_seconds = time.perf_counter() - total_start
     resources = monitor.stop()
     context.collector = None
-    prompt_tokens = int(prompt_ids.shape[1])
     prefill_seconds = step_seconds[0] if step_seconds else 0.0
     decode_seconds = step_seconds[1:]
     detokenization_phase = (
@@ -1027,6 +1253,7 @@ def run_generation(runtime, tokenizer, prompt: str, max_new_tokens: int,
         )
     return {
         "mode": mode,
+        "execution_mode": execution_mode,
         "prompt": prompt,
         "prompt_token_ids": prompt_ids_cpu[0].tolist(),
         "prompt_token_count": prompt_tokens,
@@ -1047,6 +1274,8 @@ def run_generation(runtime, tokenizer, prompt: str, max_new_tokens: int,
         "live_generation_inputs": tensor_tree_inventory({
             "current_input": current_input,
             "attention_mask": attention_mask,
+            "attention_mask_storage": attention_mask_storage,
+            "next_token_buffer": next_token_buffer,
         }),
         "resources": resources,
         "router_tie_fallback_rows": context.router_tie_fallback_rows - tie_fallback_start,
@@ -1157,6 +1386,16 @@ def parse_args():
     parser.add_argument("--max-new-tokens", type=int, default=4)
     parser.add_argument("--greedy", action="store_true", help="Required deterministic mode")
     parser.add_argument("--benchmark", action="store_true")
+    parser.add_argument(
+        "--execution-mode",
+        choices=EXECUTION_MODES,
+        default="production",
+        help=(
+            "production removes evidence-only host copies; parity enables trace "
+            "comparison; profiler enables measurement hooks; debug-full-logit "
+            "also retains full vocabulary logits on host"
+        ),
+    )
     parser.add_argument("--reference-parity", action="store_true")
     parser.add_argument("--chat-template", action="store_true")
     parser.add_argument("--require-dual-gpu", action="store_true")
@@ -1256,11 +1495,13 @@ def main():
         cold = run_generation(
             runtime, tokenizer, args.prompt[0], args.max_new_tokens,
             args.chat_template, "dee", trace=False,
+            execution_mode="production",
         )
         after_cold = engine_stats(runtime)
         warm = run_generation(
             runtime, tokenizer, args.prompt[0], args.max_new_tokens,
             args.chat_template, "dee", trace=False,
+            execution_mode="production",
         )
         after_warm = engine_stats(runtime)
         report["benchmark"] = {
@@ -1278,6 +1519,7 @@ def main():
             reference = run_generation(
                 runtime, tokenizer, prompt, args.max_new_tokens,
                 args.chat_template, "reference", trace=True,
+                execution_mode="parity",
             )
             for expert in runtime["reference_experts"]:
                 expert.clear_cache()
@@ -1285,14 +1527,14 @@ def main():
         candidate = run_generation(
             runtime, tokenizer, prompt, args.max_new_tokens,
             args.chat_template, "dee", trace=args.reference_parity,
+            execution_mode=("parity" if args.reference_parity else args.execution_mode),
         )
         candidate_outputs.append(serializable_generation(candidate))
         item = {
             "prompt": prompt,
             "candidate": serializable_generation(candidate),
             "all_40_layers_executed": (
-                candidate["collector"] is not None and
-                candidate["collector"].router_layers == set(range(40))
+                candidate["executed_router_layers"] == list(range(40))
             ),
         }
         if reference is not None:

@@ -69,6 +69,15 @@ def parse_args() -> argparse.Namespace:
         help="Enable expensive native cache invariant checks for validation runs.",
     )
     parser.add_argument("--torch-profiler-step", type=int)
+    parser.add_argument(
+        "--torch-profiler-control",
+        action="store_true",
+        help=(
+            "Capture Torch/CUPTI operators without native StageProfiler CUDA "
+            "events or per-module CUDA-event hooks. Use as the production API/"
+            "launch-count control paired with a direct --profile run."
+        ),
+    )
     parser.add_argument("--reference-parity", action="store_true")
     parser.add_argument("--warmup-generation", action="store_true")
     parser.add_argument("--require-dual-gpu", action="store_true")
@@ -78,6 +87,10 @@ def parse_args() -> argparse.Namespace:
         parser.error("--max-new-tokens must be positive")
     if args.cache_experts < 1:
         parser.error("--cache-experts must be positive")
+    if args.torch_profiler_control and args.torch_profiler_step is None:
+        parser.error("--torch-profiler-control requires --torch-profiler-step")
+    if args.torch_profiler_control and args.profile:
+        parser.error("--torch-profiler-control and --profile are distinct runs")
     return args
 
 
@@ -219,6 +232,7 @@ def build_layer_timing(timing: dict[str, Any]) -> dict[str, Any]:
     cuda_groups: dict[tuple[int, int], collections.Counter] = collections.defaultdict(
         collections.Counter
     )
+    cuda_presence: set[tuple[int, int, str]] = set()
     for span in spans:
         step = int(span.get("step", -1))
         layer = int(span.get("layer", -1))
@@ -227,6 +241,7 @@ def build_layer_timing(timing: dict[str, Any]) -> dict[str, Any]:
         span_groups[(step, layer)][span["name"]] += float(span.get("cpu_wall_ms", 0.0))
         if span.get("cuda_event_ms") is not None:
             cuda_groups[(step, layer)][span["name"]] += float(span["cuda_event_ms"])
+            cuda_presence.add((step, layer, span["name"]))
 
     previous_by_layer: dict[int, dict[str, Any]] = {}
     rows = []
@@ -243,17 +258,40 @@ def build_layer_timing(timing: dict[str, Any]) -> dict[str, Any]:
             previous_requests = previous.get("requests", {}) if previous else {}
             transfers = profile.get("transfers", {})
             previous_transfers = previous.get("transfers", {}) if previous else {}
+            operations = profile.get("operations", {})
+            previous_operations = previous.get("operations", {}) if previous else {}
             normalization_ms = (
                 wall["normalization_input"] + wall["normalization_post_attention"]
             )
-            router_ms = sum(value for name, value in wall.items()
-                            if name.startswith("router_"))
-            expert_wall_ms = sum(value for name, value in wall.items()
-                                 if name.startswith("expert_"))
+            router_component_ms = sum(
+                value for name, value in wall.items()
+                if name.startswith("router_") and name != "router_module_total"
+            )
+            router_ms = (
+                wall["router_module_total"]
+                if wall["router_module_total"] > 0.0 else router_component_ms
+            )
+            expert_component_ms = sum(
+                value for name, value in wall.items()
+                if name.startswith("expert_")
+            )
+            expert_wall_ms = (
+                wall["routed_experts_total"]
+                if wall["routed_experts_total"] > 0.0 else expert_component_ms
+            )
+            # Prefer non-overlapping direct top-level hooks. Nested router,
+            # expert, and shared-expert spans remain available below but must
+            # not be subtracted again from the residual bucket.
             known_top_level = (
                 normalization_ms + wall["attention_or_linear_attention"] +
-                router_ms + expert_wall_ms + wall["shared_expert"] +
-                wall["shared_expert_gate"]
+                (
+                    wall["moe_block_total"]
+                    if wall["moe_block_total"] > 0.0
+                    else (
+                        router_ms + expert_wall_ms + wall["shared_expert"] +
+                        wall["shared_expert_gate"]
+                    )
+                )
             )
             total_layer_ms = wall["layer_total"]
             rows.append({
@@ -264,14 +302,27 @@ def build_layer_timing(timing: dict[str, Any]) -> dict[str, Any]:
                 "gpu": int(timing["engine_profiles"][layer]["gpu"]),
                 "normalization_wall_ms": normalization_ms,
                 "attention_wall_ms": wall["attention_or_linear_attention"],
-                "attention_cuda_event_ms": cuda["attention_or_linear_attention"],
+                "attention_cuda_event_ms": (
+                    cuda["attention_or_linear_attention"]
+                    if (step, layer, "attention_or_linear_attention") in cuda_presence
+                    else None
+                ),
                 "router_wall_ms": router_ms,
+                "router_component_wall_ms": router_component_ms,
+                "router_cuda_event_ms": (
+                    cuda["router_module_total"]
+                    if (step, layer, "router_module_total") in cuda_presence
+                    else None
+                ),
                 "router_hidden_d2h_wall_ms": wall["router_hidden_gpu_to_cpu"],
                 "router_native_wall_ms": wall["router_native"],
                 "router_output_h2d_wall_ms": wall["router_outputs_cpu_to_gpu"],
                 "router_canonicalization_wall_ms": wall["router_canonicalization"],
                 "expert_lookup_ms": _profile_delta(
                     profile, previous, "cpu_ms", "cache_lookup"
+                ),
+                "expert_grouping_wall_ms": _profile_delta(
+                    profile, previous, "cpu_ms", "batch_construction"
                 ),
                 "cache_hits": int(requests.get("resident_hits", 0) +
                                   requests.get("inflight_hits", 0) -
@@ -310,7 +361,39 @@ def build_layer_timing(timing: dict[str, Any]) -> dict[str, Any]:
                     for key in ("gate_projection", "up_projection", "silu_multiply",
                                 "down_projection")
                 ),
-                "expert_native_wall_ms": wall["expert_native"],
+                "expert_gate_cuda_ms": _profile_delta(
+                    profile, previous, "gpu_ms", "gate_projection"
+                ),
+                "expert_up_cuda_ms": _profile_delta(
+                    profile, previous, "gpu_ms", "up_projection"
+                ),
+                "expert_activation_cuda_ms": _profile_delta(
+                    profile, previous, "gpu_ms", "silu_multiply"
+                ),
+                "expert_down_cuda_ms": _profile_delta(
+                    profile, previous, "gpu_ms", "down_projection"
+                ),
+                "expert_d2d_gather_cuda_ms": _profile_delta(
+                    profile, previous, "gpu_ms", "d2d_gather"
+                ),
+                "expert_d2d_scatter_cuda_ms": _profile_delta(
+                    profile, previous, "gpu_ms", "d2d_scatter"
+                ),
+                "routed_experts_wall_ms": expert_wall_ms,
+                "routed_experts_cuda_event_ms": (
+                    cuda["routed_experts_total"]
+                    if (step, layer, "routed_experts_total") in cuda_presence
+                    else None
+                ),
+                "moe_block_wall_ms": wall["moe_block_total"],
+                "moe_block_cuda_event_ms": (
+                    cuda["moe_block_total"]
+                    if (step, layer, "moe_block_total") in cuda_presence
+                    else None
+                ),
+                "expert_native_wall_ms": (
+                    wall["expert_native_device"] + wall["expert_native"]
+                ),
                 "expert_input_d2h_wall_ms": wall["expert_inputs_gpu_to_cpu"],
                 "expert_output_h2d_wall_ms": wall["expert_outputs_cpu_to_gpu"],
                 "expert_output_combination_wall_ms": wall["expert_output_combination"],
@@ -321,14 +404,486 @@ def build_layer_timing(timing: dict[str, Any]) -> dict[str, Any]:
                 "synchronization_ms": _profile_delta(
                     profile, previous, "cpu_ms", "synchronization"
                 ),
+                "native_timing_events_dropped": int(
+                    operations.get("timing_events_dropped", 0) -
+                    previous_operations.get("timing_events_dropped", 0)
+                ),
                 "total_layer_wall_ms": total_layer_ms,
                 "expert_h2d_bytes": int(
                     transfers.get("h2d_bytes", 0) -
                     previous_transfers.get("h2d_bytes", 0)
                 ),
+                "expert_d2d_gather_bytes": int(
+                    transfers.get("d2d_gather_bytes", 0) -
+                    previous_transfers.get("d2d_gather_bytes", 0)
+                ),
+                "expert_d2d_gather_copies": int(
+                    transfers.get("d2d_gather_copies", 0) -
+                    previous_transfers.get("d2d_gather_copies", 0)
+                ),
+                "expert_d2d_scatter_bytes": int(
+                    transfers.get("d2d_scatter_bytes", 0) -
+                    previous_transfers.get("d2d_scatter_bytes", 0)
+                ),
+                "expert_d2d_scatter_copies": int(
+                    transfers.get("d2d_scatter_copies", 0) -
+                    previous_transfers.get("d2d_scatter_copies", 0)
+                ),
             })
             previous_by_layer[layer] = profile
     return {"schema_version": 1, "rows": rows}
+
+
+def build_full_token_breakdown(
+        timing: dict[str, Any],
+        layer_timing: dict[str, Any],
+        path_proof: dict[str, Any]) -> dict[str, Any]:
+    """Build a direct, representative decode-token M5A attribution.
+
+    CUDA-event module timings, native StageProfiler deltas, and Torch profiler
+    operator/API rows are kept separate. No residual bucket is relabeled as a
+    measured recurrent-attention cost.
+    """
+    rows = [
+        row for row in layer_timing.get("rows", [])
+        if row.get("phase") == "decode"
+    ]
+    decode_steps = sorted({int(row["step"]) for row in rows})
+    captured_step = timing.get("torch_profiler", {}).get("captured_step")
+    representative_step = (
+        int(captured_step)
+        if captured_step is not None and int(captured_step) in decode_steps
+        else (decode_steps[-1] if decode_steps else None)
+    )
+    selected = [
+        row for row in rows
+        if representative_step is not None and int(row["step"]) == representative_step
+    ]
+
+    summed_fields = (
+        "total_layer_wall_ms",
+        "normalization_wall_ms",
+        "attention_wall_ms",
+        "attention_cuda_event_ms",
+        "router_wall_ms",
+        "expert_grouping_wall_ms",
+        "expert_native_wall_ms",
+        "expert_output_combination_wall_ms",
+        "shared_expert_wall_ms",
+        "shared_expert_gate_wall_ms",
+        "expert_gate_cuda_ms",
+        "expert_up_cuda_ms",
+        "expert_activation_cuda_ms",
+        "expert_down_cuda_ms",
+        "expert_d2d_gather_cuda_ms",
+        "expert_d2d_scatter_cuda_ms",
+        "inter_device_transfer_wall_ms",
+        "synchronization_ms",
+        "residual_and_unattributed_wall_ms",
+    )
+    totals = {
+        field: sum(float(row.get(field, 0.0) or 0.0) for row in selected)
+        for field in summed_fields
+    }
+    count_fields = (
+        "expert_d2d_gather_bytes",
+        "expert_d2d_gather_copies",
+        "expert_d2d_scatter_bytes",
+        "expert_d2d_scatter_copies",
+    )
+    transfer_totals = {
+        field: sum(int(row.get(field, 0) or 0) for row in selected)
+        for field in count_fields
+    }
+    timing_events_dropped = sum(
+        int(row.get("native_timing_events_dropped", 0) or 0)
+        for row in selected
+    )
+    epoch_timing_events_dropped = sum(
+        int(item.get("profile", {}).get("operations", {}).get(
+            "timing_events_dropped", 0
+        ))
+        for item in timing.get("engine_profiles", [])
+    )
+
+    selected_spans = [
+        span for span in timing.get("wall_spans", [])
+        if representative_step is not None
+        and int(span.get("step", -1)) == representative_step
+    ]
+    direct_span_cpu: dict[str, float] = collections.Counter()
+    direct_span_cuda: dict[str, float] = collections.Counter()
+    for span in selected_spans:
+        name = str(span.get("name", ""))
+        direct_span_cpu[name] += float(span.get("cpu_wall_ms", 0.0) or 0.0)
+        if span.get("cuda_event_ms") is not None:
+            direct_span_cuda[name] += float(span["cuda_event_ms"])
+
+    step_record = next(
+        (
+            row for row in timing.get("steps", [])
+            if representative_step is not None
+            and int(row.get("step", -1)) == representative_step
+        ),
+        None,
+    )
+    full_token_wall_ms = (
+        float(step_record.get(
+            "full_token_wall_ms", step_record.get("model_wall_ms", 0.0)
+        ))
+        if step_record is not None else None
+    )
+
+    def percentile(values: list[float], fraction: float) -> float | None:
+        if not values:
+            return None
+        ordered = sorted(values)
+        position = fraction * (len(ordered) - 1)
+        lower = int(position)
+        upper = min(lower + 1, len(ordered) - 1)
+        weight = position - lower
+        return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+    if step_record is not None:
+        step_begin_ns = int(step_record.get("begin_monotonic_ns", -1))
+        step_end_ns = int(step_record.get("end_monotonic_ns", -1))
+        nvml_samples = [
+            sample for sample in timing.get("nvml", {}).get("samples", [])
+            if step_begin_ns <= int(sample.get("monotonic_ns", -1)) <= step_end_ns
+        ]
+    else:
+        nvml_samples = []
+    gpu_busy: dict[str, Any] = {}
+    gpu_count = max(
+        (len(sample.get("gpus", [])) for sample in nvml_samples),
+        default=0,
+    )
+    for gpu in range(gpu_count):
+        utilization = [
+            float(sample["gpus"][gpu]["gpu_utilization_percent"])
+            for sample in nvml_samples
+            if gpu < len(sample.get("gpus", []))
+            and "gpu_utilization_percent" in sample["gpus"][gpu]
+        ]
+        gpu_busy[f"cuda:{gpu}"] = {
+            "sample_count": len(utilization),
+            "median_utilization_percent": percentile(utilization, 0.50),
+            "p95_utilization_percent": percentile(utilization, 0.95),
+            "maximum_utilization_percent": max(utilization) if utilization else None,
+        }
+
+    native_idle_profiles = [
+        {
+            "layer": int(item["layer"]),
+            "gpu": int(item["gpu"]),
+            "scope": "full_profile_epoch_cumulative_not_representative_token",
+            "gpu_timeline_span_ms": item["profile"].get(
+                "gpu_timeline_span_ms", 0.0
+            ),
+            "compute_engine_active_ms": item["profile"].get(
+                "compute_engine_active_ms", 0.0
+            ),
+            "copy_engine_active_ms": item["profile"].get(
+                "copy_engine_active_ms", 0.0
+            ),
+            "idle_gap_attribution": item["profile"].get(
+                "idle_gap_attribution", {}
+            ),
+        }
+        for item in timing.get("engine_profiles", [])
+    ]
+    representative_native_timelines = []
+    for item in timing.get("engine_timelines", []):
+        events = [
+            event for event in item.get("timeline", {}).get("traceEvents", [])
+            if int(event.get("args", {}).get("token", -1)) == representative_step
+            and float(event.get("dur", 0.0) or 0.0) >= 0.0
+        ]
+        intervals = sorted(
+            (
+                float(event.get("ts", 0.0)) / 1000.0,
+                (
+                    float(event.get("ts", 0.0))
+                    + float(event.get("dur", 0.0))
+                ) / 1000.0,
+            )
+            for event in events
+        )
+        gaps = [
+            max(0.0, intervals[index][0] - intervals[index - 1][1])
+            for index in range(1, len(intervals))
+            if intervals[index][0] > intervals[index - 1][1]
+        ]
+        stage_ms: dict[str, float] = collections.Counter()
+        stage_counts: dict[str, int] = collections.Counter()
+        for event in events:
+            name = str(event.get("name", ""))
+            stage_ms[name] += float(event.get("dur", 0.0) or 0.0) / 1000.0
+            stage_counts[name] += 1
+        representative_native_timelines.append({
+            "layer": int(item["layer"]),
+            "gpu": int(item["gpu"]),
+            "scope": "representative_decode_token",
+            "step": representative_step,
+            "event_count": len(events),
+            "stage_event_count": dict(sorted(stage_counts.items())),
+            "stage_duration_ms": dict(sorted(stage_ms.items())),
+            "inter_event_gap_ms": {
+                "count": len(gaps),
+                "median": percentile(gaps, 0.50),
+                "p95": percentile(gaps, 0.95),
+                "maximum": max(gaps) if gaps else None,
+            },
+        })
+    native_d2d_timeline_tokens = [
+        int(event.get("args", {}).get("token", -1))
+        for item in timing.get("engine_timelines", [])
+        for event in item.get("timeline", {}).get("traceEvents", [])
+        if event.get("name") in {"d2d_gather", "d2d_scatter"}
+    ]
+
+    operators = timing.get("torch_profiler", {}).get("operators", [])
+    api_needles = (
+        "cudaLaunch", "cudaMemcpy", "cudaStream", "cudaEvent",
+        "cudaDeviceSynchronize", "cudaFree", "cudaMalloc",
+    )
+    cuda_api_rows = [
+        row for row in operators
+        if any(needle in str(row.get("key", "")) for needle in api_needles)
+    ]
+    operator_totals = {
+        "captured_step": captured_step,
+        "cuda_api_call_count": sum(int(row.get("count", 0)) for row in cuda_api_rows),
+        "cuda_api_self_cpu_time_total_us": sum(
+            float(row.get("self_cpu_time_total_us", 0.0)) for row in cuda_api_rows
+        ),
+        "cuda_api_rows": cuda_api_rows,
+        "top_operators": operators,
+        "error": timing.get("torch_profiler", {}).get("error"),
+    }
+
+    linear_rows = [row for row in selected if row.get("layer_type") == "linear_attention"]
+    full_rows = [row for row in selected if row.get("layer_type") == "full_attention"]
+    selected_layers = [int(row.get("layer", -1)) for row in selected]
+    linear_cuda_rows = sum(
+        1 for row in linear_rows
+        if row.get("attention_cuda_event_ms") is not None
+    )
+    full_cuda_rows = sum(
+        1 for row in full_rows
+        if row.get("attention_cuda_event_ms") is not None
+    )
+    gates = {
+        "representative_decode_step_present": representative_step is not None,
+        "all_40_layers_present": (
+            len(selected) == 40
+            and sorted(selected_layers) == list(range(40))
+        ),
+        "all_30_linear_attention_layers_directly_timed": linear_cuda_rows == 30,
+        "all_10_full_attention_layers_directly_timed": full_cuda_rows == 10,
+        "torch_profiler_step_captured": (
+            captured_step is not None
+        ),
+        "torch_profiler_matches_representative_step": (
+            captured_step is not None
+            and representative_step is not None
+            and int(captured_step) == representative_step
+        ),
+        "torch_profiler_has_operators": bool(operators),
+        "torch_profiler_has_cuda_api_rows": bool(cuda_api_rows),
+        "torch_profiler_has_no_error": (
+            timing.get("torch_profiler", {}).get("error") is None
+        ),
+        "native_timing_events_not_dropped": (
+            timing_events_dropped == 0 and epoch_timing_events_dropped == 0
+        ),
+        "native_d2d_gather_measured_on_all_layers": (
+            len(selected) == 40
+            and all(
+                int(row.get("expert_d2d_gather_copies", 0) or 0) > 0
+                for row in selected
+            )
+        ),
+        "native_d2d_scatter_measured_on_all_layers": (
+            len(selected) == 40
+            and all(
+                int(row.get("expert_d2d_scatter_copies", 0) or 0) > 0
+                for row in selected
+            )
+        ),
+        "native_d2d_timeline_tokens_attributed": (
+            bool(native_d2d_timeline_tokens)
+            and all(token >= 0 for token in native_d2d_timeline_tokens)
+        ),
+        "pybind_device_path_measured": path_proof.get("pybind_device_calls", 0) > 0,
+        "lm_head_directly_timed": (
+            "lm_head" in direct_span_cpu and "lm_head" in direct_span_cuda
+        ),
+        "sampling_and_item_sync_directly_timed": (
+            "token_selection_and_item_sync" in direct_span_cpu
+        ),
+        "full_token_wall_time_present": (
+            full_token_wall_ms is not None and full_token_wall_ms > 0.0
+        ),
+        "representative_nvml_samples_present_for_both_gpus": (
+            len(gpu_busy) == 2
+            and all(
+                int(item.get("sample_count", 0)) > 0
+                for item in gpu_busy.values()
+            )
+        ),
+        "zero_host_fallback_calls": (
+            path_proof.get("host_path_fallback_calls", 0) == 0
+        ),
+    }
+    return {
+        "schema_version": 1,
+        "result": "PASS" if all(gates.values()) else "FAIL",
+        "gates": gates,
+        "measurement_scope": (
+            "representative full single-token decode including all 40 layers, "
+            "LM head, sampling/item sync, and Python/native boundaries"
+        ),
+        "representative_step": representative_step,
+        "full_token_wall_ms": full_token_wall_ms,
+        "layer_count": len(selected),
+        "direct_measurement": {
+            "linear_attention_layers": len(linear_rows),
+            "linear_attention_cuda_event_layers": linear_cuda_rows,
+            "full_attention_layers": len(full_rows),
+            "full_attention_cuda_event_layers": full_cuda_rows,
+            "stage_totals": totals,
+            "native_d2d_totals": transfer_totals,
+            "native_timing_events_dropped": timing_events_dropped,
+            "native_epoch_timing_events_dropped": epoch_timing_events_dropped,
+            "native_d2d_timeline_tokens": native_d2d_timeline_tokens,
+            "torch_profiler": operator_totals,
+            "direct_span_cpu_ms": dict(sorted(direct_span_cpu.items())),
+            "direct_span_cuda_ms": dict(sorted(direct_span_cuda.items())),
+            "recurrent_component_cuda_ms": {
+                name: value
+                for name, value in sorted(direct_span_cuda.items())
+                if name.startswith("linear_attention_")
+            },
+            "full_attention_component_cuda_ms": {
+                name: value
+                for name, value in sorted(direct_span_cuda.items())
+                if name.startswith("full_attention_")
+            },
+            "lm_head": {
+                "cpu_wall_ms": direct_span_cpu.get("lm_head"),
+                "cuda_event_ms": direct_span_cuda.get("lm_head"),
+            },
+            "sampling_and_item_sync_cpu_wall_ms": direct_span_cpu.get(
+                "token_selection_and_item_sync"
+            ),
+            "python_native_boundaries": {
+                key: path_proof.get(key, 0)
+                for key in (
+                    "pybind_device_calls",
+                    "pybind_host_fallback_calls",
+                    "python_combine_calls",
+                    "raw_output_allocations",
+                    "router_torch_device_calls",
+                    "router_native_host_calls",
+                    "router_scalar_sync_calls",
+                )
+            },
+            "gpu_busy_nvml": gpu_busy,
+            "representative_native_timelines": representative_native_timelines,
+            "native_idle_gap_profiles_cumulative": native_idle_profiles,
+        },
+        "unattributed": {
+            "wall_ms": totals["residual_and_unattributed_wall_ms"],
+            "classification": (
+                "residual_and_framework_unattributed; not direct recurrent timing"
+            ),
+        },
+        "instrumentation": {
+            "bookkeeping_ms": timing.get("instrumentation_bookkeeping_ms", 0.0),
+            "module_spans_with_cuda_events": sum(
+                1 for span in selected_spans
+                if span.get("cuda_event_ms") is not None
+            ),
+            "native_timing_events_allocated": sum(
+                int(item.get("profile", {}).get("operations", {}).get(
+                    "timing_events_allocated", 0
+                ))
+                for item in timing.get("engine_profiles", [])
+            ),
+            "native_timing_events_dropped": timing_events_dropped,
+            "native_epoch_timing_events_dropped": epoch_timing_events_dropped,
+            "api_count_scope": (
+                "instrumented direct run; use paired "
+                "m5a-profiler-control.json for production launch/API counts"
+            ),
+        },
+        "layers": selected,
+    }
+
+
+def build_torch_profiler_control(timing: dict[str, Any]) -> dict[str, Any]:
+    """Fail-closed production-path Torch/CUPTI control without event hooks."""
+    profiler = timing.get("torch_profiler", {})
+    operators = profiler.get("operators", [])
+    api_needles = (
+        "cudaLaunch", "cudaMemcpy", "cudaStream", "cudaEvent",
+        "cudaDeviceSynchronize", "cudaFree", "cudaMalloc",
+    )
+    cuda_api_rows = [
+        row for row in operators
+        if any(needle in str(row.get("key", "")) for needle in api_needles)
+    ]
+    hook_cuda_events = [
+        span for span in timing.get("wall_spans", [])
+        if span.get("cuda_event_ms") is not None
+    ]
+    captured_step = profiler.get("captured_step")
+    step = next(
+        (
+            row for row in timing.get("steps", [])
+            if captured_step is not None
+            and int(row.get("step", -1)) == int(captured_step)
+        ),
+        None,
+    )
+    gates = {
+        "captured_step_present": captured_step is not None,
+        "captured_step_is_decode": step is not None and step.get("phase") == "decode",
+        "operators_present": bool(operators),
+        "cuda_api_rows_present": bool(cuda_api_rows),
+        "torch_profiler_has_no_error": profiler.get("error") is None,
+        "per_module_cuda_event_hooks_absent": not hook_cuda_events,
+        "native_stage_profiles_absent": not timing.get("engine_profiles"),
+    }
+    return {
+        "schema_version": 1,
+        "result": "PASS" if all(gates.values()) else "FAIL",
+        "gates": gates,
+        "scope": (
+            "production execution mode with Torch profiler only; no native "
+            "StageProfiler events and no per-module CUDA-event hooks"
+        ),
+        "captured_step": captured_step,
+        "model_wall_ms": (
+            step.get("model_wall_ms") if step is not None else None
+        ),
+        "full_token_wall_ms": (
+            step.get("full_token_wall_ms") if step is not None else None
+        ),
+        "cuda_api_call_count": sum(
+            int(row.get("count", 0)) for row in cuda_api_rows
+        ),
+        "cuda_api_self_cpu_time_total_us": sum(
+            float(row.get("self_cpu_time_total_us", 0.0))
+            for row in cuda_api_rows
+        ),
+        "cuda_api_rows": cuda_api_rows,
+        "operators": operators,
+        "instrumentation_bookkeeping_ms": timing.get(
+            "instrumentation_bookkeeping_ms", 0.0
+        ),
+    }
 
 
 def _source_shards(index: dict[str, Any], layer: int, expert: int) -> list[str]:
@@ -893,7 +1448,7 @@ def build_expert_events(run_id: str, timing: dict[str, Any],
     return [*route_rows, *requests, *transfers, *evictions]
 
 
-def main() -> None:
+def main() -> int:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     memory = MemoryProbe(max_checkpoints=256)
@@ -990,7 +1545,7 @@ def main() -> None:
         with recorder.phase("warmup_generation"):
             warmup_generation = run_generation(
                 runtime, tokenizer, args.prompt, args.max_new_tokens,
-                False, "dee", trace=False,
+                False, "dee", trace=False, execution_mode="production",
             )
         if args.profile and args.trace_requests:
             warmup_wall_ms = warmup_generation["total_generation_seconds"] * 1000.0
@@ -1007,9 +1562,10 @@ def main() -> None:
                 })
         memory.checkpoint("after_warmup_generation", include_maps=True,
                           include_smaps=True, include_cuda=True, include_nvml=True)
-    if args.profile:
-        recorder.attach_model_hooks(runtime["model"], runtime["context"])
-        recorder.reset_engine_profiles()
+    if args.profile or args.torch_profiler_control:
+        if args.profile:
+            recorder.attach_model_hooks(runtime["model"], runtime["context"])
+            recorder.reset_engine_profiles()
         runtime["context"].forensics = recorder
 
     tensor_owners = {
@@ -1040,6 +1596,7 @@ def main() -> None:
     generation = run_generation(
         runtime, tokenizer, args.prompt, args.max_new_tokens,
         False, "dee", trace=False,
+        execution_mode=("profiler" if args.profile else "production"),
     )
     if args.profile:
         recorder.capture_final_engine_evidence(
@@ -1125,7 +1682,7 @@ def main() -> None:
                           include_smaps=True, include_cuda=True, include_nvml=True)
         reference = run_generation(
             runtime, tokenizer, args.prompt, args.max_new_tokens,
-            False, "reference", trace=True,
+            False, "reference", trace=True, execution_mode="parity",
         )
         reference_tensor_inventory = inventory_tensors(
             {"reference_expert_caches": runtime["reference_expert_caches"]},
@@ -1149,7 +1706,7 @@ def main() -> None:
         torch.cuda.empty_cache()
         candidate = run_generation(
             runtime, tokenizer, args.prompt, args.max_new_tokens,
-            False, "dee", trace=True,
+            False, "dee", trace=True, execution_mode="parity",
         )
         comparisons = compare_trace(reference["collector"], candidate["collector"])
         parity = {
@@ -1226,6 +1783,48 @@ def main() -> None:
         path_proof["device_path_share"] = 0.0
         path_proof["host_fallback_share"] = 0.0
     write_json(args.output_dir / "path-proof.json", path_proof)
+    full_token_breakdown = (
+        build_full_token_breakdown(timing, layer_timing, path_proof)
+        if args.profile else {
+            "schema_version": 1,
+            "measurement_scope": "disabled",
+            "reason": "profiling disabled control",
+        }
+    )
+    write_json(
+        args.output_dir / "m5a-full-token-breakdown.json",
+        full_token_breakdown,
+    )
+    requested_m5a_failures = []
+    if (
+        args.profile
+        and args.torch_profiler_step is not None
+        and full_token_breakdown.get("result") != "PASS"
+    ):
+        requested_m5a_failures.append({
+            "gate": "direct_profiler",
+            "details": full_token_breakdown.get("gates", {}),
+        })
+    profiler_control = (
+        build_torch_profiler_control(timing)
+        if args.torch_profiler_control else {
+            "schema_version": 1,
+            "result": "SKIP",
+            "reason": "torch profiler control not requested",
+        }
+    )
+    write_json(
+        args.output_dir / "m5a-profiler-control.json",
+        profiler_control,
+    )
+    if (
+        args.torch_profiler_control
+        and profiler_control.get("result") != "PASS"
+    ):
+        requested_m5a_failures.append({
+            "gate": "torch_profiler_control",
+            "details": profiler_control.get("gates", {}),
+        })
 
     memory.write_json(args.output_dir / "memory-timeline.json")
     write_json(args.output_dir / "layer-timing.json", layer_timing)
@@ -1269,7 +1868,7 @@ def main() -> None:
     }
     report = {
         "schema_version": 1,
-        "result": "PASS",
+        "result": "FAIL" if requested_m5a_failures else "PASS",
         "run_id": args.run_id,
         "git_commit": git_revision(),
         "checkpoint": {
@@ -1289,6 +1888,7 @@ def main() -> None:
             "cache_experts_per_layer": args.cache_experts,
             "cache_disabled": args.cache_disabled,
             "profile_enabled": args.profile,
+            "torch_profiler_control": args.torch_profiler_control,
             "trace_requests": args.trace_requests,
             "profile_timeline": args.profile_timeline,
             "debug_validate_cache": args.debug_validate_cache,
@@ -1323,6 +1923,7 @@ def main() -> None:
             "torch_profiler": timing["torch_profiler"],
             "expert_event_count": len(expert_events),
             "warmup_expert_event_count": len(warmup_expert_events),
+            "requested_m5a_gate_failures": requested_m5a_failures,
         },
         "artifacts": {
             "memory_timeline": "memory-timeline.json",
@@ -1332,6 +1933,8 @@ def main() -> None:
             "cache_invariants": "cache-invariants.json",
             "timing_raw": "timing-raw.json",
             "gpu_utilization_summary": "gpu-utilization-summary.json",
+            "m5a_full_token_breakdown": "m5a-full-token-breakdown.json",
+            "m5a_profiler_control": "m5a-profiler-control.json",
         },
     }
     write_json(args.output_dir / "run-report.json", report)
@@ -1362,7 +1965,8 @@ def main() -> None:
         "all_40_layers": all_40_layers,
         "output_dir": str(args.output_dir),
     }, sort_keys=True), flush=True)
+    return 1 if requested_m5a_failures else 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

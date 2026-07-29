@@ -101,7 +101,8 @@ if(DEE_BUILD_TESTS)
         list(APPEND DEE_TEST_SOURCES
             tests/test_swiglu_cuda.cpp
             tests/test_router_cuda.cpp
-            tests/test_expert_batch_cuda.cpp)
+            tests/test_expert_batch_cuda.cpp
+            tests/test_profiling_cuda.cpp)
     endif()
     foreach(test_source IN LISTS DEE_TEST_SOURCES)
         get_filename_component(test_name ${test_source} NAME_WE)

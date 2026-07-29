@@ -277,7 +277,7 @@ PYBIND11_MODULE(pydee_core, m) {
                 Run MoE forward with device-resident hidden and outputs.
                 d_h_in_ptr: device pointer to FP16 hidden [tokens, hidden].
                 expert_ids: numpy int32 array [tokens, topk] (host-side for grouping).
-                d_experts_out_ptr: device pointer to FP16 output [tokens, topk, hidden].
+                d_experts_out_ptr: device pointer to FP32 output [tokens, topk, hidden].
                 Returns True on success; caller must sync the compute stream before
                 reading d_experts_out.
             )pbdoc")

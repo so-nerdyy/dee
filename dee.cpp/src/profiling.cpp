@@ -182,6 +182,10 @@ void StageProfiler::configure(bool enabled, bool trace_enabled,
     mmap_to_pinned_bytes_ = 0;
     h2d_bytes_ = 0;
     h2d_copies_ = 0;
+    d2d_gather_bytes_ = 0;
+    d2d_gather_copies_ = 0;
+    d2d_scatter_bytes_ = 0;
+    d2d_scatter_copies_ = 0;
     cublas_calls_ = 0;
     kernel_launches_ = 0;
     stream_waits_ = 0;
@@ -585,6 +589,10 @@ StageProfile StageProfiler::finish(double total_wall_ms, uint64_t resident_hits,
     result.mmap_to_pinned_bytes = mmap_to_pinned_bytes_;
     result.h2d_bytes = h2d_bytes_;
     result.h2d_copies = h2d_copies_;
+    result.d2d_gather_bytes = d2d_gather_bytes_;
+    result.d2d_gather_copies = d2d_gather_copies_;
+    result.d2d_scatter_bytes = d2d_scatter_bytes_;
+    result.d2d_scatter_copies = d2d_scatter_copies_;
     result.cublas_calls = cublas_calls_;
     result.kernel_launches = kernel_launches_;
     result.stream_waits = stream_waits_;
@@ -633,7 +641,9 @@ StageProfile StageProfiler::finish(double total_wall_ms, uint64_t resident_hits,
     result.total_gpu_transfer_ms =
         gpu_ms_[static_cast<size_t>(GpuStage::H2D)] +
         gpu_ms_[static_cast<size_t>(GpuStage::ActivationH2D)] +
-        gpu_ms_[static_cast<size_t>(GpuStage::D2H)];
+        gpu_ms_[static_cast<size_t>(GpuStage::D2H)] +
+        gpu_ms_[static_cast<size_t>(GpuStage::D2DGather)] +
+        gpu_ms_[static_cast<size_t>(GpuStage::D2DScatter)];
     result.total_gpu_weight_conversion_ms =
         gpu_ms_[static_cast<size_t>(GpuStage::WeightConversion)];
     result.total_gpu_compute_ms =
@@ -689,7 +699,9 @@ StageProfile StageProfiler::finish(double total_wall_ms, uint64_t resident_hits,
             last_gpu = std::max(last_gpu, record.end_ms);
             if (record.gpu_stage == GpuStage::H2D ||
                 record.gpu_stage == GpuStage::ActivationH2D ||
-                record.gpu_stage == GpuStage::D2H) {
+                record.gpu_stage == GpuStage::D2H ||
+                record.gpu_stage == GpuStage::D2DGather ||
+                record.gpu_stage == GpuStage::D2DScatter) {
                 copy_intervals.emplace_back(record.start_ms, record.end_ms);
                 if (record.gpu_stage == GpuStage::H2D) {
                     const size_t bucket = h2d_bucket(record.bytes);
@@ -941,7 +953,7 @@ const char* gpu_stage_name(GpuStage stage) {
     static const char* names[] = {
         "h2d", "weight_conversion", "gate_projection", "up_projection", "silu_multiply",
         "down_projection", "combine", "stream_wait", "activation_h2d",
-        "activation_conversion", "d2h"
+        "activation_conversion", "d2h", "d2d_gather", "d2d_scatter"
     };
     return names[static_cast<size_t>(stage)];
 }
@@ -1059,6 +1071,10 @@ std::string stage_profile_json(const StageProfile& profile, bool include_trace) 
     out << ",\"transfers\":{\"mmap_to_pinned_bytes\":" << profile.mmap_to_pinned_bytes
         << ",\"h2d_bytes\":" << profile.h2d_bytes
         << ",\"h2d_copies\":" << profile.h2d_copies
+        << ",\"d2d_gather_bytes\":" << profile.d2d_gather_bytes
+        << ",\"d2d_gather_copies\":" << profile.d2d_gather_copies
+        << ",\"d2d_scatter_bytes\":" << profile.d2d_scatter_bytes
+        << ",\"d2d_scatter_copies\":" << profile.d2d_scatter_copies
         << ",\"average_h2d_copy_bytes\":" << profile.average_h2d_copy_bytes << '}';
     out << ",\"operations\":{\"cublas_calls\":" << profile.cublas_calls
         << ",\"kernel_launches\":" << profile.kernel_launches

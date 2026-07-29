@@ -40,6 +40,8 @@ enum class GpuStage : size_t {
     ActivationH2D,
     ActivationConversion,
     D2H,
+    D2DGather,
+    D2DScatter,
     Count
 };
 
@@ -202,6 +204,10 @@ struct StageProfile {
     uint64_t mmap_to_pinned_bytes = 0;
     uint64_t h2d_bytes = 0;
     uint64_t h2d_copies = 0;
+    uint64_t d2d_gather_bytes = 0;
+    uint64_t d2d_gather_copies = 0;
+    uint64_t d2d_scatter_bytes = 0;
+    uint64_t d2d_scatter_copies = 0;
     uint64_t cublas_calls = 0;
     uint64_t kernel_launches = 0;
     uint64_t stream_waits = 0;
@@ -303,6 +309,14 @@ public:
     void note_pinned_skip(uint64_t count = 1) { pinned_blocks_skipped_ += count; }
     void note_mmap_copy(size_t bytes) { mmap_to_pinned_bytes_ += bytes; }
     void note_h2d_copy(size_t bytes) { h2d_bytes_ += bytes; ++h2d_copies_; }
+    void note_d2d_gather_copy(size_t bytes) {
+        d2d_gather_bytes_ += bytes;
+        ++d2d_gather_copies_;
+    }
+    void note_d2d_scatter_copy(size_t bytes) {
+        d2d_scatter_bytes_ += bytes;
+        ++d2d_scatter_copies_;
+    }
     void note_cublas_call(uint64_t count = 1) { cublas_calls_ += count; }
     void note_kernel_launch(uint64_t count = 1) { kernel_launches_ += count; }
     void note_stream_wait(uint64_t count = 1) { stream_waits_ += count; }
@@ -332,6 +346,7 @@ public:
     size_t cuda_begin(GpuStage stage, void* stream);
     bool cuda_end(size_t ticket, void* stream);
     bool cuda_collect_ready();
+    size_t pending_cuda_samples() const { return pending_cuda_.size(); }
 #endif
 
     StageProfile finish(double total_wall_ms, uint64_t resident_hits,
@@ -361,6 +376,10 @@ private:
     uint64_t mmap_to_pinned_bytes_ = 0;
     uint64_t h2d_bytes_ = 0;
     uint64_t h2d_copies_ = 0;
+    uint64_t d2d_gather_bytes_ = 0;
+    uint64_t d2d_gather_copies_ = 0;
+    uint64_t d2d_scatter_bytes_ = 0;
+    uint64_t d2d_scatter_copies_ = 0;
     uint64_t cublas_calls_ = 0;
     uint64_t kernel_launches_ = 0;
     uint64_t stream_waits_ = 0;

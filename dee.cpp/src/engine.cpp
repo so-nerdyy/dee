@@ -761,6 +761,14 @@ bool Engine::moe_forward_batch_device(int layer, const void* d_h_in, int tokens,
 
             // Device-to-device gather: pull each token's hidden row from
             // d_h_in_half into d_moe_batch_input_half_.  No host staging.
+            if (profiler_.enabled()) {
+                profiler_.set_cuda_context(
+                    current_token_, layer, expert, group_tokens * hidden_half);
+            }
+            const size_t gather_ticket = profiler_.enabled()
+                ? profiler_.cuda_begin(
+                    GpuStage::D2DGather, static_cast<void*>(compute_stream_))
+                : static_cast<size_t>(-1);
             for (size_t row = 0; row < group_tokens; ++row) {
                 const size_t token = positions[row] / static_cast<size_t>(topk);
                 if (!DEE_CUDA_CHECK_NAMED(
@@ -768,8 +776,16 @@ bool Engine::moe_forward_batch_device(int layer, const void* d_h_in, int tokens,
                             static_cast<uint16_t*>(d_moe_batch_input_half_) +
                                 row * static_cast<size_t>(hidden_),
                             d_h_in_half + token * static_cast<size_t>(hidden_),
-                            hidden_half, cudaMemcpyDeviceToDevice, compute_stream_),
-                        "cudaMemcpyAsync(MoE batch D2D gather)")) return false;
+                             hidden_half, cudaMemcpyDeviceToDevice, compute_stream_),
+                         "cudaMemcpyAsync(MoE batch D2D gather)")) return false;
+                if (profiler_.enabled()) {
+                    profiler_.note_d2d_gather_copy(hidden_half);
+                }
+            }
+            if (profiler_.enabled() &&
+                !profiler_.cuda_end(
+                    gather_ticket, static_cast<void*>(compute_stream_))) {
+                return false;
             }
 
             // Arm device-side wait for expert weight transfer.
@@ -797,6 +813,14 @@ bool Engine::moe_forward_batch_device(int layer, const void* d_h_in, int tokens,
             // d_moe_batch_output_ to d_experts_out position.  FP32 output
             // matches the host-path moe_forward_batch contract; Python caller
             // converts to FP16 on-device via .to(dtype=hidden_states.dtype).
+            if (profiler_.enabled()) {
+                profiler_.set_cuda_context(
+                    current_token_, layer, expert, group_tokens * hidden_float);
+            }
+            const size_t scatter_ticket = profiler_.enabled()
+                ? profiler_.cuda_begin(
+                    GpuStage::D2DScatter, static_cast<void*>(compute_stream_))
+                : static_cast<size_t>(-1);
             for (size_t row = 0; row < group_tokens; ++row) {
                 const size_t position = positions[row];
                 if (!DEE_CUDA_CHECK_NAMED(
@@ -811,6 +835,15 @@ bool Engine::moe_forward_batch_device(int layer, const void* d_h_in, int tokens,
                     cache_.unpin(source_layer, expert);
                     return false;
                 }
+                if (profiler_.enabled()) {
+                    profiler_.note_d2d_scatter_copy(hidden_float);
+                }
+            }
+            if (profiler_.enabled() &&
+                !profiler_.cuda_end(
+                    scatter_ticket, static_cast<void*>(compute_stream_))) {
+                cache_.unpin(source_layer, expert);
+                return false;
             }
             cache_.unpin(source_layer, expert);
         }
@@ -819,9 +852,22 @@ bool Engine::moe_forward_batch_device(int layer, const void* d_h_in, int tokens,
     // No D2H, no host output scatter.  Output is already on-device.
     // Synchronize the compute stream so the Python caller can safely read
     // d_experts_out without needing access to the engine's internal stream.
+    const auto output_sync_begin = profiler_.enabled()
+        ? StageProfiler::now() : StageProfiler::TimePoint{};
     if (!DEE_CUDA_CHECK_NAMED(
             cudaStreamSynchronize(compute_stream_),
             "cudaStreamSynchronize(device MoE batch)")) return false;
+    if (profiler_.enabled()) {
+        const auto output_sync_end = StageProfiler::now();
+        profiler_.add_cpu_ms(
+            CpuStage::Synchronization,
+            std::chrono::duration<double, std::milli>(
+                output_sync_end - output_sync_begin).count());
+        profiler_.note_host_synchronization();
+        profiler_.note_host_wait(
+            HostWaitReason::LayerOutput, output_sync_begin, output_sync_end,
+            current_token_, layer);
+    }
     release_transient_f32_sources();
     stats_.peak_vram = std::max(stats_.peak_vram, cache_.used_bytes());
     if (profiler_.enabled()) profiler_.add_layer_latency(external_layer_begin);
@@ -955,6 +1001,18 @@ bool Engine::reset_external_profile() {
         if (compute_stream_ &&
             !DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(compute_stream_),
                                   "cudaStreamSynchronize(reset external profile)")) return false;
+        // The previous epoch may have completed CUDA samples that were never
+        // snapshotted (for example a warmup immediately followed by a reset).
+        // Resolve them against the old timeline origin before configure()
+        // clears counters and begin_cuda_timeline() replaces that origin.
+        if (profiler_.enabled() &&
+            (!profiler_.cuda_collect_ready() ||
+             profiler_.pending_cuda_samples() != 0)) {
+            std::fprintf(
+                stderr,
+                "[profile] reset external profile left pending CUDA samples\n");
+            return false;
+        }
     }
 #endif
     cache_.reset_stats();

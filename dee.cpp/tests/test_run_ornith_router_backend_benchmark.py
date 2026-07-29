@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
 
 
 SCRIPT = (
@@ -13,6 +16,16 @@ SPEC = importlib.util.spec_from_file_location("router_backend_benchmark", SCRIPT
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+
+M5B_SCRIPT = (
+    Path(__file__).resolve().parents[1]
+    / "scripts"
+    / "run_ornith_m5b_execution_benchmark.py"
+)
+M5B_SPEC = importlib.util.spec_from_file_location("m5b_execution_benchmark", M5B_SCRIPT)
+assert M5B_SPEC and M5B_SPEC.loader
+M5B_MODULE = importlib.util.module_from_spec(M5B_SPEC)
+M5B_SPEC.loader.exec_module(M5B_MODULE)
 
 
 def row(rate: float, device_calls: int = 160) -> dict:
@@ -53,3 +66,91 @@ def test_empty_trial_summary_fails_closed() -> None:
         assert "empty" in str(exc)
     else:
         raise AssertionError("empty trials must fail")
+
+
+def test_m5b_balanced_order_is_paired_and_bounded() -> None:
+    order = M5B_MODULE.balanced_order(3)
+    assert order == [
+        "debug-full-logit",
+        "production",
+        "production",
+        "debug-full-logit",
+        "debug-full-logit",
+        "production",
+    ]
+    assert order.count("debug-full-logit") == 3
+    assert order.count("production") == 3
+
+
+def test_m5b_paired_analysis_requires_majority_real_wins() -> None:
+    sequence = [
+        {"execution_mode": "debug-full-logit", "tokens_per_second": 8.0},
+        {"execution_mode": "production", "tokens_per_second": 8.2},
+        {"execution_mode": "production", "tokens_per_second": 8.1},
+        {"execution_mode": "debug-full-logit", "tokens_per_second": 8.0},
+        {"execution_mode": "debug-full-logit", "tokens_per_second": 8.0},
+        {"execution_mode": "production", "tokens_per_second": 7.9},
+    ]
+    result = M5B_MODULE.paired_trial_analysis(sequence)
+    assert result["pair_count"] == 3
+    assert result["production_wins"] == 2
+    assert result["minimum_speedup_ratio"] == 7.9 / 8.0
+
+
+def test_m5b_exact_trace_comparison_rejects_any_numeric_drift() -> None:
+    records = {
+        category: [("operation", np.asarray([1.0], dtype=np.float32))]
+        for category in set(M5B_MODULE.TOLERANCES) | {"expert_ids"}
+    }
+    expected = SimpleNamespace(records=records)
+    exact = SimpleNamespace(records={
+        category: [(label, array.copy()) for label, array in rows]
+        for category, rows in records.items()
+    })
+    drifted_records = {
+        category: [(label, array.copy()) for label, array in rows]
+        for category, rows in records.items()
+    }
+    drifted_records["final_hidden_state"][0][1][0] += 1e-6
+    drifted = SimpleNamespace(records=drifted_records)
+    assert M5B_MODULE.exact_trace_comparison(
+        expected, exact
+    )["all_categories_bitwise_exact"]
+    assert not M5B_MODULE.exact_trace_comparison(
+        expected, drifted
+    )["all_categories_bitwise_exact"]
+
+
+def test_m5b_exact_trace_comparison_fails_closed_on_missing_category() -> None:
+    partial = SimpleNamespace(records={
+        "final_hidden_state": [(
+            "layer=39", np.asarray([1.0], dtype=np.float32)
+        )]
+    })
+    result = M5B_MODULE.exact_trace_comparison(partial, partial)
+    assert not result["all_required_categories_present"]
+    assert not result["all_categories_bitwise_exact"]
+
+
+def test_m5b_thermal_clock_analysis_is_fail_closed() -> None:
+    assert M5B_MODULE.thermal_clock_analysis([])["anomaly_detected"]
+    rows = [{
+        "thermal_clock": {
+            "nvml_error": None,
+            "by_device": {
+                "cuda:0": {
+                    "sample_count": 4,
+                    "maximum_temperature_c": 71,
+                    "median_sm_clock_mhz": 1500,
+                },
+                "cuda:1": {
+                    "sample_count": 4,
+                    "maximum_temperature_c": 72,
+                    "median_sm_clock_mhz": 1485,
+                },
+            },
+        },
+    }]
+    result = M5B_MODULE.thermal_clock_analysis(rows)
+    assert result["samples_present"]
+    assert not result["anomaly_detected"]
