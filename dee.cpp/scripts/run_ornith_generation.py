@@ -347,6 +347,8 @@ def fresh_engine_path_proof() -> dict:
         "native_combined_ids_d2h_total_bytes": 0,
         "native_combined_raw_trace_allocations": 0,
         "native_combined_stream_handoffs": 0,
+        "native_combined_input_materializations": 0,
+        "native_combined_input_materialization_bytes": 0,
         "last_native_error_combined_attempt": "",
         "native_direct_calls": 0,
         "native_direct_fallback_calls": 0,
@@ -676,18 +678,13 @@ class HybridExperts:
                     f"the loaded pydee binary has no {method_name} binding"
                 )
             combined_method = getattr(self.engine, method_name)
-            combined_supported = (
+            combined_base_supported = (
                 hidden_states.is_cuda
                 and hidden_states.dtype == torch.float16
-                and hidden_states.is_contiguous()
                 and top_k_index.is_cuda
-                and top_k_index.dtype == torch.int64
-                and top_k_index.is_contiguous()
                 and top_k_weights.is_cuda
-                and top_k_weights.dtype == torch.float32
-                and top_k_weights.is_contiguous()
             )
-            if not combined_supported:
+            if not combined_base_supported:
                 proof["native_combined_fallback_calls"] += 1
                 if direct_mode:
                     proof["native_direct_fallback_calls"] += 1
@@ -695,9 +692,38 @@ class HybridExperts:
                     "<combined path unsupported tensor contract>"
                 )
                 raise RuntimeError(
-                    "native-combined execution requires contiguous CUDA "
-                    "FP16 hidden, int64 expert IDs, and FP32 routing weights"
+                    "native-combined execution requires CUDA FP16 hidden "
+                    "plus CUDA expert IDs and routing weights; got "
+                    f"hidden(device={hidden_states.device}, "
+                    f"dtype={hidden_states.dtype}, "
+                    f"contiguous={hidden_states.is_contiguous()}), "
+                    f"ids(device={top_k_index.device}, "
+                    f"dtype={top_k_index.dtype}, "
+                    f"contiguous={top_k_index.is_contiguous()}), "
+                    f"weights(device={top_k_weights.device}, "
+                    f"dtype={top_k_weights.dtype}, "
+                    f"contiguous={top_k_weights.is_contiguous()})"
                 )
+            # The HF router is allowed to return strided views and a routing
+            # dtype other than the native ABI's int64/FP32. Canonicalize only
+            # a violating tensor, and make every allocation/byte observable.
+            combined_hidden = hidden_states.contiguous()
+            combined_ids = top_k_index.to(dtype=torch.int64).contiguous()
+            combined_weights = top_k_weights.to(
+                dtype=torch.float32
+            ).contiguous()
+            for original, canonical in (
+                (hidden_states, combined_hidden),
+                (top_k_index, combined_ids),
+                (top_k_weights, combined_weights),
+            ):
+                if canonical.data_ptr() != original.data_ptr():
+                    proof["native_combined_input_materializations"] += 1
+                    proof[
+                        "native_combined_input_materialization_bytes"
+                    ] += int(canonical.numel()) * int(
+                        canonical.element_size()
+                    )
             combined_output = torch.empty_like(hidden_states)
             raw_trace = None
             if self.context.collector is not None and self.layer in TRACE_LAYERS:
@@ -726,11 +752,11 @@ class HybridExperts:
                 proof["pybind_device_calls"] += 1
                 combined_ok = combined_method(
                     self.layer,
-                    hidden_states.data_ptr(),
-                    hidden_states.shape[0],
-                    top_k_index.data_ptr(),
-                    top_k_index.shape[1],
-                    top_k_weights.data_ptr(),
+                    combined_hidden.data_ptr(),
+                    combined_hidden.shape[0],
+                    combined_ids.data_ptr(),
+                    combined_ids.shape[1],
+                    combined_weights.data_ptr(),
                     combined_output.data_ptr(),
                     raw_trace.data_ptr() if raw_trace is not None else 0,
                     torch.cuda.current_stream(
@@ -743,8 +769,9 @@ class HybridExperts:
             # work reaches the completion event handed back above.
             for tensor in (
                 hidden_states,
-                top_k_index,
-                top_k_weights,
+                combined_hidden,
+                combined_ids,
+                combined_weights,
                 combined_output,
                 raw_trace,
             ):
