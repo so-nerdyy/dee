@@ -19,7 +19,7 @@ import psutil
 import torch
 
 
-RUN_ID = "20260729T221700Z-m5f-v1"
+RUN_ID = "20260730T175000Z-m5f-v2"
 EXPECTED_COMMIT = "a9cebd3f25a37baae2b07a7a495effd2d07b1033"
 BRANCH = "codex/phase2-cap32-matrix"
 ROOT = Path("/kaggle/temp/dee-source")
