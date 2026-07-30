@@ -19,12 +19,14 @@ import psutil
 import torch
 
 
-RUN_ID = "20260730T183000Z-m5g-v1"
-EXPECTED_COMMIT = "9e35b2305568144fee54e689b501d226b72cfb21"
+RUN_ID = "20260730T220000Z-m5g-v2-execution-equivalent"
+EXPECTED_COMMIT = "1289bd25d21a69ec69b0d43fd203520ffea5a4cf"
 BRANCH = "codex/phase2-cap32-matrix"
 ROOT = Path("/kaggle/temp/dee-source")
 EVIDENCE = Path(f"/kaggle/working/ornith-m5g-evidence-{RUN_ID}")
-ARCHIVE_BASE = Path("/kaggle/working/ornith-m5g-evidence")
+ARCHIVE_BASE = Path(
+    f"/kaggle/working/ornith-m5g-evidence-{RUN_ID}"
+)
 
 
 def sha256_file(path: Path) -> str:
@@ -407,35 +409,178 @@ try:
                 benchmark_dir / "m5g-norm-subset-benchmark.json"
             ).read_text()
         )
-        candidate_reports = report.get("candidate_reports", {})
+        candidate_reports = report.get("candidate_reports")
+        expected_candidate_ids = {
+            "native-combined-direct-fused-regular-norm",
+            "native-combined-direct-fused-gated-norm",
+        }
+        reports_are_mapping = isinstance(candidate_reports, dict)
+        candidate_ids_exact = (
+            reports_are_mapping
+            and set(candidate_reports) == expected_candidate_ids
+        )
+        require(
+            "m5g_candidate_reports_mapping",
+            reports_are_mapping,
+            type(candidate_reports).__name__,
+        )
+        require(
+            "m5g_candidate_reports_complete",
+            candidate_ids_exact,
+            sorted(candidate_reports) if reports_are_mapping else None,
+        )
+        safe_candidate_reports = (
+            candidate_reports if candidate_ids_exact else {}
+        )
         accepted_best = report.get("accepted_best")
         candidate_results = {
             mode: row.get("result")
-            for mode, row in candidate_reports.items()
+            for mode, row in safe_candidate_reports.items()
+            if isinstance(row, dict)
         }
         candidate_summary = {
             "accepted_best": accepted_best,
             "candidate_results": candidate_results,
             "report_result": report.get("result"),
+            "verdict": report.get("verdict"),
+            "execution_equivalence": {
+                mode: row.get("execution_equivalence")
+                for mode, row in safe_candidate_reports.items()
+                if isinstance(row, dict)
+            },
             "pareto": {
                 mode: row.get("pareto")
-                for mode, row in candidate_reports.items()
+                for mode, row in safe_candidate_reports.items()
+                if isinstance(row, dict)
             },
         }
-        candidate_accepted = bool(accepted_best)
-        require(
-            "m5g_candidate_reports_complete",
-            set(candidate_reports)
-            == {
-                "native-combined-direct-fused-regular-norm",
-                "native-combined-direct-fused-gated-norm",
-            },
-            sorted(candidate_reports),
+        candidate_rows_are_mappings = (
+            candidate_ids_exact
+            and all(
+                isinstance(row, dict)
+                for row in safe_candidate_reports.values()
+            )
         )
+        require(
+            "m5g_candidate_rows_mappings",
+            candidate_rows_are_mappings,
+            candidate_summary,
+        )
+        required_equivalence_gates = {
+            "all_trace_categories_bitwise_exact",
+            "all_trace_categories_passed",
+            "tokens_and_text_exact",
+            "same_direct_expert_path_both_modes",
+        }
+        def candidate_report_is_valid(row: Any) -> bool:
+            if not isinstance(row, dict):
+                return False
+            pareto = row.get("pareto")
+            equivalence = row.get("execution_equivalence")
+            if not isinstance(pareto, dict):
+                return False
+            gates = pareto.get("gates")
+            if not isinstance(gates, dict) or not gates:
+                return False
+            if not all(isinstance(value, bool) for value in gates.values()):
+                return False
+            if not isinstance(row.get("candidate_accepted"), bool):
+                return False
+            if row["candidate_accepted"] != all(gates.values()):
+                return False
+            if row.get("result") != (
+                "PASS" if row["candidate_accepted"] else "FAIL"
+            ):
+                return False
+            if not isinstance(equivalence, dict):
+                return False
+            if equivalence.get("fail_closed") is not True:
+                return False
+            equivalence_gate = equivalence.get("gate")
+            if not isinstance(equivalence_gate, bool):
+                return False
+            expected_equivalence_gate = all(
+                gates.get(name) is True for name in required_equivalence_gates
+            )
+            if equivalence_gate != expected_equivalence_gate:
+                return False
+            return equivalence.get("verdict") == (
+                "PASS"
+                if equivalence_gate
+                else "REJECTED_NON_EQUIVALENT_EXECUTION_PATH"
+            )
+
+        candidate_gate_reports_valid = (
+            candidate_rows_are_mappings
+            and all(
+                candidate_report_is_valid(row)
+                for row in safe_candidate_reports.values()
+            )
+        )
+        require(
+            "m5g_candidate_acceptance_matches_all_gates",
+            candidate_gate_reports_valid,
+            candidate_summary,
+        )
+        accepted_modes = {
+            mode
+            for mode, row in safe_candidate_reports.items()
+            if candidate_gate_reports_valid and row["candidate_accepted"]
+        }
+        accepted_best_valid = (
+            accepted_best is None
+            and not accepted_modes
+        ) or (
+            accepted_best in expected_candidate_ids
+            and accepted_best in accepted_modes
+        )
+        require(
+            "m5g_accepted_best_matches_validated_rows",
+            accepted_best_valid,
+            {
+                "accepted_best": accepted_best,
+                "accepted_modes": sorted(accepted_modes),
+            },
+        )
+        candidate_accepted = bool(accepted_modes)
         require(
             "m5g_result_matches_acceptance",
             (report.get("result") == "PASS") == candidate_accepted,
             candidate_summary,
+        )
+        require(
+            "m5g_execution_equivalence_verdict_present",
+            report.get("verdict") in {
+                "PASS",
+                "FAIL",
+                "REJECTED_NON_EQUIVALENT_EXECUTION_PATH",
+            },
+            report.get("verdict"),
+        )
+        equivalence_rows_valid = candidate_gate_reports_valid
+        require(
+            "m5g_execution_equivalence_gates_fail_closed",
+            equivalence_rows_valid,
+            candidate_summary.get("execution_equivalence"),
+        )
+        expected_verdict = (
+            "PASS"
+            if accepted_modes
+            else (
+                "REJECTED_NON_EQUIVALENT_EXECUTION_PATH"
+                if equivalence_rows_valid
+                and any(
+                    row["execution_equivalence"]["verdict"]
+                    == "REJECTED_NON_EQUIVALENT_EXECUTION_PATH"
+                    for row in safe_candidate_reports.values()
+                )
+                else "FAIL"
+            )
+        )
+        require(
+            "m5g_top_level_verdict_consistent",
+            report.get("verdict") == expected_verdict,
+            {"actual": report.get("verdict"), "expected": expected_verdict},
         )
         require(
             "m5g_return_code_matches_acceptance",
