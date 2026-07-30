@@ -426,8 +426,10 @@ try:
         require(
             "m5g_candidate_reports_complete",
             set(candidate_reports)
-            == {"native-combined-direct-fused-regular",
-                "native-combined-direct-fused-gated"},
+            == {
+                "native-combined-direct-fused-regular-norm",
+                "native-combined-direct-fused-gated-norm",
+            },
             sorted(candidate_reports),
         )
         require(

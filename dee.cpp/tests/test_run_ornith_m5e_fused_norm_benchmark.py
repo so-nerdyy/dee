@@ -54,6 +54,14 @@ def test_fused_norm_mode_is_explicit_and_fail_closed() -> None:
         generation.FUSED_NORM_EXECUTION_MODE,
         generation.FUSED_GATED_NORM_EXECUTION_MODE,
     }
+    assert generation.NATIVE_DIRECT_EXECUTION_MODES.issuperset({
+        generation.FUSED_NORM_EXECUTION_MODE,
+        generation.FUSED_REGULAR_NORM_EXECUTION_MODE,
+        generation.FUSED_GATED_NORM_EXECUTION_MODE,
+    })
+    assert generation.NATIVE_COMBINED_EXECUTION_MODES.issuperset(
+        generation.NATIVE_DIRECT_EXECUTION_MODES
+    )
     regular = inspect.getsource(generation.HybridRMSNorm.forward)
     gated = inspect.getsource(generation.HybridRMSNormGated.forward)
     assert "REGULAR_FUSED_NORM_EXECUTION_MODES" in regular

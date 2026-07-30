@@ -63,6 +63,21 @@ GATED_FUSED_NORM_EXECUTION_MODES = frozenset({
     FUSED_GATED_NORM_EXECUTION_MODE,
 })
 POINTER_BATCHED_EXECUTION_MODE = "native-combined-pointer-batched"
+NATIVE_COMBINED_EXECUTION_MODES = frozenset({
+    "native-combined",
+    "native-combined-direct",
+    FUSED_NORM_EXECUTION_MODE,
+    FUSED_REGULAR_NORM_EXECUTION_MODE,
+    FUSED_GATED_NORM_EXECUTION_MODE,
+    POINTER_BATCHED_EXECUTION_MODE,
+})
+NATIVE_DIRECT_EXECUTION_MODES = frozenset({
+    "native-combined-direct",
+    FUSED_NORM_EXECUTION_MODE,
+    FUSED_REGULAR_NORM_EXECUTION_MODE,
+    FUSED_GATED_NORM_EXECUTION_MODE,
+    POINTER_BATCHED_EXECUTION_MODE,
+})
 EXECUTION_MODES = (
     "production",
     "parity",
@@ -836,22 +851,13 @@ class HybridExperts:
         #   (b) the device path returned false and the silent fallback took
         #       over (which is observable as host_path_fallback_calls > 0).
         proof = self.context.engine_path_proof
-        if self.context.execution_mode in (
-            "native-combined",
-            "native-combined-direct",
-            FUSED_NORM_EXECUTION_MODE,
-            POINTER_BATCHED_EXECUTION_MODE,
-        ):
+        if self.context.execution_mode in NATIVE_COMBINED_EXECUTION_MODES:
             pointer_batched_mode = (
                 self.context.execution_mode
                 == POINTER_BATCHED_EXECUTION_MODE
             )
             direct_mode = (
-                self.context.execution_mode in (
-                    "native-combined-direct",
-                    FUSED_NORM_EXECUTION_MODE,
-                    POINTER_BATCHED_EXECUTION_MODE,
-                )
+                self.context.execution_mode in NATIVE_DIRECT_EXECUTION_MODES
             )
             method_name = (
                 "moe_forward_combined_pointer_batched_device"
