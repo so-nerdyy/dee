@@ -38,8 +38,26 @@ def test_m5e_paired_analysis_uses_candidate_over_control() -> None:
 
 def test_fused_norm_mode_is_explicit_and_fail_closed() -> None:
     assert generation.FUSED_NORM_EXECUTION_MODE in generation.EXECUTION_MODES
+    assert (
+        generation.FUSED_REGULAR_NORM_EXECUTION_MODE
+        in generation.EXECUTION_MODES
+    )
+    assert (
+        generation.FUSED_GATED_NORM_EXECUTION_MODE
+        in generation.EXECUTION_MODES
+    )
+    assert generation.REGULAR_FUSED_NORM_EXECUTION_MODES == {
+        generation.FUSED_NORM_EXECUTION_MODE,
+        generation.FUSED_REGULAR_NORM_EXECUTION_MODE,
+    }
+    assert generation.GATED_FUSED_NORM_EXECUTION_MODES == {
+        generation.FUSED_NORM_EXECUTION_MODE,
+        generation.FUSED_GATED_NORM_EXECUTION_MODE,
+    }
     regular = inspect.getsource(generation.HybridRMSNorm.forward)
     gated = inspect.getsource(generation.HybridRMSNormGated.forward)
+    assert "REGULAR_FUSED_NORM_EXECUTION_MODES" in regular
+    assert "GATED_FUSED_NORM_EXECUTION_MODES" in gated
     assert "qwen_rms_norm_device" in regular
     assert "fused Qwen RMSNorm failed" in regular
     assert "qwen_rms_norm_gated_device" in gated

@@ -48,6 +48,20 @@ from scripts.ornith_support import (  # noqa: E402
 
 TRACE_LAYERS = set(range(40))
 FUSED_NORM_EXECUTION_MODE = "native-combined-direct-fused-norm"
+FUSED_REGULAR_NORM_EXECUTION_MODE = (
+    "native-combined-direct-fused-regular-norm"
+)
+FUSED_GATED_NORM_EXECUTION_MODE = (
+    "native-combined-direct-fused-gated-norm"
+)
+REGULAR_FUSED_NORM_EXECUTION_MODES = frozenset({
+    FUSED_NORM_EXECUTION_MODE,
+    FUSED_REGULAR_NORM_EXECUTION_MODE,
+})
+GATED_FUSED_NORM_EXECUTION_MODES = frozenset({
+    FUSED_NORM_EXECUTION_MODE,
+    FUSED_GATED_NORM_EXECUTION_MODE,
+})
 POINTER_BATCHED_EXECUTION_MODE = "native-combined-pointer-batched"
 EXECUTION_MODES = (
     "production",
@@ -57,6 +71,8 @@ EXECUTION_MODES = (
     "native-combined",
     "native-combined-direct",
     FUSED_NORM_EXECUTION_MODE,
+    FUSED_REGULAR_NORM_EXECUTION_MODE,
+    FUSED_GATED_NORM_EXECUTION_MODE,
     POINTER_BATCHED_EXECUTION_MODE,
 )
 TOLERANCES = {
@@ -620,7 +636,8 @@ class HybridRMSNorm:
     def forward(self, hidden_states):
         if (
             self.context.mode == "reference"
-            or self.context.execution_mode != FUSED_NORM_EXECUTION_MODE
+            or self.context.execution_mode
+            not in REGULAR_FUSED_NORM_EXECUTION_MODES
         ):
             return self.reference_forward(hidden_states)
         import torch
@@ -693,7 +710,8 @@ class HybridRMSNormGated:
     def forward(self, hidden_states, gate=None):
         if (
             self.context.mode == "reference"
-            or self.context.execution_mode != FUSED_NORM_EXECUTION_MODE
+            or self.context.execution_mode
+            not in GATED_FUSED_NORM_EXECUTION_MODES
         ):
             return self.reference_forward(hidden_states, gate)
         import torch
