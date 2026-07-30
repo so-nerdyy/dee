@@ -251,6 +251,27 @@ def candidate_gates(
         "thermal_clock_samples_present": thermal["samples_present"],
         "no_thermal_or_clock_anomaly": not thermal["anomaly_detected"],
         "tracked_source_clean": source_clean,
+        # A candidate may be accepted only when the optimization is an
+        # execution-equivalent subset of the control: the exact same direct
+        # expert path, exact trace bits, and the existing tolerance contract.
+        # Keep this as one explicit fail-closed gate so an outer harness cannot
+        # mistake a faster but semantically different path for a valid result.
+        "execution_equivalence_fail_closed": (
+            exact_comparison["all_categories_bitwise_exact"]
+            and tolerance_comparison["all_categories_passed"]
+            and all(
+                row["generated_token_ids"] == EXPECTED_TOKENS
+                for row in trace_rows
+            )
+            and trace_rows[0]["generated_text"]
+            == trace_rows[1]["generated_text"]
+            and all(
+                row["path_proof"]["native_combined_calls"] == 160
+                and row["path_proof"]["native_direct_calls"] == 160
+                and row["path_proof"]["native_direct_fallback_calls"] == 0
+                for row in rows
+            )
+        ),
     }
 
 
@@ -438,6 +459,21 @@ def main() -> int:
                 "speedup_percent": (speedup_ratio - 1.0) * 100.0,
                 "gates": gates,
             },
+            "execution_equivalence": {
+                "verdict": (
+                    "PASS"
+                    if gates["execution_equivalence_fail_closed"]
+                    else "REJECTED_NON_EQUIVALENT_EXECUTION_PATH"
+                ),
+                "fail_closed": True,
+                "gate": gates["execution_equivalence_fail_closed"],
+                "required": [
+                    "all_trace_categories_bitwise_exact",
+                    "all_trace_categories_passed",
+                    "tokens_and_text_exact",
+                    "same_direct_expert_path_both_modes",
+                ],
+            },
         }
 
     accepted = [
@@ -458,9 +494,20 @@ def main() -> int:
         if all(shared_gates.values()) and accepted_best is not None
         else "FAIL"
     )
+    if accepted_best is not None:
+        verdict = "PASS"
+    elif any(
+        row["execution_equivalence"]["verdict"]
+        == "REJECTED_NON_EQUIVALENT_EXECUTION_PATH"
+        for row in candidate_reports.values()
+    ):
+        verdict = "REJECTED_NON_EQUIVALENT_EXECUTION_PATH"
+    else:
+        verdict = "FAIL"
     report = {
         "schema_version": 1,
         "result": result,
+        "verdict": verdict,
         "git_commit": git_revision(),
         "model": {
             "name": "Ornith-1.0-35B",

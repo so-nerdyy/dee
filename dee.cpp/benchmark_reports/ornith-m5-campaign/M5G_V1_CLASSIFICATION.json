@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "stage": "M5G",
+  "run_id": "20260730T183000Z-m5g-v1",
+  "verdict": "REJECTED_NON_EQUIVALENT_EXECUTION_PATH",
+  "classification_scope": "Forensic classification only; the v1 evidence files are preserved byte-for-byte and are not rewritten.",
+  "runtime_commit": "9e35b2305568144fee54e689b501d226b72cfb21",
+  "control": "native-combined-direct",
+  "candidates": [
+    "native-combined-direct-fused-regular-norm",
+    "native-combined-direct-fused-gated-norm"
+  ],
+  "first_failing_acceptance_facts": [
+    "all_trace_categories_bitwise_exact=false",
+    "all_trace_categories_passed=false",
+    "same_direct_expert_path_both_modes=false",
+    "candidate_paired_median_gain_at_least_1_percent=false",
+    "candidate_independent_median_gain_at_least_1_percent=false"
+  ],
+  "reason": "The v1 candidate traces were not execution-equivalent to the control and neither candidate satisfied the controlled performance gates. It is not an accepted optimization result.",
+  "preserved_artifacts": [
+    {
+      "path": "tmp/m5g_v1_output/ornith-m5g-evidence-20260730T183000Z-m5g-v1/m5g/m5g-norm-subset-benchmark.json",
+      "bytes": 479471,
+      "sha256": "af12fa9dc40bc86d27bbd3ddc54ab3f57678f9ce8d5e5677c4c98752d4ad4346"
+    },
+    {
+      "path": "tmp/m5g_v1_output/ornith-m5g-evidence-20260730T183000Z-m5g-v1/artifact-manifest.json",
+      "bytes": 7659,
+      "sha256": "73966f19837b22db0f3ad93f6f591ac1d657aa15510ede0cac8d6da2fd5521ef"
+    },
+    {
+      "path": "tmp/m5g_v1_output/ornith-m5g-evidence.tar.gz",
+      "bytes": 108854,
+      "sha256": "7e454fd2c559b3aeb5decf49fbf1f5784c379d803bfa3c5e5e767c1a46004db7"
+    }
+  ]
+}
