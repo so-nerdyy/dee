@@ -6,7 +6,9 @@ from scripts.run_ornith_m5i_linear_graph_benchmark import (
     CANDIDATE,
     CONTROL,
     LinearAttentionGraph,
+    balanced_order,
     graph_stats,
+    paired_trial_analysis,
     select_graph_mode,
 )
 
@@ -83,3 +85,28 @@ def test_mode_selection_resets_counts_and_stats():
 def test_mode_selection_rejects_unknown_mode():
     with pytest.raises(ValueError, match="unknown graph mode"):
         select_graph_mode([], "mystery")
+
+
+def test_balanced_order_uses_m5i_modes():
+    assert balanced_order(3) == [
+        CONTROL,
+        CANDIDATE,
+        CANDIDATE,
+        CONTROL,
+        CONTROL,
+        CANDIDATE,
+    ]
+
+
+def test_paired_trial_analysis_uses_m5i_modes():
+    result = paired_trial_analysis(
+        [
+            {"execution_mode": CONTROL, "tokens_per_second": 10.0},
+            {"execution_mode": CANDIDATE, "tokens_per_second": 11.0},
+            {"execution_mode": CANDIDATE, "tokens_per_second": 12.0},
+            {"execution_mode": CONTROL, "tokens_per_second": 10.0},
+        ]
+    )
+    assert result["candidate_wins"] == 2
+    assert result["minimum_speedup_ratio"] == pytest.approx(1.1)
+    assert result["maximum_speedup_ratio"] == pytest.approx(1.2)

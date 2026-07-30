@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import statistics
 import sys
 import time
 from pathlib import Path
@@ -26,10 +27,6 @@ from scripts.run_ornith_m5b_execution_benchmark import (  # noqa: E402
 from scripts.run_ornith_m5f_pointer_batched_benchmark import (  # noqa: E402
     run_m5f_once,
 )
-from scripts.run_ornith_m5h_fla_recurrent_benchmark import (  # noqa: E402
-    balanced_order,
-    paired_trial_analysis,
-)
 from scripts.run_ornith_router_backend_benchmark import (  # noqa: E402
     EXPECTED_TOKENS,
     MAX_PROCESS_VRAM_BYTES,
@@ -43,6 +40,65 @@ CONTROL = "pointer-eager-linear-attention"
 CANDIDATE = "pointer-graphed-linear-attention"
 BASE_EXECUTION_MODE = "native-combined-pointer"
 LINEAR_LAYER_COUNT = 30
+
+
+def balanced_order(trials: int) -> list[str]:
+    pattern = [
+        CONTROL,
+        CANDIDATE,
+        CANDIDATE,
+        CONTROL,
+        CONTROL,
+        CANDIDATE,
+    ]
+    order: list[str] = []
+    while order.count(CONTROL) < trials or order.count(CANDIDATE) < trials:
+        for mode in pattern:
+            if mode == CONTROL and order.count(mode) >= trials:
+                continue
+            if mode == CANDIDATE and order.count(mode) >= trials:
+                continue
+            order.append(mode)
+    return order
+
+
+def paired_trial_analysis(
+    sequence: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if len(sequence) % 2:
+        raise ValueError("paired sequence must contain an even number of rows")
+    pairs = []
+    for index in range(0, len(sequence), 2):
+        pair_rows = sequence[index : index + 2]
+        rows = {row["execution_mode"]: row for row in pair_rows}
+        if set(rows) != {CONTROL, CANDIDATE}:
+            raise ValueError(
+                f"pair {index // 2} does not contain control and candidate"
+            )
+        control_tps = float(rows[CONTROL]["tokens_per_second"])
+        candidate_tps = float(rows[CANDIDATE]["tokens_per_second"])
+        ratio = candidate_tps / control_tps
+        pairs.append(
+            {
+                "pair_index": index // 2,
+                "sequence_indices": [index, index + 1],
+                "first_mode": pair_rows[0]["execution_mode"],
+                "control_tps": control_tps,
+                "candidate_tps": candidate_tps,
+                "speedup_ratio": ratio,
+                "speedup_percent": (ratio - 1.0) * 100.0,
+                "candidate_won": candidate_tps > control_tps,
+            }
+        )
+    ratios = [row["speedup_ratio"] for row in pairs]
+    return {
+        "pair_count": len(pairs),
+        "candidate_wins": sum(row["candidate_won"] for row in pairs),
+        "median_speedup_ratio": statistics.median(ratios),
+        "minimum_speedup_ratio": min(ratios),
+        "maximum_speedup_ratio": max(ratios),
+        "pairs": pairs,
+    }
 
 
 def _cache_states(cache_params: Any, layer_idx: int) -> tuple[Any, Any]:
