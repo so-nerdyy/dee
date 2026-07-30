@@ -76,4 +76,3 @@ def test_counted_backend_and_layer_selection():
     assert selection["backend"]["module"] == "transformers.fake"
     assert backend(4) == 5
     assert backend.calls == 1
-
