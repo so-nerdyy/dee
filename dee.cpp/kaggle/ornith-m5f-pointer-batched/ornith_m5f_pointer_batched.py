@@ -19,7 +19,7 @@ import psutil
 import torch
 
 
-RUN_ID = "20260730T175000Z-m5f-v2"
+RUN_ID = "20260730T181500Z-m5f-v3"
 EXPECTED_COMMIT = "a9cebd3f25a37baae2b07a7a495effd2d07b1033"
 BRANCH = "codex/phase2-cap32-matrix"
 ROOT = Path("/kaggle/temp/dee-source")
@@ -44,14 +44,26 @@ def write_json(path: Path, value: Any) -> None:
 
 
 def run_tee(
-        command: list[str],
-        log_path: Path,
-        cwd: Path,
-        *,
-        env: dict[str, str] | None = None,
-        check: bool = True,
+    command: list[str],
+    log_path: Path,
+    cwd: Path,
+    *,
+    env: dict[str, str] | None = None,
+    check: bool = True,
+    mirror_output: bool = False,
 ) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    print(
+        json.dumps(
+            {
+                "stage": log_path.name,
+                "state": "START",
+                "command": command,
+            },
+            sort_keys=True,
+        ),
+        flush=True,
+    )
     with log_path.open("w", encoding="utf-8") as log:
         process = subprocess.Popen(
             command,
@@ -64,10 +76,22 @@ def run_tee(
         )
         assert process.stdout is not None
         for line in process.stdout:
-            print(line, end="", flush=True)
+            if mirror_output:
+                print(line, end="", flush=True)
             log.write(line)
             log.flush()
         return_code = process.wait()
+    print(
+        json.dumps(
+            {
+                "stage": log_path.name,
+                "state": "END",
+                "return_code": return_code,
+            },
+            sort_keys=True,
+        ),
+        flush=True,
+    )
     if check and return_code:
         raise subprocess.CalledProcessError(return_code, command)
     return return_code
