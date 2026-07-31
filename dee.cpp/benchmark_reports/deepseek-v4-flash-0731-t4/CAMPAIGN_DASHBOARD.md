@@ -1,8 +1,9 @@
 # CAMPAIGN — DeepSeek-V4-Flash-0731 on Tesla T4 via Dynamic Expert Eviction
 
-Status: **DS0–DS3, DS6, DS7 COMPLETE** (freeze, audit, ledger, download
-plan/tool, resolver, one routed expert executing on T4 with evidence).
-DS4/DS5 in progress.
+Status: **DS0–DS3, DS6, DS7, DS8 COMPLETE** (freeze, audit, ledger,
+download plan/tool, resolver, one routed expert on T4, and the generalized
+expert runtime + bounded cache executing routed+shared expert portions of
+complete official layers on T4 with evidence). DS4/DS5 in progress.
 
 ## Campaign identity
 
@@ -38,7 +39,7 @@ M5G-v1/v2/v3 evidence is immutable. No M5H work until the DeepSeek campaign reac
 | DS5 | Trusted reference traces | 🔲 |
 | DS6 | Freebuff tensor resolver for V4 | ✅ (Python ledger + C++ `TensorResolver` DEEPSEEK_V4 dialect, w1/w3/w2 + scale names) |
 | DS7 | One routed expert on T4 | ✅ (kernel v5 COMPLETE, verdict `MATCH_WITHIN_TOLERANCE`, evidence `ds7-smoke-v5`) |
-| DS8 | Expert cache + Dynamic Expert Eviction | 🔲 |
+| DS8 | Expert cache + Dynamic Expert Eviction | ✅ (kernel v3 COMPLETE, verdict `ACCEPT_EXPERT_RUNTIME`, evidence `ds8-runtime-v3`) |
 | DS9 | Architecture bring-up → first token | 🔲 |
 | DS10 | Dual-T4 full-model decode | 🔲 |
 | DS11 | One-T4 path | 🔲 |
@@ -93,6 +94,49 @@ terminated **COMPLETE** with result **PASS**.
 Per the campaign contract, this validates **Family B** bring-up at the expert
 level (FP4-packed storage + on-demand FP16 dequant → SM75 GEMV). It does not
 imply full-model decode, an expert cache, or one-T4 residency.
+
+## DS8 milestone — generalized expert runtime + bounded cache (COMPLETE)
+
+Kaggle kernel `nivind/dee-cpp-deepseek-v4-flash-0731-ds8-expert-runtime` v3
+terminated **COMPLETE** with result **PASS** and verdict
+`ACCEPT_EXPERT_RUNTIME`.
+
+- Pinned harness commit: `a2e1d214080af523655b3dcb8ad627274158052d`
+- Pinned harness SHA256: `24a82819bbe7bbb76651c2b2470ec7887d3dfe8babc8006906a6c4cb7c373022`
+- Evidence: `benchmark_reports/deepseek-v4-flash-0731-t4/ds8-runtime-v3/`
+  (12/12 artifact hashes PASS + manifest + tar.gz cross-checks).
+- Archive SHA256: `69b8f712b12a46ec90c7cafe083bdbfd8de284684b541f97c941035d8671867f`;
+  manifest SHA256: `80ae02df3a0b3371ca5b52927a7eeeb32ee20428392b95c3695ffe33f19e37c1`.
+- Scope: 3 complete official MoE layers — **3, 20, 41** — shards
+  `model-00005/00022/00043-of-00048` — routed top-6 (union of selected
+  experts across all 7 corpus cases loaded) + the official shared expert,
+  executed on T4 CUDA through `DeepSeekExpertCache` (FP16-expanded active
+  experts, bounded LRU+priority eviction, async staging stream/event).
+- Numerical gates (warm combined MoE output vs trusted FP32 reference,
+  predeclared DS8_TOLERANCE):
+  - `max_abs_error` 0.0054 (gate 2.0) ✓
+  - `mean_abs_error` 0.0008 (gate 0.5) ✓
+  - `mean_rel_error` 0.0026 (gate 0.01) ✓
+  - `p95_rel_error` 0.0067 (gate 0.03) ✓
+  - `p99_rel_error` 0.034 (gate 0.05) ✓
+  - cosine 0.9999998 (gate 0.999) ✓, normalized RMSE 0.0005 (gate 0.01) ✓
+  - output-norm rel 1.8e-05 (gate 0.02) ✓, excluded fraction 0.0005 (gate 0.02) ✓
+  - Shared-expert gate PASS on all layers (max_abs 0.0047).
+- Cache correctness: cold==warm output bitwise, warm H2D bytes unchanged,
+  **zero warm-reloaded experts** (all-hits replay); a 120 MiB
+  eviction-pressure cache (41–44 evictions/layer) reproduced the full-budget
+  output **bitwise** (`output_identical_to_full_budget: true`).
+- Route agreement: reference re-routing matched the harness up-front routing
+  on **all 7 corpus cases × 3 layers** (`reference_route_agreement: true`).
+- Input: deterministic synthetic corpus (normal, low/high magnitude, sparse,
+  adversarial, repeated, near-zero); official hidden-state traces remain a
+  DS5 dependency.
+- Iteration record: v1 crashed (`'str' object has no attribute 'float'` —
+  corpus tuple unpacked name-into-x_route), v2 crashed (`KeyError: 203` —
+  per-case reference needed the full selected-expert union, not only the
+  first case's), v3 fixed both and reached COMPLETE.
+- `performance_comparable: false` — correctness milestone, not a throughput
+  number. No model TPS is claimed.
 
 ## Precision families (measured, not assumed)
 

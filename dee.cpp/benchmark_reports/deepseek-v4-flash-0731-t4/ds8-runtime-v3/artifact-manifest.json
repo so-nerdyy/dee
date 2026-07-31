@@ -1,0 +1,107 @@
+{
+  "artifacts": [
+    {
+      "bytes": 471,
+      "path": "bootstrap-environment.json",
+      "sha256": "17163337bdd8bd5b3cbc7d3d63e14f2fac60fdf5195ef4616dce858be604874a"
+    },
+    {
+      "bytes": 39881,
+      "path": "deepseek_v4_expert_runtime.py",
+      "sha256": "24a82819bbe7bbb76651c2b2470ec7887d3dfe8babc8006906a6c4cb7c373022"
+    },
+    {
+      "bytes": 17204,
+      "path": "deepseek_v4_module_cache.py",
+      "sha256": "c4d16b0cef031f1bbf8ed0c2a989e7a60394bc7f740973a85ed9a24e7271f0df"
+    },
+    {
+      "bytes": 6207,
+      "path": "deepseek_v4_module_contract.py",
+      "sha256": "a18546b41db29f66d3c31a1608c669044c2f1af08a6b1eeab0fe6ecb9cee99c8"
+    },
+    {
+      "bytes": 4560,
+      "path": "deepseek_v4_module_corpus.py",
+      "sha256": "9ffdb43f736a7dbade969619af44c8e8d817038be194050e3106eb51aa6ea215"
+    },
+    {
+      "bytes": 8175,
+      "path": "deepseek_v4_module_expert_reference.py",
+      "sha256": "9c28375b17898a6908d61ca3a769f4ba2eab4104e4049439cfa76784eaa86ef5"
+    },
+    {
+      "bytes": 10063,
+      "path": "deepseek_v4_module_moe_reference.py",
+      "sha256": "895d1b1c97c201e45ab1ea2cfd1c9b16344e848b07d2469a5a88d5c7d037fb81"
+    },
+    {
+      "bytes": 21005,
+      "path": "deepseek_v4_module_support.py",
+      "sha256": "c97e797f9688351655337f67e7ae7566fdc72bbc42fadbe72250e6410755380c"
+    },
+    {
+      "bytes": 28415,
+      "path": "ds8-expert-runtime-evidence.json",
+      "sha256": "896b600ca1d23800917763ff98a1105a320b6d87f24cf9542f1f66bae2cf26fa"
+    },
+    {
+      "bytes": 1159,
+      "path": "environment.json",
+      "sha256": "437b0b5a47d8c885cc1dd1e28abec496afe0feccfa1367e95b92a21113439395"
+    },
+    {
+      "bytes": 161,
+      "path": "logs/pip-install.log",
+      "sha256": "fc032d139e80ca83ba8586b2dc6656a3ea03854fa890009a8af910811e65864b"
+    },
+    {
+      "bytes": 99,
+      "path": "manifest.sha256",
+      "sha256": "ecfe6c6fa090f219ba061a353d761054f0b11e41a3fe70ddb70cfd3913085ea8"
+    }
+  ],
+  "fatal_error": null,
+  "module_sha256": {
+    "cache": "c4d16b0cef031f1bbf8ed0c2a989e7a60394bc7f740973a85ed9a24e7271f0df",
+    "contract": "a18546b41db29f66d3c31a1608c669044c2f1af08a6b1eeab0fe6ecb9cee99c8",
+    "corpus": "9ffdb43f736a7dbade969619af44c8e8d817038be194050e3106eb51aa6ea215",
+    "expert_reference": "9c28375b17898a6908d61ca3a769f4ba2eab4104e4049439cfa76784eaa86ef5",
+    "moe_reference": "895d1b1c97c201e45ab1ea2cfd1c9b16344e848b07d2469a5a88d5c7d037fb81",
+    "support": "c97e797f9688351655337f67e7ae7566fdc72bbc42fadbe72250e6410755380c"
+  },
+  "performance_comparable": false,
+  "repository_commit": "a2e1d214080af523655b3dcb8ad627274158052d",
+  "required_paths": [
+    {
+      "bytes": 471,
+      "path": "bootstrap-environment.json",
+      "present": true
+    },
+    {
+      "bytes": 1159,
+      "path": "environment.json",
+      "present": true
+    },
+    {
+      "bytes": 28415,
+      "path": "ds8-expert-runtime-evidence.json",
+      "present": true
+    },
+    {
+      "bytes": 99,
+      "path": "manifest.sha256",
+      "present": true
+    },
+    {
+      "bytes": 161,
+      "path": "logs/pip-install.log",
+      "present": true
+    }
+  ],
+  "result": "PASS",
+  "run_id": "20260731T080000Z-dsv4-ds8-expert-runtime",
+  "schema_version": 1,
+  "terminal_verdict": "ACCEPT_EXPERT_RUNTIME",
+  "validation_failures": []
+}
