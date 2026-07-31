@@ -457,8 +457,10 @@ def main() -> int:
             shared_raw = load_tensors_from_shard(shard_path, shared_names)
 
             # Route on the first corpus case (normal) to pick the top-6
-            # experts deterministically.
-            x_route, _ = corpus_cases[0]
+            # experts deterministically.  corpus_cases[0] is (name, tensor),
+            # so the tensor is the SECOND element (v1 crashed here by
+            # assigning the name string to x_route).
+            _, x_route = corpus_cases[0]
             scores, ids, weights = ds7.router_scores(
                 x_route, gate_w, bias=gate_b, score_func="sqrtsoftplus",
                 topk=TOPK, route_scale=ROUTE_SCALE)
