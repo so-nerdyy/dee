@@ -456,25 +456,48 @@ def main() -> int:
             shared_names = v4support.shared_expert_tensor_names(layer)
             shared_raw = load_tensors_from_shard(shard_path, shared_names)
 
-            # Route on the first corpus case (normal) to pick the top-6
-            # experts deterministically.  corpus_cases[0] is (name, tensor),
-            # so the tensor is the SECOND element (v1 crashed here by
-            # assigning the name string to x_route).
+            # Route EVERY corpus case up-front (cheap: just the gate matmul).
+            # Different input distributions select different experts, so the
+            # trusted per-case reference needs the packed weights of EVERY
+            # selected expert -- v2 crashed with KeyError: <eid> because only
+            # the first case's experts were loaded.  The candidate itself
+            # runs on x_route (first case, "normal").  corpus_cases[i] is
+            # (name, tensor), so the tensor is the SECOND element (v1 crashed
+            # here by assigning the name string to x_route).
             _, x_route = corpus_cases[0]
-            scores, ids, weights = ds7.router_scores(
-                x_route, gate_w, bias=gate_b, score_func="sqrtsoftplus",
-                topk=TOPK, route_scale=ROUTE_SCALE)
+            case_routes = []
+            reference_union: set[int] = set()
+            for case_name, x in corpus_cases:
+                sc, ids_c, wts_c = ds7.router_scores(
+                    x, gate_w, bias=gate_b, score_func="sqrtsoftplus",
+                    topk=TOPK, route_scale=ROUTE_SCALE)
+                case_routes.append({"case": case_name, "scores": sc,
+                                    "expert_ids": ids_c,
+                                    "routing_weights": wts_c})
+                reference_union.update(int(e)
+                                       for e in ids_c.flatten().tolist())
+            x_scores = case_routes[0]["scores"]
+            ids = case_routes[0]["expert_ids"]
+            weights = case_routes[0]["routing_weights"]
             layer_result["expert_ids"] = ids.tolist()
             layer_result["routing_weights"] = weights.tolist()
-            layer_result["router_max_abs_score"] = float(scores.abs().max())
+            layer_result["router_max_abs_score"] = float(x_scores.abs().max())
 
-            selected = sorted({int(e) for e in ids.flatten().tolist()})
-            print("  top-k expert ids:", selected, flush=True)
+            reference_selected = sorted(reference_union)
+            candidate_selected = sorted(
+                {int(e) for e in ids.flatten().tolist()})
+            print("  reference expert union (%d):" % len(reference_selected),
+                  reference_selected, flush=True)
+            print("  candidate (x_route) experts:", candidate_selected,
+                  flush=True)
 
-            # Load the selected routed experts + build FP16 payloads.
+            # Load packed FP4 weights for every reference-selected expert
+            # (the trusted per-case reference dequantizes on the fly); build
+            # FP16 candidate payloads only for the candidate's experts so the
+            # bounded cache and staging stay proportional to the workload.
             routed_raw: dict[int, dict[str, torch.Tensor]] = {}
             fp16_payloads: dict[int, dict[str, torch.Tensor]] = {}
-            for eid in selected:
+            for eid in reference_selected:
                 names = v4support.routed_expert_tensor_names(layer, eid)
                 t = load_tensors_from_shard(shard_path, names)
                 routed_raw[eid] = {
@@ -485,17 +508,18 @@ def main() -> int:
                     "w3.weight": t[f"layers.{layer}.ffn.experts.{eid}.w3.weight"],
                     "w3.scale": t[f"layers.{layer}.ffn.experts.{eid}.w3.scale"],
                 }
-                fp16_payloads[eid] = {
-                    "w1.weight": ds7.dequantize_expert_weight(
-                        routed_raw[eid]["w1.weight"],
-                        routed_raw[eid]["w1.scale"]).half(),
-                    "w2.weight": ds7.dequantize_expert_weight(
-                        routed_raw[eid]["w2.weight"],
-                        routed_raw[eid]["w2.scale"]).half(),
-                    "w3.weight": ds7.dequantize_expert_weight(
-                        routed_raw[eid]["w3.weight"],
-                        routed_raw[eid]["w3.scale"]).half(),
-                }
+                if eid in candidate_selected:
+                    fp16_payloads[eid] = {
+                        "w1.weight": ds7.dequantize_expert_weight(
+                            routed_raw[eid]["w1.weight"],
+                            routed_raw[eid]["w1.scale"]).half(),
+                        "w2.weight": ds7.dequantize_expert_weight(
+                            routed_raw[eid]["w2.weight"],
+                            routed_raw[eid]["w2.scale"]).half(),
+                        "w3.weight": ds7.dequantize_expert_weight(
+                            routed_raw[eid]["w3.weight"],
+                            routed_raw[eid]["w3.scale"]).half(),
+                    }
             shared_payload = {
                 "w1.weight": moe.dequantize_fp8_e4m3(
                     shared_raw[f"layers.{layer}.ffn.shared_experts.w1.weight"],
@@ -533,16 +557,25 @@ def main() -> int:
                     keep_per_expert=True)
                 if case_idx == 0:
                     ref_route = case_ref
+                # The reference re-routes internally; confirm it selects the
+                # same experts as the harness's up-front routing for the
+                # same input distribution.
+                pre_routed = case_routes[case_idx]["expert_ids"]
+                route_agree = bool(torch.equal(case_ref["expert_ids"],
+                                               pre_routed))
                 per_case.append({
                     "case": case_name,
                     "reference_expert_ids_first_token":
                         [int(e) for e in case_ref["expert_ids"][0]],
-                    "reference_route_agreement": True,
+                    "reference_route_agreement": route_agree,
                     "reference_moe_output_norm":
                         float(case_ref["moe_output"].norm()),
                     "reference_finite": bool(
                         torch.isfinite(case_ref["moe_output"]).all()),
                 })
+                if not route_agree:
+                    failures.append({"name": f"layer_{layer}_route_agreement",
+                                     "details": {"case": case_name}})
             layer_result["per_case"] = per_case
             if ref_route is None:
                 raise RuntimeError("corpus produced no reference for x_route")
@@ -553,8 +586,10 @@ def main() -> int:
             # cannot evict: the warm replay is then a true all-hits,
             # zero-H2D, zero-reload replay (warm_reloaded == 0 gate).
             # 8 tokens x top-6 -> typically ~10-20 distinct experts; the
-            # sized budget is airtight for any union up to the 48-slot max.
-            budget_bytes = int((len(selected) + 2) * 50 * (1 << 20))
+            # sized budget is airtight for any candidate union up to the
+            # 48-slot max (candidate_selected, not the broader reference
+            # union -- only the candidate's experts are staged).
+            budget_bytes = int((len(candidate_selected) + 2) * 50 * (1 << 20))
             cache = v4cache.DeepSeekExpertCache(
                 budget_bytes, device="cuda")
             loader = v4cache.DeepSeekExpertLoader(cache)
