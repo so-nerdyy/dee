@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "official_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+  "runs": [],
+  "notes": "Every accepted DeepSeek result must record: model revision, runtime SHA, harness SHA, hardware, GPU count, precision family, cache representation, prompt, reasoning effort, context length, generated tokens, base decode TPS, effective accepted TPS, DSpark acceptance, TTFT, TPOT, peak VRAM, process RSS, mapped bytes, expert-cache hit rate, H2D bytes, conversion time, kernel count, GPU busy percentage, exact/tolerance status, artifact hashes."
+}
