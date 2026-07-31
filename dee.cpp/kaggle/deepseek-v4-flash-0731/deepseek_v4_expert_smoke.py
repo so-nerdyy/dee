@@ -33,6 +33,7 @@ import hashlib
 import json
 import platform
 import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -55,6 +56,10 @@ REFERENCE_RELATIVE = Path("dee.cpp/scripts/deepseek_v4_expert_reference.py")
 
 REV = "9e165c30e2704aec5d9d593cce3eebd58bbef1cb"
 SHARD = "model-00008-of-00048.safetensors"
+# Committed in the pinned repo tree alongside the ledger (DS1 phase).
+CACHED_HEADER_RELATIVE = Path(
+    "dee.cpp/benchmark_reports/deepseek-v4-flash-0731-t4/shard-headers/"
+    "model-00008-of-00048.safetensors.json")
 
 # Layers.6 / expert 0 per the validated ledger (MODEL_LEDGER.json).
 EXPERT_TENSORS = [
@@ -102,6 +107,40 @@ def run_logged(
     if check and rc:
         raise subprocess.CalledProcessError(rc, command)
     return rc
+
+
+def canonical_header_sha256(parsed: dict[str, Any]) -> str:
+    """SHA256 of the canonical safetensors header JSON."""
+    canonical = json.dumps(parsed, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def downloaded_header_sha256(shard_path: Path) -> str:
+    """Hash the ACTUAL safetensors header bytes of the downloaded file.
+
+    Reads the 8-byte LE header length + header JSON from the shard, then
+    canonicalizes with the same form the committed cached header was written
+    in (json.dumps(sort_keys=True)), so the result is directly comparable to
+    the canonical hash of the committed cached header. This pins the
+    downloaded file to the pinned revision without needing any network
+    header (urllib follows HF's redirect to the CDN, which drops
+    X-Linked-Etag).
+    """
+    with open(shard_path, "rb") as fh:
+        raw = fh.read(8)
+        if len(raw) != 8:
+            raise ValueError(f"{shard_path}: truncated 8-byte prefix")
+        hlen = struct.unpack("<Q", raw)[0]
+        if hlen <= 0 or hlen > (1 << 31):
+            raise ValueError(f"{shard_path}: implausible header length {hlen}")
+        header_bytes = fh.read(hlen)
+        if len(header_bytes) != hlen:
+            raise ValueError(f"{shard_path}: truncated header")
+    try:
+        header = json.loads(header_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{shard_path}: malformed header JSON: {exc}") from exc
+    return canonical_header_sha256(header)
 
 
 def shard_expected_bytes() -> tuple[int, str | None]:
@@ -329,9 +368,20 @@ def main() -> int:
 
         checkpoint_dir = Path("/kaggle/working/dsv4-checkpoint")
         want, remote_sha = shard_expected_bytes()
-        if remote_sha is None and not Path("/kaggle/working/CHECKPOINT_MANIFEST.json").is_file():
-            raise RuntimeError("no manifest and no HF X-Linked-Etag: cannot verify shard integrity")
         shard_path = download_shard(want, checkpoint_dir)
+        # Pin the ACTUAL downloaded shard header to the committed cached
+        # header from the pinned repo tree (network-independent).
+        cached_header_path = ROOT / CACHED_HEADER_RELATIVE
+        if not cached_header_path.is_file():
+            raise RuntimeError(f"missing committed cached shard header {cached_header_path}")
+        # Canonicalize BOTH sides so the comparison is content-based and
+        # immune to eol conversion (a Windows CRLF checkout must not false-fail).
+        cached = json.loads(cached_header_path.read_text(encoding="utf-8"))
+        expected_header_sha = canonical_header_sha256(cached)
+        got_header_sha = downloaded_header_sha256(shard_path)
+        if got_header_sha != expected_header_sha:
+            raise RuntimeError({"downloaded_header_sha256": got_header_sha,
+                                "expected_committed_header_sha256": expected_header_sha})
         t = load_expert(shard_path)
         print("loaded expert tensors:", {k: tuple(v.shape) for k, v in t.items()}, flush=True)
 
@@ -404,7 +454,8 @@ def main() -> int:
             "torch": torch.__version__,
             "shard_bytes": want,
             "shard_sha256": shard_sha256,
-            "integrity_gate": "hf_etag" if remote_sha is not None else "manifest_size",
+            "integrity_gate": ("header_pin+hf_etag" if remote_sha is not None
+                                else "header_pin"),
             "shard_sha_verified_vs_hf_etag": remote_sha is not None and shard_sha256 == remote_sha,
             "tensor_shapes": {k: list(v.shape) for k, v in t.items()},
             "metrics": metrics,
