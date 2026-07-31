@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.deepseek_v4_cache import (  # noqa: E402
     PRIORITY_WEIGHT,
     DeepSeekExpertCache,
+    DeepSeekExpertLoader,
 )
 
 
@@ -177,18 +178,20 @@ def test_reserve_rejects_nonpositive_budget() -> None:
 
 
 def test_staging_bound_fails_closed() -> None:
-    from scripts.deepseek_v4_cache import DeepSeekExpertLoader
     import torch
 
     cache = DeepSeekExpertCache(1 << 30)
     loader = DeepSeekExpertLoader(cache, max_staging_bytes=10)
     # A payload larger than the bounded staging limit fails closed before any
-    # cache-slot reservation or H2D (no partial allocation, no eviction).
+    # cache-slot reservation or H2D (no partial allocation, no eviction, no
+    # counter side effects).
     with pytest.raises(RuntimeError, match="exceeds bounded staging limit"):
         loader.stage(0, 0, {"w": torch.ones(64, 64, dtype=torch.float16)})
     assert not cache.is_resident(0, 0)
     assert cache.stats["loads"] == 0
     assert cache.stats["evictions"] == 0
+    assert cache.stats["ensures"] == 0
+    assert cache.stats["requests"] == 0
     # A small payload under the bound stages fine.
     ok = loader.stage(0, 0, {"w": torch.ones(2, 2, dtype=torch.float16)},
                       metadata={"source_shard": "s.safetensors"})
