@@ -19,7 +19,7 @@ import torch
 
 RUN_ID = "20260730T235000Z-m5g-v3-regular-norm-smoke"
 # Replaced with the immutable diagnostic-infrastructure commit before push.
-EXPECTED_RUNTIME_COMMIT = "ea7578e9f7d2f874649b1f1b86d98d27965149e3"
+EXPECTED_RUNTIME_COMMIT = "a9fae52676ae807901c29a177f4d598f9484e488"
 ROOT = Path("/kaggle/temp/dee-source")
 EVIDENCE = Path(f"/kaggle/working/ornith-m5g-evidence-{RUN_ID}")
 ARCHIVE_BASE = Path(f"/kaggle/working/ornith-m5g-evidence-{RUN_ID}")
@@ -128,6 +128,32 @@ def main() -> int:
         if not repository_identity_path.is_file():
             raise RuntimeError(f"missing repository harness identity {repository_identity_path}")
         harness_identity = json.loads(repository_identity_path.read_text(encoding="utf-8"))
+        expected_harness_commit = harness_identity.get("repository_commit")
+        if (
+            not isinstance(expected_harness_commit, str)
+            or len(expected_harness_commit) != 40
+            or any(character not in "0123456789abcdef" for character in expected_harness_commit)
+        ):
+            raise RuntimeError({
+                "repository_commit": expected_harness_commit,
+                "reason": "harness identity must pin a 40-character lowercase commit",
+            })
+        subprocess.run(["git", "checkout", "--quiet", expected_harness_commit], cwd=ROOT, check=True)
+        checked_out_harness_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+        ).strip()
+        if checked_out_harness_commit != expected_harness_commit:
+            raise RuntimeError({
+                "repository_commit": checked_out_harness_commit,
+                "expected_repository_commit": expected_harness_commit,
+            })
+        committed_harness_path = ROOT / "dee.cpp/kaggle/ornith-m5g-v3-smoke/ornith_m5g_v3_smoke.py"
+        committed_harness_sha = sha256_file(committed_harness_path)
+        if committed_harness_sha != harness_identity.get("harness_sha256"):
+            raise RuntimeError({
+                "repository_harness_sha256": committed_harness_sha,
+                "expected_harness_sha256": harness_identity.get("harness_sha256"),
+            })
         harness_sha = sha256_file(Path(__file__).resolve())
         expected_harness_file = harness_identity.get("harness_file")
         actual_harness_file = Path(__file__).name
