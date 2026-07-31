@@ -176,6 +176,25 @@ def test_reserve_rejects_nonpositive_budget() -> None:
         DeepSeekExpertCache(0)
 
 
+def test_staging_bound_fails_closed() -> None:
+    from scripts.deepseek_v4_cache import DeepSeekExpertLoader
+    import torch
+
+    cache = DeepSeekExpertCache(1 << 30)
+    loader = DeepSeekExpertLoader(cache, max_staging_bytes=10)
+    # A payload larger than the bounded staging limit fails closed before any
+    # cache-slot reservation or H2D (no partial allocation, no eviction).
+    with pytest.raises(RuntimeError, match="exceeds bounded staging limit"):
+        loader.stage(0, 0, {"w": torch.ones(64, 64, dtype=torch.float16)})
+    assert not cache.is_resident(0, 0)
+    assert cache.stats["loads"] == 0
+    assert cache.stats["evictions"] == 0
+    # A small payload under the bound stages fine.
+    ok = loader.stage(0, 0, {"w": torch.ones(2, 2, dtype=torch.float16)},
+                      metadata={"source_shard": "s.safetensors"})
+    assert ok is not None and cache.is_resident(0, 0)
+
+
 def test_priority_weight_mirrors_cpp() -> None:
     # The C++ VramCacheManager uses PRIORITY_WEIGHT = 1 << 20; the Python
     # mirror must match so DS8 measured behavior transfers to the engine.
