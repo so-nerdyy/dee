@@ -61,6 +61,11 @@ CACHED_HEADER_RELATIVE = Path(
     "dee.cpp/benchmark_reports/deepseek-v4-flash-0731-t4/shard-headers/"
     "model-00008-of-00048.safetensors.json")
 
+# Transient HTTP codes from HF's CDN that are safe to retry with backoff.
+RETRYABLE_CODES = {500, 502, 503, 504}
+MAX_DOWNLOAD_ATTEMPTS = 6
+RETRY_BACKOFF_SECONDS = 2.0  # doubled per attempt
+
 # Layers.6 / expert 0 per the validated ledger (MODEL_LEDGER.json).
 EXPERT_TENSORS = [
     "layers.6.ffn.experts.0.w1.weight", "layers.6.ffn.experts.0.w1.scale",
@@ -173,6 +178,37 @@ def shard_expected_bytes() -> tuple[int, str | None]:
     return int(cr.split("/")[1]), remote_sha
 
 
+def fetch_chunk_with_retries(req: Any) -> bytes:
+    """Fetch one ranged chunk, retrying transient HTTP/network errors.
+
+    HF's CDN intermittently returns 5xx during large downloads; a bounded
+    retry with backoff on the same Range offset resumes cleanly because the
+    request is stateless. Non-transient errors (4xx, Range not honored) are
+    raised immediately.
+    """
+    import urllib.error
+    import urllib.request
+    last_error: Exception | None = None
+    for attempt in range(MAX_DOWNLOAD_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(req, timeout=600) as r:
+                if r.status != 206:
+                    raise RuntimeError(
+                        f"server did not honor Range (status {r.status})")
+                return r.read(8 << 20)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in RETRYABLE_CODES:
+                raise
+            last_error = exc
+        except (urllib.error.URLError, ConnectionError, TimeoutError) as exc:
+            last_error = exc
+        print(f"  transient download error {type(last_error).__name__}: "
+              f"{last_error}; retry {attempt + 1}/{MAX_DOWNLOAD_ATTEMPTS}", flush=True)
+        time.sleep(RETRY_BACKOFF_SECONDS * (2 ** attempt))
+    raise ConnectionError(
+        f"download failed after {MAX_DOWNLOAD_ATTEMPTS} attempts: {last_error!r}")
+
+
 def download_shard(want: int, checkpoint_dir: Path) -> Path:
     import urllib.request
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -188,14 +224,7 @@ def download_shard(want: int, checkpoint_dir: Path) -> Path:
         while have < want:
             end = min(have + chunk - 1, want - 1)
             req = urllib.request.Request(url, headers={"Range": f"bytes={have}-{end}"})
-            with urllib.request.urlopen(req, timeout=600) as r:
-                if have > 0 and r.status != 206:
-                    raise RuntimeError(
-                        f"server did not honor Range resume (status {r.status} at {have})")
-                # Bound the read to the requested range: with a 206 this reads
-                # exactly the chunk; with an unexpected full 200 it never loads
-                # the whole multi-GB body into RAM (have == 0 -> bytes 0..chunk).
-                data = r.read(chunk)
+            data = fetch_chunk_with_retries(req)
             if not data:
                 raise ConnectionError(f"empty chunk at {have}")
             fh.write(data)
