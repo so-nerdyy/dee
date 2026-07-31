@@ -19,7 +19,7 @@ import torch
 
 RUN_ID = "20260730T235000Z-m5g-v3-regular-norm-smoke"
 # Replaced with the immutable diagnostic-infrastructure commit before push.
-EXPECTED_RUNTIME_COMMIT = "3f03930d78596d457732de9cbab1f50f7878abb1"
+EXPECTED_RUNTIME_COMMIT = "ea7578e9f7d2f874649b1f1b86d98d27965149e3"
 ROOT = Path("/kaggle/temp/dee-source")
 EVIDENCE = Path(f"/kaggle/working/ornith-m5g-evidence-{RUN_ID}")
 ARCHIVE_BASE = Path(f"/kaggle/working/ornith-m5g-evidence-{RUN_ID}")
