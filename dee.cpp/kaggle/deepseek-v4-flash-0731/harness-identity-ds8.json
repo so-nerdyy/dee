@@ -1,0 +1,23 @@
+{
+  "repository": "https://github.com/so-nerdyy/dee.git",
+  "branch": "freebuff/deepseek-v4-flash-0731-t4",
+  "repository_commit": "8e79a923358e41c2a9ba5889b595f60c5ed4cf77",
+  "harness_file": "dee.cpp/kaggle/deepseek-v4-flash-0731/deepseek_v4_expert_runtime.py",
+  "harness_sha256": "2a77fa3909d8d4e4538d3f6a4eff9337546ad6d8a3add870e9609524d8984e67",
+  "module_sha256": {
+    "moe_reference": "895d1b1c97c201e45ab1ea2cfd1c9b16344e848b07d2469a5a88d5c7d037fb81",
+    "expert_reference": "9c28375b17898a6908d61ca3a769f4ba2eab4104e4049439cfa76784eaa86ef5",
+    "cache": "c4d16b0cef031f1bbf8ed0c2a989e7a60394bc7f740973a85ed9a24e7271f0df",
+    "contract": "a18546b41db29f66d3c31a1608c669044c2f1af08a6b1eeab0fe6ecb9cee99c8",
+    "corpus": "9ffdb43f736a7dbade969619af44c8e8d817038be194050e3106eb51aa6ea215",
+    "support": "c97e797f9688351655337f67e7ae7566fdc72bbc42fadbe72250e6410755380c"
+  },
+  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "model_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+  "shards": [
+    "model-00005-of-00048.safetensors",
+    "model-00022-of-00048.safetensors",
+    "model-00043-of-00048.safetensors"
+  ],
+  "schema_version": 1
+}
