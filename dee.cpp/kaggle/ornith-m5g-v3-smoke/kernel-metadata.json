@@ -1,6 +1,6 @@
 {
   "id": "nivind/dee-cpp-ornith-m5g-v3-smoke",
-  "title": "dee.cpp Ornith M5G-v3 Regular Norm Smoke",
+  "title": "dee-cpp-ornith-m5g-v3-smoke",
   "code_file": "ornith_m5g_v3_smoke.py",
   "language": "python",
   "kernel_type": "script",
