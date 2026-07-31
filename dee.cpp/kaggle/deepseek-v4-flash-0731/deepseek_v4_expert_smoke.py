@@ -38,6 +38,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
+from typing import Any
 
 import torch
 
@@ -152,7 +153,10 @@ def download_shard(want: int, checkpoint_dir: Path) -> Path:
                 if have > 0 and r.status != 206:
                     raise RuntimeError(
                         f"server did not honor Range resume (status {r.status} at {have})")
-                data = r.read()
+                # Bound the read to the requested range: with a 206 this reads
+                # exactly the chunk; with an unexpected full 200 it never loads
+                # the whole multi-GB body into RAM (have == 0 -> bytes 0..chunk).
+                data = r.read(chunk)
             if not data:
                 raise ConnectionError(f"empty chunk at {have}")
             fh.write(data)
@@ -175,7 +179,7 @@ def load_expert(shard_path: Path) -> dict[str, torch.Tensor]:
 
 
 def candidate_expert_on_t4(
-    x: torch.Tensor, t: dict[str, torch.Tensor], ref: object
+    x: torch.Tensor, t: dict[str, torch.Tensor], ref: Any
 ) -> tuple[torch.Tensor, str]:
     """FP16 dequantized GEMV with FP32 accumulation, executed ON the T4.
 
@@ -428,6 +432,11 @@ def main() -> int:
         missing = [row["path"] for row in required_status if not row["present"]]
         if missing:
             failures.append({"name": "required_artifacts_present", "details": missing})
+        # Fail closed when the candidate exceeds the predeclared tolerances:
+        # a numerical mismatch must surface as FAIL with a non-zero exit, never
+        # as a COMPLETE kernel with the mismatch buried in the evidence JSON.
+        if metrics is not None and not passed:
+            failures.append({"name": "candidate_mismatch", "details": metrics})
         result = "PASS" if fatal_error is None and not failures else "FAIL"
         artifacts = [
             {"path": path.relative_to(EVIDENCE).as_posix(), "bytes": path.stat().st_size,
