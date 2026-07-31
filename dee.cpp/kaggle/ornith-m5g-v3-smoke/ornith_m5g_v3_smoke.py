@@ -25,9 +25,6 @@ EVIDENCE = Path(f"/kaggle/working/ornith-m5g-evidence-{RUN_ID}")
 ARCHIVE_BASE = Path(f"/kaggle/working/ornith-m5g-evidence-{RUN_ID}")
 REPOSITORY = "https://github.com/so-nerdyy/dee.git"
 BRANCH = "codex/phase2-cap32-matrix"
-HARNESS_IDENTITY_PATH = Path(__file__).with_name("harness-identity.json")
-
-
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -79,6 +76,7 @@ def main() -> int:
     commit: str | None = None
     source_tree: str | None = None
     model: Path | None = None
+    harness_sha: str | None = None
 
     try:
         bootstrap = {
@@ -119,6 +117,24 @@ def main() -> int:
                 raise RuntimeError(f"refusing to remove unexpected path {resolved_root}")
             shutil.rmtree(ROOT)
         subprocess.run(["git", "clone", "--branch", BRANCH, "--single-branch", REPOSITORY, str(ROOT)], check=True)
+        # Script kernels upload only code_file. Read the sidecar from the harness
+        # commit before switching the clone to the separately pinned runtime
+        # commit, which intentionally does not contain Kaggle packaging files.
+        repository_identity_path = ROOT / "kaggle/ornith-m5g-v3-smoke/harness-identity.json"
+        if not repository_identity_path.is_file():
+            raise RuntimeError(f"missing repository harness identity {repository_identity_path}")
+        harness_identity = json.loads(repository_identity_path.read_text(encoding="utf-8"))
+        harness_sha = sha256_file(Path(__file__).resolve())
+        if harness_identity.get("harness_file") != Path(__file__).name:
+            raise RuntimeError({
+                "harness_file": Path(__file__).name,
+                "expected_harness_file": harness_identity.get("harness_file"),
+            })
+        if harness_identity.get("harness_sha256") != harness_sha:
+            raise RuntimeError({
+                "harness_sha256": harness_sha,
+                "expected_harness_sha256": harness_identity.get("harness_sha256"),
+            })
         subprocess.run(["git", "checkout", EXPECTED_RUNTIME_COMMIT], cwd=ROOT, check=True)
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
         source_tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], cwd=ROOT, text=True).strip()
@@ -174,15 +190,7 @@ def main() -> int:
         ))
 
         smoke_dir = EVIDENCE / "smoke"
-        if not HARNESS_IDENTITY_PATH.is_file():
-            raise RuntimeError(f"missing harness identity {HARNESS_IDENTITY_PATH}")
-        harness_identity = json.loads(HARNESS_IDENTITY_PATH.read_text(encoding="utf-8"))
-        harness_sha = sha256_file(Path(__file__).resolve())
-        if harness_identity.get("harness_sha256") != harness_sha:
-            raise RuntimeError({
-                "harness_sha256": harness_sha,
-                "expected_harness_sha256": harness_identity.get("harness_sha256"),
-            })
+        assert harness_sha is not None
         smoke_rc = run_logged(
             [sys.executable, "-u", str(dee / "scripts/m5g_v3_cuda_smoke.py"),
              "--model-dir", str(model), "--output-dir", str(smoke_dir),

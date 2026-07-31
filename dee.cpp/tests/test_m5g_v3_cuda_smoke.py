@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -72,6 +73,21 @@ def test_compare_records_reports_bitwise_category_results() -> None:
     comparison = smoke.compare_records(control, candidate)
     assert set(comparison) == smoke.EXPECTED_CATEGORIES
     assert all(row["bitwise_equal"] for row in comparison.values())
+
+
+def test_harness_identity_sidecar_matches_committed_source() -> None:
+    harness_dir = ROOT / "kaggle/ornith-m5g-v3-smoke"
+    identity = json.loads((harness_dir / "harness-identity.json").read_text())
+    actual = hashlib.sha256((harness_dir / identity["harness_file"]).read_bytes()).hexdigest()
+    assert identity["harness_sha256"] == actual
+
+
+def test_harness_identity_is_loaded_from_harness_commit_before_runtime_checkout() -> None:
+    harness = (ROOT / "kaggle/ornith-m5g-v3-smoke/ornith_m5g_v3_smoke.py").read_text()
+    identity_lookup = 'ROOT / "kaggle/ornith-m5g-v3-smoke/harness-identity.json"'
+    assert identity_lookup in harness
+    assert harness.index(identity_lookup) < harness.index('subprocess.run(["git", "checkout", EXPECTED_RUNTIME_COMMIT]')
+    assert 'Path(__file__).with_name("harness-identity.json")' not in harness
 
 
 def test_v3_kernel_isolated_from_sealed_v2_kernel() -> None:
