@@ -295,8 +295,6 @@ __global__ void qwen_rms_norm_gated_fp16_kernel(
     }
 }
 
-}  // namespace
-
 bool qwen_rms_norm_gated_fp16_cuda(
         const void* d_input_f16, const void* d_weight_f16,
         const void* d_gate_f16, void* d_output_f16,
