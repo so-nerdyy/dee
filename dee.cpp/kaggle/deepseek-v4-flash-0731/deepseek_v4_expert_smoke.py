@@ -227,6 +227,7 @@ def main() -> int:
     reference_sha: str | None = None
     metrics: dict[str, float] | None = None
     passed: bool = False
+    candidate_device: str = ""
 
     # Predeclared tolerances for the T4 candidate (FP16 storage + FP16 GEMV
     # vs full-FP32 trusted reference). Declared BEFORE the run, per the DS7
@@ -275,6 +276,11 @@ def main() -> int:
         if not identity_path.is_file():
             raise RuntimeError(f"missing harness identity {identity_path}")
         identity = json.loads(identity_path.read_text(encoding="utf-8"))
+        if identity.get("model_revision") != REV:
+            raise RuntimeError({"identity_model_revision": identity.get("model_revision"),
+                                "expected": REV})
+        if identity.get("shard") != SHARD:
+            raise RuntimeError({"identity_shard": identity.get("shard"), "expected": SHARD})
         expected_harness_commit = identity.get("repository_commit")
         if (
             not isinstance(expected_harness_commit, str)
@@ -346,7 +352,8 @@ def main() -> int:
         print("metrics:", json.dumps(metrics, indent=2), flush=True)
 
         passed = (
-            metrics["max_abs_error"] <= TOLERANCE["max_abs_error"]
+            candidate_device == "cuda"
+            and metrics["max_abs_error"] <= TOLERANCE["max_abs_error"]
             and metrics["mean_abs_error"] <= TOLERANCE["mean_abs_error"]
             and metrics["max_rel_error"] <= TOLERANCE["max_rel_error"]
         )
@@ -436,7 +443,9 @@ def main() -> int:
         # a numerical mismatch must surface as FAIL with a non-zero exit, never
         # as a COMPLETE kernel with the mismatch buried in the evidence JSON.
         if metrics is not None and not passed:
-            failures.append({"name": "candidate_mismatch", "details": metrics})
+            failures.append({"name": "candidate_mismatch",
+                             "details": {"metrics": metrics,
+                                         "candidate_device": candidate_device}})
         result = "PASS" if fatal_error is None and not failures else "FAIL"
         artifacts = [
             {"path": path.relative_to(EVIDENCE).as_posix(), "bytes": path.stat().st_size,
