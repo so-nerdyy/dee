@@ -389,3 +389,150 @@ def aggregate_by_component(rows: list[dict[str, Any]]) -> dict[str, dict[str, An
         bucket["expanded_fp16_bytes"] += row["expanded_fp16_bytes"]
         bucket["expanded_int8_bytes"] += row["expanded_int8_bytes"]
     return result
+
+
+# ---------------------------------------------------------------------------
+# DS8: generalized official expert resolution.
+#
+# Every MoE layer's expert tensors live entirely inside ONE shard
+# (layer N -> model-0000(N+2)-of-00048, verified against the ledger), and
+# every weight/scale pair is co-located in the same shard (0 cross-shard
+# mismatches).  These helpers resolve the exact tensor names, shard, byte
+# offsets, dtypes, shapes and scale linkage for ARBITRARY (layer, expert)
+# routed experts and for the per-layer shared expert, straight from the
+# validated ledger rows -- no hard-coded layer-6 / expert-0 assumptions.
+# ---------------------------------------------------------------------------
+
+ROUTED_PROJECTION_NAMES = ("w1", "w2", "w3")  # gate, down, up (official order)
+
+
+def routed_expert_tensor_names(layer: int, expert_id: int) -> list[str]:
+    """All 6 routed-expert tensor names (w1/w2/w3 weights + scales)."""
+    return [
+        f"layers.{layer}.ffn.experts.{expert_id}.{proj}.{kind}"
+        for proj in ROUTED_PROJECTION_NAMES
+        for kind in ("weight", "scale")
+    ]
+
+
+def shared_expert_tensor_names(layer: int) -> list[str]:
+    """All 6 shared-expert tensor names (w1/w2/w3 weights + scales)."""
+    return [
+        f"layers.{layer}.ffn.shared_experts.{proj}.{kind}"
+        for proj in ROUTED_PROJECTION_NAMES
+        for kind in ("weight", "scale")
+    ]
+
+
+def router_tensor_names(layer: int, *, hash_layer: bool = False) -> list[str]:
+    """Score-based layers use gate.weight + gate.bias; hash layers use tid2eid."""
+    if hash_layer:
+        return [f"layers.{layer}.ffn.gate.tid2eid"]
+    return [f"layers.{layer}.ffn.gate.weight", f"layers.{layer}.ffn.gate.bias"]
+
+
+def index_ledger_rows(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Build name -> row lookup from a validated ledger rows list."""
+    return {row["tensor_name"]: row for row in rows}
+
+
+def resolve_expert_tensors(
+    by_name: dict[str, dict[str, Any]],
+    layer: int,
+    expert_id: int,
+) -> dict[str, dict[str, Any]]:
+    """Resolve all 6 routed-expert tensor rows for arbitrary (layer, expert).
+
+    Fails closed on any missing tensor or cross-shard weight/scale split.
+    Returns {tensor_name: ledger_row}.
+    """
+    names = routed_expert_tensor_names(layer, expert_id)
+    resolved: dict[str, dict[str, Any]] = {}
+    for name in names:
+        row = by_name.get(name)
+        if row is None:
+            raise ValueError(f"routed expert tensor missing from ledger: {name}")
+        resolved[name] = row
+    _assert_same_shard(resolved)
+    return resolved
+
+
+def resolve_shared_expert_tensors(
+    by_name: dict[str, dict[str, Any]],
+    layer: int,
+) -> dict[str, dict[str, Any]]:
+    """Resolve all 6 shared-expert tensor rows for a layer."""
+    names = shared_expert_tensor_names(layer)
+    resolved: dict[str, dict[str, Any]] = {}
+    for name in names:
+        row = by_name.get(name)
+        if row is None:
+            raise ValueError(f"shared expert tensor missing from ledger: {name}")
+        resolved[name] = row
+    _assert_same_shard(resolved)
+    return resolved
+
+
+def resolve_router_tensors(
+    by_name: dict[str, dict[str, Any]],
+    layer: int,
+    *,
+    hash_layers: int = 3,
+) -> dict[str, dict[str, Any]]:
+    """Resolve router tensors for a layer (score-based vs hash)."""
+    hash_layer = layer < hash_layers
+    names = router_tensor_names(layer, hash_layer=hash_layer)
+    resolved: dict[str, dict[str, Any]] = {}
+    for name in names:
+        row = by_name.get(name)
+        if row is None:
+            raise ValueError(f"router tensor missing from ledger: {name}")
+        resolved[name] = row
+    _assert_same_shard(resolved)
+    return resolved
+
+
+def _assert_same_shard(resolved: dict[str, dict[str, Any]]) -> None:
+    shards = {row["source_shard"] for row in resolved.values()}
+    if len(shards) != 1:
+        raise ValueError(
+            f"tensors span {len(shards)} shards; expected exactly one: "
+            f"{sorted(shards)}"
+        )
+
+
+def expert_load_plan(
+    resolved: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Compact per-expert byte/offset plan for a bounded host staging loader.
+
+    Records, per tensor: name, shard, byte offset/length, storage dtype, shape.
+    Also aggregates the packed weight bytes + scale bytes for cache budgeting.
+    """
+    tensors: list[dict[str, Any]] = []
+    weight_bytes = 0
+    scale_bytes = 0
+    for name in sorted(resolved):
+        row = resolved[name]
+        is_scale = name.endswith(".scale")
+        tensors.append({
+            "tensor_name": name,
+            "shard": row["source_shard"],
+            "byte_offset": row["byte_offset"],
+            "byte_length": row["byte_length"],
+            "dtype": row["stored_dtype"],
+            "shape": row["shape"],
+        })
+        if is_scale:
+            scale_bytes += row["byte_length"]
+        else:
+            weight_bytes += row["byte_length"]
+    shards = {row["source_shard"] for row in resolved.values()}
+    return {
+        "tensor_count": len(tensors),
+        "shard": sorted(shards)[0],
+        "tensors": tensors,
+        "packed_weight_bytes": weight_bytes,
+        "scale_bytes": scale_bytes,
+        "compressed_bytes": weight_bytes + scale_bytes,
+    }

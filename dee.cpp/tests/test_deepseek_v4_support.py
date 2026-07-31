@@ -203,6 +203,93 @@ def test_real_index_and_cached_headers_invariants() -> None:
                for row in expert_rows)
 
 
+def _real_ledger() -> tuple[dict, list]:
+    """Load the committed validated ledger rows (or skip if absent)."""
+    ledger_path = ROOT / "benchmark_reports/deepseek-v4-flash-0731-t4/MODEL_LEDGER.json"
+    if not ledger_path.is_file():
+        pytest.skip("MODEL_LEDGER.json not present locally")
+    with open(ledger_path, encoding="utf-8") as fh:
+        ledger = json.load(fh)
+    return v4.index_ledger_rows(ledger["tensors"]), ledger["tensors"]
+
+
+def test_ds8_routed_expert_resolution_across_matrix() -> None:
+    """Arbitrary (layer, expert) resolves against the real official ledger."""
+    by_name, _rows = _real_ledger()
+    # early / middle / late layer x low / middle / high expert id
+    matrix = [(3, 0), (3, 7), (3, 255), (20, 0), (20, 128), (41, 255)]
+    seen_shards = set()
+    for layer, expert in matrix:
+        resolved = v4.resolve_expert_tensors(by_name, layer, expert)
+        assert len(resolved) == 6
+        plan = v4.expert_load_plan(resolved)
+        assert plan["tensor_count"] == 6
+        # official shard naming: model-000{N:02d} (5-digit, 48 shards)
+        assert plan["shard"] == f"model-000{layer + 2:02d}-of-00048.safetensors"
+        assert plan["compressed_bytes"] == 13369344  # all routed experts same size
+        # every weight/scale pair co-located
+        shards = {row["source_shard"] for row in resolved.values()}
+        assert len(shards) == 1
+        seen_shards.add(plan["shard"])
+    assert len(seen_shards) == 3  # three distinct shards exercised
+
+
+def test_ds8_shared_expert_resolution_fp8_storage() -> None:
+    by_name, _rows = _real_ledger()
+    for layer in (3, 20, 41):
+        resolved = v4.resolve_shared_expert_tensors(by_name, layer)
+        assert len(resolved) == 6
+        plan = v4.expert_load_plan(resolved)
+        assert plan["tensor_count"] == 6
+        assert plan["shard"] == f"model-000{layer + 2:02d}-of-00048.safetensors"
+        # Shared expert weights are F8_E4M3 (NOT packed I8 FP4)
+        for name in ("w1", "w2", "w3"):
+            assert resolved[f"layers.{layer}.ffn.shared_experts.{name}.weight"]["stored_dtype"] == "F8_E4M3"
+            assert resolved[f"layers.{layer}.ffn.shared_experts.{name}.scale"]["stored_dtype"] == "F8_E8M0"
+        # block-128 tiling for the FP8 scales
+        assert resolved[f"layers.{layer}.ffn.shared_experts.w1.weight"]["block_shape"] == [16, 32]
+        assert resolved[f"layers.{layer}.ffn.shared_experts.w1.scale"]["shape"] == [16, 32]
+
+
+def test_ds8_router_resolution_score_and_hash_layers() -> None:
+    by_name, _rows = _real_ledger()
+    # score layer (>=3): weight BF16 + bias F32
+    score = v4.resolve_router_tensors(by_name, 3)
+    assert set(score) == {"layers.3.ffn.gate.weight", "layers.3.ffn.gate.bias"}
+    assert score["layers.3.ffn.gate.weight"]["stored_dtype"] == "BF16"
+    assert score["layers.3.ffn.gate.weight"]["shape"] == [256, 4096]
+    assert score["layers.3.ffn.gate.bias"]["stored_dtype"] == "F32"
+    # hash layer (<3): tid2eid only
+    hash_layer = v4.resolve_router_tensors(by_name, 0)
+    assert set(hash_layer) == {"layers.0.ffn.gate.tid2eid"}
+    assert hash_layer["layers.0.ffn.gate.tid2eid"]["stored_dtype"] == "I64"
+    assert hash_layer["layers.0.ffn.gate.tid2eid"]["shape"] == [129280, 6]
+
+
+def test_ds8_resolution_fails_closed_on_missing_tensor_and_cross_shard() -> None:
+    by_name, _rows = _real_ledger()
+    with pytest.raises(ValueError, match="missing from ledger"):
+        v4.resolve_expert_tensors(by_name, 999, 0)  # no such layer
+    # corrupt one row's shard -> cross-shard rejection
+    good = v4.resolve_expert_tensors(by_name, 3, 0)
+    corrupted = dict(good)
+    first = next(iter(corrupted))
+    row = dict(corrupted[first])
+    row["source_shard"] = "model-00099-of-00048.safetensors"
+    corrupted[first] = row
+    with pytest.raises(ValueError, match="exactly one"):
+        v4._assert_same_shard(corrupted)
+
+
+def test_ds8_expert_load_plan_budget_bytes() -> None:
+    by_name, _rows = _real_ledger()
+    plan = v4.expert_load_plan(v4.resolve_expert_tensors(by_name, 6, 0))
+    # DS7 measured: one packed routed expert = 12.75 MiB compressed
+    assert plan["compressed_bytes"] == 13369344
+    assert plan["packed_weight_bytes"] == 3 * 4194304  # w1+w2+w3 packed
+    assert plan["scale_bytes"] == 3 * 262144  # three F8_E8M0 scale tensors
+
+
 if __name__ == "__main__":
     # Self-executing so the CTest entry (python tests/test_deepseek_v4_support.py)
     # actually runs pytest-collected tests instead of a silent no-op.
