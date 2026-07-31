@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 from pathlib import Path
@@ -88,6 +89,22 @@ def test_harness_identity_is_loaded_from_harness_commit_before_runtime_checkout(
     assert identity_lookup in harness
     assert harness.index(identity_lookup) < harness.index('subprocess.run(["git", "checkout", EXPECTED_RUNTIME_COMMIT]')
     assert 'Path(__file__).with_name("harness-identity.json")' not in harness
+
+
+def test_harness_identity_allows_only_kaggle_script_rename() -> None:
+    source = (ROOT / "kaggle/ornith-m5g-v3-smoke/ornith_m5g_v3_smoke.py").read_text()
+    tree = ast.parse(source)
+    helper = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "is_accepted_harness_filename"
+    )
+    namespace: dict[str, object] = {}
+    exec(compile(ast.Module(body=[helper], type_ignores=[]), "<harness-helper>", "exec"), namespace)
+    accepts = namespace["is_accepted_harness_filename"]
+    assert accepts("ornith_m5g_v3_smoke.py", "ornith_m5g_v3_smoke.py") is True
+    assert accepts("script.py", "ornith_m5g_v3_smoke.py") is True
+    assert accepts("arbitrary.py", "ornith_m5g_v3_smoke.py") is False
+    assert accepts("script.py", None) is True
 
 
 def test_v3_kernel_isolated_from_sealed_v2_kernel() -> None:

@@ -25,6 +25,10 @@ EVIDENCE = Path(f"/kaggle/working/ornith-m5g-evidence-{RUN_ID}")
 ARCHIVE_BASE = Path(f"/kaggle/working/ornith-m5g-evidence-{RUN_ID}")
 REPOSITORY = "https://github.com/so-nerdyy/dee.git"
 BRANCH = "codex/phase2-cap32-matrix"
+def is_accepted_harness_filename(actual_name: str, expected_name: str | None) -> bool:
+    return actual_name in {expected_name, "script.py"}
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -125,10 +129,12 @@ def main() -> int:
             raise RuntimeError(f"missing repository harness identity {repository_identity_path}")
         harness_identity = json.loads(repository_identity_path.read_text(encoding="utf-8"))
         harness_sha = sha256_file(Path(__file__).resolve())
-        if harness_identity.get("harness_file") != Path(__file__).name:
+        expected_harness_file = harness_identity.get("harness_file")
+        actual_harness_file = Path(__file__).name
+        if not is_accepted_harness_filename(actual_harness_file, expected_harness_file):
             raise RuntimeError({
-                "harness_file": Path(__file__).name,
-                "expected_harness_file": harness_identity.get("harness_file"),
+                "harness_file": actual_harness_file,
+                "expected_harness_file": expected_harness_file,
             })
         if harness_identity.get("harness_sha256") != harness_sha:
             raise RuntimeError({
