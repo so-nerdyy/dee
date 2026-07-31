@@ -330,13 +330,13 @@ class TraceCollector:
             tensor = tensor.detach().float().cpu().numpy()
         self.records[category].append((label, np.asarray(tensor).copy()))
 
-    def add_boundary(self, category: str, label: str, tensor, **metadata):
+    def add_boundary(self, category: str, boundary_label: str, tensor, **metadata):
         if not self.capture_boundaries or tensor is None:
             return
         if hasattr(tensor, "detach"):
             tensor = tensor.detach().cpu().numpy()
         self.boundaries[category].append({
-            "label": label,
+            "label": boundary_label,
             "array": np.asarray(tensor).copy(),
             "metadata": metadata,
         })
@@ -617,14 +617,14 @@ def record_norm_dependency(context: ExecutionContext, hidden_states, output,
     })
 
 
-def trace_boundary(context: ExecutionContext, category: str, label: str, tensor,
+def trace_boundary(context: ExecutionContext, category: str, boundary_label: str, tensor,
                    **metadata):
     """Record an opt-in v3 boundary snapshot without changing the forward path."""
     if (
         context.collector is not None
         and context.collector.capture_boundaries
     ):
-        context.collector.add_boundary(category, label, tensor, **metadata)
+        context.collector.add_boundary(category, boundary_label, tensor, **metadata)
 
 
 def forensic_span(context: ExecutionContext, name: str, layer: int,

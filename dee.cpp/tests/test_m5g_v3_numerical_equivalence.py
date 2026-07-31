@@ -112,6 +112,24 @@ def test_device_diagnostic_selector_is_bounded_and_unambiguous() -> None:
             raise AssertionError("invalid selector was accepted")
 
 
+def test_trace_boundary_accepts_label_metadata_without_argument_collision() -> None:
+    context = generation.ExecutionContext()
+    context.collector = generation.TraceCollector(capture_boundaries=True)
+    tensor = np.array([1.0, 2.0], dtype=np.float16)
+    generation.trace_boundary(
+        context,
+        "pre_norm_input",
+        "step=0,layer=0:input_layernorm",
+        tensor,
+        label="input_layernorm",
+        layer=0,
+        token=0,
+    )
+    record = context.collector.boundaries["pre_norm_input"][0]
+    assert record["label"] == "step=0,layer=0:input_layernorm"
+    assert record["metadata"]["label"] == "input_layernorm"
+
+
 def test_boundary_capture_is_opt_in_and_preserves_source_dtype() -> None:
     collector = generation.TraceCollector()
     value = np.array([1.0, -0.0], dtype=np.float16)
