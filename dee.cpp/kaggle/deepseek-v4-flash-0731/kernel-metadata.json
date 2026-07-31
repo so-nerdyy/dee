@@ -1,6 +1,6 @@
 {
   "id": "nivind/dee-cpp-deepseek-v4-flash-0731-ds7-expert-smoke",
-  "title": "dee.cpp DeepSeek-V4-Flash-0731 DS7 One-Expert Smoke",
+  "title": "dee-cpp-deepseek-v4-flash-0731-ds7-expert-smoke",
   "code_file": "deepseek_v4_expert_smoke.py",
   "language": "python",
   "kernel_type": "script",
