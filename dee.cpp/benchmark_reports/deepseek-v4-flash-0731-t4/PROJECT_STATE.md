@@ -32,6 +32,26 @@ test can run without `tmp/`.
 - `CHECKPOINT_MANIFEST.json` — 48 shards, header-validated sizes.
 - Declared total = validated total = `166,878,536,440` bytes. PASS.
 
+## Download plan + tool (DS3)
+
+- `CHECKPOINT_DOWNLOAD_PLAN.md` — no verified Kaggle mirror exists; partition
+  plan + shard-00008 rationale (holds `layers.6.ffn.experts.0.*`), mount
+  validation rules, mandatory post-download full-file hash.
+- `tools/download_deepseek_v4_shard.py` — resumable range downloader that
+  verifies the ACTUAL downloaded safetensors header against the manifest
+  `header_sha256` of the pinned revision (same-size tampered files fail).
+
+## DS7 smoke harness (ready, not launched)
+
+- `kaggle/deepseek-v4-flash-0731/kernel-metadata.json` — single T4, private,
+  internet, direct shard download (no dataset dependency).
+- `kaggle/deepseek-v4-flash-0731/deepseek_v4_expert_smoke.py` — downloads
+  model-00008, loads expert-0 (layer 6), runs the trusted FP32 reference and
+  a device-authentic FP16-dequantized T4 candidate (`.to("cuda")`, sync,
+  `candidate_executed_on_cuda` in evidence), compares with predeclared
+  tolerances, archives evidence + manifest.sha256. `performance_comparable:
+  false`.
+
 ## Expert reference (DS7)
 
 - `scripts/deepseek_v4_expert_reference.py` — trusted FP32 reference for one

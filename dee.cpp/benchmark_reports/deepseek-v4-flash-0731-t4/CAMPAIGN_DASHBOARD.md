@@ -1,8 +1,8 @@
 # CAMPAIGN — DeepSeek-V4-Flash-0731 on Tesla T4 via Dynamic Expert Eviction
 
-Status: **DS0–DS2, DS6 COMPLETE** (freeze, audit, ledger, resolver).
-DS7 reference (trusted one-expert math) COMPLETE; DS7 T4 smoke pending.
-DS3/DS4/DS5 in progress.
+Status: **DS0–DS2, DS3, DS6 COMPLETE** (freeze, audit, ledger, download
+plan/tool, resolver). DS7 reference COMPLETE; DS7 T4 smoke harness READY
+(not yet launched). DS4/DS5 in progress.
 
 ## Campaign identity
 
@@ -33,11 +33,11 @@ M5G-v1/v2/v3 evidence is immutable. No M5H work until the DeepSeek campaign reac
 | DS0 | Freeze Ornith, create branch, campaign scaffold | ✅ |
 | DS1 | Official source/config audit + revision pin | ✅ |
 | DS2 | Byte-accurate tensor ledger | ✅ |
-| DS3 | Checkpoint download / Kaggle dataset plan | 🔲 |
+| DS3 | Checkpoint download / Kaggle dataset plan | ✅ (plan + resumable shard tool + header pin) |
 | DS4 | Tokenizer + encoding parity golden tests | 🔲 |
 | DS5 | Trusted reference traces | 🔲 |
 | DS6 | Freebuff tensor resolver for V4 | ✅ (Python ledger + C++ `TensorResolver` DEEPSEEK_V4 dialect, w1/w3/w2 + scale names) |
-| DS7 | One routed expert on T4 | 🔶 (trusted FP32 reference done; T4 smoke pending) |
+| DS7 | One routed expert on T4 | 🔶 (reference + smoke harness ready; remote run pending) |
 | DS8 | Expert cache + Dynamic Expert Eviction | 🔲 |
 | DS9 | Architecture bring-up → first token | 🔲 |
 | DS10 | Dual-T4 full-model decode | 🔲 |
