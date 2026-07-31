@@ -1,5 +1,5 @@
 {
   "schema_version": 1,
   "harness_file": "ornith_m5g_v3_smoke.py",
-  "harness_sha256": "705db8951a5afaa9071236f0ea0f4662f539756c989aeb6d507cf793c5582209"
+  "harness_sha256": "8c6238653c1171be0a9fce125d2ebc7220877af56383c3c4a7dcbbd8b1c49bb6"
 }

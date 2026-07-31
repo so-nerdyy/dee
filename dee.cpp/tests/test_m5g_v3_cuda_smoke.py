@@ -84,7 +84,7 @@ def test_harness_identity_sidecar_matches_committed_source() -> None:
 
 def test_harness_identity_is_loaded_from_harness_commit_before_runtime_checkout() -> None:
     harness = (ROOT / "kaggle/ornith-m5g-v3-smoke/ornith_m5g_v3_smoke.py").read_text()
-    identity_lookup = 'ROOT / "kaggle/ornith-m5g-v3-smoke/harness-identity.json"'
+    identity_lookup = 'ROOT / "dee.cpp/kaggle/ornith-m5g-v3-smoke/harness-identity.json"'
     assert identity_lookup in harness
     assert harness.index(identity_lookup) < harness.index('subprocess.run(["git", "checkout", EXPECTED_RUNTIME_COMMIT]')
     assert 'Path(__file__).with_name("harness-identity.json")' not in harness

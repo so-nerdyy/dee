@@ -120,7 +120,7 @@ def main() -> int:
         # Script kernels upload only code_file. Read the sidecar from the harness
         # commit before switching the clone to the separately pinned runtime
         # commit, which intentionally does not contain Kaggle packaging files.
-        repository_identity_path = ROOT / "kaggle/ornith-m5g-v3-smoke/harness-identity.json"
+        repository_identity_path = ROOT / "dee.cpp/kaggle/ornith-m5g-v3-smoke/harness-identity.json"
         if not repository_identity_path.is_file():
             raise RuntimeError(f"missing repository harness identity {repository_identity_path}")
         harness_identity = json.loads(repository_identity_path.read_text(encoding="utf-8"))
