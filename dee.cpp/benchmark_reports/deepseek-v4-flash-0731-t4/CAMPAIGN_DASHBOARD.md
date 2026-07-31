@@ -69,6 +69,9 @@ terminated **COMPLETE** with result **PASS**.
 - Evidence: `benchmark_reports/deepseek-v4-flash-0731-t4/ds7-smoke-v5/`
   (20/20 local validation checks PASS, incl. external cross-checks of the
   evidence copies of the harness and reference against the pinned SHAs).
+- Archive SHA256: `f6992fbe1dcc9cf3504f8545802ab5294432279e7c8fa91570063b9b85687e6f`;
+  manifest SHA256: `6e0b02f98d4f18cf2cee47b4e5e244613438bfdb6dd028c6bc6bbda40546953a`
+  (from `archive-metadata.json`, cross-checked against the downloaded tar.gz).
 - Verdict: `MATCH_WITHIN_TOLERANCE` — one official routed expert
   (`layers.6.ffn.experts.0`, shard `model-00008-of-00048`) executed on T4
   (CUDA, `candidate_executed_on_cuda: true`) and matched the trusted full-FP32

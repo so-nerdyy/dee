@@ -58,7 +58,10 @@ Kernel `nivind/dee-cpp-deepseek-v4-flash-0731-ds7-expert-smoke` v5 terminated
 COMPLETE with verdict `MATCH_WITHIN_TOLERANCE`:
 
 - Evidence: `benchmark_reports/deepseek-v4-flash-0731-t4/ds7-smoke-v5/`
-  (downloaded 2026-07-31).
+  (downloaded 2026-07-31). Archive SHA256:
+  `f6992fbe1dcc9cf3504f8545802ab5294432279e7c8fa91570063b9b85687e6f`;
+  manifest SHA256: `6e0b02f98d4f18cf2cee47b4e5e244613438bfdb6dd028c6bc6bbda40546953a`
+  (cross-checked against the downloaded tar.gz in local validation).
 - Verdict: `MATCH_WITHIN_TOLERANCE`, `passed: true`,
   `candidate_executed_on_cuda: true`, integrity gate `header_pin` PASS.
 - Metrics vs gates: `max_abs_error` 0.0046/2.0 ✓, `mean_abs_error`
