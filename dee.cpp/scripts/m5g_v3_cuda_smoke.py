@@ -153,7 +153,12 @@ def validate_side(
             "element_count": metadata.get("element_count") == expected["element_count"],
             "completion_sequence": int(metadata.get("completion_sequence", 0)) > 0,
             "kernel_identity": metadata.get("kernel_identity") == EXPECTED_KERNELS[side],
-            "stream_id": int(metadata.get("stream_id", 0)) != 0,
+            "stream_id": (
+                "stream_id" in metadata
+                and isinstance(metadata.get("stream_id"), int)
+                and not isinstance(metadata.get("stream_id"), bool)
+                and metadata["stream_id"] >= 0
+            ),
             "epsilon": math.isfinite(float(metadata.get("epsilon", float("nan")))),
             "source_dtype": metadata.get("source_dtype") == "torch.float16",
             "destination_dtype": metadata.get("destination_dtype") == "torch.float16",

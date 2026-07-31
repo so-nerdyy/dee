@@ -76,6 +76,24 @@ def test_compare_records_reports_bitwise_category_results() -> None:
     assert all(row["bitwise_equal"] for row in comparison.values())
 
 
+def test_validate_side_accepts_default_cuda_stream_zero_but_not_missing_or_negative() -> None:
+    records = _records("candidate")
+    records[0]["metadata"]["stream_id"] = 0
+    assert smoke.validate_side(records, "candidate", smoke.selector()) == []
+
+    records[0]["metadata"]["stream_id"] = -1
+    assert any(
+        failure["name"] == "candidate_stream_id"
+        for failure in smoke.validate_side(records, "candidate", smoke.selector())
+    )
+
+    del records[0]["metadata"]["stream_id"]
+    assert any(
+        failure["name"] == "candidate_stream_id"
+        for failure in smoke.validate_side(records, "candidate", smoke.selector())
+    )
+
+
 def test_harness_identity_sidecar_matches_committed_source() -> None:
     harness_dir = ROOT / "kaggle/ornith-m5g-v3-smoke"
     identity = json.loads((harness_dir / "harness-identity.json").read_text())
