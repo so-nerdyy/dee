@@ -1,0 +1,30 @@
+{
+  "id": "nivind/dee-cpp-ornith-m5g-v3-smoke",
+  "title": "dee.cpp Ornith M5G-v3 Regular Norm Smoke",
+  "code_file": "ornith_m5g_v3_smoke.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "enable_network": true,
+  "accelerator": "NvidiaTeslaT4",
+  "machine_shape": "NvidiaTeslaT4",
+  "machine_spec": {
+    "accelerator": "NvidiaTeslaT4",
+    "gpu_count": 2,
+    "is_shared_vm": false,
+    "container_size": "medium"
+  },
+  "dataset_sources": [
+    "nivind/ornith-1-0-35b"
+  ],
+  "keywords": [
+    "dee.cpp",
+    "ornith",
+    "m5g-v3",
+    "rmsnorm",
+    "diagnostic",
+    "dual-t4"
+  ]
+}
