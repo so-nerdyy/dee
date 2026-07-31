@@ -32,6 +32,19 @@ test can run without `tmp/`.
 - `CHECKPOINT_MANIFEST.json` — 48 shards, header-validated sizes.
 - Declared total = validated total = `166,878,536,440` bytes. PASS.
 
+## Resolver (DS6)
+
+- C++ `TensorResolver` extended with a `DEEPSEEK_V4` dialect (additive;
+  `ORNITH` remains the default): `w1`=GATE, `w3`=UP, `w2`=DOWN naming,
+  expert `.scale` resolution, shared-expert names, and `F8`/`I8`/`I64`
+  dtype mapping for the FP4-packed / FP8 / hash layouts.
+- Tests: `tests/test_deepseek_v4_resolver.cpp` (C++ naming/dtype) and
+  `tests/test_deepseek_v4_support.py` (Python ledger, self-executing so the
+  CTest entry runs real assertions).
+- Full official-index coverage remains the Python ledger's 72,317 tensors,
+  all resolved with matched shapes/offsets/dtypes/scales (0 unresolved,
+  0 duplicate mappings).
+
 ## Branch
 
 `freebuff/deepseek-v4-flash-0731-t4` (off `9ff967ef4429fb08a433d6ef0a4495468d89b4ba`).

@@ -20,6 +20,9 @@ DType dtype_from_string(const std::string& s) {
     if (s == "F32" || s == "F32E4M3" || s == "F32E5M2") return DType::F32;
     if (s == "F16") return DType::F16;
     if (s == "BF16") return DType::BF16;
+    if (s == "F8_E4M3" || s == "F8_E5M2" || s == "F8_E8M0") return DType::F8;
+    if (s == "I8") return DType::I8;
+    if (s == "I64") return DType::I64;
     return DType::UNKNOWN;
 }
 const char* dtype_to_string(DType d) {
@@ -27,6 +30,9 @@ const char* dtype_to_string(DType d) {
         case DType::F32:  return "F32";
         case DType::F16:  return "F16";
         case DType::BF16: return "BF16";
+        case DType::F8:   return "F8";
+        case DType::I8:   return "I8";
+        case DType::I64:  return "I64";
         default:          return "UNKNOWN";
     }
 }
@@ -222,12 +228,50 @@ std::string TensorResolver::expert_tensor_name(int layer, int expert, TensorReso
     return std::string(buf);
 }
 
+namespace {
+// DeepSeek-V4 weight suffix per resolver Kind: w1=gate, w3=up, w2=down.
+const char* v4_kind_suffix(TensorResolver::Kind kind) {
+    switch (kind) {
+        case TensorResolver::GATE_PROJ: return "w1";
+        case TensorResolver::UP_PROJ:   return "w3";
+        case TensorResolver::DOWN_PROJ: return "w2";
+    }
+    return "?";
+}
+}  // namespace
+
+std::string TensorResolver::v4_expert_tensor_name(int layer, int expert, TensorResolver::Kind kind) {
+    char buf[256];
+    snprintf(buf, sizeof(buf), "layers.%d.ffn.experts.%d.%s.weight", layer, expert, v4_kind_suffix(kind));
+    return std::string(buf);
+}
+
+std::string TensorResolver::v4_expert_scale_name(int layer, int expert, TensorResolver::Kind kind) {
+    char buf[256];
+    snprintf(buf, sizeof(buf), "layers.%d.ffn.experts.%d.%s.scale", layer, expert, v4_kind_suffix(kind));
+    return std::string(buf);
+}
+
+std::string TensorResolver::v4_shared_expert_tensor_name(int layer, TensorResolver::Kind kind) {
+    char buf[256];
+    snprintf(buf, sizeof(buf), "layers.%d.ffn.shared_experts.%s.weight", layer, v4_kind_suffix(kind));
+    return std::string(buf);
+}
+
 void TensorResolver::register_shard(WeightMmap* mmap) {
     if (mmap) shards_.push_back(mmap);
 }
 
 TensorView TensorResolver::resolve_expert(int layer, int expert, Kind kind) const {
+    if (model_ == Model::DEEPSEEK_V4) {
+        return resolve_tensor(v4_expert_tensor_name(layer, expert, kind));
+    }
     return resolve_tensor(expert_tensor_name(layer, expert, kind));
+}
+
+TensorView TensorResolver::resolve_expert_scale(int layer, int expert, Kind kind) const {
+    if (model_ != Model::DEEPSEEK_V4) return TensorView{};  // no scales in ORNITH
+    return resolve_tensor(v4_expert_scale_name(layer, expert, kind));
 }
 
 TensorView TensorResolver::resolve_tensor(const std::string& name) const {

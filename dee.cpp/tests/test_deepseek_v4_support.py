@@ -1,11 +1,25 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
-import pytest
+# pytest is required to run this file (pytest.raises / pytest.skip fixtures
+# and the __main__ runner below). Guard the import so the CTest entry
+# (`python tests/test_deepseek_v4_support.py`) fails with a clear message
+# instead of an opaque traceback when pytest is missing.
+try:
+    import pytest
+except ImportError:
+    sys.stderr.write("tests/test_deepseek_v4_support.py requires pytest: pip install pytest\n")
+    sys.exit(2)
 
-from scripts import deepseek_v4_support as v4
+# Make `scripts` importable regardless of how this file is invoked (pytest -m
+# from the repo root, or `python tests/test_deepseek_v4_support.py` via CTest,
+# where sys.path[0] is the script's own directory).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts import deepseek_v4_support as v4  # noqa: E402
 
 
 ROOT = Path(__file__).parents[1]
@@ -187,3 +201,9 @@ def test_real_index_and_cached_headers_invariants() -> None:
     assert len(expert_rows) == 66048
     assert all(row["stored_dtype"] == "I8" or row["tensor_name"].endswith(".scale")
                for row in expert_rows)
+
+
+if __name__ == "__main__":
+    # Self-executing so the CTest entry (python tests/test_deepseek_v4_support.py)
+    # actually runs pytest-collected tests instead of a silent no-op.
+    sys.exit(pytest.main([__file__, "-q"]))

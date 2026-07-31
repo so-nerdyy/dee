@@ -23,7 +23,7 @@
 namespace dee {
 
 // safetensors scalar dtypes we care about for the MoE weights.
-enum class DType { F32, F16, BF16, UNKNOWN };
+enum class DType { F32, F16, BF16, F8, I8, I64, UNKNOWN };
 
 // A resolved view into the mmap'd region. `data` points directly at the
 // tensor's first element (no copy); `nbytes` is the tensor byte length.
@@ -91,20 +91,42 @@ private:
 // TensorResolver: the C++ port of the Python prototype's _resolve_key +
 // get_fused_expert. Knows the Ornith/Qwen3.5-MoE tensor naming and can
 // resolve a single expert's gate/up/down projection by (layer, expert).
+//
+// Also supports the deepseek-ai/DeepSeek-V4-Flash-0731 layout when set_model()
+// selects DEEPSEEK_V4:
+//   - routed experts:  layers.<L>.ffn.experts.<E>.w1|w2|w3.weight  (packed FP4,
+//     dtype I8, two e2m1fn values per byte) + matching .scale (F8_E8M0)
+//   - shared experts:  layers.<L>.ffn.shared_experts.w1|w2|w3.weight
+//   - hash/index:      layers.<L>.hc_* , layers.<L>.attn.indexer.*
+//   - DSpark:          mtp.<I>.*  (layers 40-42)
+// The Kind mapping for DEEPSEEK_V4 is GATE_PROJ->w1, UP_PROJ->w3, DOWN_PROJ->w2.
+// The default remains ORNITH so existing engine.cpp callers are unchanged.
 // ---------------------------------------------------------------------------
 class TensorResolver {
 public:
-    // Expert weight kind.
+    // Expert weight kind. For DEEPSEEK_V4: GATE_PROJ=w1, UP_PROJ=w3, DOWN_PROJ=w2.
     enum Kind { GATE_PROJ, UP_PROJ, DOWN_PROJ };
+
+    // Model naming dialect the resolver should use.
+    enum class Model { ORNITH, DEEPSEEK_V4 };
 
     // The model is loaded one shard at a time. Call register_shard() for each
     // WeightMmap you open; the resolver routes lookups to the right shard by
     // tensor name. (For the single-shard smoke test, register just one.)
     void register_shard(WeightMmap* mmap);
 
-    // Resolve the fused gate_up projection for an expert.
-    // Returns the gate_proj view (caller may also fetch up_proj separately).
+    // Select the checkpoint naming dialect. Defaults to ORNITH.
+    void set_model(Model model) { model_ = model; }
+    Model model() const { return model_; }
+
+    // Resolve one expert weight tensor by Kind. ORNITH: returns the
+    // gate/up/down_proj view (gate and up are separate tensors).
+    // DEEPSEEK_V4: GATE_PROJ->w1, UP_PROJ->w3, DOWN_PROJ->w2.
     TensorView resolve_expert(int layer, int expert, Kind kind) const;
+
+    // Resolve the quantization scale tensor paired with an expert weight
+    // (DEEPSEEK_V4 only; returns !ok() for ORNITH, which has no scales).
+    TensorView resolve_expert_scale(int layer, int expert, Kind kind) const;
 
     // Resolve any exact checkpoint tensor name across the registered shards.
     TensorView resolve_tensor(const std::string& tensor_name) const;
@@ -112,8 +134,15 @@ public:
     // Build the canonical tensor name for the Ornith/Qwen3.5-MoE architecture.
     static std::string expert_tensor_name(int layer, int expert, Kind kind);
 
+    // DEEPSEEK_V4 naming helpers (independent of the instance model setting,
+    // so callers can build names without a resolver).
+    static std::string v4_expert_tensor_name(int layer, int expert, Kind kind);
+    static std::string v4_expert_scale_name(int layer, int expert, Kind kind);
+    static std::string v4_shared_expert_tensor_name(int layer, Kind kind);
+
 private:
     std::vector<WeightMmap*> shards_;
+    Model model_ = Model::ORNITH;
 };
 
 // ---------------------------------------------------------------------------

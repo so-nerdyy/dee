@@ -95,6 +95,7 @@ if(DEE_BUILD_TESTS)
     set(DEE_TEST_SOURCES
         tests/test_smoke.cpp
         tests/test_weight_mmap.cpp
+        tests/test_deepseek_v4_resolver.cpp
         tests/test_vram_cache.cpp
         tests/test_async_prefetcher.cpp
         tests/test_oracle.cpp
@@ -120,6 +121,10 @@ if(DEE_BUILD_TESTS)
         NAME test_ornith_support
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ornith_support.py)
     set_tests_properties(test_ornith_support PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(
+        NAME test_deepseek_v4_support
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_deepseek_v4_support.py)
+    set_tests_properties(test_deepseek_v4_support PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
 add_custom_target(lightning_t4_benchmark
