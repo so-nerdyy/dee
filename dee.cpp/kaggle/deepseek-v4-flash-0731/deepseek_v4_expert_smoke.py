@@ -253,8 +253,14 @@ def main() -> int:
             ],
         }
         write_json(EVIDENCE / "bootstrap-environment.json", bootstrap)
-        if torch.cuda.device_count() != 1 or "T4" not in torch.cuda.get_device_name(0):
-            raise RuntimeError(f"expected one Tesla T4, got {bootstrap['gpus']}")
+        # The campaign initial hardware is dual-T4 and Kaggle's NvidiaTeslaT4
+        # accelerator provisions two devices; the DS7 candidate only uses
+        # device 0, so accept any T4-only topology with >= 1 GPU.
+        if torch.cuda.device_count() < 1 or not all(
+            "T4" in torch.cuda.get_device_name(device)
+            for device in range(torch.cuda.device_count())
+        ):
+            raise RuntimeError(f"expected Tesla T4 topology, got {bootstrap['gpus']}")
 
         run_logged(
             [sys.executable, "-m", "pip", "install", "--no-cache-dir", "-q",

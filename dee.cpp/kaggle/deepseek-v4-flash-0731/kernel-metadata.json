@@ -12,7 +12,7 @@
   "machine_shape": "NvidiaTeslaT4",
   "machine_spec": {
     "accelerator": "NvidiaTeslaT4",
-    "gpu_count": 1,
+    "gpu_count": 2,
     "is_shared_vm": false,
     "container_size": "medium"
   },
