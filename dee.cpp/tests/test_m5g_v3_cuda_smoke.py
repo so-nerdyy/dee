@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from scripts import m5g_v3_cuda_smoke as smoke
@@ -99,6 +100,8 @@ def test_harness_identity_sidecar_matches_committed_source() -> None:
     identity = json.loads((harness_dir / "harness-identity.json").read_text())
     actual = hashlib.sha256((harness_dir / identity["harness_file"]).read_bytes()).hexdigest()
     assert identity["harness_sha256"] == actual
+    assert identity["repository_commit"] == "5b874015929c237767cbf52201e900380926eab7"
+    assert re.fullmatch(r"[0-9a-f]{40}", identity["repository_commit"])
 
 
 def test_harness_identity_is_loaded_from_harness_commit_before_runtime_checkout() -> None:
