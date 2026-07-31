@@ -1,0 +1,89 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from scripts import m5g_v3_cuda_smoke as smoke
+
+
+ROOT = Path(__file__).parents[1]
+
+
+def _metadata(side: str) -> dict:
+    return {
+        "side": side,
+        "layer": 0,
+        "token": 0,
+        "label": "input_layernorm",
+        "selector": smoke.selector(),
+        "element_start": 0,
+        "element_count": 8,
+        "completion_sequence": 1,
+        "kernel_identity": smoke.EXPECTED_KERNELS[side],
+        "stream_id": 7,
+        "epsilon": 1.0e-6,
+        "source_dtype": "torch.float16",
+        "destination_dtype": "torch.float16",
+    }
+
+
+def _records(side: str) -> list[dict]:
+    return [
+        {
+            "category": category,
+            "label": "step=0,layer=0:input_layernorm",
+            "array": [[0.0] * 8] if category not in {"norm_variance", "norm_denominator", "reciprocal_rms"} else [0.0],
+            "metadata": _metadata(side),
+        }
+        for category in sorted(smoke.EXPECTED_CATEGORIES)
+    ]
+
+
+def test_smoke_selector_is_bounded_and_exact() -> None:
+    selected = smoke.selector()
+    assert selected == {
+        "token_index": 0,
+        "layer_index": 0,
+        "norm_label": "input_layernorm",
+        "element_start": 0,
+        "element_count": 8,
+        "flattened_row_index": 0,
+    }
+
+
+def test_validate_side_rejects_duplicate_or_wrong_kernel_records() -> None:
+    records = _records("candidate")
+    assert smoke.validate_side(records, "candidate", smoke.selector()) == []
+    records[0]["metadata"]["kernel_identity"] = "wrong"
+    assert any(
+        failure["name"] == "candidate_kernel_identity"
+        for failure in smoke.validate_side(records, "candidate", smoke.selector())
+    )
+    records[1] = records[0]
+    assert any(
+        failure["name"] == "candidate_diagnostic_records_unique"
+        for failure in smoke.validate_side(records, "candidate", smoke.selector())
+    )
+
+
+def test_compare_records_reports_bitwise_category_results() -> None:
+    control = _records("control")
+    candidate = _records("candidate")
+    comparison = smoke.compare_records(control, candidate)
+    assert set(comparison) == smoke.EXPECTED_CATEGORIES
+    assert all(row["bitwise_equal"] for row in comparison.values())
+
+
+def test_v3_kernel_isolated_from_sealed_v2_kernel() -> None:
+    v3_metadata = json.loads(
+        (ROOT / "kaggle/ornith-m5g-v3-smoke/kernel-metadata.json").read_text()
+    )
+    v2_metadata = json.loads(
+        (ROOT / "kaggle/ornith-m5g-norm-subsets/kernel-metadata.json").read_text()
+    )
+    assert v3_metadata["id"] != v2_metadata["id"]
+    assert v3_metadata["code_file"] == "ornith_m5g_v3_smoke.py"
+    assert v2_metadata["code_file"] == "ornith_m5g_norm_subsets.py"
+    harness = (ROOT / "kaggle/ornith-m5g-v3-smoke/ornith_m5g_v3_smoke.py").read_text()
+    assert "m5g-v3-regular-norm-smoke" in harness
+    assert "m5g-v2-execution-equivalent" not in harness

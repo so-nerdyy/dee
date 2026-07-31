@@ -270,6 +270,47 @@ public:
         const void* d_input_f16, const void* d_weight_f16,
         void* d_output_f16, int rows, int dim, float epsilon,
         void* external_stream);
+    // M5G-v3 diagnostic-only regular norm launch. It records device-produced
+    // intermediates into bounded caller-owned buffers and synchronizes only
+    // this diagnostic event before returning. A nonzero sequence is success;
+    // zero is fail-closed and leaves last_error_message() populated.
+    uint64_t qwen_rms_norm_device_diagnostic(
+        const void* d_input_f16, const void* d_weight_f16,
+        void* d_output_f16, int rows, int dim, float epsilon,
+        int row_start, int row_count, int element_start, int element_count,
+        size_t input_snapshot_row_stride_bytes,
+        size_t normalized_row_stride_bytes,
+        size_t output_snapshot_row_stride_bytes,
+        size_t weight_snapshot_row_stride_bytes,
+        size_t scalar_stride_bytes,
+        void* d_input_snapshot_f32,
+        void* d_sum_squares_f32,
+        void* d_denominator_f32,
+        void* d_reciprocal_rms_f32,
+        void* d_weight_snapshot_f32,
+        void* d_normalized_f32,
+        void* d_output_snapshot_f32,
+        void* external_stream);
+    // Diagnostic-only control probe. The caller must prove its FP16 output
+    // matches the untouched PyTorch control boundary before using its
+    // intermediates as control evidence.
+    uint64_t qwen_rms_norm_reference_diagnostic(
+        const void* d_input_f16, const void* d_weight_f16,
+        void* d_output_f16, int rows, int dim, float epsilon,
+        int row_start, int row_count, int element_start, int element_count,
+        size_t input_snapshot_row_stride_bytes,
+        size_t normalized_row_stride_bytes,
+        size_t output_snapshot_row_stride_bytes,
+        size_t weight_snapshot_row_stride_bytes,
+        size_t scalar_stride_bytes,
+        void* d_input_snapshot_f32,
+        void* d_sum_squares_f32,
+        void* d_denominator_f32,
+        void* d_reciprocal_rms_f32,
+        void* d_weight_snapshot_f32,
+        void* d_normalized_f32,
+        void* d_output_snapshot_f32,
+        void* external_stream);
     bool qwen_rms_norm_gated_device(
         const void* d_input_f16, const void* d_weight_f16,
         const void* d_gate_f16, void* d_output_f16,
@@ -377,6 +418,25 @@ private:
         int layer, const void* d_h_in, int tokens,
         const int* h_expert_ids, int topk, void* d_experts_out,
         bool synchronize_output, bool direct_single_row_io);
+    uint64_t qwen_rms_norm_device_diagnostic_impl(
+        const void* d_input_f16, const void* d_weight_f16,
+        void* d_output_f16, int rows, int dim, float epsilon,
+        int row_start, int row_count, int element_start, int element_count,
+        size_t input_snapshot_row_stride_bytes,
+        size_t normalized_row_stride_bytes,
+        size_t output_snapshot_row_stride_bytes,
+        size_t weight_snapshot_row_stride_bytes,
+        size_t scalar_stride_bytes,
+        void* d_input_snapshot_f32,
+        void* d_sum_squares_f32,
+        void* d_denominator_f32,
+        void* d_reciprocal_rms_f32,
+        void* d_weight_snapshot_f32,
+        void* d_normalized_f32,
+        void* d_output_snapshot_f32,
+        void* external_stream,
+        bool reference_kernel);
+
     bool moe_forward_combined_device_impl(
         int layer, const void* d_h_in, int tokens,
         const int64_t* d_expert_ids, int topk, const float* d_weights_f32,
@@ -415,6 +475,7 @@ private:
     uint64_t scenario_requests_ = 0;
     uint64_t scenario_resident_hits_ = 0;
     uint64_t scenario_cold_loads_ = 0;
+    uint64_t diagnostic_sequence_ = 0;
 
     // map a model layer to the shard layer that actually exists (synthetic
     // single-layer shards expose only layer 0).

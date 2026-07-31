@@ -14,6 +14,7 @@
 #include <limits>
 #include <numeric>
 #include <unordered_set>
+#include <utility>
 
 #if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
 #include <immintrin.h>
@@ -1230,6 +1231,246 @@ bool Engine::qwen_rms_norm_device(
     set_last_error("Qwen RMSNorm device path unavailable without CUDA");
     return false;
 #endif
+}
+
+uint64_t Engine::qwen_rms_norm_device_diagnostic_impl(
+        const void* d_input_f16, const void* d_weight_f16,
+        void* d_output_f16, int rows, int dim, float epsilon,
+        int row_start, int row_count, int element_start, int element_count,
+        size_t input_snapshot_row_stride_bytes,
+        size_t normalized_row_stride_bytes,
+        size_t output_snapshot_row_stride_bytes,
+        size_t weight_snapshot_row_stride_bytes,
+        size_t scalar_stride_bytes,
+        void* d_input_snapshot_f32,
+        void* d_sum_squares_f32,
+        void* d_denominator_f32,
+        void* d_reciprocal_rms_f32,
+        void* d_weight_snapshot_f32,
+        void* d_normalized_f32,
+        void* d_output_snapshot_f32,
+        void* external_stream,
+        bool reference_kernel) {
+    clear_last_error();
+#ifdef DEE_CUDA
+    if (!cfg_.use_cuda) {
+        set_last_error("Qwen RMSNorm diagnostic requires CUDA");
+        return 0;
+    }
+    if (!DEE_CUDA_CHECK_NAMED(
+            cudaSetDevice(cfg_.device_id),
+            "cudaSetDevice(Qwen RMSNorm diagnostic)")) {
+        set_last_error("cudaSetDevice failed for Qwen RMSNorm diagnostic");
+        return 0;
+    }
+    QwenRmsNormDiagnosticBuffers diagnostics;
+    diagnostics.row_start = row_start;
+    diagnostics.row_count = row_count;
+    diagnostics.element_start = element_start;
+    diagnostics.element_count = element_count;
+    diagnostics.input_snapshot_row_stride_bytes = input_snapshot_row_stride_bytes;
+    diagnostics.normalized_row_stride_bytes = normalized_row_stride_bytes;
+    diagnostics.output_snapshot_row_stride_bytes = output_snapshot_row_stride_bytes;
+    diagnostics.weight_snapshot_row_stride_bytes = weight_snapshot_row_stride_bytes;
+    diagnostics.scalar_stride_bytes = scalar_stride_bytes;
+    diagnostics.d_input_snapshot_f32 = static_cast<float*>(d_input_snapshot_f32);
+    diagnostics.d_sum_squares_f32 = static_cast<float*>(d_sum_squares_f32);
+    diagnostics.d_denominator_f32 = static_cast<float*>(d_denominator_f32);
+    diagnostics.d_reciprocal_rms_f32 = static_cast<float*>(d_reciprocal_rms_f32);
+    diagnostics.d_weight_snapshot_f32 = static_cast<float*>(d_weight_snapshot_f32);
+    diagnostics.d_normalized_f32 = static_cast<float*>(d_normalized_f32);
+    diagnostics.d_output_snapshot_f32 = static_cast<float*>(d_output_snapshot_f32);
+    if (!d_input_f16 || !d_weight_f16 || !d_output_f16 ||
+        !std::isfinite(epsilon) || epsilon < 0.0f || rows <= 0 || dim <= 0 ||
+        !qwen_rms_norm_fp16_diagnostic_validate(rows, dim, diagnostics)) {
+        set_last_error("invalid Qwen RMSNorm diagnostic arguments or bounded buffers");
+        return 0;
+    }
+    const auto checked_bytes = [](size_t count, size_t stride, size_t* result) {
+        if (stride != 0 && count > std::numeric_limits<size_t>::max() / stride) {
+            return false;
+        }
+        *result = count * stride;
+        return true;
+    };
+    const auto ranges_overlap = [](const void* left, size_t left_bytes,
+                                   const void* right, size_t right_bytes) {
+        if (!left || !right || left_bytes == 0 || right_bytes == 0) return false;
+        const uintptr_t left_begin = reinterpret_cast<uintptr_t>(left);
+        const uintptr_t right_begin = reinterpret_cast<uintptr_t>(right);
+        if (left_begin > std::numeric_limits<uintptr_t>::max() - left_bytes ||
+            right_begin > std::numeric_limits<uintptr_t>::max() - right_bytes) {
+            return true;
+        }
+        const uintptr_t left_end = left_begin + left_bytes;
+        const uintptr_t right_end = right_begin + right_bytes;
+        return left_begin < right_end && right_begin < left_end;
+    };
+    size_t input_bytes = 0;
+    size_t weight_bytes = 0;
+    size_t output_bytes = 0;
+    size_t input_snapshot_bytes = 0;
+    size_t normalized_bytes = 0;
+    size_t output_snapshot_bytes = 0;
+    size_t weight_snapshot_bytes = 0;
+    size_t scalar_bytes = 0;
+    if (!checked_bytes(static_cast<size_t>(rows), static_cast<size_t>(dim) * sizeof(uint16_t), &input_bytes) ||
+        !checked_bytes(static_cast<size_t>(dim), sizeof(uint16_t), &weight_bytes) ||
+        !checked_bytes(static_cast<size_t>(rows), static_cast<size_t>(dim) * sizeof(uint16_t), &output_bytes) ||
+        !checked_bytes(static_cast<size_t>(row_count), input_snapshot_row_stride_bytes, &input_snapshot_bytes) ||
+        !checked_bytes(static_cast<size_t>(row_count), normalized_row_stride_bytes, &normalized_bytes) ||
+        !checked_bytes(static_cast<size_t>(row_count), output_snapshot_row_stride_bytes, &output_snapshot_bytes) ||
+        !checked_bytes(static_cast<size_t>(row_count), weight_snapshot_row_stride_bytes, &weight_snapshot_bytes) ||
+        !checked_bytes(static_cast<size_t>(row_count), scalar_stride_bytes, &scalar_bytes)) {
+        set_last_error("Qwen RMSNorm diagnostic buffer size overflow");
+        return 0;
+    }
+    const std::pair<const void*, size_t> primary[] = {
+        {d_input_f16, input_bytes}, {d_weight_f16, weight_bytes},
+        {d_output_f16, output_bytes},
+    };
+    const std::pair<const void*, size_t> diagnostic[] = {
+        {d_input_snapshot_f32, input_snapshot_bytes},
+        {d_sum_squares_f32, scalar_bytes},
+        {d_denominator_f32, scalar_bytes},
+        {d_reciprocal_rms_f32, scalar_bytes},
+        {d_weight_snapshot_f32, weight_bytes > 0 ? weight_snapshot_bytes : 0},
+        {d_normalized_f32, normalized_bytes},
+        {d_output_snapshot_f32, output_snapshot_bytes},
+    };
+    for (const auto& diagnostic_range : diagnostic) {
+        for (const auto& primary_range : primary) {
+            if (ranges_overlap(diagnostic_range.first, diagnostic_range.second,
+                               primary_range.first, primary_range.second)) {
+                set_last_error("Qwen RMSNorm diagnostic buffer aliases a norm input, weight, or output");
+                return 0;
+            }
+        }
+    }
+    for (size_t left = 0; left < sizeof(diagnostic) / sizeof(diagnostic[0]); ++left) {
+        for (size_t right = left + 1; right < sizeof(diagnostic) / sizeof(diagnostic[0]); ++right) {
+            if (ranges_overlap(diagnostic[left].first, diagnostic[left].second,
+                               diagnostic[right].first, diagnostic[right].second)) {
+                set_last_error("Qwen RMSNorm diagnostic buffers overlap each other");
+                return 0;
+            }
+        }
+    }
+    cudaEvent_t completion_event = nullptr;
+    if (!DEE_CUDA_CHECK_NAMED(
+            cudaEventCreateWithFlags(&completion_event, cudaEventDisableTiming),
+            "cudaEventCreateWithFlags(Qwen RMSNorm diagnostic)")) {
+        set_last_error("cudaEventCreate failed for Qwen RMSNorm diagnostic");
+        return 0;
+    }
+    const bool launched = reference_kernel
+        ? qwen_rms_norm_fp16_reference_diagnostic_cuda(
+            d_input_f16, d_weight_f16, d_output_f16, rows, dim, epsilon,
+            static_cast<cudaStream_t>(external_stream), diagnostics, completion_event)
+        : qwen_rms_norm_fp16_diagnostic_cuda(
+            d_input_f16, d_weight_f16, d_output_f16, rows, dim, epsilon,
+            static_cast<cudaStream_t>(external_stream), diagnostics, completion_event);
+    if (!launched) {
+        cudaEventDestroy(completion_event);
+        set_last_error("Qwen RMSNorm diagnostic CUDA launch failed");
+        return 0;
+    }
+    const cudaError_t wait_status = cudaEventSynchronize(completion_event);
+    const cudaError_t destroy_status = cudaEventDestroy(completion_event);
+    if (!DEE_CUDA_CHECK_NAMED(wait_status,
+                              "cudaEventSynchronize(Qwen RMSNorm diagnostic)")) {
+        set_last_error("Qwen RMSNorm diagnostic completion failed");
+        return 0;
+    }
+    if (!DEE_CUDA_CHECK_NAMED(destroy_status,
+                              "cudaEventDestroy(Qwen RMSNorm diagnostic)")) {
+        set_last_error("Qwen RMSNorm diagnostic event destruction failed");
+        return 0;
+    }
+    ++diagnostic_sequence_;
+    return diagnostic_sequence_;
+#else
+    (void)d_input_f16;
+    (void)d_weight_f16;
+    (void)d_output_f16;
+    (void)rows;
+    (void)dim;
+    (void)epsilon;
+    (void)row_start;
+    (void)row_count;
+    (void)element_start;
+    (void)element_count;
+    (void)input_snapshot_row_stride_bytes;
+    (void)normalized_row_stride_bytes;
+    (void)output_snapshot_row_stride_bytes;
+    (void)weight_snapshot_row_stride_bytes;
+    (void)scalar_stride_bytes;
+    (void)d_input_snapshot_f32;
+    (void)d_sum_squares_f32;
+    (void)d_denominator_f32;
+    (void)d_reciprocal_rms_f32;
+    (void)d_weight_snapshot_f32;
+    (void)d_normalized_f32;
+    (void)d_output_snapshot_f32;
+    (void)external_stream;
+    (void)reference_kernel;
+    set_last_error("Qwen RMSNorm diagnostic unavailable without CUDA");
+    return 0;
+#endif
+}
+
+uint64_t Engine::qwen_rms_norm_device_diagnostic(
+        const void* d_input_f16, const void* d_weight_f16,
+        void* d_output_f16, int rows, int dim, float epsilon,
+        int row_start, int row_count, int element_start, int element_count,
+        size_t input_snapshot_row_stride_bytes,
+        size_t normalized_row_stride_bytes,
+        size_t output_snapshot_row_stride_bytes,
+        size_t weight_snapshot_row_stride_bytes,
+        size_t scalar_stride_bytes,
+        void* d_input_snapshot_f32,
+        void* d_sum_squares_f32,
+        void* d_denominator_f32,
+        void* d_reciprocal_rms_f32,
+        void* d_weight_snapshot_f32,
+        void* d_normalized_f32,
+        void* d_output_snapshot_f32,
+        void* external_stream) {
+    return qwen_rms_norm_device_diagnostic_impl(
+        d_input_f16, d_weight_f16, d_output_f16, rows, dim, epsilon,
+        row_start, row_count, element_start, element_count,
+        input_snapshot_row_stride_bytes, normalized_row_stride_bytes,
+        output_snapshot_row_stride_bytes, weight_snapshot_row_stride_bytes,
+        scalar_stride_bytes, d_input_snapshot_f32, d_sum_squares_f32,
+        d_denominator_f32, d_reciprocal_rms_f32, d_weight_snapshot_f32,
+        d_normalized_f32, d_output_snapshot_f32, external_stream, false);
+}
+
+uint64_t Engine::qwen_rms_norm_reference_diagnostic(
+        const void* d_input_f16, const void* d_weight_f16,
+        void* d_output_f16, int rows, int dim, float epsilon,
+        int row_start, int row_count, int element_start, int element_count,
+        size_t input_snapshot_row_stride_bytes,
+        size_t normalized_row_stride_bytes,
+        size_t output_snapshot_row_stride_bytes,
+        size_t weight_snapshot_row_stride_bytes,
+        size_t scalar_stride_bytes,
+        void* d_input_snapshot_f32,
+        void* d_sum_squares_f32,
+        void* d_denominator_f32,
+        void* d_reciprocal_rms_f32,
+        void* d_weight_snapshot_f32,
+        void* d_normalized_f32,
+        void* d_output_snapshot_f32,
+        void* external_stream) {
+    return qwen_rms_norm_device_diagnostic_impl(
+        d_input_f16, d_weight_f16, d_output_f16, rows, dim, epsilon,
+        row_start, row_count, element_start, element_count,
+        input_snapshot_row_stride_bytes, normalized_row_stride_bytes,
+        output_snapshot_row_stride_bytes, weight_snapshot_row_stride_bytes,
+        scalar_stride_bytes, d_input_snapshot_f32, d_sum_squares_f32,
+        d_denominator_f32, d_reciprocal_rms_f32, d_weight_snapshot_f32,
+        d_normalized_f32, d_output_snapshot_f32, external_stream, true);
 }
 
 bool Engine::qwen_rms_norm_gated_device(

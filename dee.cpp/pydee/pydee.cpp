@@ -428,6 +428,128 @@ PYBIND11_MODULE(pydee_core, m) {
            py::arg("d_output_ptr"), py::arg("rows"), py::arg("dim"),
            py::arg("epsilon"), py::arg("external_stream_ptr"),
            "Launch Qwen RMSNorm on contiguous FP16 device tensors.")
+        .def("qwen_rms_norm_device_diagnostic", [](
+                dee::Engine& self,
+                uintptr_t d_input_ptr,
+                uintptr_t d_weight_ptr,
+                uintptr_t d_output_ptr,
+                int rows,
+                int dim,
+                float epsilon,
+                int row_start,
+                int row_count,
+                int element_start,
+                int element_count,
+                uintptr_t d_input_snapshot_ptr,
+                uintptr_t d_sum_squares_ptr,
+                uintptr_t d_denominator_ptr,
+                uintptr_t d_reciprocal_rms_ptr,
+                uintptr_t d_weight_snapshot_ptr,
+                uintptr_t d_normalized_ptr,
+                uintptr_t d_output_snapshot_ptr,
+                uintptr_t external_stream_ptr) -> uint64_t {
+            const size_t vector_stride = static_cast<size_t>(element_count) * sizeof(float);
+            const size_t scalar_stride = sizeof(float);
+            uint64_t sequence = 0;
+            {
+                py::gil_scoped_release release;
+                sequence = self.qwen_rms_norm_device_diagnostic(
+                    reinterpret_cast<const void*>(d_input_ptr),
+                    reinterpret_cast<const void*>(d_weight_ptr),
+                    reinterpret_cast<void*>(d_output_ptr),
+                    rows,
+                    dim,
+                    epsilon,
+                    row_start,
+                    row_count,
+                    element_start,
+                    element_count,
+                    vector_stride,
+                    vector_stride,
+                    vector_stride,
+                    vector_stride,
+                    scalar_stride,
+                    reinterpret_cast<void*>(d_input_snapshot_ptr),
+                    reinterpret_cast<void*>(d_sum_squares_ptr),
+                    reinterpret_cast<void*>(d_denominator_ptr),
+                    reinterpret_cast<void*>(d_reciprocal_rms_ptr),
+                    reinterpret_cast<void*>(d_weight_snapshot_ptr),
+                    reinterpret_cast<void*>(d_normalized_ptr),
+                    reinterpret_cast<void*>(d_output_snapshot_ptr),
+                    reinterpret_cast<void*>(external_stream_ptr));
+            }
+            return sequence;
+        }, py::arg("d_input_ptr"), py::arg("d_weight_ptr"),
+           py::arg("d_output_ptr"), py::arg("rows"), py::arg("dim"),
+           py::arg("epsilon"), py::arg("row_start"), py::arg("row_count"),
+           py::arg("element_start"), py::arg("element_count"),
+           py::arg("d_input_snapshot_ptr"), py::arg("d_sum_squares_ptr"),
+           py::arg("d_denominator_ptr"), py::arg("d_reciprocal_rms_ptr"),
+           py::arg("d_weight_snapshot_ptr"), py::arg("d_normalized_ptr"),
+           py::arg("d_output_snapshot_ptr"), py::arg("external_stream_ptr"),
+           "Run the opt-in device-authentic regular RMSNorm diagnostic and "
+           "wait for its completion event before returning a sequence number.")
+        .def("qwen_rms_norm_reference_diagnostic", [](
+                dee::Engine& self,
+                uintptr_t d_input_ptr,
+                uintptr_t d_weight_ptr,
+                uintptr_t d_output_ptr,
+                int rows,
+                int dim,
+                float epsilon,
+                int row_start,
+                int row_count,
+                int element_start,
+                int element_count,
+                uintptr_t d_input_snapshot_ptr,
+                uintptr_t d_sum_squares_ptr,
+                uintptr_t d_denominator_ptr,
+                uintptr_t d_reciprocal_rms_ptr,
+                uintptr_t d_weight_snapshot_ptr,
+                uintptr_t d_normalized_ptr,
+                uintptr_t d_output_snapshot_ptr,
+                uintptr_t external_stream_ptr) -> uint64_t {
+            const size_t vector_stride = static_cast<size_t>(element_count) * sizeof(float);
+            const size_t scalar_stride = sizeof(float);
+            uint64_t sequence = 0;
+            {
+                py::gil_scoped_release release;
+                sequence = self.qwen_rms_norm_reference_diagnostic(
+                    reinterpret_cast<const void*>(d_input_ptr),
+                    reinterpret_cast<const void*>(d_weight_ptr),
+                    reinterpret_cast<void*>(d_output_ptr),
+                    rows,
+                    dim,
+                    epsilon,
+                    row_start,
+                    row_count,
+                    element_start,
+                    element_count,
+                    vector_stride,
+                    vector_stride,
+                    vector_stride,
+                    vector_stride,
+                    scalar_stride,
+                    reinterpret_cast<void*>(d_input_snapshot_ptr),
+                    reinterpret_cast<void*>(d_sum_squares_ptr),
+                    reinterpret_cast<void*>(d_denominator_ptr),
+                    reinterpret_cast<void*>(d_reciprocal_rms_ptr),
+                    reinterpret_cast<void*>(d_weight_snapshot_ptr),
+                    reinterpret_cast<void*>(d_normalized_ptr),
+                    reinterpret_cast<void*>(d_output_snapshot_ptr),
+                    reinterpret_cast<void*>(external_stream_ptr));
+            }
+            return sequence;
+        }, py::arg("d_input_ptr"), py::arg("d_weight_ptr"),
+           py::arg("d_output_ptr"), py::arg("rows"), py::arg("dim"),
+           py::arg("epsilon"), py::arg("row_start"), py::arg("row_count"),
+           py::arg("element_start"), py::arg("element_count"),
+           py::arg("d_input_snapshot_ptr"), py::arg("d_sum_squares_ptr"),
+           py::arg("d_denominator_ptr"), py::arg("d_reciprocal_rms_ptr"),
+           py::arg("d_weight_snapshot_ptr"), py::arg("d_normalized_ptr"),
+           py::arg("d_output_snapshot_ptr"), py::arg("external_stream_ptr"),
+           "Run the diagnostic-only control RMSNorm probe; callers must prove "
+           "its output bits match the untouched reference module.")
         .def("qwen_rms_norm_gated_device", [](
                 dee::Engine& self,
                 uintptr_t d_input_ptr,

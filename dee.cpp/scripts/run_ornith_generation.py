@@ -315,8 +315,14 @@ class CheckpointPool:
 
 
 class TraceCollector:
-    def __init__(self):
+    def __init__(self, *, capture_boundaries: bool = False):
         self.records: dict[str, list[tuple[str, np.ndarray]]] = collections.defaultdict(list)
+        self.capture_boundaries = bool(capture_boundaries)
+        # M5G-v3 keeps boundary captures separate from the historical aggregate
+        # trace categories.  The arrays retain their source dtype so the v3
+        # analyzer can distinguish a cast/tensor-boundary defect from ordinary
+        # float32 arithmetic drift.
+        self.boundaries: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
         self.router_layers: set[int] = set()
 
     def add(self, category: str, label: str, tensor):
@@ -324,7 +330,18 @@ class TraceCollector:
             tensor = tensor.detach().float().cpu().numpy()
         self.records[category].append((label, np.asarray(tensor).copy()))
 
-    def router(self, layer: int, logits, weights, experts):
+    def add_boundary(self, category: str, label: str, tensor, **metadata):
+        if not self.capture_boundaries or tensor is None:
+            return
+        if hasattr(tensor, "detach"):
+            tensor = tensor.detach().cpu().numpy()
+        self.boundaries[category].append({
+            "label": label,
+            "array": np.asarray(tensor).copy(),
+            "metadata": metadata,
+        })
+
+    def router(self, layer: int, logits, weights, experts, *, step: int = -1):
         call = sum(1 for label, _ in self.records["router_logits"]
                    if label.startswith(f"layer={layer},"))
         prefix = f"layer={layer},call={call}"
@@ -332,6 +349,63 @@ class TraceCollector:
         self.add("router_logits", prefix, logits)
         self.add("routing_weights", prefix, weights)
         self.add("expert_ids", prefix, experts)
+        metadata = {"layer": layer, "token": step, "dtype": str(getattr(logits, "dtype", "unknown"))}
+        self.add_boundary("router_logits", prefix, logits, **metadata)
+        self.add_boundary("routing_weights", prefix, weights, **metadata)
+        self.add_boundary(
+            "selected_expert_ids", prefix, experts,
+            layer=layer, token=step, dtype=str(getattr(experts, "dtype", "unknown")),
+        )
+
+
+def validate_device_diagnostic_selector(selector: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Validate the bounded M5G-v3 regular-norm device selector.
+
+    The selector intentionally addresses one flattened norm row and one
+    contiguous element range. It is metadata-only validation; CUDA buffers are
+    allocated only when the selected candidate call is reached.
+    """
+    if selector is None:
+        return None
+    if not isinstance(selector, dict):
+        raise TypeError("device_diagnostic selector must be a mapping")
+    required = ("token_index", "layer_index", "element_start", "element_count")
+    missing = [name for name in required if name not in selector]
+    if missing:
+        raise ValueError("device_diagnostic selector missing: " + ", ".join(missing))
+    normalized = {}
+    for name in required:
+        value = selector[name]
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"device_diagnostic {name} must be an integer")
+        normalized[name] = value
+    if normalized["token_index"] < 0 or normalized["layer_index"] < 0:
+        raise ValueError("device_diagnostic token/layer indices must be non-negative")
+    if normalized["element_start"] < 0 or normalized["element_count"] <= 0:
+        raise ValueError("device_diagnostic element range must be non-empty and non-negative")
+    if normalized["element_count"] > 4096:
+        raise ValueError("device_diagnostic element_count exceeds 4096 bound")
+    label = selector.get("norm_label")
+    if not isinstance(label, str) or not label:
+        raise ValueError(
+            "device_diagnostic norm_label is required to disambiguate regular norms"
+        )
+    if label not in {
+        "input_layernorm",
+        "post_attention_layernorm",
+        "final_norm",
+        "linear_attn_gated_norm",
+    }:
+        raise ValueError(f"unsupported diagnostic norm label: {label!r}")
+    flattened_row_index = selector.get("flattened_row_index")
+    if flattened_row_index is not None:
+        if isinstance(flattened_row_index, bool) or not isinstance(flattened_row_index, int):
+            raise TypeError("device_diagnostic flattened_row_index must be an integer")
+        if flattened_row_index < 0:
+            raise ValueError("device_diagnostic flattened_row_index must be non-negative")
+    normalized["norm_label"] = label
+    normalized["flattened_row_index"] = flattened_row_index
+    return normalized
 
 
 class ExecutionContext:
@@ -359,6 +433,11 @@ class ExecutionContext:
         # accumulate over the lifetime of a single generation and are flushed
         # to path-proof.json by run_ornith_forensics.py after recorder.stop().
         self.engine_path_proof = fresh_engine_path_proof()
+        self.device_diagnostic_selector: dict[str, Any] | None = None
+        self.device_diagnostic_records: list[dict[str, Any]] = []
+        self.control_probe_output_matches_reference = False
+        self.residual_provenance_records: list[dict[str, Any]] = []
+        self.device_event_graph_records: list[dict[str, Any]] = []
 
 
 def fresh_engine_path_proof() -> dict:
@@ -406,6 +485,146 @@ def fresh_engine_path_proof() -> dict:
         "last_native_error_device_attempt": "",
         "last_native_error_host_fallback_attempt": "",
     }
+
+
+def diagnostic_row_and_range(hidden_states, selector: dict[str, Any]):
+    """Resolve one bounded flattened row without guessing prefill layout."""
+    dim = int(hidden_states.shape[-1])
+    rows = int(hidden_states.numel() // dim)
+    element_start = int(selector["element_start"])
+    element_count = int(selector["element_count"])
+    if element_start + element_count > dim:
+        raise ValueError(
+            f"device diagnostic element range exceeds hidden dimension {dim}"
+        )
+    row_start = selector.get("flattened_row_index")
+    if rows == 1:
+        row_start = 0
+    elif row_start is None:
+        raise ValueError(
+            "device diagnostic requires flattened_row_index for multi-row tensors"
+        )
+    elif int(row_start) >= rows:
+        raise ValueError(
+            f"device diagnostic flattened row {row_start} exceeds {rows} rows"
+        )
+    return rows, dim, int(row_start), element_start, element_count
+
+
+def allocate_norm_diagnostic_buffers(torch, device, element_count: int):
+    """Allocate one bounded record; never used unless diagnostic mode is on."""
+    return {
+        "input": torch.empty((1, element_count), dtype=torch.float32, device=device),
+        "sum_squares": torch.empty((1,), dtype=torch.float32, device=device),
+        "denominator": torch.empty((1,), dtype=torch.float32, device=device),
+        "reciprocal_rms": torch.empty((1,), dtype=torch.float32, device=device),
+        "weight": torch.empty((1, element_count), dtype=torch.float32, device=device),
+        "normalized": torch.empty((1, element_count), dtype=torch.float32, device=device),
+        "output": torch.empty((1, element_count), dtype=torch.float32, device=device),
+    }
+
+
+def run_norm_device_probe(engine, method_name: str, hidden_states, weight, output,
+                          rows: int, dim: int, epsilon: float,
+                          row_start: int, element_start: int, element_count: int,
+                          buffers: dict[str, Any], stream: int) -> int:
+    """Run one bounded native probe; the caller owns output validation."""
+    return int(getattr(engine, method_name)(
+        hidden_states.data_ptr(),
+        weight.data_ptr(),
+        output.data_ptr(),
+        rows,
+        dim,
+        epsilon,
+        row_start,
+        1,
+        element_start,
+        element_count,
+        buffers["input"].data_ptr(),
+        buffers["sum_squares"].data_ptr(),
+        buffers["denominator"].data_ptr(),
+        buffers["reciprocal_rms"].data_ptr(),
+        buffers["weight"].data_ptr(),
+        buffers["normalized"].data_ptr(),
+        buffers["output"].data_ptr(),
+        stream,
+    ))
+
+
+def append_norm_diagnostic_records(context: ExecutionContext, buffers: dict[str, Any],
+                                   metadata: dict[str, Any], *, side: str):
+    for category, key in (
+        ("pre_norm_input", "input"),
+        ("norm_variance", "sum_squares"),
+        ("norm_denominator", "denominator"),
+        ("reciprocal_rms", "reciprocal_rms"),
+        ("norm_weight", "weight"),
+        ("normalized_output", "normalized"),
+        ("post_norm_output", "output"),
+    ):
+        context.device_diagnostic_records.append({
+            "side": side,
+            "category": category,
+            "label": (
+                f"step={context.current_step},layer={metadata['layer']}:"
+                f"{metadata['label']}"
+            ),
+            "array": buffers[key].detach().cpu().numpy().tolist(),
+            "metadata": metadata,
+        })
+
+
+def record_norm_dependency(context: ExecutionContext, hidden_states, output,
+                           metadata: dict[str, Any], sequence: int, *, side: str):
+    """Record observed addresses plus explicitly unknown producer provenance."""
+    stream_id = int(__import__("torch").cuda.current_stream(hidden_states.device).cuda_stream)
+    input_id = int(hidden_states.data_ptr())
+    output_id = int(output.data_ptr())
+    provenance = {
+        "side": side,
+        "layer": int(metadata["layer"]),
+        "label": metadata["label"],
+        "token": int(metadata["token"]),
+        "residual_buffer_id": hex(input_id),
+        "residual_source_data_ptr": input_id,
+        "residual_destination_data_ptr": output_id,
+        "residual_dtype": str(hidden_states.dtype),
+        "residual_shape": [int(value) for value in hidden_states.shape],
+        "residual_strides": [int(value) for value in hidden_states.stride()],
+        "norm_input_aliases_residual": True,
+        "norm_input_aliases_output": input_id == output_id,
+        "producer_kernel_identity": "unknown: caller/module boundary",
+        "producer_stream_id": stream_id,
+        "producer_event": "unknown",
+        "consumer_wait": "same caller stream ordering; native completion synchronized",
+        "workspace_reuse_checked": False,
+        "event_sequence": int(sequence),
+    }
+    context.residual_provenance_records.append(provenance)
+    context.device_event_graph_records.append({
+        "side": side,
+        "operation_id": f"rmsnorm:{side}:{metadata['layer']}:{metadata['label']}:{metadata['token']}",
+        "kernel_identity": metadata.get("kernel_identity"),
+        "stream_id": stream_id,
+        "event_recorded": f"rmsnorm-completion:{sequence}",
+        "event_waited": "host cudaEventSynchronize",
+        "buffer_reads": [hex(input_id), hex(int(metadata.get("weight_data_ptr", 0)))],
+        "buffer_writes": [hex(output_id)],
+        "logical_sequence": int(sequence),
+        "completion_state": "complete",
+        "dependency_graph_measured": False,
+        "unknowns": ["producer event", "cross-stream waits", "workspace lifetime"],
+    })
+
+
+def trace_boundary(context: ExecutionContext, category: str, label: str, tensor,
+                   **metadata):
+    """Record an opt-in v3 boundary snapshot without changing the forward path."""
+    if (
+        context.collector is not None
+        and context.collector.capture_boundaries
+    ):
+        context.collector.add_boundary(category, label, tensor, **metadata)
 
 
 def forensic_span(context: ExecutionContext, name: str, layer: int,
@@ -631,7 +850,19 @@ class HybridRouter:
                 experts, weights,
             )
         if self.context.collector is not None:
-            self.context.collector.router(self.layer, logits, weights, experts)
+            self.context.collector.router(
+                self.layer, logits, weights, experts,
+                step=self.context.current_step,
+            )
+            trace_boundary(
+                self.context, "router_input",
+                f"step={self.context.current_step},layer={self.layer}",
+                flattened,
+                layer=self.layer, token=self.context.current_step,
+                dtype=str(flattened.dtype), accumulation_dtype="float32",
+                operation_order="official router module, then softmax/top-k",
+                stream_dependency="caller current CUDA stream",
+            )
         return logits, weights, experts
 
 
@@ -649,13 +880,131 @@ class HybridRMSNorm:
         module.forward = self.forward
 
     def forward(self, hidden_states):
+        import torch
+
+        trace_metadata = {
+            "layer": self.layer,
+            "token": self.context.current_step,
+            "label": self.label,
+            "input_dtype": str(hidden_states.dtype),
+            "weight_dtype": str(self.module.weight.dtype),
+            "accumulation_dtype": "float32",
+            "epsilon": float(self.module.eps),
+            "operation_order": (
+                "square -> reduction -> divide by hidden size -> epsilon -> rsqrt -> "
+                "input multiply -> (1 + weight) multiply -> output cast"
+            ),
+            "stream_dependency": "reference module or caller current CUDA stream",
+        }
+        trace_boundary(
+            self.context, "pre_norm_input",
+            f"step={self.context.current_step},layer={self.layer}:{self.label}",
+            hidden_states, **trace_metadata,
+        )
+        trace_boundary(
+            self.context, "residual_input",
+            f"step={self.context.current_step},layer={self.layer}:{self.label}",
+            hidden_states, **trace_metadata,
+        )
+        trace_boundary(
+            self.context, "norm_weight",
+            f"step={self.context.current_step},layer={self.layer}:{self.label}",
+            self.module.weight, **trace_metadata,
+        )
         if (
             self.context.mode == "reference"
             or self.context.execution_mode
             not in REGULAR_FUSED_NORM_EXECUTION_MODES
         ):
-            return self.reference_forward(hidden_states)
-        import torch
+            result = self.reference_forward(hidden_states)
+            selector = self.context.device_diagnostic_selector
+            diagnostic_selected = bool(
+                selector is not None
+                and selector["layer_index"] == self.layer
+                and selector["token_index"] == self.context.current_step
+                and selector["norm_label"] == self.label
+            )
+            if (
+                diagnostic_selected
+                and self.context.mode == "reference"
+                and hasattr(self.engine, "qwen_rms_norm_reference_diagnostic")
+                and hidden_states.is_cuda
+                and hidden_states.dtype == torch.float16
+                and hidden_states.is_contiguous()
+                and self.module.weight.is_cuda
+                and self.module.weight.dtype == torch.float16
+                and self.module.weight.is_contiguous()
+                and result.is_cuda
+                and result.dtype == torch.float16
+                and result.is_contiguous()
+            ):
+                rows, dim, row_start, element_start, element_count = (
+                    diagnostic_row_and_range(hidden_states, selector)
+                )
+                probe_output = torch.empty_like(hidden_states)
+                buffers = allocate_norm_diagnostic_buffers(
+                    torch, hidden_states.device, element_count
+                )
+                sequence = run_norm_device_probe(
+                    self.engine,
+                    "qwen_rms_norm_reference_diagnostic",
+                    hidden_states,
+                    self.module.weight,
+                    probe_output,
+                    rows,
+                    dim,
+                    float(self.module.eps),
+                    row_start,
+                    element_start,
+                    element_count,
+                    buffers,
+                    int(torch.cuda.current_stream(hidden_states.device).cuda_stream),
+                )
+                if not sequence:
+                    raise RuntimeError(
+                        f"reference RMSNorm diagnostic failed at {self.label}"
+                    )
+                if not torch.equal(probe_output, result):
+                    self.context.control_probe_output_matches_reference = False
+                    raise RuntimeError(
+                        "reference RMSNorm diagnostic does not match the "
+                        f"untouched control output at layer {self.layer}:{self.label}"
+                    )
+                control_metadata = {
+                    **trace_metadata,
+                    "side": "control",
+                    "device_authentic": True,
+                    "control_output_bitwise_match": True,
+                    "source_dtype": str(hidden_states.dtype),
+                    "destination_dtype": str(result.dtype),
+                    "kernel_identity": "qwen_rms_norm_fp16_reference_diagnostic",
+                    "weight_data_ptr": int(self.module.weight.data_ptr()),
+                    "completion_sequence": sequence,
+                    "stream_id": int(torch.cuda.current_stream(hidden_states.device).cuda_stream),
+                    "selector": dict(selector),
+                    "row_start": row_start,
+                    "flattened_row_index": row_start,
+                    "element_start": element_start,
+                    "element_count": element_count,
+                    "input_shape": [int(value) for value in hidden_states.shape],
+                    "input_strides": [int(value) for value in hidden_states.stride()],
+                    "output_shape": [int(value) for value in result.shape],
+                    "output_strides": [int(value) for value in result.stride()],
+                }
+                append_norm_diagnostic_records(
+                    self.context, buffers, control_metadata, side="control"
+                )
+                record_norm_dependency(
+                    self.context, hidden_states, result, control_metadata, sequence,
+                    side="control",
+                )
+                self.context.control_probe_output_matches_reference = True
+            trace_boundary(
+                self.context, "final_layer_output" if self.label == "final_norm" else "normalized_output",
+                f"step={self.context.current_step},layer={self.layer}:{self.label}",
+                result, **trace_metadata,
+            )
+            return result
 
         weight = self.module.weight
         supported = (
@@ -681,20 +1030,116 @@ class HybridRMSNorm:
         proof["fused_norm_output_allocations"] += 1
         dim = int(hidden_states.shape[-1])
         rows = int(hidden_states.numel() // dim)
+        selector = self.context.device_diagnostic_selector
+        diagnostic_selected = bool(
+            selector is not None
+            and selector["layer_index"] == self.layer
+            and selector["token_index"] == self.context.current_step
+            and (selector["norm_label"] is None or selector["norm_label"] == self.label)
+        )
+        diagnostic_buffers = None
+        diagnostic_sequence = 0
+        stream_handle = int(torch.cuda.current_stream(hidden_states.device).cuda_stream)
+        if diagnostic_selected:
+            element_start = selector["element_start"]
+            element_count = selector["element_count"]
+            if element_start + element_count > dim:
+                raise ValueError(
+                    f"device diagnostic element range exceeds {self.label} dimension {dim}"
+                )
+            if rows == 1:
+                row_start = 0
+            elif selector["flattened_row_index"] is not None:
+                row_start = selector["flattened_row_index"]
+                if row_start >= rows:
+                    raise ValueError(
+                        f"device diagnostic flattened row {row_start} exceeds {rows} rows"
+                    )
+            else:
+                raise ValueError(
+                    "device diagnostic requires flattened_row_index for multi-row or prefill tensors"
+                )
+            diagnostic_buffers = {
+                "input": torch.empty((1, element_count), dtype=torch.float32, device=hidden_states.device),
+                "sum_squares": torch.empty((1,), dtype=torch.float32, device=hidden_states.device),
+                "denominator": torch.empty((1,), dtype=torch.float32, device=hidden_states.device),
+                "reciprocal_rms": torch.empty((1,), dtype=torch.float32, device=hidden_states.device),
+                "weight": torch.empty((1, element_count), dtype=torch.float32, device=hidden_states.device),
+                "normalized": torch.empty((1, element_count), dtype=torch.float32, device=hidden_states.device),
+                "output": torch.empty((1, element_count), dtype=torch.float32, device=hidden_states.device),
+            }
         with forensic_span(
             self.context, "fused_qwen_rms_norm", self.layer,
-            {"component": self.label, "rows": rows, "dim": dim},
+            {"component": self.label, "rows": rows, "dim": dim,
+             "device_diagnostic": diagnostic_selected},
         ):
-            ok = self.engine.qwen_rms_norm_device(
-                hidden_states.data_ptr(),
-                weight.data_ptr(),
-                output.data_ptr(),
-                rows,
-                dim,
-                float(self.module.eps),
-                torch.cuda.current_stream(
-                    hidden_states.device
-                ).cuda_stream,
+            stream = torch.cuda.current_stream(hidden_states.device).cuda_stream
+            if diagnostic_selected:
+                diagnostic_sequence = self.engine.qwen_rms_norm_device_diagnostic(
+                    hidden_states.data_ptr(),
+                    weight.data_ptr(),
+                    output.data_ptr(),
+                    rows,
+                    dim,
+                    float(self.module.eps),
+                    row_start,
+                    1,
+                    element_start,
+                    element_count,
+                    diagnostic_buffers["input"].data_ptr(),
+                    diagnostic_buffers["sum_squares"].data_ptr(),
+                    diagnostic_buffers["denominator"].data_ptr(),
+                    diagnostic_buffers["reciprocal_rms"].data_ptr(),
+                    diagnostic_buffers["weight"].data_ptr(),
+                    diagnostic_buffers["normalized"].data_ptr(),
+                    diagnostic_buffers["output"].data_ptr(),
+                    stream,
+                )
+                ok = bool(diagnostic_sequence)
+            else:
+                ok = self.engine.qwen_rms_norm_device(
+                    hidden_states.data_ptr(),
+                    weight.data_ptr(),
+                    output.data_ptr(),
+                    rows,
+                    dim,
+                    float(self.module.eps),
+                    stream,
+                )
+        if diagnostic_selected and ok:
+            diagnostic_metadata = {
+                **trace_metadata,
+                "side": "candidate",
+                "device_authentic": True,
+                "kernel_identity": "qwen_rms_norm_fp16_diagnostic",
+                "weight_data_ptr": int(weight.data_ptr()),
+                "source_dtype": str(hidden_states.dtype),
+                "destination_dtype": str(output.dtype),
+                "input_stride_bytes": int(hidden_states.stride(-2) * hidden_states.element_size()) if hidden_states.ndim > 1 else int(hidden_states.element_size()),
+                "output_stride_bytes": int(output.stride(-2) * output.element_size()) if output.ndim > 1 else int(output.element_size()),
+                "weight_stride_bytes": int(weight.stride(0) * weight.element_size()),
+                "alias_input_output": hidden_states.data_ptr() == output.data_ptr(),
+                "alias_input_weight": hidden_states.data_ptr() == weight.data_ptr(),
+                "stream_id": stream_handle,
+                "event_dependencies": "caller stream ordering only; native completion event synchronized before return",
+                "completion_sequence": int(diagnostic_sequence),
+                "selector": dict(selector),
+                "row_start": int(row_start),
+                "flattened_row_index": int(row_start),
+                "input_shape": [int(value) for value in hidden_states.shape],
+                "input_strides": [int(value) for value in hidden_states.stride()],
+                "output_shape": [int(value) for value in output.shape],
+                "output_strides": [int(value) for value in output.stride()],
+                "row_count": 1,
+                "element_start": int(element_start),
+                "element_count": int(element_count),
+            }
+            append_norm_diagnostic_records(
+                self.context, diagnostic_buffers, diagnostic_metadata, side="candidate"
+            )
+            record_norm_dependency(
+                self.context, hidden_states, output, diagnostic_metadata,
+                diagnostic_sequence, side="candidate",
             )
         if not ok:
             proof["fused_norm_failures"] += 1
@@ -708,6 +1153,11 @@ class HybridRMSNorm:
                 f"layer={self.layer}: {detail or '<no native detail>'}"
             )
         proof["fused_rms_norm_calls"] += 1
+        trace_boundary(
+            self.context, "final_layer_output" if self.label == "final_norm" else "normalized_output",
+            f"step={self.context.current_step},layer={self.layer}:{self.label}",
+            output, **trace_metadata,
+        )
         return output
 
 
@@ -723,13 +1173,49 @@ class HybridRMSNormGated:
         module.forward = self.forward
 
     def forward(self, hidden_states, gate=None):
+        import torch
+
+        trace_metadata = {
+            "layer": self.layer,
+            "token": self.context.current_step,
+            "input_dtype": str(hidden_states.dtype),
+            "gate_dtype": str(gate.dtype) if gate is not None else None,
+            "weight_dtype": str(self.module.weight.dtype),
+            "accumulation_dtype": "float32",
+            "epsilon": float(self.module.variance_epsilon),
+            "operation_order": (
+                "square -> reduction -> divide by hidden size -> epsilon -> rsqrt -> "
+                "normalized cast -> weight half multiply -> SiLU(gate) -> output cast"
+            ),
+            "stream_dependency": "reference module or caller current CUDA stream",
+        }
+        trace_boundary(
+            self.context, "pre_norm_input",
+            f"step={self.context.current_step},layer={self.layer}:linear_attn.norm",
+            hidden_states, **trace_metadata,
+        )
+        trace_boundary(
+            self.context, "gated_input",
+            f"step={self.context.current_step},layer={self.layer}:linear_attn.norm",
+            gate, **trace_metadata,
+        )
+        trace_boundary(
+            self.context, "norm_weight",
+            f"step={self.context.current_step},layer={self.layer}:linear_attn.norm",
+            self.module.weight, **trace_metadata,
+        )
         if (
             self.context.mode == "reference"
             or self.context.execution_mode
             not in GATED_FUSED_NORM_EXECUTION_MODES
         ):
-            return self.reference_forward(hidden_states, gate)
-        import torch
+            result = self.reference_forward(hidden_states, gate)
+            trace_boundary(
+                self.context, "gated_output",
+                f"step={self.context.current_step},layer={self.layer}:linear_attn.norm",
+                result, **trace_metadata,
+            )
+            return result
 
         weight = self.module.weight
         supported = (
@@ -788,6 +1274,11 @@ class HybridRMSNormGated:
                 f"layer={self.layer}: {detail or '<no native detail>'}"
             )
         proof["fused_rms_norm_gated_calls"] += 1
+        trace_boundary(
+            self.context, "gated_output",
+            f"step={self.context.current_step},layer={self.layer}:linear_attn.norm",
+            output, **trace_metadata,
+        )
         return output
 
 
@@ -1159,6 +1650,24 @@ class HybridExperts:
             self.context.collector.add(
                 "selected_expert_outputs", f"layer={self.layer}", raw
             )
+        trace_boundary(
+            self.context, "expert_input",
+            f"step={self.context.current_step},layer={self.layer}",
+            hidden_states,
+            layer=self.layer, token=self.context.current_step,
+            dtype=str(hidden_states.dtype), accumulation_dtype="float32",
+            operation_order="native expert dispatch",
+            stream_dependency="caller stream -> native expert stream",
+        )
+        trace_boundary(
+            self.context, "expert_output",
+            f"step={self.context.current_step},layer={self.layer}",
+            output,
+            layer=self.layer, token=self.context.current_step,
+            dtype=str(output.dtype), accumulation_dtype="float32",
+            operation_order="weighted expert accumulation in stable expert order",
+            stream_dependency="native expert completion -> caller stream",
+        )
         return output
 
 
@@ -1463,6 +1972,14 @@ def load_runtime(model_dir: Path, gpu_count: int, split_layer: int, cache_expert
                     context.collector.add(
                         "intermediate_hidden_states", f"layer={layer}", output
                     )
+                    trace_boundary(
+                        context, "post_residual_output", f"step={context.current_step},layer={layer}",
+                        output, layer=layer, token=context.current_step,
+                        dtype=str(getattr(output, "dtype", "unknown")),
+                        accumulation_dtype="module-defined",
+                        operation_order="decoder layer residual/attention/MLP sequence",
+                        stream_dependency="layer forward hook after block completion",
+                    )
             block.register_forward_hook(capture_layer)
 
     def capture_embedding(_module, _args, output):
@@ -1475,6 +1992,7 @@ def load_runtime(model_dir: Path, gpu_count: int, split_layer: int, cache_expert
 
     model.model.embed_tokens.register_forward_hook(capture_embedding)
     model.model.norm.register_forward_hook(capture_final)
+
     finalize_started = time.perf_counter()
     model.eval()
     synchronize_all(torch, gpu_count)
@@ -1510,7 +2028,9 @@ def tokenize_prompt(tokenizer, prompt: str, chat_template: bool):
 
 def run_generation(runtime, tokenizer, prompt: str, max_new_tokens: int,
                    chat_template: bool, mode: str, trace: bool,
-                   execution_mode: str = "production"):
+                   execution_mode: str = "production",
+                   boundary_trace: bool = False,
+                   device_diagnostic: dict[str, Any] | None = None):
     import torch
 
     if execution_mode not in EXECUTION_MODES:
@@ -1521,6 +2041,13 @@ def run_generation(runtime, tokenizer, prompt: str, max_new_tokens: int,
     model = runtime["model"]
     config = runtime["config"]
     context = runtime["context"]
+    context.device_diagnostic_selector = validate_device_diagnostic_selector(device_diagnostic)
+    # A runtime may be reused for multiple focused probes. Never carry a
+    # previous control match or dependency record into the next report.
+    context.device_diagnostic_records = []
+    context.control_probe_output_matches_reference = False
+    context.residual_provenance_records = []
+    context.device_event_graph_records = []
     if execution_mode == "parity" and not trace:
         raise ValueError("parity execution mode requires trace=True")
     if execution_mode == "profiler" and context.forensics is None:
@@ -1532,7 +2059,10 @@ def run_generation(runtime, tokenizer, prompt: str, max_new_tokens: int,
     context.execution_mode = execution_mode
     context.executed_router_layers = set()
     tie_fallback_start = context.router_tie_fallback_rows
-    collector = TraceCollector() if trace else None
+    collector = (
+        TraceCollector(capture_boundaries=boundary_trace)
+        if trace else None
+    )
     context.collector = collector
     tokenization_phase = (
         context.forensics.phase("prompt_tokenization", {"mode": mode, "prompt": prompt})
@@ -1723,6 +2253,60 @@ def run_generation(runtime, tokenizer, prompt: str, max_new_tokens: int,
         "router_tie_fallback_rows": context.router_tie_fallback_rows - tie_fallback_start,
         "executed_router_layers": sorted(context.executed_router_layers),
         "collector": collector,
+        "device_diagnostic": {
+            "enabled": bool(context.device_diagnostic_selector),
+            "selector": context.device_diagnostic_selector,
+            "records": context.device_diagnostic_records,
+            "candidate_device_authentic": any(
+                record.get("metadata", {}).get("side") == "candidate"
+                and record.get("metadata", {}).get("device_authentic") is True
+                for record in context.device_diagnostic_records
+            ),
+            # This remains false for the untouched HF module: its internal
+            # CUDA reduction is not directly instrumented. The separate probe
+            # is accepted only as a reference-probe output match.
+            "control_device_authentic": False,
+            "control_probe_output_validated": context.control_probe_output_matches_reference,
+            "control_intermediates_reference_probe": any(
+                record.get("metadata", {}).get("side") == "control"
+                for record in context.device_diagnostic_records
+            ),
+            "stream_event_dependencies_measured": False,
+            "candidate_stream_completion_observed": any(
+                record.get("metadata", {}).get("completion_sequence", 0) > 0
+                for record in context.device_diagnostic_records
+            ),
+            "residual_provenance_records": context.residual_provenance_records,
+            "event_graph_records": context.device_event_graph_records,
+            "performance_comparable": False if context.device_diagnostic_selector else True,
+            "diagnostic_evidence_complete": bool(
+                context.device_diagnostic_selector
+                and context.control_probe_output_matches_reference
+                and context.residual_provenance_records
+                and context.device_event_graph_records
+                and all(
+                    record.get("dependency_graph_measured") is True
+                    for record in context.device_event_graph_records
+                )
+            ),
+            "missing_evidence": [
+                "actual_residual_source_and_alias_graph",
+                "producer_consumer_event_graph",
+                "gated_norm_device_intermediates",
+            ],
+        },
+        "boundary_trace": {
+            "enabled": bool(collector and collector.capture_boundaries),
+            "capture_method": "synchronous_host_snapshot" if collector and collector.capture_boundaries else None,
+            "performance_comparable": not bool(collector and collector.capture_boundaries),
+            "stream_event_dependencies_measured": False,
+            "kernel_internal_variance_and_reciprocal_rms_captured": False,
+            "candidate_kernel_internal_variance_and_reciprocal_rms_captured": bool(context.device_diagnostic_records),
+            "instrumentation_overhead": {
+                "measured": False,
+                "method": "synchronous host snapshots; timing is not comparable",
+            },
+        },
         "logits_records": logits_records,
     }
 
