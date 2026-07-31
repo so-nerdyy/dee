@@ -1,0 +1,59 @@
+{
+  "campaign": "deepseek-v4-flash-0731",
+  "candidate_executed_on_cuda": true,
+  "device": "Tesla T4",
+  "expert": 0,
+  "integrity_gate": "header_pin",
+  "layer": 6,
+  "metrics": {
+    "max_abs_error": 0.004613399505615234,
+    "max_rel_error": 36.69813919067383,
+    "mean_abs_error": 0.0008795939502306283,
+    "mean_rel_error": 0.005874003283679485,
+    "p99_rel_error": 0.038374871015548706
+  },
+  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "note": "candidate carries FP16-storage/FP16-GEMV error vs full-FP32 reference; max_rel_error is excluded from the gate because it is undefined for near-zero reference elements (cancellation artifact), see tolerance comment in harness",
+  "passed": true,
+  "performance_comparable": false,
+  "phase": "DS7-expert-smoke",
+  "revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+  "shard": "model-00008-of-00048.safetensors",
+  "shard_bytes": 3590024776,
+  "shard_sha256": "224968d2b27f8669365ec08657a768dfec40da0585f85f302a31495931f6a526",
+  "shard_sha_verified_vs_hf_etag": false,
+  "tensor_shapes": {
+    "layers.6.ffn.experts.0.w1.scale": [
+      2048,
+      128
+    ],
+    "layers.6.ffn.experts.0.w1.weight": [
+      2048,
+      2048
+    ],
+    "layers.6.ffn.experts.0.w2.scale": [
+      4096,
+      64
+    ],
+    "layers.6.ffn.experts.0.w2.weight": [
+      4096,
+      1024
+    ],
+    "layers.6.ffn.experts.0.w3.scale": [
+      2048,
+      128
+    ],
+    "layers.6.ffn.experts.0.w3.weight": [
+      2048,
+      2048
+    ]
+  },
+  "tolerance": {
+    "max_abs_error": 2.0,
+    "mean_abs_error": 0.5,
+    "mean_rel_error": 0.01,
+    "p99_rel_error": 0.05
+  },
+  "torch": "2.10.0+cu128",
+  "verdict": "MATCH_WITHIN_TOLERANCE"
+}

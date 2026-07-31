@@ -1,0 +1,89 @@
+{
+  "artifacts": [
+    {
+      "bytes": 469,
+      "path": "bootstrap-environment.json",
+      "sha256": "29d25f3ec21d7bff36080ed9c3a293b6c0ee3ae7b5fd5e0cc6512c946f83a502"
+    },
+    {
+      "bytes": 8175,
+      "path": "deepseek_v4_expert_reference.py",
+      "sha256": "9c28375b17898a6908d61ca3a769f4ba2eab4104e4049439cfa76784eaa86ef5"
+    },
+    {
+      "bytes": 26979,
+      "path": "deepseek_v4_expert_smoke.py",
+      "sha256": "d8c97005282e07b3c8a1be9ae4577b4579365a42de8a97536e7ea0fb811df9a7"
+    },
+    {
+      "bytes": 1681,
+      "path": "ds7-expert-evidence.json",
+      "sha256": "c31202ff3547856af71c09193f973b918396f2391f864d638f888c83c8f8e7a9"
+    },
+    {
+      "bytes": 620,
+      "path": "environment.json",
+      "sha256": "df9e8308d044a1bbe99134edbe519246bd9a14cb6df60a87e1b13b4096dc1a40"
+    },
+    {
+      "bytes": 160,
+      "path": "logs/pip-install.log",
+      "sha256": "3dd071093219696cef14a1932e7a8673ef38b99fa0601d837b0907f70e2ea2d1"
+    },
+    {
+      "bytes": 91,
+      "path": "manifest.sha256",
+      "sha256": "af415c76793e272c65096c2d9117f9621eb656bd03254cb015c62376395b2be2"
+    }
+  ],
+  "fatal_error": null,
+  "metrics": {
+    "max_abs_error": 0.004613399505615234,
+    "max_rel_error": 36.69813919067383,
+    "mean_abs_error": 0.0008795939502306283,
+    "mean_rel_error": 0.005874003283679485,
+    "p99_rel_error": 0.038374871015548706
+  },
+  "passed": true,
+  "performance_comparable": false,
+  "reference_sha256": "9c28375b17898a6908d61ca3a769f4ba2eab4104e4049439cfa76784eaa86ef5",
+  "repository_commit": "cc8910e8518f80947ab0fff711dc56e8a00279b1",
+  "required_paths": [
+    {
+      "bytes": 469,
+      "path": "bootstrap-environment.json",
+      "present": true
+    },
+    {
+      "bytes": 620,
+      "path": "environment.json",
+      "present": true
+    },
+    {
+      "bytes": 1681,
+      "path": "ds7-expert-evidence.json",
+      "present": true
+    },
+    {
+      "bytes": 91,
+      "path": "manifest.sha256",
+      "present": true
+    },
+    {
+      "bytes": 160,
+      "path": "logs/pip-install.log",
+      "present": true
+    }
+  ],
+  "result": "PASS",
+  "run_id": "20260731T000000Z-dsv4-ds7-expert-smoke",
+  "schema_version": 1,
+  "terminal_verdict": "INVALID_EXPERIMENT",
+  "tolerance": {
+    "max_abs_error": 2.0,
+    "mean_abs_error": 0.5,
+    "mean_rel_error": 0.01,
+    "p99_rel_error": 0.05
+  },
+  "validation_failures": []
+}

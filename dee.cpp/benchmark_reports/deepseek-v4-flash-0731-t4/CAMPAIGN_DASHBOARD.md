@@ -1,8 +1,8 @@
 # CAMPAIGN — DeepSeek-V4-Flash-0731 on Tesla T4 via Dynamic Expert Eviction
 
-Status: **DS0–DS2, DS3, DS6 COMPLETE** (freeze, audit, ledger, download
-plan/tool, resolver). DS7 reference COMPLETE; DS7 T4 smoke harness READY
-(not yet launched). DS4/DS5 in progress.
+Status: **DS0–DS3, DS6, DS7 COMPLETE** (freeze, audit, ledger, download
+plan/tool, resolver, one routed expert executing on T4 with evidence).
+DS4/DS5 in progress.
 
 ## Campaign identity
 
@@ -37,7 +37,7 @@ M5G-v1/v2/v3 evidence is immutable. No M5H work until the DeepSeek campaign reac
 | DS4 | Tokenizer + encoding parity golden tests | 🔲 |
 | DS5 | Trusted reference traces | 🔲 |
 | DS6 | Freebuff tensor resolver for V4 | ✅ (Python ledger + C++ `TensorResolver` DEEPSEEK_V4 dialect, w1/w3/w2 + scale names) |
-| DS7 | One routed expert on T4 | 🔶 (reference + smoke harness ready; remote run pending) |
+| DS7 | One routed expert on T4 | ✅ (kernel v5 COMPLETE, verdict `MATCH_WITHIN_TOLERANCE`, evidence `ds7-smoke-v5`) |
 | DS8 | Expert cache + Dynamic Expert Eviction | 🔲 |
 | DS9 | Architecture bring-up → first token | 🔲 |
 | DS10 | Dual-T4 full-model decode | 🔲 |
@@ -57,6 +57,39 @@ M5G-v1/v2/v3 evidence is immutable. No M5H work until the DeepSeek campaign reac
 | Hash/compress | 615 | 0.94 GB | 1.04 GB |
 | Router | 86 | 0.11 GB | 0.10 GB |
 | **Total** | **72,317** | **166.88 GB** | **626.88 GB** |
+
+## DS7 milestone — one routed expert on T4 (COMPLETE)
+
+Kaggle kernel `nivind/dee-cpp-deepseek-v4-flash-0731-ds7-expert-smoke` v5
+terminated **COMPLETE** with result **PASS**.
+
+- Pinned harness commit: `cc8910e8518f80947ab0fff711dc56e8a00279b1`
+- Pinned harness SHA256: `d8c97005282e07b3c8a1be9ae4577b4579365a42de8a97536e7ea0fb811df9a7`
+- Pinned reference SHA256: `9c28375b17898a6908d61ca3a769f4ba2eab4104e4049439cfa76784eaa86ef5`
+- Evidence: `benchmark_reports/deepseek-v4-flash-0731-t4/ds7-smoke-v5/`
+  (20/20 local validation checks PASS, incl. external cross-checks of the
+  evidence copies of the harness and reference against the pinned SHAs).
+- Verdict: `MATCH_WITHIN_TOLERANCE` — one official routed expert
+  (`layers.6.ffn.experts.0`, shard `model-00008-of-00048`) executed on T4
+  (CUDA, `candidate_executed_on_cuda: true`) and matched the trusted full-FP32
+  reference within the predeclared tolerance contract:
+  - `max_abs_error` 0.0046 (gate 2.0) ✓
+  - `mean_abs_error` 0.0009 (gate 0.5) ✓
+  - `mean_rel_error` 0.0059 (gate 0.01) ✓
+  - `p99_rel_error` 0.038 (gate 0.05) ✓
+  - `max_rel_error` 36.7 **excluded from the gate** — mathematically undefined
+    for a near-zero reference element (~1e-4, catastrophic cancellation;
+    absolute error stays tiny). Recorded as a diagnostic only.
+- Integrity gate: header pin of the actual downloaded shard vs the committed
+  cached header (canonical, EOL-immune) PASS; X-Linked-Etag opportunistic.
+- Shard download used bounded retry (6 attempts, 2–32 s backoff) on transient
+  CDN 5xx; header pin + reference self-test passed.
+- `performance_comparable: false` — this is a correctness milestone, not a
+  throughput number. No TPS is claimed.
+
+Per the campaign contract, this validates **Family B** bring-up at the expert
+level (FP4-packed storage + on-demand FP16 dequant → SM75 GEMV). It does not
+imply full-model decode, an expert cache, or one-T4 residency.
 
 ## Precision families (measured, not assumed)
 

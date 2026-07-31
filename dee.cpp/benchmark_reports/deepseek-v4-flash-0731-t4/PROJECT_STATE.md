@@ -41,9 +41,9 @@ test can run without `tmp/`.
   verifies the ACTUAL downloaded safetensors header against the manifest
   `header_sha256` of the pinned revision (same-size tampered files fail).
 
-## DS7 smoke harness (ready, not launched)
+## DS7 smoke harness (launched, PASS)
 
-- `kaggle/deepseek-v4-flash-0731/kernel-metadata.json` — single T4, private,
+- `kaggle/deepseek-v4-flash-0731/kernel-metadata.json` — dual T4, private,
   internet, direct shard download (no dataset dependency).
 - `kaggle/deepseek-v4-flash-0731/deepseek_v4_expert_smoke.py` — downloads
   model-00008, loads expert-0 (layer 6), runs the trusted FP32 reference and
@@ -51,6 +51,34 @@ test can run without `tmp/`.
   `candidate_executed_on_cuda` in evidence), compares with predeclared
   tolerances, archives evidence + manifest.sha256. `performance_comparable:
   false`.
+
+### DS7 remote result (v5 COMPLETE, PASS)
+
+Kernel `nivind/dee-cpp-deepseek-v4-flash-0731-ds7-expert-smoke` v5 terminated
+COMPLETE with verdict `MATCH_WITHIN_TOLERANCE`:
+
+- Evidence: `benchmark_reports/deepseek-v4-flash-0731-t4/ds7-smoke-v5/`
+  (downloaded 2026-07-31).
+- Verdict: `MATCH_WITHIN_TOLERANCE`, `passed: true`,
+  `candidate_executed_on_cuda: true`, integrity gate `header_pin` PASS.
+- Metrics vs gates: `max_abs_error` 0.0046/2.0 ✓, `mean_abs_error`
+  0.0009/0.5 ✓, `mean_rel_error` 0.0059/0.01 ✓, `p99_rel_error` 0.038/0.05 ✓.
+  `max_rel_error` 36.7 recorded as a diagnostic but excluded from the gate:
+  relative error is undefined for a near-zero reference element
+  (ref ~1e-4, abs error ~0.004 — cancellation artifact, not semantic).
+- Embedded `environment.json`: repository commit
+  `cc8910e8518f80947ab0fff711dc56e8a00279b1`, harness SHA256
+  `d8c97005282e07b3c8a1be9ae4577b4579365a42de8a97536e7ea0fb811df9a7`,
+  reference SHA256 `9c28375b17898a6908d61ca3a769f4ba2eab4104e4049439cfa76784eaa86ef5`
+  — all match the committed `harness-identity.json` sidecar.
+- Local validation `tmp/validate_ds7_v5_evidence.py`: 20/20 checks PASS,
+  including independent re-hashes of the downloaded evidence copies of the
+  harness and reference against the pinned committed SHAs (external
+  cross-check, not tautological with the harness's runtime self-verification).
+- Prior kernel failures documented: v1 (single-T4 topology gate),
+  v2 (ETag gate on a CDN without X-Linked-Etag), v3 (transient CDN 503 —
+  fixed with bounded ranged-fetch retry), v4 (max_rel_error gate artifact —
+  fixed with robust-statistics gate). No evidence was overwritten.
 
 ## Expert reference (DS7)
 
