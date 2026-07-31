@@ -32,6 +32,19 @@ test can run without `tmp/`.
 - `CHECKPOINT_MANIFEST.json` — 48 shards, header-validated sizes.
 - Declared total = validated total = `166,878,536,440` bytes. PASS.
 
+## Expert reference (DS7)
+
+- `scripts/deepseek_v4_expert_reference.py` — trusted FP32 reference for one
+  routed expert: official `FP4_TABLE` nibble decode (low->elem 2i, high->2i+1),
+  `F8_E8M0` scale decode `2^(bits-127)` (bit-reinterpreted for int8 /
+  float8_e8m0fnu checkpoint dtypes), dequantize `w[o,i]=fp4*scale[o,i//32]`,
+  asymmetric SwiGLU clamps (`gate` max-only, `up` min+max, limit 10.0), and
+  the sqrtsoftplus router (top-k, normalize, x route_scale 1.5).
+- Intentionally full-FP32 (act_quant FP8 is excluded); DS7 T4 candidates must
+  meet predeclared tolerance, not near-bitwise agreement.
+- Tests: `tests/test_deepseek_v4_expert_reference.py` (21 total incl. this
+  suite; dtype round-trips, clamp oracle, official constants pinned).
+
 ## Resolver (DS6)
 
 - C++ `TensorResolver` extended with a `DEEPSEEK_V4` dialect (additive;
