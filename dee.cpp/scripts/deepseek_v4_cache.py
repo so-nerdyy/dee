@@ -196,6 +196,9 @@ class DeepSeekExpertCache:
         tracked byte counter against the entries (same policy as the loader's
         ``stage``) so accounting stays consistent even if the entry carries
         non-zero scratch bytes.
+
+        NOTE: ``load`` performs no pinned staging, so it does not enforce
+        ``max_staging_bytes`` (that bound is a loader/staging contract).
         """
         entry = self.get(layer, expert_id)
         if entry is None:
@@ -348,11 +351,19 @@ class DeepSeekExpertLoader:
         """Reserve + populate + (async) stage an expert in the cache.
 
         Returns the resident entry whose ``ready_event`` (if any) the
-        consuming stream must wait on before compute.
+        consuming stream must wait on before compute.  The bounded staging
+        contract is enforced: a payload larger than ``max_staging_bytes``
+        fails closed instead of silently exceeding the pinned buffer bound.
         """
         meta = metadata or {}
         resident_bytes = int(sum(v.numel() * v.element_size()
                                  for v in payload.values()))
+        if resident_bytes > self.max_staging_bytes:
+            raise RuntimeError(
+                f"expert ({layer},{expert_id}) resident payload {resident_bytes} "
+                f"bytes exceeds bounded staging limit "
+                f"{self.max_staging_bytes} bytes"
+            )
         entry = self.cache.reserve(
             layer, expert_id, resident_bytes,
             priority=meta.get("priority", 0),
