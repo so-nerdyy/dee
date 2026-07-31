@@ -1,19 +1,28 @@
+#!/usr/bin/env python3
 """DS7 Kaggle smoke: ONE official DeepSeek-V4-Flash-0731 routed expert on T4.
 
-Goal (DS7): prove one official routed expert executes on SM75 (T4) and
-matches the pinned trusted reference within predeclared tolerances.
+Goal (DS7): prove one official routed expert executes on SM75 (Tesla T4)
+and matches the pinned trusted reference within predeclared tolerances.
+
+Kaggle script kernels upload ONLY code_file, so this harness follows the
+proven M5G pattern: it clones the campaign branch, reads a committed
+``harness-identity.json`` sidecar, checks out the pinned repository commit,
+verifies the committed harness and reference SHA256s against the sidecar and
+the running file, and only then imports the trusted reference module from the
+pinned tree. Nothing is imported from the uploaded script directory.
 
 Pipeline:
-  1. Download the pinned shard containing layers.6.ffn.experts.0.*
-     (model-00008-of-00048.safetensors) plus config/index, with size + header
-     verification.
-  2. Load the 6 tensors (w1/w2/w3 packed I8 + F8_E8M0 scales).
-  3. Trusted reference: scripts/deepseek_v4_expert_reference.py (FP32 math,
+  1. Bootstrap environment; require a single Tesla T4.
+  2. Clone the pinned branch and verify harness identity.
+  3. Import the trusted FP32 reference from the pinned tree.
+  4. Download the pinned shard (model-00008) with size + ETag verification.
+  5. Load the 6 expert tensors (w1/w2/w3 packed I8 + F8_E8M0 scales).
+  6. Trusted reference: scripts/deepseek_v4_expert_reference.py (FP32 math,
      official FP4_TABLE + E8M0 decode + asymmetric SwiGLU clamps).
-  4. Candidate on T4: FP16 dequantized GEMV with FP32 accumulation.
-  5. Compare per predeclared tolerance (T4 candidate carries FP8 act-quant
+  7. Candidate on T4: FP16 dequantized GEMV with FP32 accumulation.
+  8. Compare per predeclared tolerance (T4 candidate carries FP8 act-quant
      and FP16 storage error, so near-bitwise agreement is NOT expected).
-  6. Archive evidence JSON + manifest hashes under /kaggle/working/.
+  9. Archive evidence JSON + manifest hashes under /kaggle/working/.
 
 Performance reporting is disabled in this smoke run (non-comparable mode).
 """
@@ -22,30 +31,82 @@ from __future__ import annotations
 
 import hashlib
 import json
+import platform
 import shutil
+import subprocess
 import sys
 import time
+import traceback
 from pathlib import Path
 
-WORKING = Path("/kaggle/working")
-CHECKPOINT_DIR = Path("/kaggle/working/dsv4-checkpoint")
-OUT = WORKING / "ds7-evidence"
+import torch
 
-sys.path.insert(0, "/kaggle/working")  # copied scripts/
-sys.path.insert(0, "/kaggle/working/scripts")
-
-import torch  # noqa: E402
-
-from scripts import deepseek_v4_expert_reference as ref  # noqa: E402
+RUN_ID = "20260731T000000Z-dsv4-ds7-expert-smoke"
+REPOSITORY = "https://github.com/so-nerdyy/dee.git"
+BRANCH = "freebuff/deepseek-v4-flash-0731-t4"
+ROOT = Path("/kaggle/temp/dsv4-source")
+EVIDENCE = Path(f"/kaggle/working/dsv4-ds7-evidence-{RUN_ID}")
+ARCHIVE_BASE = EVIDENCE
+DEE = ROOT / "dee.cpp"
+IDENTITY_RELATIVE = Path("dee.cpp/kaggle/deepseek-v4-flash-0731/harness-identity.json")
+HARNESS_RELATIVE = Path("dee.cpp/kaggle/deepseek-v4-flash-0731/deepseek_v4_expert_smoke.py")
+REFERENCE_RELATIVE = Path("dee.cpp/scripts/deepseek_v4_expert_reference.py")
 
 REV = "9e165c30e2704aec5d9d593cce3eebd58bbef1cb"
 SHARD = "model-00008-of-00048.safetensors"
+
+# Layers.6 / expert 0 per the validated ledger (MODEL_LEDGER.json).
+EXPERT_TENSORS = [
+    "layers.6.ffn.experts.0.w1.weight", "layers.6.ffn.experts.0.w1.scale",
+    "layers.6.ffn.experts.0.w2.weight", "layers.6.ffn.experts.0.w2.scale",
+    "layers.6.ffn.experts.0.w3.weight", "layers.6.ffn.experts.0.w3.scale",
+]
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def write_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def run_logged(
+    command: list[str],
+    log_path: Path,
+    cwd: Path,
+    *,
+    check: bool = True,
+) -> int:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w", encoding="utf-8") as log:
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        assert process.stdout is not None
+        for line in process.stdout:
+            log.write(line)
+            log.flush()
+        rc = process.wait()
+    if check and rc:
+        raise subprocess.CalledProcessError(rc, command)
+    return rc
 
 
 def shard_expected_bytes() -> tuple[int, str | None]:
     """Resolve (shard_byte_size, remote_sha256_or_None).
 
-    Uses the local manifest if present, else the remote Content-Range total.
+    Uses a local manifest if present, else the remote Content-Range total.
     When remote is queried, also captures X-Linked-Etag (the LFS sha256 for
     safetensor shards) so the downloaded file can be verified against it.
     """
@@ -71,18 +132,11 @@ def shard_expected_bytes() -> tuple[int, str | None]:
             remote_sha = remote_sha[:64]
     return int(cr.split("/")[1]), remote_sha
 
-# Layers.6 / expert 0 per the validated ledger (MODEL_LEDGER.json).
-EXPERT_TENSORS = [
-    "layers.6.ffn.experts.0.w1.weight", "layers.6.ffn.experts.0.w1.scale",
-    "layers.6.ffn.experts.0.w2.weight", "layers.6.ffn.experts.0.w2.scale",
-    "layers.6.ffn.experts.0.w3.weight", "layers.6.ffn.experts.0.w3.scale",
-]
 
-
-def download_shard(want: int) -> Path:
+def download_shard(want: int, checkpoint_dir: Path) -> Path:
     import urllib.request
-    CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
-    dest = CHECKPOINT_DIR / SHARD
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    dest = checkpoint_dir / SHARD
     url = f"https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731/resolve/{REV}/{SHARD}"
     have = dest.stat().st_size if dest.is_file() else 0
     if have == want:
@@ -95,6 +149,9 @@ def download_shard(want: int) -> Path:
             end = min(have + chunk - 1, want - 1)
             req = urllib.request.Request(url, headers={"Range": f"bytes={have}-{end}"})
             with urllib.request.urlopen(req, timeout=600) as r:
+                if have > 0 and r.status != 206:
+                    raise RuntimeError(
+                        f"server did not honor Range resume (status {r.status} at {have})")
                 data = r.read()
             if not data:
                 raise ConnectionError(f"empty chunk at {have}")
@@ -118,7 +175,7 @@ def load_expert(shard_path: Path) -> dict[str, torch.Tensor]:
 
 
 def candidate_expert_on_t4(
-    x: torch.Tensor, t: dict[str, torch.Tensor]
+    x: torch.Tensor, t: dict[str, torch.Tensor], ref: object
 ) -> tuple[torch.Tensor, str]:
     """FP16 dequantized GEMV with FP32 accumulation, executed ON the T4.
 
@@ -153,103 +210,262 @@ def compare(reference: torch.Tensor, candidate: torch.Tensor) -> dict[str, float
         "mean_abs_error": float(abs_err.mean()),
         "max_rel_error": float(rel.max()),
         "mean_rel_error": float(rel.mean()),
+        "p99_rel_error": float(rel.flatten().quantile(0.99)),
     }
 
 
 def main() -> int:
     print("=== DS7 DeepSeek-V4-Flash-0731 one-expert smoke on T4 ===", flush=True)
-    print("torch", torch.__version__, "cuda", torch.cuda.is_available(), flush=True)
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is required for the candidate path")
-    print("device", torch.cuda.get_device_name(0), flush=True)
-
-    want, remote_sha = shard_expected_bytes()
-    shard_path = download_shard(want)
-    t = load_expert(shard_path)
-    print("loaded expert tensors:", {k: tuple(v.shape) for k, v in t.items()}, flush=True)
-
-    torch.manual_seed(0)
-    x = torch.randn(4, 4096)  # 4 tokens, hidden=4096
-
-    t0 = time.time()
-    reference = ref.expert_forward(
-        x,
-        t["layers.6.ffn.experts.0.w1.weight"], t["layers.6.ffn.experts.0.w1.scale"],
-        t["layers.6.ffn.experts.0.w2.weight"], t["layers.6.ffn.experts.0.w2.scale"],
-        t["layers.6.ffn.experts.0.w3.weight"], t["layers.6.ffn.experts.0.w3.scale"],
-        swiglu_limit=10.0,
-    )
-    t_ref = time.time() - t0
-
-    t0 = time.time()
-    candidate, candidate_device = candidate_expert_on_t4(x, t)
-    t_cand = time.time() - t0
-    print("candidate executed on device:", candidate_device, flush=True)
-
-    metrics = compare(reference, candidate)
-    print("reference time %.3fs candidate time %.3fs" % (t_ref, t_cand), flush=True)
-    print("metrics:", json.dumps(metrics, indent=2), flush=True)
+    EVIDENCE.mkdir(parents=True, exist_ok=True)
+    failures: list[dict[str, object]] = []
+    fatal_error: dict[str, object] | None = None
+    commit: str | None = None
+    reference_sha: str | None = None
+    metrics: dict[str, float] | None = None
+    passed: bool = False
 
     # Predeclared tolerances for the T4 candidate (FP16 storage + FP16 GEMV
-    # vs full-FP32 trusted reference). These are declared BEFORE the run,
-    # per the DS7 protocol: the candidate is NOT expected to be bitwise exact.
+    # vs full-FP32 trusted reference). Declared BEFORE the run, per the DS7
+    # protocol: the candidate is NOT expected to be bitwise exact.
     TOLERANCE = {"max_abs_error": 2.0, "mean_abs_error": 0.5, "max_rel_error": 1e-2}
-    passed = (
-        metrics["max_abs_error"] <= TOLERANCE["max_abs_error"]
-        and metrics["mean_abs_error"] <= TOLERANCE["mean_abs_error"]
-        and metrics["max_rel_error"] <= TOLERANCE["max_rel_error"]
-    )
 
-    OUT.mkdir(parents=True, exist_ok=True)
-    # Stream-hash the shard (3.5 GB) to avoid loading it into RAM.
-    h = hashlib.sha256()
-    with open(shard_path, "rb") as fh:
-        for block in iter(lambda: fh.read(1 << 20), b""):
-            h.update(block)
-    shard_sha256 = h.hexdigest()
-    if remote_sha is not None and shard_sha256 != remote_sha:
-        raise RuntimeError(f"{SHARD}: streamed sha {shard_sha256[:16]} != HF etag {remote_sha[:16]}")
-    # Keep the Kaggle output artifact small: Kaggle zips the ENTIRE working
-    # directory as the downloadable output, so drop the shard now that its
-    # SHA is recorded and its tensors are loaded in memory.
-    shard_path.unlink()
-    evidence = {
-        "campaign": "deepseek-v4-flash-0731",
-        "phase": "DS7-expert-smoke",
-        "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
-        "revision": REV,
-        "shard": SHARD,
-        "layer": 6,
-        "expert": 0,
-        "device": torch.cuda.get_device_name(0),
-        "candidate_executed_on_cuda": candidate_device == "cuda",
-        "torch": torch.__version__,
-        "shard_bytes": shard_path.stat().st_size if shard_path.is_file() else None,
-        "shard_sha256": shard_sha256,
-        "integrity_gate": "hf_etag" if remote_sha is not None else "manifest_size",
-        "shard_sha_verified_vs_hf_etag": remote_sha is not None and shard_sha256 == remote_sha,
-        "tensor_shapes": {k: list(v.shape) for k, v in t.items()},
-        "metrics": metrics,
-        "tolerance": TOLERANCE,
-        "passed": bool(passed),
-        "verdict": "MATCH_WITHIN_TOLERANCE" if passed else "MISMATCH",
-        "note": "candidate carries FP16-storage/FP16-GEMV error vs full-FP32 reference",
-        "performance_comparable": False,
-    }
-    (OUT / "ds7-expert-evidence.json").write_text(
-        json.dumps(evidence, indent=2), encoding="utf-8"
-    )
+    try:
+        bootstrap = {
+            "schema_version": 1,
+            "run_id": RUN_ID,
+            "python": sys.version,
+            "platform": platform.platform(),
+            "torch": torch.__version__,
+            "cuda_runtime": torch.version.cuda,
+            "gpu_count": torch.cuda.device_count(),
+            "gpus": [
+                {
+                    "index": device,
+                    "name": torch.cuda.get_device_name(device),
+                    "memory_bytes": torch.cuda.get_device_properties(device).total_memory,
+                }
+                for device in range(torch.cuda.device_count())
+            ],
+        }
+        write_json(EVIDENCE / "bootstrap-environment.json", bootstrap)
+        if torch.cuda.device_count() != 1 or "T4" not in torch.cuda.get_device_name(0):
+            raise RuntimeError(f"expected one Tesla T4, got {bootstrap['gpus']}")
 
-    # Keep the downloaded shard out of the evidence copy to bound artifact size.
-    shutil.copy2(Path(__file__).resolve(),
-                 OUT / "deepseek_v4_expert_smoke.py")
-    (OUT / "manifest.sha256").write_text(
-        hashlib.sha256((OUT / "ds7-expert-evidence.json").read_bytes()).hexdigest()
-        + "  ds7-expert-evidence.json\n", encoding="utf-8")
+        run_logged(
+            [sys.executable, "-m", "pip", "install", "--no-cache-dir", "-q",
+             "safetensors==0.8.0"],
+            EVIDENCE / "logs/pip-install.log", EVIDENCE,
+        )
 
-    print("evidence:", OUT, flush=True)
-    print("VERDICT:", evidence["verdict"], flush=True)
-    return 0 if passed else 1
+        if ROOT.exists():
+            resolved_root = ROOT.resolve()
+            if not str(resolved_root).startswith("/kaggle/temp/"):
+                raise RuntimeError(f"refusing to remove unexpected path {resolved_root}")
+            shutil.rmtree(ROOT)
+        subprocess.run(["git", "clone", "--branch", BRANCH, "--single-branch",
+                        REPOSITORY, str(ROOT)], check=True)
+
+        # Script kernels upload only code_file; read the committed sidecar
+        # from the cloned tree and verify everything by content hash.
+        identity_path = ROOT / IDENTITY_RELATIVE
+        if not identity_path.is_file():
+            raise RuntimeError(f"missing harness identity {identity_path}")
+        identity = json.loads(identity_path.read_text(encoding="utf-8"))
+        expected_harness_commit = identity.get("repository_commit")
+        if (
+            not isinstance(expected_harness_commit, str)
+            or len(expected_harness_commit) != 40
+            or any(c not in "0123456789abcdef" for c in expected_harness_commit)
+        ):
+            raise RuntimeError({"repository_commit": expected_harness_commit,
+                                "reason": "identity must pin a 40-char lowercase commit"})
+        subprocess.run(["git", "checkout", "--quiet", expected_harness_commit],
+                       cwd=ROOT, check=True)
+        checked_out = subprocess.check_output(["git", "rev-parse", "HEAD"],
+                                              cwd=ROOT, text=True).strip()
+        if checked_out != expected_harness_commit:
+            raise RuntimeError({"commit": checked_out, "expected": expected_harness_commit})
+
+        committed_harness = ROOT / HARNESS_RELATIVE
+        committed_harness_sha = sha256_file(committed_harness)
+        running_sha = sha256_file(Path(__file__).resolve())
+        if committed_harness_sha != identity.get("harness_sha256"):
+            raise RuntimeError({"committed_harness_sha256": committed_harness_sha,
+                                "expected": identity.get("harness_sha256")})
+        if running_sha != identity.get("harness_sha256"):
+            raise RuntimeError({"running_harness_sha256": running_sha,
+                                "expected": identity.get("harness_sha256")})
+
+        committed_reference = ROOT / REFERENCE_RELATIVE
+        reference_sha = sha256_file(committed_reference)
+        if reference_sha != identity.get("reference_sha256"):
+            raise RuntimeError({"committed_reference_sha256": reference_sha,
+                                "expected": identity.get("reference_sha256")})
+
+        sys.path.insert(0, str(ROOT / "dee.cpp"))
+        from scripts import deepseek_v4_expert_reference as ref  # noqa: E402
+        # Run the reference module's own self-test from the pinned tree.
+        ref.main()
+        commit = checked_out
+        print("pinned commit", commit, flush=True)
+        print("harness sha", running_sha, flush=True)
+        print("reference sha", reference_sha, flush=True)
+
+        checkpoint_dir = Path("/kaggle/working/dsv4-checkpoint")
+        want, remote_sha = shard_expected_bytes()
+        if remote_sha is None and not Path("/kaggle/working/CHECKPOINT_MANIFEST.json").is_file():
+            raise RuntimeError("no manifest and no HF X-Linked-Etag: cannot verify shard integrity")
+        shard_path = download_shard(want, checkpoint_dir)
+        t = load_expert(shard_path)
+        print("loaded expert tensors:", {k: tuple(v.shape) for k, v in t.items()}, flush=True)
+
+        torch.manual_seed(0)
+        x = torch.randn(4, 4096)  # 4 tokens, hidden=4096
+
+        t0 = time.time()
+        reference = ref.expert_forward(
+            x,
+            t["layers.6.ffn.experts.0.w1.weight"], t["layers.6.ffn.experts.0.w1.scale"],
+            t["layers.6.ffn.experts.0.w2.weight"], t["layers.6.ffn.experts.0.w2.scale"],
+            t["layers.6.ffn.experts.0.w3.weight"], t["layers.6.ffn.experts.0.w3.scale"],
+            swiglu_limit=10.0,
+        )
+        t_ref = time.time() - t0
+
+        t0 = time.time()
+        candidate, candidate_device = candidate_expert_on_t4(x, t, ref)
+        t_cand = time.time() - t0
+        print("candidate executed on device:", candidate_device, flush=True)
+
+        metrics = compare(reference, candidate)
+        print("reference time %.3fs candidate time %.3fs" % (t_ref, t_cand), flush=True)
+        print("metrics:", json.dumps(metrics, indent=2), flush=True)
+
+        passed = (
+            metrics["max_abs_error"] <= TOLERANCE["max_abs_error"]
+            and metrics["mean_abs_error"] <= TOLERANCE["mean_abs_error"]
+            and metrics["max_rel_error"] <= TOLERANCE["max_rel_error"]
+        )
+
+        # Stream-hash the shard (3.5 GB) to avoid loading it into RAM.
+        h = hashlib.sha256()
+        with open(shard_path, "rb") as fh:
+            for block in iter(lambda: fh.read(1 << 20), b""):
+                h.update(block)
+        shard_sha256 = h.hexdigest()
+        if remote_sha is not None and shard_sha256 != remote_sha:
+            raise RuntimeError(f"{SHARD}: streamed sha {shard_sha256[:16]} != HF etag {remote_sha[:16]}")
+        # Keep the Kaggle output artifact small: Kaggle zips the ENTIRE working
+        # directory as the downloadable output, so drop the shard now that its
+        # SHA is recorded and its tensors are loaded in memory.
+        shard_path.unlink()
+
+        write_json(EVIDENCE / "environment.json", {
+            "schema_version": 1,
+            "run_id": RUN_ID,
+            "repository": REPOSITORY,
+            "branch": BRANCH,
+            "repository_commit": commit,
+            "harness_sha256": running_sha,
+            "reference_sha256": reference_sha,
+            "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+            "revision": REV,
+            "shard": SHARD,
+            "performance_comparable": False,
+        })
+
+        write_json(EVIDENCE / "ds7-expert-evidence.json", {
+            "campaign": "deepseek-v4-flash-0731",
+            "phase": "DS7-expert-smoke",
+            "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+            "revision": REV,
+            "shard": SHARD,
+            "layer": 6,
+            "expert": 0,
+            "device": torch.cuda.get_device_name(0),
+            "candidate_executed_on_cuda": candidate_device == "cuda",
+            "torch": torch.__version__,
+            "shard_bytes": want,
+            "shard_sha256": shard_sha256,
+            "integrity_gate": "hf_etag" if remote_sha is not None else "manifest_size",
+            "shard_sha_verified_vs_hf_etag": remote_sha is not None and shard_sha256 == remote_sha,
+            "tensor_shapes": {k: list(v.shape) for k, v in t.items()},
+            "metrics": metrics,
+            "tolerance": TOLERANCE,
+            "passed": bool(passed),
+            "verdict": "MATCH_WITHIN_TOLERANCE" if passed else "MISMATCH",
+            "note": "candidate carries FP16-storage/FP16-GEMV error vs full-FP32 reference",
+            "performance_comparable": False,
+        })
+
+        shutil.copy2(Path(__file__).resolve(),
+                     EVIDENCE / "deepseek_v4_expert_smoke.py")
+        shutil.copy2(committed_reference, EVIDENCE / "deepseek_v4_expert_reference.py")
+        (EVIDENCE / "manifest.sha256").write_text(
+            hashlib.sha256((EVIDENCE / "ds7-expert-evidence.json").read_bytes()).hexdigest()
+            + "  ds7-expert-evidence.json\n", encoding="utf-8")
+
+    except Exception as exc:  # noqa: BLE001
+        fatal_error = {"type": type(exc).__name__, "message": str(exc),
+                       "traceback": traceback.format_exc()}
+        write_json(EVIDENCE / "fatal-error.json", fatal_error)
+
+    finally:
+        required_paths = [
+            EVIDENCE / "bootstrap-environment.json",
+            EVIDENCE / "environment.json",
+            EVIDENCE / "ds7-expert-evidence.json",
+            EVIDENCE / "manifest.sha256",
+            EVIDENCE / "logs/pip-install.log",
+        ]
+        required_status = []
+        for path in required_paths:
+            required_status.append({
+                "path": path.relative_to(EVIDENCE).as_posix() if path.is_file() else str(path),
+                "present": path.is_file(),
+                "bytes": path.stat().st_size if path.is_file() else None,
+            })
+        missing = [row["path"] for row in required_status if not row["present"]]
+        if missing:
+            failures.append({"name": "required_artifacts_present", "details": missing})
+        result = "PASS" if fatal_error is None and not failures else "FAIL"
+        artifacts = [
+            {"path": path.relative_to(EVIDENCE).as_posix(), "bytes": path.stat().st_size,
+             "sha256": sha256_file(path)}
+            for path in sorted(EVIDENCE.rglob("*"))
+            if path.is_file() and path.name != "artifact-manifest.json"
+        ]
+        manifest = {
+            "schema_version": 1,
+            "run_id": RUN_ID,
+            "result": result,
+            "terminal_verdict": "INVALID_EXPERIMENT",  # smoke is never an accept verdict
+            "repository_commit": commit,
+            "reference_sha256": reference_sha,
+            "metrics": metrics,
+            "passed": bool(passed),
+            "tolerance": TOLERANCE,
+            "fatal_error": fatal_error,
+            "validation_failures": failures,
+            "required_paths": required_status,
+            "artifacts": artifacts,
+            "performance_comparable": False,
+        }
+        write_json(EVIDENCE / "artifact-manifest.json", manifest)
+        archive = shutil.make_archive(str(ARCHIVE_BASE), "gztar",
+                                      root_dir=EVIDENCE.parent, base_dir=EVIDENCE.name)
+        write_json(EVIDENCE / "archive-metadata.json", {
+            "archive": archive,
+            "archive_sha256": sha256_file(Path(archive)),
+            "manifest_sha256": sha256_file(EVIDENCE / "artifact-manifest.json"),
+            "excluded_from_archive": ["archive-metadata.json"],
+        })
+        print(json.dumps({"run_id": RUN_ID, "result": result, "archive": archive,
+                          "fatal_error": fatal_error}, sort_keys=True), flush=True)
+        if result != "PASS":
+            raise SystemExit(1)
+
+    return 0
 
 
 if __name__ == "__main__":
