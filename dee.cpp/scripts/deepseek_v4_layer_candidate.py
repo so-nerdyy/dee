@@ -98,6 +98,12 @@ class DeepseekV4CacheFfn:
             entry = self.cache.get(self.layer_id, eid)
             if entry is None:
                 self.stats["misses"] += 1
+                if eid not in self.fp16_payloads:
+                    raise RuntimeError(
+                        f"candidate routed to expert {eid} outside the "
+                        f"reference-discovered union "
+                        f"{sorted(self.fp16_payloads)}; route divergence "
+                        f"between candidate and reference")
                 entry = self.loader.stage(self.layer_id, eid,
                                           self.fp16_payloads[eid],
                                           metadata={"expert_type": "routed"})

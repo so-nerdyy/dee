@@ -242,6 +242,40 @@ def load_tensors_from_shard(shard_path: Path, names: list[str]) -> dict[str, tor
     return tensors
 
 
+class LazyRoutedExpertDict(dict):
+    """dict subclass that materializes a routed expert's packed FP4 tensors
+    from the shard on first access (single open safetensors handle).
+
+    The DS9 sequence is CHAINED: each decode step routes through the hidden
+    state produced by the previous step, so the full-sequence expert union
+    CANNOT be known up-front from the first step's routing.  This dict lets
+    the trusted reference run discover exactly the experts it touches;
+    ``accessed`` records the ids so the candidate's FP16 payloads are built
+    from the true union (v1 crashed with KeyError: 214 because a later
+    decode step routed to an expert outside the step-0 union).
+    """
+
+    def __init__(self, shard_path: Path, layer: int, support: Any):
+        super().__init__()
+        from safetensors import safe_open
+        self._layer = layer
+        self._support = support
+        self._handle = safe_open(str(shard_path), framework="pt", device="cpu")
+        self._keys = set(self._handle.keys())
+        self.accessed: set[int] = set()
+
+    def __missing__(self, eid: int) -> dict[str, torch.Tensor]:
+        names = self._support.routed_expert_tensor_names(self._layer, eid)
+        tensors: dict[str, torch.Tensor] = {}
+        for name in names:
+            if name not in self._keys:
+                raise KeyError(f"missing {name} in shard")
+            tensors[name] = self._handle.get_tensor(name).contiguous()
+        self[eid] = tensors
+        self.accessed.add(int(eid))
+        return self[eid]
+
+
 def move_tree_to_device(value: Any, device: str) -> Any:
     """Recursively move a nested dict-of-tensors weight structure to device."""
     if isinstance(value, torch.Tensor):
@@ -489,12 +523,21 @@ def main() -> int:
         print(f"layer {LAYER} dense tensors loaded: {len(dense_raw)}",
               flush=True)
 
-        # ---- route every corpus input; union of selected experts ----------
-        # The router is the official sqrtsoftplus gate (score layer).
+        # ---- route the first corpus input (route-agreement evidence) -------
+        # The router is the official sqrtsoftplus gate (score layer).  NOTE:
+        # this step-0 routing CANNOT pre-declare the full expert union.  The
+        # DS9 sequence is CHAINED (each decode step routes through the hidden
+        # state produced by the previous step), so experts selected at later
+        # steps -- e.g. expert 214 in v1 -- are outside the step-0 union.  The
+        # trusted reference therefore runs with a LAZY routed dict that
+        # materializes each expert from the shard on first access and records
+        # the true full-sequence union; candidate payloads are built from
+        # that discovered union (the DS8 v2 KeyError:203 lesson, applied to
+        # the chained sequence).
         gate_w = dense_raw[f"layers.{LAYER}.ffn.gate.weight"].float()
         gate_b = dense_raw[f"layers.{LAYER}.ffn.gate.bias"].float()
         case_routes = []
-        reference_union: set[int] = set()
+        step0_union: set[int] = set()
         for case_name, x in corpus_cases[:N_CORPUS_INPUTS]:
             sc, ids_c, wts_c = ds7.router_scores(
                 x, gate_w, bias=gate_b, score_func="sqrtsoftplus",
@@ -502,38 +545,14 @@ def main() -> int:
             case_routes.append({"case": case_name, "scores": sc,
                                 "expert_ids": ids_c,
                                 "routing_weights": wts_c})
-            reference_union.update(int(e) for e in ids_c.flatten().tolist())
+            step0_union.update(int(e) for e in ids_c.flatten().tolist())
         _, x_route = corpus_cases[0]
         route = case_routes[0]
         ids = route["expert_ids"]
         weights = route["routing_weights"]
-        print("  selected expert union:", sorted(reference_union), flush=True)
+        print("  step-0 routed expert union:", sorted(step0_union), flush=True)
 
-        # ---- load routed expert packed weights for the union ---------------
-        routed_raw: dict[int, dict[str, torch.Tensor]] = {}
-        fp16_payloads: dict[int, dict[str, torch.Tensor]] = {}
-        for eid in sorted(reference_union):
-            names = v4support.routed_expert_tensor_names(LAYER, eid)
-            t = load_tensors_from_shard(shard_path, names)
-            routed_raw[eid] = {
-                "w1.weight": t[f"layers.{LAYER}.ffn.experts.{eid}.w1.weight"],
-                "w1.scale": t[f"layers.{LAYER}.ffn.experts.{eid}.w1.scale"],
-                "w2.weight": t[f"layers.{LAYER}.ffn.experts.{eid}.w2.weight"],
-                "w2.scale": t[f"layers.{LAYER}.ffn.experts.{eid}.w2.scale"],
-                "w3.weight": t[f"layers.{LAYER}.ffn.experts.{eid}.w3.weight"],
-                "w3.scale": t[f"layers.{LAYER}.ffn.experts.{eid}.w3.scale"],
-            }
-            fp16_payloads[eid] = {
-                "w1.weight": ds7.dequantize_expert_weight(
-                    routed_raw[eid]["w1.weight"],
-                    routed_raw[eid]["w1.scale"]).half(),
-                "w2.weight": ds7.dequantize_expert_weight(
-                    routed_raw[eid]["w2.weight"],
-                    routed_raw[eid]["w2.scale"]).half(),
-                "w3.weight": ds7.dequantize_expert_weight(
-                    routed_raw[eid]["w3.weight"],
-                    routed_raw[eid]["w3.scale"]).half(),
-            }
+        # ---- shared expert raw tensors + fp16 payload ----------------------
         shared_t = {
             "w1.weight": shared_raw[f"layers.{LAYER}.ffn.shared_experts.w1.weight"],
             "w1.scale": shared_raw[f"layers.{LAYER}.ffn.shared_experts.w1.scale"],
@@ -550,30 +569,20 @@ def main() -> int:
             "w3.weight": moe.dequantize_fp8_e4m3(
                 shared_t["w3.weight"], shared_t["w3.scale"]).half(),
         }
-        # Free the shard from the working dir (keeps the output archive small).
-        shard_path.unlink()
 
         # ---- assemble the layer weight dict (reference on CPU) -------------
         raw_all: dict[str, torch.Tensor] = dict(dense_raw)
         raw_all.update(shared_raw)
         w = v4ref.build_layer_weights_from_tensors(raw_all, layer=LAYER)
-        w["ffn"]["routed"] = routed_raw
+        lazy_routed = LazyRoutedExpertDict(shard_path, LAYER, v4support)
+        w["ffn"]["routed"] = lazy_routed
         w["ffn"]["shared"] = shared_t
-        w_cuda = move_tree_to_device(w, "cuda")
+        w_cuda = move_tree_to_device(w, "cuda")  # routed stays {} here (unused)
 
         # ---- trusted reference layer (CPU, FP32 FFN) -----------------------
         ref_layer = v4ref.DeepseekV4Layer(cfg, w, device="cpu", max_batch=1)
 
-        # ---- candidate layer (T4 CUDA; cache-fp16 FFN backend) -------------
-        budget_bytes = int((len(reference_union) + 2) * 50 * (1 << 20))
-        cache = v4cache.DeepSeekExpertCache(budget_bytes, device="cuda")
-        loader = v4cache.DeepSeekExpertLoader(cache)
-        cand_layer = v4cand.make_candidate_layer(
-            cfg, w_cuda, device="cuda", max_batch=1, cache=cache,
-            loader=loader, layer_id=LAYER, fp16_payloads=fp16_payloads,
-            shared_payload=shared_payload)
-
-        # ---- run the sequence on both layers --------------------------------
+        # ---- run the reference sequence (DISCOVERS the expert union) -------
         # Official input construction: embed -> h.unsqueeze(2).repeat(hc_mult).
         def build_x_hc(tokens: int) -> torch.Tensor:
             return x_route[:tokens].unsqueeze(0).unsqueeze(2).expand(
@@ -596,6 +605,37 @@ def main() -> int:
             return outputs, sigs, caps, states
 
         ref_out, ref_sigs, ref_caps, ref_states = run_sequence(ref_layer)
+        reference_union = set(lazy_routed.accessed)
+        print("  reference-discovered full-sequence expert union:",
+              sorted(reference_union), flush=True)
+        if not reference_union:
+            raise RuntimeError("reference run selected no routed experts")
+
+        # ---- fp16 payloads for the candidate (discovered union) ------------
+        fp16_payloads: dict[int, dict[str, torch.Tensor]] = {}
+        for eid in sorted(reference_union):
+            t = lazy_routed[eid]  # already materialized during the ref run
+            fp16_payloads[eid] = {
+                "w1.weight": ds7.dequantize_expert_weight(
+                    t["w1.weight"], t["w1.scale"]).half(),
+                "w2.weight": ds7.dequantize_expert_weight(
+                    t["w2.weight"], t["w2.scale"]).half(),
+                "w3.weight": ds7.dequantize_expert_weight(
+                    t["w3.weight"], t["w3.scale"]).half(),
+            }
+        # Free the shard from the working dir (keeps the output archive small).
+        shard_path.unlink()
+
+        # ---- candidate layer (T4 CUDA; cache-fp16 FFN backend) -------------
+        budget_bytes = int((len(reference_union) + 2) * 50 * (1 << 20))
+        cache = v4cache.DeepSeekExpertCache(budget_bytes, device="cuda")
+        loader = v4cache.DeepSeekExpertLoader(cache)
+        cand_layer = v4cand.make_candidate_layer(
+            cfg, w_cuda, device="cuda", max_batch=1, cache=cache,
+            loader=loader, layer_id=LAYER, fp16_payloads=fp16_payloads,
+            shared_payload=shared_payload)
+
+        # ---- candidate sequence ---------------------------------------------
         t0 = time.time()
         cand_out, cand_sigs, cand_caps, cand_states = run_sequence(cand_layer)
         torch.cuda.synchronize()
@@ -763,6 +803,8 @@ def main() -> int:
             "n_corpus_inputs": N_CORPUS_INPUTS,
             "corpus_meta": corpus_meta,
             "selected_expert_union": sorted(reference_union),
+            "step0_routed_union": sorted(step0_union),
+            "expert_union_discovery": "reference-run-lazy",
             "expert_ids_first_token": [int(e) for e in ids[0]],
             "cuda_probe": probe,
             "device": torch.cuda.get_device_name(0),
