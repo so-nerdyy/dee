@@ -152,3 +152,95 @@ def ds8_gate_passed(metrics: dict[str, Any], tol: dict[str, float] | None = None
         and metrics["output_norm_rel_error"] <= tol["output_norm_rel_error"]
         and metrics["excluded"]["fraction"] <= tol["max_excluded_fraction"]
     )
+
+
+# ---------------------------------------------------------------------------
+# DS9 predeclared numerical contract (category-specific).
+#
+# Declared BEFORE any DS9 run; NOT derived from results.  Rationale:
+# - attention-path categories (norms, q/kv, compressor, index scores,
+#   attention output, hc outputs) compare the reference and candidate BOTH in
+#   FP32/bf16 with identical QAT simulation points, so they should agree to
+#   ~1e-3; the gates allow 10-100x headroom for CUDA reduction-order drift.
+# - router scores/weights: identical FP32 gate math on both sides -> tight.
+# - expert categories reuse the DS8 contract (worst accepted DS8 error:
+#   max_abs 0.0054, mean_abs 0.0008, mean_rel 0.0026, p99 0.034, cosine
+#   0.9999998, norm_rmse 0.0005) with 2-10x headroom, since the candidate
+#   runs the DS8 FP16 cache payloads while the reference is full FP32.
+# - the final layer output mixes both paths, so it gates between the two.
+#
+# Exactness gates (not numerical): window indices exact, router expert IDs
+# exact, routing-weight signs exact; compressed (indexer) indices exact for
+# all corpus cases except the near_zero tie case, which the official
+# implementation itself leaves effectively arbitrary (documented, approved).
+# ---------------------------------------------------------------------------
+
+DS9_TOLERANCE_ATTENTION = {
+    "max_abs_error": 0.05,
+    "mean_abs_error": 0.01,
+    "mean_rel_error": 0.01,
+    "p95_rel_error": 0.02,
+    "p99_rel_error": 0.05,
+    "cosine_similarity": 0.9999,
+    "normalized_rmse": 0.01,
+    "output_norm_rel_error": 0.02,
+    "max_excluded_fraction": 0.02,
+}
+
+DS9_TOLERANCE_INDEX = {
+    "max_abs_error": 0.5,
+    "mean_abs_error": 0.05,
+    "mean_rel_error": 0.05,
+    "p95_rel_error": 0.1,
+    "p99_rel_error": 0.2,
+    "cosine_similarity": 0.999,
+    "normalized_rmse": 0.05,
+    "output_norm_rel_error": 0.05,
+    "max_excluded_fraction": 0.1,
+}
+
+DS9_TOLERANCE_ROUTER = {
+    "max_abs_error": 0.05,
+    "mean_abs_error": 0.01,
+    "mean_rel_error": 0.01,
+    "p95_rel_error": 0.02,
+    "p99_rel_error": 0.05,
+    "cosine_similarity": 0.9999,
+    "normalized_rmse": 0.01,
+    "output_norm_rel_error": 0.02,
+    "max_excluded_fraction": 0.02,
+}
+
+# Expert and final-layer categories reuse the DS8 contract shape with the
+# DS8 limits (see module docstring); declared here for provenance.
+DS9_TOLERANCE_EXPERT = dict(DS8_TOLERANCE)
+DS9_TOLERANCE_FINAL = dict(DS8_TOLERANCE)
+DS9_TOLERANCE_FINAL.update({"max_abs_error": 0.1, "mean_abs_error": 0.02})
+
+DS9_TOLERANCES = {
+    "layer_input": DS9_TOLERANCE_ATTENTION,
+    "attn_norm_in": DS9_TOLERANCE_ATTENTION,
+    "attn_norm_out": DS9_TOLERANCE_ATTENTION,
+    "qr": DS9_TOLERANCE_ATTENTION,
+    "q": DS9_TOLERANCE_ATTENTION,
+    "kv": DS9_TOLERANCE_ATTENTION,
+    "kv_compressed": DS9_TOLERANCE_ATTENTION,
+    "attn_o": DS9_TOLERANCE_ATTENTION,
+    "attn_out": DS9_TOLERANCE_ATTENTION,
+    "attn_hc_out": DS9_TOLERANCE_ATTENTION,
+    "ffn_norm_in": DS9_TOLERANCE_ATTENTION,
+    "ffn_norm_out": DS9_TOLERANCE_ATTENTION,
+    "indexer_scores": DS9_TOLERANCE_INDEX,
+    "router_scores": DS9_TOLERANCE_ROUTER,
+    "router_bias_scores": DS9_TOLERANCE_ROUTER,
+    "moe_out": DS9_TOLERANCE_EXPERT,
+    "shared_out": DS9_TOLERANCE_EXPERT,
+    "output": DS9_TOLERANCE_FINAL,
+}
+
+DS9_INDEX_EXACT_CATEGORIES = ("attn_window_idxs", "attn_compress_idxs")
+# The near-zero corpus input leaves index scores ~0 everywhere: the official
+# top-k then selects effectively arbitrary positions (an official tie case),
+# so compressed-index exactness is waived ONLY for that case.
+DS9_INDEX_EXACT_WAIVED_CASES = ("near_zero",)
+DS9_EXACT_GATES = {"router_expert_ids", "routing_weight_signs"}

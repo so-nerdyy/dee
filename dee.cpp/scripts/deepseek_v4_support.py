@@ -536,3 +536,87 @@ def expert_load_plan(
         "scale_bytes": scale_bytes,
         "compressed_bytes": weight_bytes + scale_bytes,
     }
+
+
+# ---------------------------------------------------------------------------
+# DS9: complete-layer tensor resolution.
+#
+# One complete official layer needs EVERY non-expert dense tensor (attention
+# + indexer + compressor + mHC + norms + router) plus its shared expert.
+# The dense tensor set for a layer is fixed by the official architecture
+# (verified against the layer-20 ledger: 34 dense tensors + 6 shared-expert
+# tensors, all co-located in shard model-000(N+2)).  These helpers resolve
+# the full layer-20 set and fail closed on any missing / duplicate /
+# cross-shard tensor.
+# ---------------------------------------------------------------------------
+
+
+def layer_dense_tensor_names(layer: int) -> list[str]:
+    """All 34 non-expert dense tensors for one complete layer.
+
+    Verified against the layer-20 ledger rows (shard model-00022):
+    6 hc tensors, 2 layer norms, 8 attention sub-tensors + 6 scales,
+    compressor (4), indexer (6 + 2 scales), router gate (2).
+    """
+    p = f"layers.{layer}"
+    names = [
+        f"{p}.attn_norm.weight",
+        f"{p}.ffn_norm.weight",
+        f"{p}.hc_attn_base", f"{p}.hc_attn_fn", f"{p}.hc_attn_scale",
+        f"{p}.hc_ffn_base", f"{p}.hc_ffn_fn", f"{p}.hc_ffn_scale",
+        f"{p}.attn.attn_sink",
+        f"{p}.attn.compressor.ape",
+        f"{p}.attn.compressor.norm.weight",
+        f"{p}.attn.compressor.wgate.weight",
+        f"{p}.attn.compressor.wkv.weight",
+        f"{p}.attn.indexer.compressor.ape",
+        f"{p}.attn.indexer.compressor.norm.weight",
+        f"{p}.attn.indexer.compressor.wgate.weight",
+        f"{p}.attn.indexer.compressor.wkv.weight",
+        f"{p}.attn.indexer.weights_proj.weight",
+        f"{p}.attn.indexer.wq_b.weight", f"{p}.attn.indexer.wq_b.scale",
+        f"{p}.attn.kv_norm.weight",
+        f"{p}.attn.q_norm.weight",
+        f"{p}.attn.wkv.weight", f"{p}.attn.wkv.scale",
+        f"{p}.attn.wo_a.weight", f"{p}.attn.wo_a.scale",
+        f"{p}.attn.wo_b.weight", f"{p}.attn.wo_b.scale",
+        f"{p}.attn.wq_a.weight", f"{p}.attn.wq_a.scale",
+        f"{p}.attn.wq_b.weight", f"{p}.attn.wq_b.scale",
+        f"{p}.ffn.gate.weight", f"{p}.ffn.gate.bias",
+    ]
+    return names
+
+
+def resolve_layer_dense_tensors(
+    by_name: dict[str, dict[str, Any]],
+    layer: int,
+) -> dict[str, dict[str, Any]]:
+    """Resolve every dense + shared-expert tensor for one complete layer.
+
+    Fails closed on: any missing tensor, any duplicate mapping (detected by
+    the caller via index construction), any cross-shard split, or a scale
+    tensor that is missing or points outside the layer's shard.
+    """
+    names = layer_dense_tensor_names(layer) + shared_expert_tensor_names(layer)
+    resolved: dict[str, dict[str, Any]] = {}
+    for name in names:
+        row = by_name.get(name)
+        if row is None:
+            raise ValueError(f"layer dense tensor missing from ledger: {name}")
+        resolved[name] = row
+    _assert_same_shard(resolved)
+    # weight/scale co-location within the same shard (already same-shard for
+    # all of them; also verify every F8 weight's declared scale tensor exists
+    # in the ledger and stays in this shard).
+    for name, row in resolved.items():
+        scale = row.get("scale_tensor")
+        if scale is None:
+            continue
+        scale_row = by_name.get(scale)
+        if scale_row is None:
+            raise ValueError(f"{name} references missing scale tensor {scale}")
+        if scale_row["source_shard"] != row["source_shard"]:
+            raise ValueError(
+                f"{name} scale {scale} spans shard "
+                f"{scale_row['source_shard']} != {row['source_shard']}")
+    return resolved
