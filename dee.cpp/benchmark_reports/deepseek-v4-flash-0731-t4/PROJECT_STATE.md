@@ -109,6 +109,31 @@ COMPLETE with verdict `MATCH_WITHIN_TOLERANCE`:
   all resolved with matched shapes/offsets/dtypes/scales (0 unresolved,
   0 duplicate mappings).
 
+## DS9 milestone (first complete official layer on T4)
+
+Kernel `nivind/dee-cpp-deepseek-v4-flash-0731-ds9-one-layer` v6 terminated
+COMPLETE with a full evidence set and verdict `REJECT_STATE` (valid terminal
+rejection, first failing component proven). This is the first run where the
+COMPLETE official layer 20 executes on T4 CUDA end-to-end.
+
+- Evidence: `benchmark_reports/deepseek-v4-flash-0731-t4/ds9-v6-reject-state/`
+  (18 files). Pinned commit `a3a90c2cb9ad18c75d7a39c475655585ad7fb41d`,
+  harness SHA `7d825a16fdc328259710d4508b03d5ea116d519bfcf17705b085652db61b6d04`.
+- PASS: attention path (cosine ≈ 1.0), router scores, exact window/compress
+  index gates, route agreement, cache correctness (77 loads, 0 warm
+  reloads, cold==warm bitwise), candidate CUDA-resident, peak VRAM 4.47 GB.
+- REJECT_STATE cause: `compressor_kv_state` max_rel 0.387,
+  `indexer_compressor_kv_state` 0.548 (bound 0.001), and both
+  `score_state` buffers show `finite_agreement: false` (reference vs
+  candidate disagree on `-inf` sentinel vs written positions) — a
+  structural state-semantics mismatch.
+- Secondary (non-attribution) failures: `expert_ids_exact` step-0 boundary
+  flip (CPU fp32 vs CUDA bf16), `moe_out`/`shared_out` p99_rel 0.07–0.12 vs
+  predeclared 0.05, `indexer_scores` step-0 metrics NaN (harness `-inf`
+  causal-mask artifact).
+- Iteration record preserved: `ds9-failed-v1` … `ds9-failed-v5` +
+  `ds9-v6-reject-state`; no evidence overwritten.
+
 ## Branch
 
 `freebuff/deepseek-v4-flash-0731-t4` (off `9ff967ef4429fb08a433d6ef0a4495468d89b4ba`).

@@ -44,6 +44,63 @@
       "notes": "Correctness milestone only: one official routed expert executes on T4 and matches the trusted full-FP32 reference within predeclared tolerances. No TPS, no bitwise-exactness, no full-model/cache/one-T4 claims."
     },
     {
+      "run_id": "ds9-v6-reject-state",
+      "milestone": "DS9",
+      "kernel": "nivind/dee-cpp-deepseek-v4-flash-0731-ds9-one-layer",
+      "kernel_version": 6,
+      "terminal": "COMPLETE",
+      "verdict": "REJECT_STATE",
+      "passed": false,
+      "candidate_executed_on_cuda": true,
+      "integrity_gate": "identity_pin (harness + 9 modules)",
+      "pinned_repository_commit": "a3a90c2cb9ad18c75d7a39c475655585ad7fb41d",
+      "branch_head_at_launch": "8f65dfa35fe942b12b0ddc4f55cba8de47876b98",
+      "harness_sha256": "7d825a16fdc328259710d4508b03d5ea116d519bfcf17705b085652db61b6d04",
+      "hardware": "Kaggle dual Tesla T4 (SM75)",
+      "gpu_count": 2,
+      "precision_family": "B (FP4-packed routed storage + F8_E4M3 shared storage, FP16-expanded payloads through DeepSeekExpertCache; torch-CUDA attention/compressor/indexer/mHC hybrid bridge)",
+      "cache_representation": "FP16-expanded active expert through DeepSeekExpertCache (77 loaded, 0 warm reloads, cold==warm bitwise)",
+      "layer": 20,
+      "shard": "model-00022-of-00048",
+      "topk": 6,
+      "full_layer_attention_passes": true,
+      "attention_categories_pass": ["layer_input", "attn_norm_in", "attn_norm_out", "qr", "q", "kv", "kv_compressed", "attn_o", "attn_out", "attn_hc_out", "ffn_norm_in", "ffn_norm_out", "router_scores", "router_bias_scores", "output"],
+      "exact_gates": {
+        "attn_window_idxs_exact": true,
+        "attn_compress_idxs_exact": true,
+        "expert_ids_exact_step0": false
+      },
+      "route_agreement": true,
+      "cache": {
+        "loads": 77,
+        "h2d_bytes": 3875536896,
+        "evictions": 0,
+        "warm_reloaded_experts": 0,
+        "warm_output_identical": true
+      },
+      "peak_vram_bytes": 4472537600,
+      "candidate_sequence_seconds": 1.963,
+      "first_failing_component": "compressor/indexer state buffers",
+      "state_failures": {
+        "compressor_kv_state_max_rel": 0.387,
+        "indexer_compressor_kv_state_max_rel": 0.548,
+        "compressor_score_state_finite_agreement": false,
+        "indexer_compressor_score_state_finite_agreement": false,
+        "attn_kv_cache_max_rel": 0.0,
+        "indexer_kv_cache_max_rel": 0.0
+      },
+      "secondary_failures": [
+        "expert_ids_exact step0 (CPU-fp32 vs CUDA-bf16 top-6 boundary flip)",
+        "moe_out/shared_out p99_rel 0.07-0.12 vs predeclared 0.05 gate",
+        "indexer_scores step0 metrics NaN (-inf causal-mask artifact in metrics)"
+      ],
+      "performance_comparable": false,
+      "generated_tokens": 0,
+      "evidence_dir": "benchmark_reports/deepseek-v4-flash-0731-t4/ds9-v6-reject-state/",
+      "local_validation": "full evidence set: ds9-one-layer-evidence.json, artifact-manifest.json (result FAIL, terminal_verdict REJECT_STATE), environment.json, manifest.sha256, harness + 9 module copies, archive metadata",
+      "notes": "First complete official layer 20 execution on T4 CUDA end-to-end (no fatal error). Attention, router scores, exact index gates, route agreement, and cache correctness all PASS. REJECT_STATE: compressor/indexer kv_state diverge 39-55% and score_state finite (sentinel vs written) patterns disagree between reference and candidate - a structural state-semantics mismatch, not ULP drift. Iteration record: v1 KeyError:214 (chained union), v2 KeyError:w1.weight (lazy-dict key scheme), v3 device mismatch x_step, v4 freqs_cis/window/indexer device boundaries, v5 candidate FFN .cpu() leftover, v6 first full run -> REJECT_STATE. performance_comparable: false; no model TPS."
+    },
+    {
       "run_id": "ds8-runtime-v3",
       "milestone": "DS8",
       "kernel": "nivind/dee-cpp-deepseek-v4-flash-0731-ds8-expert-runtime",

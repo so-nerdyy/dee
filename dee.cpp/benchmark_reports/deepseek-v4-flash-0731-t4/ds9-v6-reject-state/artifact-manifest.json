@@ -1,0 +1,519 @@
+{
+  "artifacts": [
+    {
+      "bytes": 466,
+      "path": "bootstrap-environment.json",
+      "sha256": "cbe209719dd9a32ebf325110cf788a01ee2ad71c30d804b8b4d644149ba49190"
+    },
+    {
+      "bytes": 59,
+      "path": "cuda-capability-probe.json",
+      "sha256": "5f3a56f90e298f9976b3e34fb137f9d035b21ed3e87e9adf9d3ea5e7e901d4a7"
+    },
+    {
+      "bytes": 45547,
+      "path": "deepseek_v4_layer_runtime.py",
+      "sha256": "7d825a16fdc328259710d4508b03d5ea116d519bfcf17705b085652db61b6d04"
+    },
+    {
+      "bytes": 17204,
+      "path": "deepseek_v4_module_cache.py",
+      "sha256": "c4d16b0cef031f1bbf8ed0c2a989e7a60394bc7f740973a85ed9a24e7271f0df"
+    },
+    {
+      "bytes": 9887,
+      "path": "deepseek_v4_module_contract.py",
+      "sha256": "1b85c9bb513732329fb01f59571bf5b7f02de3fa0e3b4b5d109c36d9bc27e0f5"
+    },
+    {
+      "bytes": 4560,
+      "path": "deepseek_v4_module_corpus.py",
+      "sha256": "9ffdb43f736a7dbade969619af44c8e8d817038be194050e3106eb51aa6ea215"
+    },
+    {
+      "bytes": 8175,
+      "path": "deepseek_v4_module_expert_reference.py",
+      "sha256": "9c28375b17898a6908d61ca3a769f4ba2eab4104e4049439cfa76784eaa86ef5"
+    },
+    {
+      "bytes": 9215,
+      "path": "deepseek_v4_module_layer_candidate.py",
+      "sha256": "2da4e551b0c5f64fe34f0db1d63ec96d88c9508b250864a2b438508d6b248db3"
+    },
+    {
+      "bytes": 14997,
+      "path": "deepseek_v4_module_layer_common.py",
+      "sha256": "005c168e578724c4284a23c61273f65449a7a8b910e82782cbeb0100857121cc"
+    },
+    {
+      "bytes": 31447,
+      "path": "deepseek_v4_module_layer_reference.py",
+      "sha256": "56ec9995f35aeb5bf7e72644bd2d4255d190f5569b9314f7701f2f89167c23fe"
+    },
+    {
+      "bytes": 10063,
+      "path": "deepseek_v4_module_moe_reference.py",
+      "sha256": "895d1b1c97c201e45ab1ea2cfd1c9b16344e848b07d2469a5a88d5c7d037fb81"
+    },
+    {
+      "bytes": 24670,
+      "path": "deepseek_v4_module_support.py",
+      "sha256": "58161d1525a4bbea1ea19779447006690602154ea680649cd0c4ba9b438d639b"
+    },
+    {
+      "bytes": 39442,
+      "path": "ds9-one-layer-evidence.json",
+      "sha256": "f823a494ca1cfeedeb32740a4cfd7781e31444fa2d654dfc4478c9915b5cb83b"
+    },
+    {
+      "bytes": 1344,
+      "path": "environment.json",
+      "sha256": "416abef2684858ccd2e14f8c019aabc49d16a4d4e57ba39f62770c3274615b52"
+    },
+    {
+      "bytes": 161,
+      "path": "logs/pip-install.log",
+      "sha256": "bae73110c7bcf51f87dc4438a3ed367b33fb48c7e0a2a9d324b00b9b48cba71f"
+    },
+    {
+      "bytes": 94,
+      "path": "manifest.sha256",
+      "sha256": "0b494063f4173f13092c771b776a74386ec46538b67dbb8e7d7fdbc721bb189a"
+    }
+  ],
+  "fatal_error": null,
+  "module_sha256": {
+    "cache": "c4d16b0cef031f1bbf8ed0c2a989e7a60394bc7f740973a85ed9a24e7271f0df",
+    "contract": "1b85c9bb513732329fb01f59571bf5b7f02de3fa0e3b4b5d109c36d9bc27e0f5",
+    "corpus": "9ffdb43f736a7dbade969619af44c8e8d817038be194050e3106eb51aa6ea215",
+    "expert_reference": "9c28375b17898a6908d61ca3a769f4ba2eab4104e4049439cfa76784eaa86ef5",
+    "layer_candidate": "2da4e551b0c5f64fe34f0db1d63ec96d88c9508b250864a2b438508d6b248db3",
+    "layer_common": "005c168e578724c4284a23c61273f65449a7a8b910e82782cbeb0100857121cc",
+    "layer_reference": "56ec9995f35aeb5bf7e72644bd2d4255d190f5569b9314f7701f2f89167c23fe",
+    "moe_reference": "895d1b1c97c201e45ab1ea2cfd1c9b16344e848b07d2469a5a88d5c7d037fb81",
+    "support": "58161d1525a4bbea1ea19779447006690602154ea680649cd0c4ba9b438d639b"
+  },
+  "performance_comparable": false,
+  "repository_commit": "a3a90c2cb9ad18c75d7a39c475655585ad7fb41d",
+  "required_paths": [
+    {
+      "bytes": 466,
+      "path": "bootstrap-environment.json",
+      "present": true
+    },
+    {
+      "bytes": 59,
+      "path": "cuda-capability-probe.json",
+      "present": true
+    },
+    {
+      "bytes": 1344,
+      "path": "environment.json",
+      "present": true
+    },
+    {
+      "bytes": 39442,
+      "path": "ds9-one-layer-evidence.json",
+      "present": true
+    },
+    {
+      "bytes": 94,
+      "path": "manifest.sha256",
+      "present": true
+    },
+    {
+      "bytes": 161,
+      "path": "logs/pip-install.log",
+      "present": true
+    }
+  ],
+  "result": "FAIL",
+  "run_id": "20260731T120000Z-dsv4-ds9-one-layer",
+  "schema_version": 1,
+  "terminal_verdict": "REJECT_STATE",
+  "validation_failures": [
+    {
+      "details": {
+        "attn_compress_idxs_exact": true,
+        "attn_window_idxs_exact": true,
+        "expert_ids_exact": false
+      },
+      "name": "step_0_exact_gates"
+    },
+    {
+      "details": [
+        {
+          "bound": 0.02,
+          "buffer": "attn_kv_cache",
+          "dtype": "torch.float32",
+          "finite_agreement": true,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "ok": true,
+          "shape": [
+            1,
+            1152,
+            512
+          ]
+        },
+        {
+          "bound": 0.001,
+          "buffer": "compressor_kv_state",
+          "dtype": "torch.float32",
+          "finite_agreement": true,
+          "max_abs_diff": 0.38712626695632935,
+          "max_rel_diff": 0.38712626695632935,
+          "ok": false,
+          "shape": [
+            1,
+            8,
+            1024
+          ]
+        },
+        {
+          "bound": 0.001,
+          "buffer": "compressor_score_state",
+          "dtype": "torch.float32",
+          "finite_agreement": false,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "ok": false,
+          "shape": [
+            1,
+            8,
+            1024
+          ]
+        },
+        {
+          "bound": 0.02,
+          "buffer": "indexer_kv_cache",
+          "dtype": "torch.float32",
+          "finite_agreement": true,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "ok": true,
+          "shape": [
+            1,
+            1024,
+            128
+          ]
+        },
+        {
+          "bound": 0.001,
+          "buffer": "indexer_compressor_kv_state",
+          "dtype": "torch.float32",
+          "finite_agreement": true,
+          "max_abs_diff": 0.5477361679077148,
+          "max_rel_diff": 0.5477361679077148,
+          "ok": false,
+          "shape": [
+            1,
+            8,
+            256
+          ]
+        },
+        {
+          "bound": 0.001,
+          "buffer": "indexer_compressor_score_state",
+          "dtype": "torch.float32",
+          "finite_agreement": false,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "ok": false,
+          "shape": [
+            1,
+            8,
+            256
+          ]
+        }
+      ],
+      "name": "step_0_state_agreement"
+    },
+    {
+      "details": [
+        {
+          "bound": 0.02,
+          "buffer": "attn_kv_cache",
+          "dtype": "torch.float32",
+          "finite_agreement": true,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "ok": true,
+          "shape": [
+            1,
+            1152,
+            512
+          ]
+        },
+        {
+          "bound": 0.001,
+          "buffer": "compressor_kv_state",
+          "dtype": "torch.float32",
+          "finite_agreement": true,
+          "max_abs_diff": 0.40123450756073,
+          "max_rel_diff": 0.40123450756073,
+          "ok": false,
+          "shape": [
+            1,
+            8,
+            1024
+          ]
+        },
+        {
+          "bound": 0.001,
+          "buffer": "compressor_score_state",
+          "dtype": "torch.float32",
+          "finite_agreement": false,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "ok": false,
+          "shape": [
+            1,
+            8,
+            1024
+          ]
+        },
+        {
+          "bound": 0.02,
+          "buffer": "indexer_kv_cache",
+          "dtype": "torch.float32",
+          "finite_agreement": true,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "ok": true,
+          "shape": [
+            1,
+            1024,
+            128
+          ]
+        },
+        {
+          "bound": 0.001,
+          "buffer": "indexer_compressor_kv_state",
+          "dtype": "torch.float32",
+          "finite_agreement": true,
+          "max_abs_diff": 0.5477361679077148,
+          "max_rel_diff": 0.5477361679077148,
+          "ok": false,
+          "shape": [
+            1,
+            8,
+            256
+          ]
+        },
+        {
+          "bound": 0.001,
+          "buffer": "indexer_compressor_score_state",
+          "dtype": "torch.float32",
+          "finite_agreement": false,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "ok": false,
+          "shape": [
+            1,
+            8,
+            256
+          ]
+        }
+      ],
+      "name": "step_16_state_agreement"
+    },
+    {
+      "details": [
+        {
+          "bound": 0.02,
+          "buffer": "attn_kv_cache",
+          "dtype": "torch.float32",
+          "finite_agreement": true,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "ok": true,
+          "shape": [
+            1,
+            1152,
+            512
+          ]
+        },
+        {
+          "bound": 0.001,
+          "buffer": "compressor_kv_state",
+          "dtype": "torch.float32",
+          "finite_agreement": true,
+          "max_abs_diff": 0.40123450756073,
+          "max_rel_diff": 0.40123450756073,
+          "ok": false,
+          "shape": [
+            1,
+            8,
+            1024
+          ]
+        },
+        {
+          "bound": 0.001,
+          "buffer": "compressor_score_state",
+          "dtype": "torch.float32",
+          "finite_agreement": false,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "ok": false,
+          "shape": [
+            1,
+            8,
+            1024
+          ]
+        },
+        {
+          "bound": 0.02,
+          "buffer": "indexer_kv_cache",
+          "dtype": "torch.float32",
+          "finite_agreement": true,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "ok": true,
+          "shape": [
+            1,
+            1024,
+            128
+          ]
+        },
+        {
+          "bound": 0.001,
+          "buffer": "indexer_compressor_kv_state",
+          "dtype": "torch.float32",
+          "finite_agreement": true,
+          "max_abs_diff": 0.5477361679077148,
+          "max_rel_diff": 0.5477361679077148,
+          "ok": false,
+          "shape": [
+            1,
+            8,
+            256
+          ]
+        },
+        {
+          "bound": 0.001,
+          "buffer": "indexer_compressor_score_state",
+          "dtype": "torch.float32",
+          "finite_agreement": false,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "ok": false,
+          "shape": [
+            1,
+            8,
+            256
+          ]
+        }
+      ],
+      "name": "step_20_state_agreement"
+    },
+    {
+      "details": [
+        {
+          "bound": 0.02,
+          "buffer": "attn_kv_cache",
+          "dtype": "torch.float32",
+          "finite_agreement": true,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "ok": true,
+          "shape": [
+            1,
+            1152,
+            512
+          ]
+        },
+        {
+          "bound": 0.001,
+          "buffer": "compressor_kv_state",
+          "dtype": "torch.float32",
+          "finite_agreement": true,
+          "max_abs_diff": 0.40123450756073,
+          "max_rel_diff": 0.40123450756073,
+          "ok": false,
+          "shape": [
+            1,
+            8,
+            1024
+          ]
+        },
+        {
+          "bound": 0.001,
+          "buffer": "compressor_score_state",
+          "dtype": "torch.float32",
+          "finite_agreement": false,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "ok": false,
+          "shape": [
+            1,
+            8,
+            1024
+          ]
+        },
+        {
+          "bound": 0.02,
+          "buffer": "indexer_kv_cache",
+          "dtype": "torch.float32",
+          "finite_agreement": true,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "ok": true,
+          "shape": [
+            1,
+            1024,
+            128
+          ]
+        },
+        {
+          "bound": 0.001,
+          "buffer": "indexer_compressor_kv_state",
+          "dtype": "torch.float32",
+          "finite_agreement": true,
+          "max_abs_diff": 0.5477361679077148,
+          "max_rel_diff": 0.5477361679077148,
+          "ok": false,
+          "shape": [
+            1,
+            8,
+            256
+          ]
+        },
+        {
+          "bound": 0.001,
+          "buffer": "indexer_compressor_score_state",
+          "dtype": "torch.float32",
+          "finite_agreement": false,
+          "max_abs_diff": 0.0,
+          "max_rel_diff": 0.0,
+          "ok": false,
+          "shape": [
+            1,
+            8,
+            256
+          ]
+        }
+      ],
+      "name": "step_24_state_agreement"
+    },
+    {
+      "details": {
+        "failing_categories": [
+          "step0:indexer_scores",
+          "step0:moe_out",
+          "step0:shared_out",
+          "step16:moe_out",
+          "step16:shared_out",
+          "step20:indexer_scores",
+          "step20:moe_out",
+          "step20:shared_out",
+          "step20:output",
+          "step24:indexer_scores",
+          "step24:moe_out",
+          "step24:shared_out"
+        ]
+      },
+      "name": "category_gates"
+    }
+  ]
+}

@@ -40,7 +40,7 @@ M5G-v1/v2/v3 evidence is immutable. No M5H work until the DeepSeek campaign reac
 | DS6 | Freebuff tensor resolver for V4 | ✅ (Python ledger + C++ `TensorResolver` DEEPSEEK_V4 dialect, w1/w3/w2 + scale names) |
 | DS7 | One routed expert on T4 | ✅ (kernel v5 COMPLETE, verdict `MATCH_WITHIN_TOLERANCE`, evidence `ds7-smoke-v5`) |
 | DS8 | Expert cache + Dynamic Expert Eviction | ✅ (kernel v3 COMPLETE, verdict `ACCEPT_EXPERT_RUNTIME`, evidence `ds8-runtime-v3`) |
-| DS9 | Architecture bring-up → first token | 🔲 |
+| DS9 | Architecture bring-up → first token | 🔶 (kernel v6 COMPLETE, verdict `REJECT_STATE` — full layer 20 executes on T4, compressor/indexer state diverges; evidence `ds9-v6-reject-state`) |
 | DS10 | Dual-T4 full-model decode | 🔲 |
 | DS11 | One-T4 path | 🔲 |
 | DS12 | DSpark speculative decoding | 🔲 |
@@ -137,6 +137,56 @@ terminated **COMPLETE** with result **PASS** and verdict
   first case's), v3 fixed both and reached COMPLETE.
 - `performance_comparable: false` — correctness milestone, not a throughput
   number. No model TPS is claimed.
+
+## DS9 milestone — one complete official layer on T4 (first full-layer run)
+
+Kaggle kernel `nivind/dee-cpp-deepseek-v4-flash-0731-ds9-one-layer` v6
+terminated **COMPLETE** with a full evidence set (no fatal error) and verdict
+`REJECT_STATE` — a valid terminal rejection with the first failing component
+proven. This is the first run where the COMPLETE official layer 20 executes
+on T4 CUDA end-to-end.
+
+- Pinned harness commit: `a3a90c2cb9ad18c75d7a39c475655585ad7fb41d`
+- Pinned harness SHA256: `7d825a16fdc328259710d4508b03d5ea116d519bfcf17705b085652db61b6d04`
+- Evidence: `benchmark_reports/deepseek-v4-flash-0731-t4/ds9-v6-reject-state/`
+  (18 files: evidence JSON, manifest, environment, harness + 9 module copies,
+  archive metadata, kernel log).
+- Candidate: `candidate_cuda_resident: true`, peak VRAM 4.47 GB, sequence
+  1.96 s, `performance_comparable: false`.
+- **Attention path PASSES** (first time): attn_norm_in/out, qr, q, kv,
+  kv_compressed, attn_o, attn_out, attn_hc_out all cosine ≈ 1.0 within
+  predeclared DS9_TOLERANCES.
+- **Router scores PASS** (cosine 0.9999999, max_abs 0.0016); route
+  agreement true; exact gates `attn_window_idxs_exact` +
+  `attn_compress_idxs_exact` true.
+- **Cache correctness PASS**: 77 loads, 0 warm reloads, warm outputs bitwise
+  identical, 3.88 GB H2D, 0 evictions.
+- **First failing component (REJECT_STATE)** — compressor/indexer state
+  buffers diverge structurally:
+  - `compressor_kv_state` max_rel 0.387, `indexer_compressor_kv_state` 0.548
+    (both vs 0.001 bound);
+  - `compressor_score_state` + `indexer_compressor_score_state`
+    `finite_agreement: false` (reference and candidate disagree on which
+    positions are the `-inf` sentinel vs written) — a state-semantics
+    mismatch, not ULP drift;
+  - `attn_kv_cache` and `indexer_kv_cache` match exactly (0.0).
+- Secondary gate failures (recorded, not the attribution):
+  - `expert_ids_exact: false` at step 0 (top-6 boundary flip between the
+    CPU fp32 reference and CUDA bf16 candidate);
+  - `moe_out`/`shared_out` p99_rel 0.07–0.12 vs the predeclared 0.05 gate
+    (fp16-payload vs fp32-reference gap at near-zero elements);
+  - `indexer_scores` step-0 metrics NaN (harness artifact: the causal mask
+    leaves `-inf` in the captured scores, which poison cosine/error
+    metrics).
+- Iteration record (all preserved, none overwritten): v1 `KeyError: 214`
+  (chained-sequence union), v2 `KeyError: 'w1.weight'` (lazy dict keyed by
+  full tensor names), v3 CUDA×CPU device mismatch (x_step stayed on CPU),
+  v4 `freqs_cis`/window-idx/indexer-mask device boundaries, v5 candidate
+  FFN returned CPU tensors (`.cpu()` leftover from the DS8 harness), v6
+  first complete full-layer execution → `REJECT_STATE`.
+- Next: diagnose the compressor/indexer state divergence (write position,
+  sentinel, or aliasing) with targeted device diagnostics; fix the
+  `indexer_scores` `-inf` metrics artifact; re-run v7.
 
 ## Precision families (measured, not assumed)
 
