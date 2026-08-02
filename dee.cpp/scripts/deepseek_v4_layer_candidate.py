@@ -84,7 +84,12 @@ class DeepseekV4CacheFfn:
                      weights: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         cfg = self.cfg
         n, d = xf.shape
-        moe = torch.zeros(n, d, dtype=torch.float32)
+        # Keep the accumulator on the execution device: v5 crashed at the
+        # post-FFN _hc_post with 'found at least two devices, cuda:0 and
+        # cpu!' because the FFN returned CPU tensors (the DS8 harness needed
+        # .cpu() for host-side comparison, but here the FFN output feeds the
+        # CUDA layer's hc_post).
+        moe = torch.zeros(n, d, dtype=torch.float32, device=self.device)
         groups: dict[int, list[tuple[int, float]]] = {}
         for tok in range(n):
             for pos in range(cfg.topk):
@@ -123,7 +128,7 @@ class DeepseekV4CacheFfn:
                              min=-cfg.swiglu_limit, max=cfg.swiglu_limit)
             h = torch.nn.functional.silu(gate) * up
             h = ws.to(self.device) * h  # official: weight before w2
-            out = (h.half() @ payload["w2.weight"].t()).float().cpu()
+            out = (h.half() @ payload["w2.weight"].t()).float()
             moe[toks] += out
         # shared expert (unweighted)
         self.stats["requests"] += 1
@@ -145,7 +150,7 @@ class DeepseekV4CacheFfn:
         up = torch.clamp((xc @ sp["w3.weight"].t()).float(),
                          min=-cfg.swiglu_limit, max=cfg.swiglu_limit)
         h = torch.nn.functional.silu(gate) * up
-        shared_out = (h.half() @ sp["w2.weight"].t()).float().cpu()
+        shared_out = (h.half() @ sp["w2.weight"].t()).float()
         return moe + shared_out, shared_out
 
 
