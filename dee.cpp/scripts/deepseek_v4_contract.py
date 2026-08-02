@@ -932,6 +932,25 @@ def bf16_storage_bound(a: torch.Tensor, b: torch.Tensor, *,
     }
 
 
+def expert_ids_set_exact(a: torch.Tensor,
+                         b: torch.Tensor) -> tuple[bool, bool]:
+    """Set-based (policy) vs tuple-based exact expert-ID agreement.
+
+    DS9 v12 product policy (decision 2026-08-02): the exact expert-ID gate
+    is the SELECTED SET, order-insensitive -- an intra-set rank swap caused
+    by bounded BF16 storage rounding does not change which experts were
+    routed to.  Returns (set_eq, tuple_eq); the ordered tuple equality is
+    still reported for evidence (v10/v11 proved tuple order can differ at
+    one token while the per-token selected sets are identical everywhere).
+    The sorted-values comparison is a multiset comparison, so it remains
+    correct even if a row ever contained duplicate ids.
+    """
+    tuple_eq = bool(torch.equal(a, b))
+    set_eq = bool(torch.equal(torch.sort(a, dim=-1).values,
+                              torch.sort(b, dim=-1).values))
+    return set_eq, tuple_eq
+
+
 def router_diagnosis_classify(diag: dict[str, Any],
                               iso: dict[str, Any]) -> dict[str, Any]:
     """Refined DS9 v10/v11 diagnostic classification (campaign outcome rules).

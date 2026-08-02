@@ -481,6 +481,23 @@ def test_bf16_storage_bound_rounding_vs_structural() -> None:
     assert bm["within_bf16_storage_bound"] is False
 
 
+def test_expert_ids_set_vs_tuple_exact() -> None:
+    # v10/v11 proven case: identical SET, intra-set rank swap at token 4.
+    a = torch.tensor([[6, 30, 78, 102, 198, 214]], dtype=torch.int64)
+    b = torch.tensor([[6, 30, 78, 198, 102, 214]], dtype=torch.int64)
+    set_eq, tuple_eq = contract.expert_ids_set_exact(a, b)
+    assert set_eq is True
+    assert tuple_eq is False
+    # a genuine selection difference must fail the set gate.
+    c = torch.tensor([[6, 30, 78, 102, 198, 215]], dtype=torch.int64)
+    set_eq2, tuple_eq2 = contract.expert_ids_set_exact(a, c)
+    assert set_eq2 is False
+    assert tuple_eq2 is False
+    # exact match passes both.
+    set_eq3, tuple_eq3 = contract.expert_ids_set_exact(a, a)
+    assert set_eq3 is True and tuple_eq3 is True
+
+
 def _iso(topk_ok: bool = True, ref_ok: bool = True, cand_ok: bool = True,
          ref_ids: list[int] | None = None,
          cand_ids: list[int] | None = None) -> dict:

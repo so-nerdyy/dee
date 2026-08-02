@@ -962,9 +962,16 @@ def main() -> int:
                                  cc["attn_compress_idxs"])
                 row["attn_compress_idxs_exact"] = bool(eq)
                 exact_ok = exact_ok and eq
-            ids_eq = bool(torch.equal(rc["expert_ids"], cc["expert_ids"]))
-            row["expert_ids_exact"] = ids_eq
-            exact_ok = exact_ok and ids_eq
+            # DS9 v12 policy (product decision 2026-08-02): the exact
+            # expert-ID gate is the SELECTED SET, order-insensitive; the
+            # ordered tuple is still recorded as evidence (it can differ by
+            # an intra-set rank swap from bounded BF16 storage rounding while
+            # the selected experts are identical -- proven in v10/v11).
+            set_eq, tuple_eq = v4contract.expert_ids_set_exact(
+                rc["expert_ids"], cc["expert_ids"])
+            row["expert_ids_tuple_exact"] = tuple_eq
+            row["expert_ids_exact"] = set_eq
+            exact_ok = exact_ok and set_eq
             row["exact_gates_ok"] = bool(exact_ok)
             if not exact_ok:
                 failures.append({"name": f"step_{start_pos}_exact_gates",
