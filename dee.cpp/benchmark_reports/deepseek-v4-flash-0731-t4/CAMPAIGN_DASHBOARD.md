@@ -36,7 +36,7 @@ M5G-v1/v2/v3 evidence is immutable. No M5H work until the DeepSeek campaign reac
 | DS2 | Byte-accurate tensor ledger | ✅ |
 | DS3 | Checkpoint download / Kaggle dataset plan | ✅ (plan + resumable shard tool + header pin) |
 | DS4 | Tokenizer + encoding parity golden tests | ✅ (official `encoding_dsv4.py` + `tokenizer.json` pinned w/ SHA-256; wrapper `scripts/deepseek_v4_encoding.py`; 15 golden tests — exact IDs for chat/thinking/low/high/max reasoning/tool/multi-turn; parse roundtrips; pinned 2026-08-02) |
-| DS5 | Trusted reference traces | 🔲 |
+| DS5 | Trusted reference traces | 🔶 scaffold committed (`deepseek_v4_trace_spec.py` + `ds5_trace_runtime.py` + `tools/build_ds5_kernel.py`, 16 tests) — reference = OFFICIAL inference stack (model.py + tilelang kernel.py + convert.py), layer-0 subset (shards 00001/00002/00045 ≈ 5.7 GB), canonical prompt, bounded boundary captures + hashes; remote Kaggle run pending (tilelang-on-SM75 + checkpoint download are the launch risks) |
 | DS6 | Freebuff tensor resolver for V4 | ✅ (Python ledger + C++ `TensorResolver` DEEPSEEK_V4 dialect, w1/w3/w2 + scale names) |
 | DS7 | One routed expert on T4 | ✅ (kernel v5 COMPLETE, verdict `MATCH_WITHIN_TOLERANCE`, evidence `ds7-smoke-v5`) |
 | DS8 | Expert cache + Dynamic Expert Eviction | ✅ (kernel v3 COMPLETE, verdict `ACCEPT_EXPERT_RUNTIME`, evidence `ds8-runtime-v3`) |
@@ -306,6 +306,22 @@ expert-ID gate is redefined as the **selected expert SET, order-insensitive**
 Next (user-approved): **expert-integration audit** — DS8 isolated-expert
 inputs vs DS9 integrated inputs, route weights, input dtype, accumulation
 order, FP4 unpack, FP16 execution, shared/routed combination.
+
+## DS5 — trusted reference traces (layer-0 subset scaffold)
+
+The trusted reference is the OFFICIAL inference stack pinned in `official-source/`
+(`model.py` + tilelang `kernel.py` + `convert.py` + `generate.py`; transformers 5.x
+ships no `deepseek_v4` module, so the official inference code is the reference).
+`scripts/deepseek_v4_trace_spec.py` pins identities (config/generation/inference-
+config SHA-256, revision) and defines the boundary contract + bounded-capture
+policy (bitwise tensor SHA-256, head-of-dim slices, NaN/inf counts).
+`kaggle/deepseek-v4-flash-0731/ds5_trace_runtime.py` runs the reference on the
+layer-0 subset (embedding + layer 0 + final norm/head; shards 00001/00002/00045
+≈ 5.7 GB, size+header verified, resumable download), converts with the official
+`convert.py` (fp4, mp=1), builds `Transformer(n_layers=1)` with a post-load
+dtype contract (FP4 experts / FP8-BF16 dense), captures bounded traces at every
+boundary over prefill + greedy decode, and fails closed with gates. Payload
+assembler: `tools/build_ds5_kernel.py` (15 files, 6.5 MB). 16 local tests.
 
 ## DS4 — tokenizer + encoding parity (official implementation pinned)
 
