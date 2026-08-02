@@ -255,14 +255,18 @@ class DeepseekV4Indexer:
         index_score = torch.einsum(
             "bshd,btd->bsht", q, self.kv_cache[:bsz, : end_pos // ratio])
         index_score = (index_score.relu() * weights.unsqueeze(-1)).sum(dim=2)
+        dev = x.device
         if start_pos == 0:
-            mask = (torch.arange(seqlen // ratio).repeat(seqlen, 1)
-                    >= torch.arange(1, seqlen + 1).unsqueeze(1) // ratio)
-            index_score = index_score + torch.where(mask, float("-inf"), 0.0)
+            mask = (torch.arange(seqlen // ratio, device=dev).repeat(seqlen, 1)
+                    >= torch.arange(1, seqlen + 1, device=dev).unsqueeze(1)
+                    // ratio)
+            index_score = index_score + torch.where(
+                mask, float("-inf"), 0.0)
         topk_idxs = index_score.topk(
             min(self.cfg.index_topk, end_pos // ratio), dim=-1)[1]
         if start_pos == 0:
-            mask = topk_idxs >= torch.arange(1, seqlen + 1).unsqueeze(1) // ratio
+            mask = topk_idxs >= torch.arange(
+                1, seqlen + 1, device=dev).unsqueeze(1) // ratio
             topk_idxs = torch.where(mask, -1, topk_idxs + offset)
         else:
             topk_idxs = topk_idxs + offset
@@ -288,9 +292,14 @@ class DeepseekV4Attention:
         # official buffer dtype (runtime default is bf16)
         self.kv_cache = torch.zeros(max_batch, cfg.kv_cache_len, cfg.head_dim,
                                     device=device, dtype=torch.bfloat16)
+        # precompute_freqs_cis is lru_cached on CPU; move the result to this
+        # layer's device (v4 crashed at common.py apply_rotary_emb with
+        # 'found at least two devices, cuda:0 and cpu!' because the cached
+        # freqs_cis stayed on CPU while the CUDA candidate's q was on cuda).
         self.freqs_cis = common.precompute_freqs_cis(
             cfg.rope_head_dim, cfg.max_seq_len, cfg.original_seq_len,
-            cfg.compress_rope_theta, cfg.rope_factor, cfg.beta_fast, cfg.beta_slow)
+            cfg.compress_rope_theta, cfg.rope_factor, cfg.beta_fast,
+            cfg.beta_slow).to(device)
 
     def reset_state(self) -> None:
         self.kv_cache.zero_()
@@ -323,8 +332,10 @@ class DeepseekV4Attention:
         kv = common.rms_norm(kv, w["kv_norm.weight"], cfg.norm_eps)
         common.apply_rotary_emb(kv[..., -rd:], freqs_cis)
         common.act_quant_inplace(kv[..., :-rd], 64, "ue8m0")
-        # indices
-        window_idxs = common.get_window_topk_idxs(win, bsz, seqlen, start_pos)
+        # indices (get_window_topk_idxs builds on CPU; move to x.device so the
+        # torch.cat with the CUDA compress_idxs below stays same-device)
+        window_idxs = common.get_window_topk_idxs(
+            win, bsz, seqlen, start_pos).to(x.device)
         offset = kv.size(1) if start_pos == 0 else win
         compress_idxs = self.indexer.forward(x, qr, start_pos, offset,
                                              w["indexer"], capture=capture)
