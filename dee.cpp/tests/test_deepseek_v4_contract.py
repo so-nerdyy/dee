@@ -175,6 +175,23 @@ def test_state_mask_analysis_sentinel_mismatch_classified() -> None:
     assert out["score"]["counts"]["ref_only_nonfinite"] == 1
 
 
+def test_zero_finite_overlap_gate_fails_cleanly() -> None:
+    # All-(-inf) tensors (e.g. indexer_scores before any position is written)
+    # must produce cosine None, finite_overlap False and a clean gate FAIL
+    # (no TypeError from None >= tol, no NaN -> silent pass).
+    ref = torch.full((4, 8), float("-inf"))
+    cand = torch.full((4, 8), float("-inf"))
+    m = contract.compute_ds8_metrics(ref, cand)
+    assert m["cosine_similarity"] is None
+    assert m["finite_overlap"] is False
+    assert m["sentinel_mask_exact"] is True
+    assert contract.ds8_gate_passed(m) is False
+    # a finite/-inf mask mismatch is also a clean fail
+    m2 = contract.compute_ds8_metrics(ref, torch.zeros(4, 8))
+    assert m2["sentinel_mask_exact"] is False
+    assert contract.ds8_gate_passed(m2) is False
+
+
 def test_state_mask_analysis_written_slot_gate_kv_state() -> None:
     # kv_state inits to ZEROS: a candidate that writes a DIFFERENT slot than
     # the reference (but keeps the same finite mask everywhere) must fail the
