@@ -26,9 +26,11 @@ import torch  # noqa: E402
 
 from deepseek_v4_trace_spec import (  # noqa: E402
     BOUNDARIES,
+    CANONICAL_PROMPT,
     CAPTURE_MAX_FEATURES,
     CAPTURE_MAX_TOKENS,
     CONFIG_JSON_SHA256,
+    GENERATION_CONFIG_SHA256,
     INFERENCE_CONFIG_SHA256,
     bounded_capture,
     build_subset_config,
@@ -49,7 +51,7 @@ OFFICIAL_SOURCE = REPO_ROOT / "benchmark_reports" / "deepseek-v4-flash-0731-t4" 
 def test_pinned_files_verify_against_checked_in_sources() -> None:
     hashes = verify_pinned_files(OFFICIAL_SOURCE)
     assert hashes["config.json"] == CONFIG_JSON_SHA256
-    assert hashes["generation_config.json"] == harness.spec.GENERATION_CONFIG_SHA256
+    assert hashes["generation_config.json"] == GENERATION_CONFIG_SHA256
     assert hashes["inference/config.json"] == INFERENCE_CONFIG_SHA256
 
 
@@ -155,7 +157,7 @@ def test_bounded_capture_3d_limits_all_dims() -> None:
 
 def test_canonical_prompt_exact_ids() -> None:
     prompt = harness.encode_canonical_prompt()
-    assert prompt["prompt"] == harness.spec.CANONICAL_PROMPT
+    assert prompt["prompt"] == CANONICAL_PROMPT
     assert prompt["token_ids"] == [0, 128803, 671, 6102, 294, 8760, 344, 128804, 128822]
     assert prompt["n_tokens"] == 9
 
@@ -226,8 +228,8 @@ def test_hook_plumbing_synthetic_model() -> None:
                 "layer0_expert0_out", "layer0_expert1_out", "layer0_expert2_out",
                 "layer0_shared_expert_out", "final_norm_out", "head_logits"):
         assert key in captures, key
-        assert captures[key]["invocations"] >= 1
-        assert captures[key]["entries"][0]["record"]["sha256"]
+        assert len(captures[key]) >= 1
+        assert captures[key][0]["record"]["sha256"]
     # no expert beyond the 3 present was resolved
     assert "layer0_expert3_out" not in captures
 
