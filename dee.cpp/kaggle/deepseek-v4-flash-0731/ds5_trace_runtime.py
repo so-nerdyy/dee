@@ -1,8 +1,8 @@
 """DS5: trusted official-reference trace generation (layer-0 subset, Kaggle).
 
 Runs the OFFICIAL DeepSeek-V4 inference stack for a bounded single-layer
-reference — embedding + layer 0 (hash-routed, pure sliding-window:
-``compress_ratios[0] == 0``) + final norm/head — on the canonical prompt,
+reference -- embedding + layer 0 (hash-routed, pure sliding-window:
+``compress_ratios[0] == 0``) + final norm/head -- on the canonical prompt,
 capturing bounded traces at every official boundary.
 
 Source discipline (mirrors the sealed DS9 kernel): the kernel payload contains
@@ -206,7 +206,7 @@ def bootstrap_deps() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Stage 0 — environment probe
+# Stage 0 -- environment probe
 # ---------------------------------------------------------------------------
 
 def run_probe() -> dict[str, Any]:
@@ -262,7 +262,7 @@ def _find_mounted_checkpoint() -> Path | None:
 
 
 # ---------------------------------------------------------------------------
-# Stage 1 — identity
+# Stage 1 -- identity
 # ---------------------------------------------------------------------------
 
 def verify_identity(assets_dir: Path) -> dict[str, Any]:
@@ -273,7 +273,7 @@ def verify_identity(assets_dir: Path) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Stage 2 — prompt encode
+# Stage 2 -- prompt encode
 # ---------------------------------------------------------------------------
 
 def encode_canonical_prompt() -> dict[str, Any]:
@@ -287,7 +287,7 @@ def encode_canonical_prompt() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Stage 3 — shard acquisition + verification
+# Stage 3 -- shard acquisition + verification
 # ---------------------------------------------------------------------------
 
 def _header_sha256(path: Path) -> str:
@@ -353,7 +353,7 @@ def ensure_subset_shards(work_dir: Path) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Stage 4 — official convert (convert.py semantics, fp4, mp=1)
+# Stage 4 -- official convert (convert.py semantics, fp4, mp=1)
 # ---------------------------------------------------------------------------
 
 def convert_subset(hf_dir: Path, save_dir: Path, *, n_experts: int = 256) -> Path:
@@ -372,7 +372,7 @@ def convert_subset(hf_dir: Path, save_dir: Path, *, n_experts: int = 256) -> Pat
 
 
 # ---------------------------------------------------------------------------
-# Stage 5 — build the official reference (layer-0 subset)
+# Stage 5 -- build the official reference (layer-0 subset)
 # ---------------------------------------------------------------------------
 
 _REFERENCE_MODEL: Any = None
@@ -441,7 +441,7 @@ def describe_reference(model: Any, assets_dir: Path) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Stage 6 — name-driven boundary hooks
+# Stage 6 -- name-driven boundary hooks
 # ---------------------------------------------------------------------------
 
 def _resolve_path(module: Any, dotted: str) -> Any:
@@ -529,7 +529,7 @@ def take_captures() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Stage 7 — trace: prefill + greedy decode, bounded captures
+# Stage 7 -- trace: prefill + greedy decode, bounded captures
 # ---------------------------------------------------------------------------
 
 def run_trace(model: Any, token_ids: list[int],
@@ -579,7 +579,7 @@ def _topk_logits(logits: Any, k: int) -> list[list[float]]:
 
 
 # ---------------------------------------------------------------------------
-# Stage 8 — gates
+# Stage 8 -- gates
 # ---------------------------------------------------------------------------
 
 def _boundary_coverage_ok(trace: dict[str, Any]) -> bool:
