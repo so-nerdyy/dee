@@ -40,7 +40,7 @@ M5G-v1/v2/v3 evidence is immutable. No M5H work until the DeepSeek campaign reac
 | DS6 | Freebuff tensor resolver for V4 | ✅ (Python ledger + C++ `TensorResolver` DEEPSEEK_V4 dialect, w1/w3/w2 + scale names) |
 | DS7 | One routed expert on T4 | ✅ (kernel v5 COMPLETE, verdict `MATCH_WITHIN_TOLERANCE`, evidence `ds7-smoke-v5`) |
 | DS8 | Expert cache + Dynamic Expert Eviction | ✅ (kernel v3 COMPLETE, verdict `ACCEPT_EXPERT_RUNTIME`, evidence `ds8-runtime-v3`) |
-| DS9 | Architecture bring-up → first token | 🔶 (kernel v6 COMPLETE, verdict `REJECT_STATE` — full layer 20 executes on T4, compressor/indexer state diverges; evidence `ds9-v6-reject-state`) |
+| DS9 | Architecture bring-up → first token | 🔶 (kernel v9 COMPLETE, verdict `REJECT_ROUTER` — **state fixed** (v6/v8 `REJECT_STATE` was a harness snapshot-aliasing artifact); remaining: step-0 expert-ID boundary flip + MoE p99 tail; evidence `ds9-v9-reject-router`) |
 | DS10 | Dual-T4 full-model decode | 🔲 |
 | DS11 | One-T4 path | 🔲 |
 | DS12 | DSpark speculative decoding | 🔲 |
@@ -187,6 +187,41 @@ on T4 CUDA end-to-end.
 - Next: diagnose the compressor/indexer state divergence (write position,
   sentinel, or aliasing) with targeted device diagnostics; fix the
   `indexer_scores` `-inf` metrics artifact; re-run v7.
+
+## DS9 v9 — state semantics proven correct (focused state-parity run)
+
+Kaggle kernel `nivind/dee-cpp-deepseek-v4-flash-0731-ds9-one-layer` v9
+terminated **COMPLETE** with verdict `REJECT_ROUTER`. This run proves the
+v6/v8 `REJECT_STATE` was a **harness instrumentation defect, not a model
+state defect**: `state_buffers()` aliased the already-fp32 CPU buffers
+(`detach().float().cpu()` is identity for fp32), so the warm-replay
+`reset_state()` zeroed/`-inf`-filled the aliased snapshots before the gates
+compared them — manufacturing the phantom 0.387/0.548 divergence.
+
+- Pinned runtime commit: `aad6c02ab4158ed4af238c36a8344b56d1aff80b`
+- Pinned harness SHA256: `0b45e60c02772d1d85ca72d3b2d3addcc0087a9a4d6afaccedd978dc7b389321`
+- Evidence: `benchmark_reports/deepseek-v4-flash-0731-t4/ds9-v9-reject-router/`
+  (manifest validated; archive SHA256 `5e6047c1…`, manifest SHA256
+  `ae69c19a…`).
+- **State gates PASS at both steps (0 prefill + 16 decode):** all six buffers
+  (`attn_kv_cache`, `compressor_kv_state`, `compressor_score_state`,
+  `indexer_kv_cache`, `indexer_compressor_kv_state`,
+  `indexer_compressor_score_state`) have exact sentinel / written / untouched
+  masks; `boundary_captures_ok` true (structural keys bitwise).
+- **Locator ULP evidence:** raw compressor projections drift 1–10 ULP
+  (CPU-fp32 vs CUDA-fp32 reduction order — expected), state carry 1–2 ULP;
+  inputs/APE/scalars bitwise. `attn_kv_cache` bitwise identical.
+- Fixes landed: snapshot clone in `state_buffers()`; `state_mask_analysis`
+  `ok` structural-only (value bounds stay in the 0.001 rel `state_agreement`
+  gates); `boundary_captures_ok` gates structural keys only.
+- **Remaining failures (valid `REJECT_ROUTER` via the exact-gates gate):**
+  - step-0 top-6 expert-ID exact gate: CPU-fp32 vs CUDA-bf16 boundary flip;
+  - `moe_out` / `shared_out` p99_rel 0.068–0.099 vs the predeclared 0.05
+    gate (cosine 0.999997–0.9999999 — small overall error with a heavier
+    tail in the integrated FP16 expert path).
+- Attention (15 categories), router scores, exact window/compress indices,
+  route agreement, and cache correctness all PASS. Candidate CUDA-resident,
+  peak VRAM 4.47 GB, `performance_comparable: false`, no model TPS.
 
 ## Precision families (measured, not assumed)
 
