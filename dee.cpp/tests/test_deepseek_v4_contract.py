@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import struct
 import sys
 from pathlib import Path
 
@@ -18,6 +19,7 @@ import torch  # noqa: E402
 
 from scripts import deepseek_v4_contract as contract  # noqa: E402
 from scripts import deepseek_v4_corpus as corpus  # noqa: E402
+from scripts import deepseek_v4_expert_reference as ds7  # noqa: E402
 
 
 def test_identical_tensors_pass_every_gate() -> None:
@@ -258,6 +260,146 @@ def test_state_mask_analysis_ulp_drift_passes_structural() -> None:
     assert fd["abs_error"] == 2.0**-24
     assert fd["ulp"] == 1
     assert fd["ref_bits"] != fd["cand_bits"]
+
+
+# ---------------------------------------------------------------------------
+# DS9 v10: router-boundary diagnostics
+# ---------------------------------------------------------------------------
+
+
+def test_ulp_tensor_matches_scalar_semantics() -> None:
+    a = torch.tensor([1.0, 0.5, -1.0, 1.0 + 2.0**-23, 0.0])
+    b = torch.tensor([1.0 + 2.0**-23, 0.5 + 2.0**-24, -1.0, 1.0, -0.0])
+    u = contract.ulp_tensor(a, b)
+    assert u.tolist() == [1, 1, 0, 1, 0]  # ±0.0 have the same ordered bits
+
+
+def test_router_stages_match_ds7_router_scores() -> None:
+    # The diagnostic pipeline must reproduce the OFFICIAL router bitwise.
+    torch.manual_seed(11)
+    x = torch.randn(3, 16)
+    w = torch.randn(8, 16)
+    b = torch.randn(8)
+    st = contract.router_stages(x, w, b, topk=6, route_scale=1.5)
+    sc, ids, wts = ds7.router_scores(x, w, bias=b, score_func="sqrtsoftplus",
+                                     topk=6, route_scale=1.5)
+    # ds7 returns the SELECTION scores (bias-shifted); the sqrt stage is the
+    # official routed score (unbiased, used for routing weights).  Note
+    # (sqrt + b) - b != sqrt in fp, so the unbiased stage is cross-checked
+    # via internal consistency (raw -> softplus -> sqrt) and via the routing
+    # weights, which ds7 computes from the SAME unbiased sqrt gather.
+    assert torch.equal(st["biased"], sc)        # selection scores bitwise
+    assert torch.equal(st["ids"], ids)          # selected ids bitwise
+    assert torch.equal(st["sqrt"],
+                       torch.nn.functional.softplus(st["raw"]).sqrt())
+    assert torch.equal(st["weights"], wts)      # weights use the sqrt stage
+    assert torch.equal(st["biased"], st["sqrt"] + b)  # bias shifts selection
+    # no-bias path: biased == sqrt == ds7 scores
+    st2 = contract.router_stages(x, w, None, topk=6)
+    sc2, ids2, wts2 = ds7.router_scores(x, w, bias=None,
+                                        score_func="sqrtsoftplus",
+                                        topk=6, route_scale=1.5)
+    assert torch.equal(st2["biased"], st2["sqrt"])
+    assert torch.equal(st2["sqrt"], sc2)
+    assert torch.equal(st2["ids"], ids2)
+    assert torch.equal(st2["weights"], wts2)
+
+
+def test_router_boundary_metrics_identical_inputs_no_flip() -> None:
+    torch.manual_seed(29)
+    gw = torch.randn(8, 16)
+    gb = torch.randn(8)
+    x = torch.randn(2, 16)
+    diag = contract.router_boundary_metrics(x, x.clone(), gw, gb, topk=6)
+    assert diag["first_flip_token"] is None
+    assert diag["input_summary"]["bitwise_exact"] is True
+    assert diag["input_summary"]["count_diff"] == 0
+    assert diag["input_summary"]["max_ulp"] == 0
+    assert diag["stages"] == {}
+    assert diag["sensitivity"] == {}
+
+
+def test_router_boundary_metrics_near_tie_flip_explained() -> None:
+    # Construct a rank-6/rank-7 near tie and perturb the input along the
+    # margin gradient with 1.5x the linear reverse bound: the diagnostic must
+    # find the flip token, report the crossing, and the linear sensitivity
+    # estimate must reproduce the observed flip with a dx/min_reverse ratio
+    # consistent with the 1.5x overshoot.
+    torch.manual_seed(23)
+    n_routed, hidden, topk = 8, 16, 6
+    gw = torch.randn(n_routed, hidden)
+    gb = torch.randn(n_routed)
+    x_ref = torch.randn(1, hidden)
+    st = contract.router_stages(x_ref, gw, gb, topk=topk, route_scale=1.5)
+    sq, biased = st["sqrt"][0], st["biased"][0]
+    rvals, ridxs = biased.sort(descending=True)
+    o, i = int(ridxs[5]), int(ridxs[6])  # rank-6 / rank-7 experts
+    assert float(rvals[5] - rvals[6]) > 0
+    raw = st["raw"][0]
+    sig = torch.sigmoid(raw)
+    g = ((sig[o] / (2.0 * sq[o])) * gw[o]
+         - (sig[i] / (2.0 * sq[i])) * gw[i])
+    dx = -g / g.norm() * (float(rvals[5] - rvals[6]) / g.norm()) * 1.5
+    x_cand = (x_ref + dx).float()
+    diag = contract.router_boundary_metrics(x_ref, x_cand, gw, gb, topk=topk)
+    assert diag["first_flip_token"] == 0
+    assert diag["boundary"]["symmetric_difference"]  # non-empty flip
+    ins = diag["input_summary"]
+    assert ins["count_diff"] > 0 and ins["max_ulp"] > 0
+    sens = diag["sensitivity"]
+    assert sens["flip_explained"] is True
+    assert sens["tightest_crossing"]["margin_ref"] > 0
+    assert sens["tightest_crossing"]["margin_actual"] > 0
+    assert sens["tightest_crossing"]["est_flip_matches_actual"] is True
+    ratio = sens["dx_vs_min_reverse_ratio"]
+    assert ratio is not None and 1.0 < ratio < 4.0
+    # stage stats exist and the biased stage carries the flip
+    assert diag["stages"]["biased"]["bitwise_exact"] is False
+    assert diag["topk_audit"]["num_routed"] == n_routed
+
+
+def _fp32_next(value: float) -> float:
+    """Next fp32 value (1 ULP) in sign-magnitude order (never crosses 0)."""
+    bits = struct.unpack("<I", struct.pack("<f", float(value)))[0]
+    if bits == 0x00000000 or bits == 0x80000000:
+        return float(value)  # +/-0.0: stay put (no direction to move)
+    nbits = bits + 1 if bits < 0x80000000 else bits - 1
+    return struct.unpack("<f", struct.pack("<I", nbits))[0]
+
+
+def test_router_boundary_metrics_reports_ulp_level_input_drift() -> None:
+    # A genuine single-element 1-ULP input change must be characterized as
+    # ULP-level drift (max_ulp 1, count_diff 1) - the classification depends
+    # on that (max_ulp <= 64 -> input-driven, not upstream layout/state).
+    torch.manual_seed(31)
+    gw = torch.randn(8, 16)
+    gb = torch.randn(8)
+    x = torch.randn(2, 16)
+    x_c = x.clone()
+    v = float(x_c[0, 5])
+    assert v != 0.0 and math.isfinite(v)
+    nxt = _fp32_next(v)
+    assert contract.f32_ulp_distance(v, nxt) == 1
+    x_c[0, 5] = nxt
+    diag = contract.router_boundary_metrics(x, x_c, gw, gb, topk=6)
+    ins = diag["input_summary"]
+    assert ins["count_diff"] == 1
+    assert ins["max_ulp"] == 1
+    assert ins["max_abs"] == abs(v - nxt)
+
+
+def test_router_topk_audit_detects_boundary_tie() -> None:
+    scores = torch.tensor([0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.2, 0.1],
+                          dtype=torch.float32)
+    audit = contract._topk_audit(scores, topk=6)
+    assert audit["boundary_tie_rank6_vs_rank7"] is True
+    assert [5, 6] in audit["exact_tie_groups_top10"]
+    scores2 = torch.tensor([0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05],
+                           dtype=torch.float32)
+    audit2 = contract._topk_audit(scores2, topk=6)
+    assert audit2["boundary_tie_rank6_vs_rank7"] is False
+    assert audit2["exact_tie_groups_top10"] == []
+    assert audit2["sort_topk_ids_agree"] is True
 
 
 def test_corpus_distributions_shapes_and_seed_repro() -> None:

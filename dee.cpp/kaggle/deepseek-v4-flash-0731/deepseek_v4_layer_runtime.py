@@ -477,6 +477,189 @@ def boundary_captures_compare(ref_caps: dict[str, Any],
     return result
 
 
+def router_isolation(rc: dict[str, Any], cc: dict[str, Any],
+                     gate_w: torch.Tensor, gate_b: torch.Tensor) -> dict[str, Any]:
+    """DS9 v10 Phase 3: router isolation matrix + Phase 4 topk kernel audit.
+
+    The official Gate.forward runs in FP32 on both sides; the reference
+    executes it on CPU and the candidate on CUDA (w_cuda gate tensors), so
+    the four critical comparisons are:
+
+      1. reference router (CPU)  on reference input
+      2. candidate router (CUDA) on reference input
+      3. reference router (CPU)  on candidate input
+      4. candidate router (CUDA) on candidate input
+
+    CPU variants of 2/4 (identical code) isolate the CUDA-vs-CPU matmul
+    reduction effect; a CPU-vs-CUDA topk audit on IDENTICAL biased scores
+    isolates the topk kernel semantics from the matmul drift.  The matrix
+    must reproduce the captured ids bitwise (sanity: the isolation is
+    faithful to the actual runs).
+    """
+    from scripts import (deepseek_v4_contract as v4contract,  # noqa: E402
+                         deepseek_v4_expert_reference as ds7)
+    ref_xf = rc["ffn_norm_out"].float().reshape(-1, HIDDEN).cpu()
+    cand_xf = cc["ffn_norm_out"].float().reshape(-1, HIDDEN).cpu()
+    gw = gate_w.float().cpu()
+    gb = gate_b.float().cpu()
+    iso: dict[str, Any] = {}
+
+    def run(x: torch.Tensor, device: str) -> tuple[torch.Tensor,
+                                                    torch.Tensor]:
+        xs, ws, bs = x.to(device), gw.to(device), gb.to(device)
+        sc, ids, _wts = ds7.router_scores(
+            xs, ws, bias=bs, score_func="sqrtsoftplus",
+            topk=TOPK, route_scale=ROUTE_SCALE)
+        return ids.detach().cpu(), sc.detach().cpu()
+
+    for label, x in (("ref_in", ref_xf), ("cand_in", cand_xf)):
+        ids_cpu, sc_cpu = run(x, "cpu")
+        iso[f"{label}_cpu_ids"] = ids_cpu.tolist()
+        iso[f"{label}_cpu_scores_sha256"] = v4contract._tensor_sha(sc_cpu)
+        if torch.cuda.is_available():
+            ids_cuda, sc_cuda = run(x, "cuda")
+            iso[f"{label}_cuda_ids"] = ids_cuda.tolist()
+            iso[f"{label}_ids_cpu_vs_cuda_equal"] = bool(
+                torch.equal(ids_cpu, ids_cuda))
+            iso[f"{label}_ids_cpu_vs_cuda_rowwise"] = [
+                bool(torch.equal(ids_cpu[r], ids_cuda[r]))
+                for r in range(ids_cpu.shape[0])]
+            iso[f"{label}_scores_bitwise_cpu_vs_cuda"] = bool(
+                torch.equal(sc_cpu, sc_cuda))
+            iso[f"{label}_scores_max_ulp_cpu_vs_cuda"] = int(
+                v4contract.ulp_tensor(sc_cpu, sc_cuda).max().item())
+    # Phase 4: topk kernel device audit on IDENTICAL biased scores.
+    if torch.cuda.is_available():
+        biased = v4contract.router_stages(
+            ref_xf, gw, gb, topk=TOPK, route_scale=ROUTE_SCALE)["biased"]
+        ids_cpu_topk = biased.topk(TOPK, dim=-1)[1].cpu()
+        ids_cuda_topk = biased.cuda().topk(TOPK, dim=-1)[1].cpu()
+        iso["topk_same_scores_cpu_vs_cuda_ids_equal"] = bool(
+            torch.equal(ids_cpu_topk, ids_cuda_topk))
+        iso["topk_same_scores_cpu_vs_cuda_rowwise"] = [
+            bool(torch.equal(ids_cpu_topk[r], ids_cuda_topk[r]))
+            for r in range(ids_cpu_topk.shape[0])]
+    # sanity: the matrix must reproduce the captured ids bitwise
+    if "expert_ids" in rc and "expert_ids" in cc:
+        iso["captured_ref_matches_cpu_recompute"] = bool(
+            torch.equal(rc["expert_ids"],
+                        torch.tensor(iso["ref_in_cpu_ids"])))
+        if torch.cuda.is_available():
+            iso["captured_cand_matches_cuda_recompute"] = bool(
+                torch.equal(cc["expert_ids"],
+                            torch.tensor(iso["cand_in_cuda_ids"])))
+    return iso
+
+
+def router_ulp_trace(rc: dict[str, Any], cc: dict[str, Any],
+                     categories: tuple[str, ...]) -> dict[str, Any]:
+    """DS9 v10 Phase 5: first-divergence ULP trace across the FFN path.
+
+    Every category is already captured device-authentically by the layer and
+    relocated to CPU by run_sequence; this computes the bitwise-diff count
+    and ULP statistics per boundary so the FIRST boundary where reference
+    and candidate diverge is identified (attention projection -> O -> mHC ->
+    ffn norm -> router input).
+    """
+    from scripts import deepseek_v4_contract as v4contract  # noqa: E402
+    out: dict[str, Any] = {}
+    for cat in categories:
+        if cat not in rc or cat not in cc:
+            out[cat] = {"present": False}
+            continue
+        a = rc[cat].float().reshape(-1)
+        b = cc[cat].float().reshape(-1)
+        if a.numel() != b.numel():
+            out[cat] = {"present": True, "shape_mismatch": True}
+            continue
+        sd = a.view(torch.int32) != b.view(torch.int32)
+        nd = int(sd.sum())
+        ulps = v4contract.ulp_tensor(a, b)
+        out[cat] = {
+            "present": True,
+            "numel": int(a.numel()),
+            "bitwise_exact": nd == 0,
+            "count_diff": nd,
+            "max_ulp": int(ulps.max().item()) if nd else 0,
+            "max_abs": float((a - b).abs().max().item()) if nd else 0.0,
+            "first_diff_flat": int(sd.nonzero().flatten()[0].item())
+            if nd else None,
+        }
+    return out
+
+
+def classify_router_diagnosis(diag: dict[str, Any],
+                              iso: dict[str, Any]) -> dict[str, Any]:
+    """DS9 v10 diagnostic classification (campaign outcome rules).
+
+    Priority: topk semantics (identical scores, different ordering) ->
+    router implementation (identical input, different device result) ->
+    upstream layout/state (input drift is structural, not ULP) ->
+    input-driven flip (device agrees, input differs, flip reproduced).
+    """
+    flip = diag.get("first_flip_token")
+    ins = diag.get("input_summary") or {}
+    reasons: list[str] = []
+    if flip is None:
+        reasons.append("no expert-ID set difference in this step's tokens")
+        return {"verdict": "NO_FLIP_OBSERVED", "reasons": reasons}
+    # topk semantics: only the FLIP row matters (a tie on another row is not
+    # the operative cause); identical biased scores must produce the same
+    # top-k ids on CPU vs CUDA at the flip token.
+    topk_rowwise = iso.get("topk_same_scores_cpu_vs_cuda_rowwise")
+    if topk_rowwise is not None and not topk_rowwise[flip]:
+        verdict = "REJECT_TOPK_SEMANTICS"
+        reasons.append("identical biased scores produce different top-k "
+                       "ids on CPU vs CUDA at the flip token "
+                       "(tie/ordering semantics differ)")
+    else:
+        dev_diff: list[str] = []
+        for lbl in ("ref_in", "cand_in"):
+            rowwise = iso.get(f"{lbl}_ids_cpu_vs_cuda_rowwise")
+            if rowwise is not None and not rowwise[flip]:
+                dev_diff.append(lbl)
+        if dev_diff:
+            verdict = "REJECT_ROUTER_IMPLEMENTATION"
+            reasons.append("identical router input produces different "
+                           f"expert ids on CPU vs CUDA at the flip token "
+                           f"({', '.join(dev_diff)}); CUDA matmul "
+                           "reduction/order differs from CPU")
+        elif ins.get("count_diff", 0) == 0:
+            verdict = "INVALID_EXPERIMENT"
+            reasons.append("inputs bitwise identical and device agrees, "
+                           "yet ids differ (unobserved cause)")
+        elif (ins.get("max_ulp", 0) or 0) > 64:
+            verdict = "REJECT_UPSTREAM_LAYOUT_OR_STATE"
+            reasons.append(f"router input drift is not ULP-level "
+                           f"(max_ulp {ins.get('max_ulp')}); "
+                           "layout/lifetime/transfer suspected")
+        else:
+            cpu_ref = iso.get("ref_in_cpu_ids")
+            cpu_cand = iso.get("cand_in_cpu_ids")
+            if cpu_ref is not None and cpu_cand is not None \
+                    and cpu_ref != cpu_cand:
+                verdict = "ROUTER_IMPLEMENTATION_EXACT_INPUT_DRIVEN_FLIP"
+                reasons.append("router is exact for identical input (CPU "
+                               "and CUDA agree); the top-6 flip is "
+                               "reproduced by the measured ULP-level "
+                               "router-input drift alone")
+            else:
+                verdict = "INVALID_EXPERIMENT"
+                reasons.append("device agrees and inputs differ but the CPU "
+                               "router does not reproduce the flip "
+                               "(unobserved cause)")
+    sens = diag.get("sensitivity") or {}
+    return {
+        "verdict": verdict,
+        "reasons": reasons,
+        "flip_token": flip,
+        "input_max_ulp": ins.get("max_ulp"),
+        "input_count_diff": ins.get("count_diff"),
+        "sensitivity_explained": sens.get("flip_explained"),
+        "dx_vs_min_reverse_ratio": sens.get("dx_vs_min_reverse_ratio"),
+    }
+
+
 def main() -> int:
     print("=== DS9 DeepSeek-V4-Flash-0731 one-layer runtime on T4 ===",
           flush=True)
@@ -901,6 +1084,24 @@ def main() -> int:
                 for k, v in boundary.items()
                 if not v.get("structural", True)
                 and not v.get("bitwise_exact", True)}
+            # DS9 v10: router-boundary diagnostics (expert-ID flip proof).
+            # The router input (ffn_norm_out) is captured on both sides; the
+            # full causal analysis is computed host-side from those exact
+            # device-produced tensors plus the official FP32 Gate pipeline.
+            if "ffn_norm_out" in rc and "ffn_norm_out" in cc:
+                rdiag = v4contract.router_boundary_metrics(
+                    rc["ffn_norm_out"], cc["ffn_norm_out"], gate_w, gate_b,
+                    topk=TOPK, route_scale=ROUTE_SCALE)
+                rdiag["isolation"] = router_isolation(rc, cc, gate_w, gate_b)
+                rdiag["diagnostic_verdict"] = classify_router_diagnosis(
+                    rdiag, rdiag["isolation"])
+                rdiag["ulp_trace"] = router_ulp_trace(
+                    rc, cc, ("attn_norm_in", "attn_norm_out", "attn_o",
+                             "attn_out", "attn_hc_out", "ffn_norm_in",
+                             "ffn_norm_out"))
+                row["router_diagnosis"] = rdiag
+            else:
+                row["router_diagnosis"] = {"present": False}
             if not state_masks_ok:
                 failures.append({"name": f"step_{start_pos}_state_masks",
                                  "details": state_masks})
@@ -971,6 +1172,17 @@ def main() -> int:
         else:
             verdict = "ACCEPT_ONE_LAYER"
 
+        # ---- DS9 v10: primary router diagnostic verdict ----------------------
+        router_diag_verdict: dict[str, Any] = {
+            "verdict": "NO_FLIP_OBSERVED",
+            "reasons": ["no router expert-ID difference in any step"]}
+        for row in step_results:
+            rd = row.get("router_diagnosis") or {}
+            if rd.get("first_flip_token") is not None:
+                router_diag_verdict = rd.get("diagnostic_verdict") or \
+                    router_diag_verdict
+                break
+
         # ---- evidence --------------------------------------------------------
         write_json(EVIDENCE / "environment.json", {
             "schema_version": 1,
@@ -1008,6 +1220,12 @@ def main() -> int:
             "contract": v4contract.DS9_TOLERANCES,
             "exact_gate_categories": list(v4contract.DS9_INDEX_EXACT_CATEGORIES)
                                      + ["expert_ids"],
+            "router_diagnostic_verdict": router_diag_verdict,
+            "router_diagnosis_steps": {
+                f"step{row.get('start_pos')}": (
+                    row.get("router_diagnosis") or {}).get(
+                        "diagnostic_verdict") or row.get("router_diagnosis")
+                for row in step_results},
             "steps_results": step_results,
             "route_agreement": route_rows,
             "all_route_agree": bool(all_route_agree),

@@ -26,6 +26,7 @@ candidate math) with headroom for the 6-expert weighted combination.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import struct
 from typing import Any
@@ -478,3 +479,370 @@ DS9_INDEX_EXACT_CATEGORIES = ("attn_window_idxs", "attn_compress_idxs")
 # so compressed-index exactness is waived ONLY for that case.
 DS9_INDEX_EXACT_WAIVED_CASES = ("near_zero",)
 DS9_EXACT_GATES = {"router_expert_ids", "routing_weight_signs"}
+
+
+# ---------------------------------------------------------------------------
+# DS9 v10: router-boundary diagnostics (expert-ID flip causal proof)
+# ---------------------------------------------------------------------------
+
+def ulp_tensor(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Vectorized fp32 ULP distance between two float tensors.
+
+    Matches f32_ulp_distance semantics (IEEE-754 sign-magnitude ordering):
+    ordered(bits) = bits for positive floats, 0xFFFFFFFF - bits for negative
+    floats, so the integer difference grows monotonically with the real
+    distance on the float line.
+    """
+    ia = a.float().reshape(-1).view(torch.int32).to(torch.int64) & 0xFFFFFFFF
+    ib = b.float().reshape(-1).view(torch.int32).to(torch.int64) & 0xFFFFFFFF
+    oa = torch.where(ia < 0x80000000, ia, 0xFFFFFFFF - ia)
+    ob = torch.where(ib < 0x80000000, ib, 0xFFFFFFFF - ib)
+    ulps = (oa - ob).abs()
+    # +0.0 and -0.0 are numerically equal: treat the sign bit as zero
+    # distance (otherwise a lone +/-0 pair reads as 2^31 ULP and poisons
+    # the ULP-level-drift classification).  Scalar f32_ulp_distance keeps
+    # the raw sign-magnitude semantics for scalar records.
+    both_zero = ((ia == 0) | (ia == 0x80000000)) \
+        & ((ib == 0) | (ib == 0x80000000))
+    return torch.where(both_zero, torch.zeros_like(ulps), ulps)
+
+
+def _f32_hex(t: torch.Tensor) -> str:
+    """Concatenated fp32 bit patterns of a 1-D tensor (little-endian hex)."""
+    return "".join(format(v & 0xFFFFFFFF, "08x")
+                    for v in t.float().view(torch.int32).tolist())
+
+
+def _fp32_bits(value: float) -> str:
+    return format(struct.unpack("<I", struct.pack("<f", float(value)))[0],
+                  "08x")
+
+
+def _tensor_sha(t: torch.Tensor) -> str:
+    return hashlib.sha256(t.contiguous().numpy().tobytes()).hexdigest()
+
+
+def router_stages(
+    xf: torch.Tensor,
+    gate_w: torch.Tensor,
+    gate_b: torch.Tensor | None,
+    *,
+    topk: int = 6,
+    route_scale: float = 1.5,
+) -> dict[str, torch.Tensor]:
+    """Official Gate.forward pipeline on [n, hidden] fp32 input.
+
+    Mirrors the official inference/model.py Gate.forward and
+    scripts/deepseek_v4_expert_reference.router_scores EXACTLY (same fp32
+    ops, same order) while exposing every intermediate for boundary analysis:
+
+      raw      = x @ W^T                        (pre-activation logits)
+      softplus = F.softplus(raw)
+      sqrt     = sqrt(softplus)                 (official routed score)
+      biased   = sqrt + bias                    (selection scores)
+      ids      = biased.topk(topk, -1)[1]
+      weights  = normalize(sqrt.gather(1, ids)) * route_scale
+    """
+    raw = xf @ gate_w.transpose(0, 1)
+    softplus = torch.nn.functional.softplus(raw)
+    sqrt = softplus.sqrt()
+    biased = sqrt + gate_b if gate_b is not None else sqrt
+    ids = biased.topk(topk, dim=-1)[1]
+    sq = sqrt.gather(1, ids)
+    weights = sq / sq.sum(dim=-1, keepdim=True)
+    weights = weights * route_scale
+    return {"raw": raw, "softplus": softplus, "sqrt": sqrt,
+            "biased": biased, "ids": ids, "weights": weights}
+
+
+def _topk_audit(scores: torch.Tensor, topk: int) -> dict[str, Any]:
+    """Phase 4: torch.topk semantics audit on one biased-score vector.
+
+    torch.topk is not documented as stable: for EXACT ties the winning index
+    is implementation-defined (device-dependent select).  This reports the
+    descending-sort vs topk consistency, exact-tie groups inside the top 10,
+    and whether a tie straddles the rank-6/rank-7 boundary.
+    """
+    top = min(10, int(scores.numel()))
+    vals, idxs = scores.topk(topk, dim=-1)
+    svals, sidxs = scores.sort(descending=True)
+    groups: list[list[int]] = []
+    g = [int(sidxs[0])]
+    for k in range(1, top):
+        same = (struct.pack("<f", float(svals[k]))
+                == struct.pack("<f", float(svals[k - 1])))
+        if same:
+            g.append(int(sidxs[k]))
+        else:
+            if len(g) > 1:
+                groups.append([int(e) for e in g])
+            g = [int(sidxs[k])]
+    if len(g) > 1:
+        groups.append([int(e) for e in g])
+    boundary_tie = bool(top >= 7 and (struct.pack("<f", float(svals[5]))
+                                       == struct.pack("<f", float(svals[6]))))
+    return {
+        "num_routed": int(scores.numel()),
+        "topk_ids": [int(e) for e in idxs.tolist()],
+        "sort_topk_ids_agree": bool(torch.equal(idxs, sidxs[:topk])),
+        "exact_tie_groups_top10": groups,
+        "boundary_tie_rank6_vs_rank7": boundary_tie,
+    }
+
+
+def _router_sensitivity(
+    ref_row: torch.Tensor,
+    cand_row: torch.Tensor,
+    gw: torch.Tensor,
+    gb: torch.Tensor | None,
+    rs: dict[str, torch.Tensor],
+    cs: dict[str, torch.Tensor],
+    row: int,
+    topk: int,
+) -> dict[str, Any]:
+    """Phase 6: linearized score-change causal analysis for one token.
+
+    score_e = sqrt(softplus(x @ w_e + b_e)), so
+    d(score_e)/dx = sigmoid(l_e) / (2 * score_e) * w_e.  With dx = cand - ref
+    the estimated score change is dscore_e = sigmoid(l_e)/(2 s_e) * (dx@w_e);
+    the estimated SELECTION score is biased_ref + dscore (the bias is
+    input-independent, so it drops out of the derivative).
+
+    Reports the top-6 symmetric-difference (flipped) expert pairs with
+    BIASED-score margins (the ranking is on biased), estimated vs ACTUAL
+    candidate selection scores, whether the linear estimate reproduces the
+    observed flip, and the minimum input perturbation that reverses the
+    tightest crossing (margin / ||g|| where g is the margin gradient) versus
+    the measured input delta.
+    """
+    dx = cand_row - ref_row
+    raw_r = rs["raw"][row]
+    sq_r = rs["sqrt"][row]
+    biased_ref = rs["biased"][row]   # SELECTION scores (sqrt + bias)
+    biased_cand = cs["biased"][row]  # actual candidate selection scores
+    sig = torch.sigmoid(raw_r)
+    dl = dx @ gw.transpose(0, 1)
+    # d(score)/d(logit) = sigmoid(l)/(2*sqrt(softplus(l))); the bias is
+    # input-independent so it drops out of the derivative, and the estimated
+    # SELECTION score is biased_ref + dscore.
+    dscore = (sig / (2.0 * sq_r)) * dl
+    est_biased = biased_ref + dscore
+    ref6 = set(int(e) for e in rs["ids"][row].tolist())
+    cand6 = set(int(e) for e in cs["ids"][row].tolist())
+    out: dict[str, Any] = {
+        "dx_norm": float(dx.norm()),
+        "dx_max_abs": float(dx.abs().max()),
+        "dx_ulp_max": int(ulp_tensor(ref_row, cand_row).max()),
+    }
+    # crossing analysis for every (outgoing, incoming) pair.  Margins use the
+    # BIASED selection scores (the ranking is on biased); the gradient is
+    # unchanged because the bias derivative is zero.
+    outgoing = sorted(ref6 - cand6)
+    incoming = sorted(cand6 - ref6)
+    crossings = []
+    for o in outgoing:
+        for i in incoming:
+            margin_ref = float(biased_ref[o] - biased_ref[i])
+            # > 0: ref selection ranked o above i
+            margin_act = float(biased_cand[i] - biased_cand[o])
+            # > 0: candidate flipped the pair
+            margin_est = float(est_biased[i] - est_biased[o])
+            # margin gradient of (score_o - score_i) w.r.t. input
+            g = ((sig[o] / (2.0 * sq_r[o])) * gw[o]
+                 - (sig[i] / (2.0 * sq_r[i])) * gw[i])
+            gnorm = float(g.norm())
+            min_reverse = abs(margin_ref) / (gnorm + 1e-12)
+            crossings.append({
+                "outgoing": o, "incoming": i,
+                "ref_score_outgoing": float(biased_ref[o]),
+                "ref_score_incoming": float(biased_ref[i]),
+                "margin_ref": margin_ref,
+                "logit_delta_outgoing": float(dl[o]),
+                "logit_delta_incoming": float(dl[i]),
+                "est_score_delta_outgoing": float(dscore[o]),
+                "est_score_delta_incoming": float(dscore[i]),
+                "est_cand_outgoing": float(est_biased[o]),
+                "est_cand_incoming": float(est_biased[i]),
+                "actual_cand_outgoing": float(biased_cand[o]),
+                "actual_cand_incoming": float(biased_cand[i]),
+                "margin_actual": margin_act,
+                "margin_est": margin_est,
+                "est_flip_matches_actual": bool(
+                    (margin_est > 0) == (margin_act > 0)),
+                "min_reverse_perturbation_norm": min_reverse,
+                "est_vs_actual_delta": float(est_biased[o]
+                                              - biased_cand[o]),
+            })
+    out["crossings"] = crossings
+    if crossings:
+        tightest = min(crossings, key=lambda c: c["margin_ref"])
+        out["tightest_crossing"] = tightest
+        out["flip_explained"] = bool(
+            tightest["est_flip_matches_actual"]
+            and tightest["margin_actual"] > 0)
+        out["dx_vs_min_reverse_ratio"] = float(
+            out["dx_norm"] / (tightest["min_reverse_perturbation_norm"]
+                               + 1e-12))
+    else:
+        out["flip_explained"] = False
+        out["dx_vs_min_reverse_ratio"] = None
+    return out
+
+
+def router_boundary_metrics(
+    ref_xf: torch.Tensor,
+    cand_xf: torch.Tensor,
+    gate_w: torch.Tensor,
+    gate_b: torch.Tensor | None,
+    *,
+    topk: int = 6,
+    route_scale: float = 1.5,
+    max_tokens: int = 64,
+) -> dict[str, Any]:
+    """Full DS9 v10 router-boundary causal analysis (CPU fp32, deterministic).
+
+    ref_xf / cand_xf: [n, hidden] fp32 router inputs (float-cast, exactly as
+    the official Gate.forward consumes them).  gate_w: [n_routed, hidden]
+    fp32; gate_b: [n_routed] fp32.  JSON-safe output:
+
+      input_summary    - full-tensor ULP/abs/rel/hash summary of the router
+                         input difference (first divergent element, count,
+                         max ULP, ULP histogram, SHA256 per side)
+      first_flip_token - first token row whose selected top-6 ID set differs
+      stages           - per-stage (raw/softplus/sqrt/biased) hashes, norms
+                         and ref-vs-cand error stats at the first flip token
+      raw/biased_hex   - full 256-score fp32 hex for the flip token (both
+                         sides) - the required full-score capture
+      boundary         - top-10 IDs+scores, rank-6/7 margin + IEEE bits,
+                         symmetric difference, ordering-change audit
+      topk_audit       - torch.topk tie/stability audit on the ref scores
+      sensitivity      - linearized score-change + min-reverse-perturbation
+                         causal analysis for the flipped pairs
+    """
+    ref_xf = ref_xf.float().reshape(-1, ref_xf.shape[-1]).cpu()
+    cand_xf = cand_xf.float().reshape(-1, cand_xf.shape[-1]).cpu()
+    n = min(ref_xf.shape[0], cand_xf.shape[0], max_tokens)
+    ref_xf, cand_xf = ref_xf[:n], cand_xf[:n]
+    gw = gate_w.float().cpu()
+    gb = gate_b.float().cpu() if gate_b is not None else None
+    out: dict[str, Any] = {}
+
+    # ---- Phase 1: input ULP summary -------------------------------------
+    ra, ca = ref_xf.reshape(-1), cand_xf.reshape(-1)
+    bits_diff = ra.view(torch.int32) != ca.view(torch.int32)
+    nd = int(bits_diff.sum())
+    ulps = ulp_tensor(ra, ca)
+    hist: dict[str, int] = {}
+    for lo, hi in ((0, 0), (1, 1), (2, 3), (4, 10), (11, 100), (101, 1 << 62)):
+        hist[f"{lo}-{hi}"] = int(((ulps >= lo) & (ulps <= hi)).sum())
+    first_flat = int(bits_diff.nonzero().flatten()[0]) if nd else None
+    out["input_summary"] = {
+        "shape": list(ref_xf.shape),
+        "numel": int(ra.numel()),
+        "bitwise_exact": nd == 0,
+        "count_diff": nd,
+        "first_diff_flat": first_flat,
+        "first_diff_coords": (
+            [first_flat // ref_xf.shape[-1], first_flat % ref_xf.shape[-1]]
+            if first_flat is not None else None),
+        "max_ulp": int(ulps.max().item()) if nd else 0,
+        "max_abs": float((ra - ca).abs().max()) if nd else 0.0,
+        "max_rel": float(((ra - ca).abs() / (ra.abs() + 1e-12)).max())
+        if nd else 0.0,
+        "ulp_histogram": hist,
+        "ref_sha256": _tensor_sha(ref_xf),
+        "cand_sha256": _tensor_sha(cand_xf),
+        "ref_min": float(ref_xf.min()), "ref_max": float(ref_xf.max()),
+        "cand_min": float(cand_xf.min()), "cand_max": float(cand_xf.max()),
+        "ref_norm": float(ref_xf.norm()), "cand_norm": float(cand_xf.norm()),
+    }
+
+    # ---- official pipeline for both inputs --------------------------------
+    rs = router_stages(ref_xf, gw, gb, topk=topk, route_scale=route_scale)
+    cs = router_stages(cand_xf, gw, gb, topk=topk, route_scale=route_scale)
+
+    # ---- first divergent token (row whose top-6 ID set differs) -----------
+    flip_row: int | None = None
+    for r in range(n):
+        if not torch.equal(rs["ids"][r], cs["ids"][r]):
+            flip_row = r
+            break
+    out["first_flip_token"] = flip_row
+    out["tokens_checked"] = n
+
+    if flip_row is None:
+        out["stages"] = {}
+        out["boundary"] = {}
+        out["topk_audit"] = {}
+        out["sensitivity"] = {}
+        return out
+
+    # ---- Phase 2: stage-level detail at the first flip token --------------
+    stages: dict[str, Any] = {}
+    for sname in ("raw", "softplus", "sqrt", "biased"):
+        rf, cf = rs[sname][flip_row].float().reshape(-1), \
+            cs[sname][flip_row].float().reshape(-1)
+        sd = rf.view(torch.int32) != cf.view(torch.int32)
+        sulp = ulp_tensor(rf, cf)
+        nsf = int(sd.sum())
+        stages[sname] = {
+            "numel": int(rf.numel()),
+            "bitwise_exact": nsf == 0,
+            "count_diff": nsf,
+            "max_ulp": int(sulp.max()) if nsf else 0,
+            "max_abs": float((rf - cf).abs().max()) if nsf else 0.0,
+            "max_rel": float(
+                ((rf - cf).abs() / (rf.abs() + 1e-12)).max()) if nsf else 0.0,
+            "cosine": float(torch.nn.functional.cosine_similarity(
+                rf.unsqueeze(0), cf.unsqueeze(0)).item()) if nsf else 1.0,
+            "ref_sha256": _tensor_sha(rf),
+            "cand_sha256": _tensor_sha(cf),
+        }
+    out["stages"] = stages
+    out["raw_hex_ref"] = _f32_hex(rs["raw"][flip_row])
+    out["raw_hex_cand"] = _f32_hex(cs["raw"][flip_row])
+    out["biased_hex_ref"] = _f32_hex(rs["biased"][flip_row])
+    out["biased_hex_cand"] = _f32_hex(cs["biased"][flip_row])
+
+    # ---- boundary ranks (top-10 + rank-6/7 margin + IEEE bits) ------------
+    rvals, ridxs = rs["biased"][flip_row].sort(descending=True)
+    cvals, cidxs = cs["biased"][flip_row].sort(descending=True)
+    topn = min(10, int(rvals.numel()))
+    r10 = [{"expert": int(ridxs[k]), "score": float(rvals[k]),
+            "bits": _fp32_bits(float(rvals[k]))} for k in range(topn)]
+    c10 = [{"expert": int(cidxs[k]), "score": float(cvals[k]),
+            "bits": _fp32_bits(float(cvals[k]))} for k in range(topn)]
+    ref6 = sorted(int(e) for e in rs["ids"][flip_row].tolist())
+    cand6 = sorted(int(e) for e in cs["ids"][flip_row].tolist())
+    n_routed_actual = int(rvals.numel())
+    has_r67 = n_routed_actual >= 7
+    out["boundary"] = {
+        "top10_ref": r10,
+        "top10_cand": c10,
+        "ref_top6": ref6,
+        "cand_top6": cand6,
+        "symmetric_difference": sorted(set(ref6) ^ set(cand6)),
+        "rank6_ref": {"expert": int(ridxs[5]), "score": float(rvals[5]),
+                       "bits": _fp32_bits(float(rvals[5]))}
+        if has_r67 else None,
+        "rank7_ref": {"expert": int(ridxs[6]), "score": float(rvals[6]),
+                       "bits": _fp32_bits(float(rvals[6]))}
+        if has_r67 else None,
+        "rank6_cand": {"expert": int(cidxs[5]), "score": float(cvals[5]),
+                        "bits": _fp32_bits(float(cvals[5]))}
+        if has_r67 else None,
+        "rank7_cand": {"expert": int(cidxs[6]), "score": float(cvals[6]),
+                        "bits": _fp32_bits(float(cvals[6]))}
+        if has_r67 else None,
+        "margin_ref": float(rvals[5] - rvals[6]) if has_r67 else None,
+        "margin_cand": float(cvals[5] - cvals[6]) if has_r67 else None,
+        "same_pair_reversed": bool(ridxs[5].item() == cidxs[6].item()
+                                    and ridxs[6].item() == cidxs[5].item())
+        if has_r67 else None,
+        "other_ranks_changed": [k for k in range(6)
+                                if int(ridxs[k]) != int(cidxs[k])],
+    }
+    out["topk_audit"] = _topk_audit(rs["biased"][flip_row], topk)
+    out["sensitivity"] = _router_sensitivity(
+        ref_xf[flip_row], cand_xf[flip_row], gw, gb, rs, cs, flip_row, topk)
+    return out
