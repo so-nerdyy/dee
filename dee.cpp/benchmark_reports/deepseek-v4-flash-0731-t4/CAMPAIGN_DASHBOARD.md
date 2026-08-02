@@ -35,12 +35,12 @@ M5G-v1/v2/v3 evidence is immutable. No M5H work until the DeepSeek campaign reac
 | DS1 | Official source/config audit + revision pin | ✅ |
 | DS2 | Byte-accurate tensor ledger | ✅ |
 | DS3 | Checkpoint download / Kaggle dataset plan | ✅ (plan + resumable shard tool + header pin) |
-| DS4 | Tokenizer + encoding parity golden tests | 🔲 |
+| DS4 | Tokenizer + encoding parity golden tests | ✅ (official `encoding_dsv4.py` + `tokenizer.json` pinned w/ SHA-256; wrapper `scripts/deepseek_v4_encoding.py`; 15 golden tests — exact IDs for chat/thinking/low/high/max reasoning/tool/multi-turn; parse roundtrips; pinned 2026-08-02) |
 | DS5 | Trusted reference traces | 🔲 |
 | DS6 | Freebuff tensor resolver for V4 | ✅ (Python ledger + C++ `TensorResolver` DEEPSEEK_V4 dialect, w1/w3/w2 + scale names) |
 | DS7 | One routed expert on T4 | ✅ (kernel v5 COMPLETE, verdict `MATCH_WITHIN_TOLERANCE`, evidence `ds7-smoke-v5`) |
 | DS8 | Expert cache + Dynamic Expert Eviction | ✅ (kernel v3 COMPLETE, verdict `ACCEPT_EXPERT_RUNTIME`, evidence `ds8-runtime-v3`) |
-| DS9 | Architecture bring-up → first token | 🔶 (kernel v13 COMPLETE, verdict `REJECT_EXPERT_INTEGRATION`, audit re-attributes to **`REJECT_NUMERICAL`** — state fixed (v9); router cause proven (v10/v11); set-based expert-ID gate adopted (v12); **expert-integration audit (v13): cause PROVEN** — the `moe_out`/`shared_out` p99 tail is driven by bounded BF16-storage-rounded input-boundary drift amplified by the FP32 weighted 6-expert+shared combination at near-cancellation elements; FP16 execution NOT the cause (kernel p99 0.021–0.023 on the reference input, within the 0.05 gate); storage/routing/order/capture all proven clean; evidence `ds9-v13-reject-numerical`) |
+| DS9 | Architecture bring-up → first token | ✅ **terminated — `REJECT_NUMERICAL` ACCEPTED (product decision 2026-08-02)** (kernel v13 COMPLETE: state fixed (v9); router cause proven (v10/v11); set-based expert-ID gate adopted (v12); expert-integration audit (v13) proves the sole `moe_out`/`shared_out` p99 failure is bounded BF16-storage-rounded input drift amplified at near-cancellation elements — FP16 execution within gate (p99 0.021–0.023), storage/routing/order/capture clean; no runtime correction exists; sealed 0.05 gate unchanged; p99 magnitudes corpus-provisional until DS5 official traces; evidence `ds9-v13-reject-numerical/` + `DS9_V13_POLICY_DECISION.md`) |
 | DS10 | Dual-T4 full-model decode | 🔲 |
 | DS11 | One-T4 path | 🔲 |
 | DS12 | DSpark speculative decoding | 🔲 |
@@ -306,6 +306,18 @@ expert-ID gate is redefined as the **selected expert SET, order-insensitive**
 Next (user-approved): **expert-integration audit** — DS8 isolated-expert
 inputs vs DS9 integrated inputs, route weights, input dtype, accumulation
 order, FP4 unpack, FP16 execution, shared/routed combination.
+
+## DS4 — tokenizer + encoding parity (official implementation pinned)
+
+Official `encoding_dsv4.py` + `tokenizer.json`/`tokenizer_config.json` pinned
+(asset SHA-256 verified fail-closed). Freebuff wrapper
+`scripts/deepseek_v4_encoding.py` is a pure passthrough to the official
+encoder/parser and the official tokenizer (TokenizersBackend, vocab 128000,
+BOS=0, EOS=1). 15 golden tests freeze exact token IDs for plain completion,
+chat, thinking low/high/max reasoning effort, tool/agent (DSML) messages,
+multi-turn, plus parse roundtrips and wrapper-parity checks. No generic Jinja
+chat template is used. Tokenizer assets are the clean two-file set
+(`tokenizer-assets/`, git-deduped against `official-source/tokenizer.json`).
 
 ## DS9 v13 — expert-integration audit: cause proven → REJECT_NUMERICAL
 
