@@ -64,15 +64,22 @@ OFFICIAL_REPOSITORY = "deepseek-ai/DeepSeek-V4-Flash-0731"
 OFFICIAL_REVISION = REV
 
 # Pinned subset manifest: shard -> (size_bytes, header_sha256, tensor_count)
+#
+# size_bytes is the FULL physical file size = 8 (length prefix) + header_size +
+# max(data_offsets[1]). The v3 run pinned only max(data_offsets[1]) (the data
+# extent), so the Range download stopped 96/172240/400 bytes short and the
+# official convert.py failed with ``incomplete metadata, file not fully
+# covered``. Sizes below were re-derived from the live official headers and
+# cross-checked against the HF Content-Length of the pinned revision.
 SUBSET_MANIFEST = {
     "model-00001-of-00048.safetensors": (
-        1059061760, "ab23277543e81504fc621596b78b61db207fef4e9d1b522c09a543127220d261", 1,
+        1059061856, "ab23277543e81504fc621596b78b61db207fef4e9d1b522c09a543127220d261", 1,
     ),
     "model-00002-of-00048.safetensors": (
-        3566148952, "8c5453415265f75d1b5afeeafbbb92fe20b3ccf4ce1ff5c55db932b28134ec38", 1565,
+        3566321192, "8c5453415265f75d1b5afeeafbbb92fe20b3ccf4ce1ff5c55db932b28134ec38", 1565,
     ),
     "model-00045-of-00048.safetensors": (
-        1059332116, "4e0d9e8684cf49832e97f565708d518012623a6881b2e392a21c0d16c23f1c65", 5,
+        1059332516, "4e0d9e8684cf49832e97f565708d518012623a6881b2e392a21c0d16c23f1c65", 5,
     ),
 }
 
@@ -290,11 +297,28 @@ def encode_canonical_prompt() -> dict[str, Any]:
 # Stage 3 -- shard acquisition + verification
 # ---------------------------------------------------------------------------
 
-def _header_sha256(path: Path) -> str:
+def _header_sha256(path: Path) -> tuple[str, int, int]:
+    """Return (header_sha256, declared_tensor_count, declared_data_end).
+
+    ``declared_data_end`` is max(data_offsets[1]) over all tensors; the full
+    physical size must be 8 (length prefix) + header_size + declared_data_end.
+    A mismatch means the file is truncated or the pin is wrong, and is a
+    fail-closed blocker (v3 pinned only the data extent and silently
+    truncated the download).
+    """
     with path.open("rb") as handle:
         header_size = struct.unpack("<Q", handle.read(8))[0]
         header = json.loads(handle.read(header_size).decode("utf-8"))
-    return hashlib.sha256(json.dumps(header, sort_keys=True).encode("utf-8")).hexdigest()
+    count = 0
+    data_end = 0
+    for name, entry in header.items():
+        if name == "__metadata__":
+            continue
+        count += 1
+        data_end = max(data_end, entry["data_offsets"][1])
+    digest = hashlib.sha256(
+        json.dumps(header, sort_keys=True).encode("utf-8")).hexdigest()
+    return digest, count, data_end
 
 
 def _download_shard_resumable(shard: str, out_dir: Path) -> None:
@@ -340,15 +364,30 @@ def ensure_subset_shards(work_dir: Path) -> dict[str, Any]:
         if actual_size != expected_size:
             raise RuntimeError(
                 f"{shard}: size {actual_size} != expected {expected_size}")
-        actual_header = _header_sha256(src)
+        actual_header, actual_count, data_end = _header_sha256(src)
         if actual_header != expected_header:
             raise RuntimeError(
                 f"{shard}: header sha256 {actual_header[:16]}... != expected "
                 f"{expected_header[:16]}...")
+        if actual_count != _count:
+            raise RuntimeError(
+                f"{shard}: tensor count {actual_count} != expected {_count}")
+        # Fail closed on physical coverage: 8 + header_size + data extent must
+        # equal the exact file size (v3 truncated files by omitting header
+        # overhead from the pinned size).
+        with src.open("rb") as handle:
+            header_size = struct.unpack("<Q", handle.read(8))[0]
+        covered = 8 + header_size + data_end
+        if covered != actual_size:
+            raise RuntimeError(
+                f"{shard}: declared coverage {covered} != size {actual_size} "
+                f"(truncated or pin error)")
         if src.parent != hf_dir:
             shutil.copy2(src, hf_dir / shard)
         result["verified"][shard] = {"size": actual_size,
-                                     "header_sha256": actual_header}
+                                     "header_sha256": actual_header,
+                                     "tensor_count": actual_count,
+                                     "coverage_bytes": covered}
     return result
 
 

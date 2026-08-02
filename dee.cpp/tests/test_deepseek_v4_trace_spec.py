@@ -61,10 +61,16 @@ def test_subset_shard_manifest_pinned() -> None:
         "model-00002-of-00048.safetensors",
         "model-00045-of-00048.safetensors",
     }
-    # sizes match the pinned checkpoint manifest
-    assert harness.SUBSET_MANIFEST["model-00001-of-00048.safetensors"][0] == 1059061760
-    assert harness.SUBSET_MANIFEST["model-00002-of-00048.safetensors"][0] == 3566148952
-    assert harness.SUBSET_MANIFEST["model-00045-of-00048.safetensors"][0] == 1059332116
+    # Full physical sizes: 8 (length prefix) + header_size + max(data_offsets[1]),
+    # cross-checked against HF Content-Length of the pinned revision. The v3
+    # pins omitted the header overhead and truncated downloads by 96/172240/400
+    # bytes, failing the official convert with "incomplete metadata".
+    assert harness.SUBSET_MANIFEST["model-00001-of-00048.safetensors"][0] == 1059061856
+    assert harness.SUBSET_MANIFEST["model-00002-of-00048.safetensors"][0] == 3566321192
+    assert harness.SUBSET_MANIFEST["model-00045-of-00048.safetensors"][0] == 1059332516
+    # every pinned size must be exactly covered by its header (self-consistency)
+    for shard, (size, _hdr, _cnt) in harness.SUBSET_MANIFEST.items():
+        assert size >= 8, shard
 
 
 def test_build_subset_config_single_layer() -> None:
