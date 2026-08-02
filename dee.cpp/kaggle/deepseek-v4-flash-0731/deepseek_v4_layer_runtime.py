@@ -81,6 +81,7 @@ MODULE_RELATIVES = {
     "contract": Path("dee.cpp/scripts/deepseek_v4_contract.py"),
     "corpus": Path("dee.cpp/scripts/deepseek_v4_corpus.py"),
     "support": Path("dee.cpp/scripts/deepseek_v4_support.py"),
+    "expert_audit": Path("dee.cpp/scripts/deepseek_v4_expert_audit.py"),
 }
 
 REV = "9e165c30e2704aec5d9d593cce3eebd58bbef1cb"
@@ -737,6 +738,7 @@ def main() -> int:
         from scripts import (deepseek_v4_cache as v4cache,  # noqa: E402
                              deepseek_v4_contract as v4contract,
                              deepseek_v4_corpus as v4corpus,
+                             deepseek_v4_expert_audit as v4audit,
                              deepseek_v4_expert_reference as ds7,
                              deepseek_v4_layer_candidate as v4cand,
                              deepseek_v4_layer_reference as v4ref,
@@ -1092,6 +1094,40 @@ def main() -> int:
         if cat_failures:
             print("  category failures:", cat_failures, flush=True)
 
+        # ---- DS9 v13 expert-integration audit (moe_out/shared_out tail) ---
+        # Decomposes the ONLY remaining failing categories across the
+        # captured steps: reference (CPU FP32) vs candidate (CUDA FP16) vs
+        # dequantized-FP32 CUDA execution, per-expert canonicalized outputs,
+        # routing-weight substitution, accumulation order, FP16 storage
+        # representability, leader-expert stage localization and p99-tail
+        # cancellation.  Fail-closed: an audit failure is recorded as an
+        # explicit failure (never silently skipped) but does not mask the
+        # category verdict.  Diagnostics only -- the candidate runtime is
+        # unchanged.
+        expert_audit: dict[str, Any] = {}
+        expert_audit_verdict: dict[str, Any] = {}
+        try:
+            expert_audit = v4audit.run_expert_integration_audit(
+                step_captures=[(ref_caps[i], cand_caps[i])
+                               for i in range(len(STEPS))],
+                routed_raw=dict(lazy_routed),
+                shared_raw=shared_t,
+                fp16_payloads=fp16_payloads,
+                shared_payload=shared_payload,
+                gate_w=gate_w, gate_b=gate_b,
+                cfg=cfg, device="cuda",
+                cache=cache, loader=loader, layer_id=LAYER)
+            expert_audit_verdict = v4contract.expert_integration_classify(
+                expert_audit)
+            print("  expert-audit verdict:",
+                  json.dumps(expert_audit_verdict.get("verdict")),
+                  flush=True)
+        except Exception as exc:  # noqa: BLE001 - fail closed, never mask
+            expert_audit = {"error": f"{type(exc).__name__}: {exc}",
+                            "traceback": traceback.format_exc()}
+            failures.append({"name": "expert_audit_failed",
+                             "details": {"error": str(exc)}})
+
         # ---- verdict --------------------------------------------------------
         if failures or not all_gates:
             # attribute by failure family (explicit failures first, then the
@@ -1177,6 +1213,8 @@ def main() -> int:
                     row.get("router_diagnosis") or {}).get(
                         "diagnostic_verdict") or row.get("router_diagnosis")
                 for row in step_results},
+            "expert_audit": expert_audit,
+            "expert_audit_verdict": expert_audit_verdict,
             "steps_results": step_results,
             "route_agreement": route_rows,
             "all_route_agree": bool(all_route_agree),

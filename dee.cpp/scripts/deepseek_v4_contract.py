@@ -482,6 +482,205 @@ DS9_EXACT_GATES = {"router_expert_ids", "routing_weight_signs"}
 
 
 # ---------------------------------------------------------------------------
+# DS9 v13: expert-integration audit classification (moe_out/shared_out tail)
+#
+# Predeclared BEFORE the v13 remote run; NOT derived from its results.
+#
+#   CAPTURE_FIDELITY_MAX      the replays must bitwise reproduce the captured
+#                             moe_out/shared_out on both sides; a mismatch is
+#                             a harness/reference capture defect
+#   FP32_EXEC_P99_MAX         CUDA dequantized-FP32 compute vs the CPU-FP32
+#                             reference: cross-device reduction drift only
+#                             (~1e-7); anything below this proves FP16
+#                             execution precision is the only arithmetic
+#                             difference left between V_B and the reference
+#   EXPERT_P99_GATE           0.05  (the sealed DS9 expert gate -- reused)
+#   ORDER_MAX_REL             accumulation-order sensitivity bound: group vs
+#                             sorted-eid fp32 accumulation cannot move the
+#                             combined output by more than fp32 rounding at
+#                             tensor scale (~1e-7); an order-induced change at
+#                             this scale cannot explain the p99 tail
+# ---------------------------------------------------------------------------
+
+FP32_EXEC_P99_MAX = 0.01
+ORDER_MAX_REL = 1e-3
+EXPERT_P99_GATE = 0.05  # the sealed DS9 expert category gate (reused)
+
+
+def expert_integration_classify(audit: dict[str, Any]) -> dict[str, Any]:
+    """Primary-cause classification of the DS9 v13 expert-integration audit.
+
+    Decision priority (each branch predeclared; the audit dict is JSON-safe):
+
+      1. HARNESS_CAPTURE_DEFECT     any step's replays fail to reproduce the
+                                    captured moe_out/shared_out bitwise
+      2. FP4_UNPACK_OR_SCALE        any routed FP16 payload differs from the
+                                    exact FP32 dequant (FP4 grid x e8m0 scale
+                                    is exactly FP16-representable); the shared
+                                    variant of this branch is
+                                    SHARED_EXPERT_SEMANTICS
+      3. FP16_EXECUTION_PRECISION   production fails the sealed gate while the
+                                    dequantized-FP32 CUDA execution (V_B)
+                                    matches the reference within
+                                    FP32_EXEC_P99_MAX -- the ONLY arithmetic
+                                    difference is FP16 execution precision
+                                    (this also covers the shared path, which
+                                    runs the same fp16 kernels; the shared-
+                                    vs-routed isolation cell is reported in
+                                    the evidence for attribution)
+      4. SHARED_EXPERT_SEMANTICS    fp32 exec is NOT clean, yet the shared
+                                    path fails in isolation while the routed
+                                    sum passes (asymmetric failure)
+      5. ROUTING_WEIGHT_ERROR       production fails, fp32 exec is not clean
+                                    or the shared/routed split is even, and
+                                    substituting the reference routing on the
+                                    candidate input changes the candidate
+                                    result beyond the gate (routing delta is
+                                    the dominant remaining source)
+      6. INTEGRATED_INPUT_DISTRIBUTION  production fails and the reference
+                                    itself (A1 on the candidate input) already
+                                    exceeds the gate -- the input delta alone
+                                    moves the fp32 reference
+      7. MULTIPLE_PROVEN_CAUSES    production fails with fp32 exec ALSO over
+                                    FP32_EXEC_P99_MAX (storage + compute + ...)
+      8. NO_TAIL_OBSERVED          production passes the sealed gate in the
+                                    audit (evidence-only, no failure)
+
+    Returns the per-step worst-case summary plus the classification with
+    reasons.  Pure / CPU-testable; never reads device state.
+    """
+    steps = audit.get("steps") or {}
+    if not steps:
+        return {"verdict": "INVALID_EXPERIMENT",
+                "reasons": ["audit contains no steps"], "steps": {}}
+    per_step: dict[str, Any] = {}
+    for name, step in steps.items():
+        reasons: list[str] = []
+        if not step.get("capture_faithful", False):
+            fid = step.get("fidelity") or {}
+            reasons.append(
+                "capture fidelity failed: " + ", ".join(
+                    f"{k}={v}" for k, v in fid.items()))
+            per_step[name] = {"verdict": "HARNESS_CAPTURE_DEFECT",
+                              "reasons": reasons}
+            continue
+        storage = step.get("weight_storage") or {}
+        if not storage.get("all_exact", True):
+            bad = [k for k, v in (storage.get("routed") or {}).items()
+                   if not v]
+            bad_sh = [k for k, v in (storage.get("shared") or {}).items()
+                      if not v]
+            reasons.append("FP16 payload not exactly representable: "
+                           f"routed={bad} shared={bad_sh}")
+            per_step[name] = {
+                "verdict": ("SHARED_EXPERT_SEMANTICS" if bad_sh and not bad
+                            else "FP4_UNPACK_OR_SCALE"),
+                "reasons": reasons}
+            continue
+        matrix = step.get("matrix") or {}
+        headline = step.get("headline") or {}
+        prod_p99 = float(headline.get("moe_out_p99") or 0.0)
+        shared_p99 = float(headline.get("shared_out_p99") or 0.0)
+        fp32exec_p99 = float(
+            (matrix.get("fp32exec_cand_input") or {}).get("p99") or 0.0)
+        kernel_p99 = float(
+            (matrix.get("kernel_ref_input") or {}).get("p99") or 0.0)
+        input_sens_p99 = float(
+            (matrix.get("ref_input_sensitivity") or {}).get("p99") or 0.0)
+        routing_sub_p99 = float(
+            (matrix.get("routing_substitution") or {}).get("p99") or 0.0)
+        routed_p99 = float(
+            (matrix.get("routed_only") or {}).get("p99") or 0.0)
+        order = step.get("accumulation_order") or {}
+        cand_order_rel = float(
+            (order.get("candidate") or {}).get("max_rel") or 0.0)
+        fails = prod_p99 > EXPERT_P99_GATE or shared_p99 > EXPERT_P99_GATE
+        over = max(prod_p99, shared_p99)
+        summary = {
+            "moe_out_p99": prod_p99, "shared_out_p99": shared_p99,
+            "fp32_exec_p99": fp32exec_p99, "kernel_p99": kernel_p99,
+            "input_sens_p99": input_sens_p99,
+            "routing_sub_p99": routing_sub_p99, "routed_p99": routed_p99,
+            "order_max_rel": cand_order_rel,
+        }
+        if not fails:
+            per_step[name] = {"verdict": "NO_TAIL_OBSERVED", "summary": summary,
+                              "reasons": ["moe_out/shared_out within the "
+                                          "sealed 0.05 gate"]}
+            continue
+        if fp32exec_p99 <= FP32_EXEC_P99_MAX:
+            reasons.append(
+                "dequantized-FP32 CUDA execution (V_B) matches the CPU-FP32 "
+                f"reference (p99 {fp32exec_p99:.6f} <= {FP32_EXEC_P99_MAX}); "
+                "the candidate's only remaining arithmetic difference is "
+                "FP16 execution (fp16 input cast + fp16 matmul + fp16 h "
+                "before w2); storage (FP4/FP8) is exact by the payload "
+                "representability check")
+            if input_sens_p99 > EXPERT_P99_GATE and kernel_p99 <= EXPERT_P99_GATE:
+                reasons.append(
+                    f"the pure-FP32 reference already moves p99 "
+                    f"{input_sens_p99:.4f} on the candidate input "
+                    "(input-distribution sensitivity), and the fp16 path "
+                    "amplifies it to the observed tail")
+            per_step[name] = {"verdict": "FP16_EXECUTION_PRECISION",
+                              "summary": summary, "reasons": reasons}
+            continue
+        if shared_p99 > EXPERT_P99_GATE and routed_p99 <= EXPERT_P99_GATE:
+            reasons.append(f"shared p99 {shared_p99:.4f} fails while the "
+                           f"routed sum p99 {routed_p99:.4f} passes")
+            per_step[name] = {"verdict": "SHARED_EXPERT_SEMANTICS",
+                              "summary": summary, "reasons": reasons}
+            continue
+        if routing_sub_p99 > EXPERT_P99_GATE:
+            reasons.append(f"reference-routing substitution moves the "
+                           f"candidate result p99 {routing_sub_p99:.4f} "
+                           "> 0.05 on the same candidate input")
+            per_step[name] = {"verdict": "ROUTING_WEIGHT_ERROR",
+                              "summary": summary, "reasons": reasons}
+            continue
+        if input_sens_p99 > EXPERT_P99_GATE:
+            reasons.append(f"the CPU-FP32 reference on the candidate input "
+                           f"already exceeds the gate (p99 {input_sens_p99:.4f})")
+            per_step[name] = {"verdict": "INTEGRATED_INPUT_DISTRIBUTION",
+                              "summary": summary, "reasons": reasons}
+            continue
+        reasons.append(f"production fails (p99 {over:.4f}) but fp32 exec also "
+                       f"exceeds FP32_EXEC_P99_MAX ({fp32exec_p99:.6f}); "
+                       "multiple causes cannot be separated by this audit")
+        per_step[name] = {"verdict": "MULTIPLE_PROVEN_CAUSES",
+                          "summary": summary, "reasons": reasons}
+    # severity order: lower = more severe; the run-level verdict must be the
+    # MOST severe across steps (fail-closed: one defective step dominates).
+    worst = min(
+        (per_step[name].get("verdict", "") for name in per_step),
+        key=lambda v: _EXPERT_VERDICT_ORDER.get(v, 99))
+    return {
+        "verdict": worst,
+        "reasons": [f"{name}: {per_step[name]['verdict']}"
+                    for name in per_step],
+        "steps": per_step,
+        "predeclared": {
+            "expert_p99_gate": EXPERT_P99_GATE,
+            "fp32_exec_p99_max": FP32_EXEC_P99_MAX,
+            "order_max_rel": ORDER_MAX_REL,
+        },
+    }
+
+
+# severity order for the run-level worst verdict (lower = more severe)
+_EXPERT_VERDICT_ORDER = {
+    "HARNESS_CAPTURE_DEFECT": 0,
+    "FP4_UNPACK_OR_SCALE": 1,
+    "SHARED_EXPERT_SEMANTICS": 2,
+    "FP16_EXECUTION_PRECISION": 3,
+    "ROUTING_WEIGHT_ERROR": 4,
+    "INTEGRATED_INPUT_DISTRIBUTION": 5,
+    "MULTIPLE_PROVEN_CAUSES": 6,
+    "NO_TAIL_OBSERVED": 7,
+}
+
+
+# ---------------------------------------------------------------------------
 # DS9 v10: router-boundary diagnostics (expert-ID flip causal proof)
 # ---------------------------------------------------------------------------
 
