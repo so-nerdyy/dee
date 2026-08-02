@@ -34,6 +34,7 @@ import struct
 import subprocess
 import sys
 import time
+import traceback
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -679,6 +680,7 @@ def write_evidence(result: dict[str, Any], out_dir: Path) -> dict[str, Any]:
         "verdict": result.get("verdict"),
         "first_failing_gate": result.get("first_failing_gate"),
         "error": result.get("error"),
+        "error_traceback": result.get("error_traceback"),
     }
     evidence_path = out_dir / "ds5-trace-evidence.json"
     evidence_path.write_text(json.dumps(evidence, indent=1), encoding="utf-8")
@@ -717,6 +719,7 @@ def main() -> int:
         result["identity"] = identity
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"
+        result["error_traceback"] = traceback.format_exc()
         result["identity"] = {}
         result["verdict"] = "BLOCKED"
         result["first_failing_gate"] = "source_identity"
@@ -747,6 +750,7 @@ def main() -> int:
         gates["no_nan"] = _no_nan_ok(result["trace"])
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"
+        result["error_traceback"] = traceback.format_exc()
     result["gates"] = gates
     failures = [name for name, ok in gates.items() if not ok]
     result["first_failing_gate"] = failures[0] if failures else None
@@ -764,6 +768,10 @@ def main() -> int:
                 "first_failing_gate": result.get("first_failing_gate"),
                 "error": result.get("error")})
     print("VERDICT:", result["verdict"], result.get("first_failing_gate"))
+    if result.get("error_traceback"):
+        print("--- ERROR TRACEBACK ---", flush=True)
+        print(result["error_traceback"][-6000:], flush=True)
+        print("--- END TRACEBACK ---", flush=True)
     return 0 if result["verdict"].startswith("ACCEPT") else 1
 
 
