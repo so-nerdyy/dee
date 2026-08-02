@@ -67,6 +67,40 @@ DOWNLOAD_CHUNK = 8 << 20  # 8 MiB range requests
 
 
 # ---------------------------------------------------------------------------
+# Dependency bootstrap (Kaggle script kernels have no setup step)
+# ---------------------------------------------------------------------------
+
+def bootstrap_deps() -> dict[str, Any]:
+    """Best-effort pip install of the non-torch reference dependencies.
+
+    Kaggle's torch is a custom build; this harness NEVER upgrades torch in
+    place. Missing torch features (e.g. ``float4_e2m1fn_x2`` on torch < 2.10)
+    surface later as precise gate failures from convert/reference stages.
+    """
+    import importlib.metadata as _md
+    import subprocess
+
+    def _have(name: str) -> bool:
+        try:
+            _md.version(name)
+            return True
+        except Exception:
+            return False
+
+    wanted = ["tqdm", "fast_hadamard_transform", "tilelang==0.1.8"]
+    missing = [pkg for pkg in wanted if not _have(pkg.split("==")[0])]
+    results: dict[str, bool] = {}
+    for pkg in missing:
+        run = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", pkg],
+            capture_output=True, text=True, timeout=900,
+        )
+        results[pkg] = run.returncode == 0
+    return {"missing_before": missing, "install_ok": results,
+            "all_present": not missing or all(results.values())}
+
+
+# ---------------------------------------------------------------------------
 # Stage 0 — environment probe
 # ---------------------------------------------------------------------------
 
@@ -546,6 +580,7 @@ def main() -> int:
     out_dir = Path(os.environ.get("DS5_OUT_DIR", "/kaggle/working/ds5-evidence"))
     result: dict[str, Any] = {"verdict": "INVALID_EXPERIMENT"}
     gates: dict[str, bool] = {}
+    result["deps"] = bootstrap_deps()
     try:
         result["probe"] = run_probe()
         gates["probe_ok"] = not result["probe"].get("first_failing_requirement")
