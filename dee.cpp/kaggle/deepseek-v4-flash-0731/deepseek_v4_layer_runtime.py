@@ -100,7 +100,13 @@ HC_MULT = 4
 N_TOKENS = 16
 # (start_pos, is_prefill) steps: prefill 16 tokens, then decode steps that
 # exercise state update across repeated invocations.
-STEPS = [(0, True), (16, False), (20, False), (24, False)]
+# DS9 v7 FOCUSED STATE DIAGNOSTIC: the v6 evidence shows the compressor/
+# indexer state diverges ALREADY at step 0 (prefill), so the focused run
+# needs exactly [prefill, first decode carry]: STEPS = [(0, True), (16,
+# False)].  Full-sequence runs are restored by flipping FOCUSED_STATE False.
+FOCUSED_STATE = True
+STEPS = ([(0, True), (16, False)] if FOCUSED_STATE
+         else [(0, True), (16, False), (20, False), (24, False)])
 N_CORPUS_INPUTS = 1  # DS9 v1: one reference input (normal case), trace mode
 
 # Transient HTTP codes from HF's CDN that are safe to retry with backoff.
@@ -303,10 +309,8 @@ def state_agreement(ref_buffers: dict[str, torch.Tensor],
                     cand_buffers: dict[str, torch.Tensor]) -> dict[str, Any]:
     """Bounded state agreement between the CPU reference and CUDA candidate.
 
-    The reference runs on CPU and the candidate on CUDA, so per-buffer
-    relative bounds absorb backend ULP drift in the bf16/fp32 state buffers.
-    A stale write, wrong buffer, or missing state update is an O(1) difference
-    and fails the bound.  Returns per-buffer rows plus an overall bool.
+    Per-buffer relative bounds absorb backend ULP drift in the bf16/fp32
+    state buffers; a stale write or missing update is O(1) and fails.
     """
     # bf16 caches -> 2% relative bound; fp32 accumulators -> 0.1%.
     bounds = {
@@ -350,6 +354,104 @@ def state_agreement(ref_buffers: dict[str, torch.Tensor],
                        "max_abs_diff": max_abs, "max_rel_diff": max_rel,
                        "bound": bounds.get(name, 0.001)})
     return {"ok": bool(all_ok), "buffers": checks}
+
+
+def boundary_captures_compare(ref_caps: dict[str, Any],
+                               cand_caps: dict[str, Any]) -> dict[str, Any]:
+    """Bitwise compare the DS9 v7 compressor boundary captures.
+
+    The reference and candidate run the IDENTICAL layer module, so their raw
+    pre-write projections (kv, score), the input, ape, and the pre-write
+    state snapshots must be bitwise identical UNLESS the divergence lives in
+    the compressor matmul / state write itself.  ``compressor_*`` keys are
+    the main attention compressor; the ``indexer_compressor`` sub-dict is the
+    indexer's own compressor.  Every key reports bitwise equality, and when
+    different the first divergent element with ref/cand bits, values, abs /
+    rel error and ULP distance (fail-closed per-key).
+    """
+    result: dict[str, Any] = {}
+
+    def _ulp(a: float, b: float) -> int:
+        """fp32 ULP distance (local; avoids module-level v4contract ref)."""
+        def ordered(bits: int) -> int:
+            return bits if bits < 0x80000000 else 0xFFFFFFFF - bits
+        ia = ordered(struct.unpack("<I", struct.pack("<f", float(a)))[0])
+        ib = ordered(struct.unpack("<I", struct.pack("<f", float(b)))[0])
+        return abs(ia - ib)
+
+    def compare_one(key: str) -> None:
+        full = key
+        rt = ref_caps.get(key)
+        ct = cand_caps.get(key)
+        if rt is None or ct is None:
+            result[full] = {"present": False}
+            return
+        if not isinstance(rt, torch.Tensor) or not isinstance(ct, torch.Tensor):
+            # scalar metadata (start_pos, should_compress): plain equality
+            result[full] = {"bitwise_exact": bool(rt == ct),
+                            "reference": rt, "candidate": ct}
+            return
+        rf = rt.float().reshape(-1)
+        cf = ct.float().reshape(-1)
+        exact = bool(torch.equal(rf, cf))
+        row: dict[str, Any] = {"bitwise_exact": exact,
+                               "numel": int(rf.numel())}
+        if not exact:
+            diff = (rf != cf).nonzero().squeeze(-1)
+            flat = int(diff[0])
+            rv, cv = float(rf[flat]), float(cf[flat])
+            row.update({
+                "first_divergent_flat": flat,
+                "ref_bits": format(
+                    struct.unpack("<I", struct.pack("<f", rv))[0], "08x"),
+                "cand_bits": format(
+                    struct.unpack("<I", struct.pack("<f", cv))[0], "08x"),
+                "reference": rv,
+                "candidate": cv,
+                "abs_error": float(abs(rv - cv)),
+                "rel_error": float(abs(rv - cv) / (abs(rv) + 1e-12)),
+                "ulp": _ulp(rv, cv),
+            })
+        result[full] = row
+
+    for key in ("compressor_input", "compressor_kv_raw",
+                "compressor_score_raw", "compressor_ape",
+                "compressor_kv_state_pre", "compressor_score_state_pre",
+                "compressor_start_pos", "compressor_should_compress"):
+        compare_one(key)
+    rsub = ref_caps.get("indexer_compressor") or {}
+    csub = cand_caps.get("indexer_compressor") or {}
+    for key in ("compressor_input", "compressor_kv_raw",
+                "compressor_score_raw", "compressor_ape",
+                "compressor_kv_state_pre", "compressor_score_state_pre"):
+        if key not in rsub or key not in csub:
+            # fail-closed: a missing capture on EITHER side is reported
+            # (present: False), never silently skipped
+            result[f"indexer_compressor/{key}"] = {"present": False}
+            continue
+        rt = rsub[key].float().reshape(-1)
+        ct = csub[key].float().reshape(-1)
+        exact = bool(torch.equal(rt, ct))
+        row: dict[str, Any] = {"bitwise_exact": exact,
+                               "numel": int(rt.numel())}
+        if not exact:
+            diff = (rt != ct).nonzero().squeeze(-1)
+            flat = int(diff[0])
+            rv, cv = float(rt[flat]), float(ct[flat])
+            row.update({
+                "first_divergent_flat": flat,
+                "ref_bits": format(
+                    struct.unpack("<I", struct.pack("<f", rv))[0], "08x"),
+                "cand_bits": format(
+                    struct.unpack("<I", struct.pack("<f", cv))[0], "08x"),
+                "reference": rv,
+                "candidate": cv,
+                "abs_error": float(abs(rv - cv)),
+                "rel_error": float(abs(rv - cv) / (abs(rv) + 1e-12)),
+                "ulp": _ulp(rv, cv),
+            })
+        result[f"indexer_compressor/{key}"] = row
+    return result
 
 
 def main() -> int:
@@ -742,6 +844,34 @@ def main() -> int:
             if not sa["ok"]:
                 failures.append({"name": f"step_{start_pos}_state_agreement",
                                  "details": sa["buffers"]})
+            # DS9 v7 focused state diagnostics: exact sentinel/finite masks
+            # per state buffer (finite/-inf classification, first divergent
+            # element with bits/values/abs/rel/ULP) and bitwise comparison of
+            # the raw compressor boundary captures (input, kv, score, ape,
+            # pre-write state).  The reference and candidate run the IDENTICAL
+            # module, so boundary bitwise equality isolates whether the first
+            # divergence is INSIDE the compressor matmul/write or downstream.
+            state_masks = v4contract.state_mask_analysis(
+                ref_states[i], cand_states[i],
+                init_values={"compressor_score_state": float("-inf"),
+                             "indexer_compressor_score_state":
+                                 float("-inf")})
+            row["state_masks"] = state_masks
+            state_masks_ok = all(
+                buf.get("ok", False) for buf in state_masks.values())
+            row["state_masks_ok"] = bool(state_masks_ok)
+            boundary = boundary_captures_compare(rc, cc)
+            row["boundary_captures"] = boundary
+            boundary_ok = all(
+                (v.get("bitwise_exact", False) if v.get("present", True)
+                 else False) for v in boundary.values())
+            row["boundary_captures_ok"] = bool(boundary_ok)
+            if not state_masks_ok:
+                failures.append({"name": f"step_{start_pos}_state_masks",
+                                 "details": state_masks})
+            if not boundary_ok:
+                failures.append({"name": f"step_{start_pos}_boundary_captures",
+                                 "details": boundary})
             step_results.append(row)
         all_categories_ok = not cat_failures
         if not all_categories_ok:
@@ -780,7 +910,8 @@ def main() -> int:
             # attribute by failure family (explicit failures first, then the
             # per-category gate failures carried in cat_failures)
             names = [f["name"] for f in failures]
-            if any("state_agreement" in n for n in names):
+            if any("state_agreement" in n or "state_masks" in n
+                   or "boundary_captures" in n for n in names):
                 verdict = "REJECT_STATE"
             elif any("exact_gates" in n or "route_" in n for n in names):
                 verdict = "REJECT_ROUTER"
@@ -830,6 +961,7 @@ def main() -> int:
             "header_sha256": expected_header_sha,
             "n_tokens": N_TOKENS,
             "steps": STEPS,
+            "focused_state": bool(FOCUSED_STATE),
             "n_corpus_inputs": N_CORPUS_INPUTS,
             "corpus_meta": corpus_meta,
             "selected_expert_union": sorted(reference_union),

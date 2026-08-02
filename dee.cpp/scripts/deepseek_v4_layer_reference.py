@@ -150,6 +150,21 @@ class DeepseekV4Compressor:
         score = xf @ w["wgate.weight"].transpose(0, 1)
         ape = w["ape"]
         should_compress = seqlen >= ratio if start_pos == 0 else (start_pos + 1) % ratio == 0
+        # DS9 v7 device-authentic boundary captures: the RAW pre-write
+        # projections (kv, score), the input, the ape, and the pre-write
+        # state snapshots.  These let the focused diagnostic locate the first
+        # divergent intermediate: if raw kv/score are bitwise identical but
+        # the written state differs, the bug is in the write/slot/mask path;
+        # if raw kv/score already differ, the divergence is in the matmul.
+        if capture is not None:
+            capture["compressor_input"] = x
+            capture["compressor_kv_raw"] = kv.detach().clone()
+            capture["compressor_score_raw"] = score.detach().clone()
+            capture["compressor_ape"] = ape.detach().clone()
+            capture["compressor_kv_state_pre"] = self.kv_state.detach().clone()
+            capture["compressor_score_state_pre"] = self.score_state.detach().clone()
+            capture["compressor_start_pos"] = int(start_pos)
+            capture["compressor_should_compress"] = bool(should_compress)
         if start_pos == 0:
             remainder = seqlen % ratio
             cutoff = seqlen - remainder
@@ -249,7 +264,13 @@ class DeepseekV4Indexer:
         common.apply_rotary_emb(q[..., -rd:], freqs_cis)
         q = common.hadamard_transform(q, self.cfg.index_head_dim ** -0.5)
         common.fp4_act_quant_inplace(q, 32)
-        self.compressor.forward(x, start_pos, w["compressor"])
+        # DS9 v7: pass a NESTED capture so the indexer compressor's raw
+        # boundary values land under capture["indexer_compressor"] and do not
+        # collide with the main attention compressor's captures.
+        icap: Optional[dict[str, Any]] = {} if capture is not None else None
+        self.compressor.forward(x, start_pos, w["compressor"], capture=icap)
+        if capture is not None and icap is not None:
+            capture["indexer_compressor"] = icap
         weights = (x.float() @ w["weights_proj.weight"].transpose(0, 1)).to(x.dtype)
         weights = weights * (self.softmax_scale * self.cfg.index_n_heads ** -0.5)
         index_score = torch.einsum(
