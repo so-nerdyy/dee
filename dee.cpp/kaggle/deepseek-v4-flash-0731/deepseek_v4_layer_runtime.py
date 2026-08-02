@@ -600,6 +600,23 @@ def main() -> int:
             return x_route[:tokens].unsqueeze(0).unsqueeze(2).expand(
                 1, tokens, HC_MULT, HIDDEN).to(torch.bfloat16)
 
+        def relocate(value: Any) -> Any:
+            """Detach + move tensors to CPU (harness-side comparisons only).
+
+            The reference runs on CPU and the candidate on CUDA; all gates
+            compare their outputs/captures cross-device, so every tensor is
+            relocated here before it is returned to the gate code.  This is
+            comparison plumbing, NOT the candidate's execution device: the
+            forward itself still runs on ``layer.device`` (v3 crashed with
+            wrapper_CUDA_mm device mismatch because x_step stayed on CPU)."""
+            if isinstance(value, torch.Tensor):
+                return value.detach().cpu()
+            if isinstance(value, dict):
+                return {k: relocate(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [relocate(v) for v in value]
+            return value
+
         def run_sequence(layer: Any) -> tuple[list[torch.Tensor],
                                               list[dict[str, str]],
                                               list[dict[str, Any]],
@@ -608,11 +625,12 @@ def main() -> int:
             for start_pos, is_prefill in STEPS:
                 x_step = build_x_hc(N_TOKENS) if is_prefill \
                     else build_x_hc(1)
+                x_step = x_step.to(layer.device)
                 cap: dict[str, Any] = {}
                 out = layer.forward(x_step, start_pos, capture=cap)
-                outputs.append(out.detach())
+                outputs.append(relocate(out))
                 sigs.append(layer.state_signature())
-                caps.append(cap)
+                caps.append(relocate(cap))
                 states.append(layer.state_buffers())
             return outputs, sigs, caps, states
 
