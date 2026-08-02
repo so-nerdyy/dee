@@ -1,9 +1,10 @@
 # CAMPAIGN — DeepSeek-V4-Flash-0731 on Tesla T4 via Dynamic Expert Eviction
 
-Status: **DS0–DS3, DS6, DS7, DS8 COMPLETE** (freeze, audit, ledger,
-download plan/tool, resolver, one routed expert on T4, and the generalized
-expert runtime + bounded cache executing routed+shared expert portions of
-complete official layers on T4 with evidence). DS4/DS5 in progress.
+Status: **DS0–DS4, DS6, DS7, DS8 COMPLETE; DS9 terminated (REJECT_NUMERICAL
+accepted); DS5 BLOCKED (hardware-format)** — official tilelang kernels need
+dynamic shared memory above the T4 SM75 64 KiB ceiling (fp8_gemm 82,048 B;
+sparse_attn ~280 KiB), so the pinned official reference cannot execute on the
+campaign's only GPU (see `ds5-v6-hardware-blocker/DS5_BLOCKER_REPORT.md`).
 
 ## Campaign identity
 
@@ -36,7 +37,7 @@ M5G-v1/v2/v3 evidence is immutable. No M5H work until the DeepSeek campaign reac
 | DS2 | Byte-accurate tensor ledger | ✅ |
 | DS3 | Checkpoint download / Kaggle dataset plan | ✅ (plan + resumable shard tool + header pin) |
 | DS4 | Tokenizer + encoding parity golden tests | ✅ (official `encoding_dsv4.py` + `tokenizer.json` pinned w/ SHA-256; wrapper `scripts/deepseek_v4_encoding.py`; 15 golden tests — exact IDs for chat/thinking/low/high/max reasoning/tool/multi-turn; parse roundtrips; pinned 2026-08-02) |
-| DS5 | Trusted reference traces | 🔶 scaffold committed (`deepseek_v4_trace_spec.py` + `ds5_trace_runtime.py` + `tools/build_ds5_kernel.py`, 16 tests) — reference = OFFICIAL inference stack (model.py + tilelang kernel.py + convert.py), layer-0 subset (shards 00001/00002/00045 ≈ 5.7 GB), canonical prompt, bounded boundary captures + hashes; remote Kaggle run pending (tilelang-on-SM75 + checkpoint download are the launch risks) |
+| DS5 | Trusted reference traces | ⛔ **BLOCKED — hardware-format** (kernel v6, `ds5-v6-hardware-blocker/`): scaffold + 16 tests committed; identity/config/tokenizer/shard/convert/reference-load all PASS on Kaggle T4; the pinned official tilelang kernels cannot launch on SM75 (fp8_gemm requests 82,048 B dynamic shared > 64 KiB ceiling; sparse_attn h=64,d=512 needs ~280 KiB). Reference = official inference stack is not SM75-runnable; unblocking requires a non-T4 reference host, a documented kernel re-tile (product decision), or reusing the sealed DS8/DS9 trusted-reference discipline |
 | DS6 | Freebuff tensor resolver for V4 | ✅ (Python ledger + C++ `TensorResolver` DEEPSEEK_V4 dialect, w1/w3/w2 + scale names) |
 | DS7 | One routed expert on T4 | ✅ (kernel v5 COMPLETE, verdict `MATCH_WITHIN_TOLERANCE`, evidence `ds7-smoke-v5`) |
 | DS8 | Expert cache + Dynamic Expert Eviction | ✅ (kernel v3 COMPLETE, verdict `ACCEPT_EXPERT_RUNTIME`, evidence `ds8-runtime-v3`) |
@@ -307,7 +308,7 @@ Next (user-approved): **expert-integration audit** — DS8 isolated-expert
 inputs vs DS9 integrated inputs, route weights, input dtype, accumulation
 order, FP4 unpack, FP16 execution, shared/routed combination.
 
-## DS5 — trusted reference traces (layer-0 subset scaffold)
+## DS5 — trusted reference traces (BLOCKED — hardware-format, v6 evidence)
 
 The trusted reference is the OFFICIAL inference stack pinned in `official-source/`
 (`model.py` + tilelang `kernel.py` + `convert.py` + `generate.py`; transformers 5.x
@@ -321,7 +322,37 @@ layer-0 subset (embedding + layer 0 + final norm/head; shards 00001/00002/00045
 `convert.py` (fp4, mp=1), builds `Transformer(n_layers=1)` with a post-load
 dtype contract (FP4 experts / FP8-BF16 dense), captures bounded traces at every
 boundary over prefill + greedy decode, and fails closed with gates. Payload
-assembler: `tools/build_ds5_kernel.py` (15 files, 6.5 MB). 16 local tests.
+assembler: `tools/build_ds5_kernel.py`. 16 local tests.
+
+**Remote iteration record (Kaggle `…-ds5-trace`, all preserved):**
+
+- v1: payload modules did not reach the kernel import path (flat imports);
+  harness rewritten to the sealed DS9 repo-clone identity pattern.
+- v2: `BLOCKED source_identity` — the harness had 11 non-ASCII em-dashes;
+  Kaggle's script wrap re-encoded them so `/kaggle/src/script.py` hashed
+  differently from the pin. Fixed by making the harness pure ASCII.
+- v3: `INVALID_EXPERIMENT` — shard size pins omitted the safetensors header
+  overhead (8 + header_size), truncating downloads by 96/172240/400 B;
+  official convert failed "incomplete metadata, file not fully covered".
+  Fixed sizes + added a fail-closed physical-coverage check.
+- v4: download/convert PASS; reference load failed with the tilelang 0.1.8 ×
+  apache-tvm-ffi >= 0.1.10 Python 3.12 incompatibility (`setattr(type_cls,
+  '__dict__', …)`). v5 added full-traceback capture; v6 pinned
+  `apache-tvm-ffi<=0.1.9` (installed first) and cleared the load.
+- **v6 terminal state: ERROR on the first dense projection** — official
+  `fp8_gemm` requests 82,048 B dynamic shared memory; T4 SM75 caps at
+  65,536 B. Full traceback in `kernel.log`; source audit shows `sparse_attn`
+  (h=64, d=512) needs ~280 KiB and `sparse_attn` indexer ~74 KiB, so no
+  pipelining tweak can make the official attention path SM75-runnable.
+
+**Verdict: hardware-format blocker.** The pinned official reference cannot
+execute on the campaign's only GPU (Kaggle dual T4). DS5's contract forbids
+substituting a re-tiled kernel as the trusted reference. Unblock options:
+(1) a non-T4 (SM80+) reference host, (2) an explicit product decision to fork
+and re-tile the official kernels for SM75, or (3) reuse the sealed DS8/DS9
+trusted-reference discipline (official tensors + FP32 CPU reference) as the
+DS6+ parity basis, recording DS5 as blocked. See
+`ds5-v6-hardware-blocker/DS5_BLOCKER_REPORT.md` and `evidence/`.
 
 ## DS4 — tokenizer + encoding parity (official implementation pinned)
 

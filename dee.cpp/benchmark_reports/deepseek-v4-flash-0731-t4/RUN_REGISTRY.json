@@ -4,6 +4,35 @@
   "official_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
   "runs": [
     {
+      "branch_head_at_launch": "ba7c05a906ad4d70a644d8886d85446b5335307f",
+      "error": "InternalError: Failed to set the allowed dynamic shared memory size to 82048",
+      "evidence_dir": "benchmark_reports/deepseek-v4-flash-0731-t4/ds5-v6-hardware-blocker/",
+      "first_failing_gate": "reference_loaded (official tilelang fp8_gemm kernel launch: 82,048 B dynamic shared requested vs SM75 T4 65,536 B ceiling)",
+      "gates_passed": [
+        "probe_ok",
+        "config_identity",
+        "tokenizer_identity",
+        "shard_identity (3 shards, size+header+tensor-count+physical-coverage)",
+        "convert.py (fp4, mp=1)",
+        "reference load (Transformer n_layers=1, FP4/FP8-BF16 dtype contract)"
+      ],
+      "generated_tokens": 0,
+      "gpu_count": 2,
+      "hardware": "Kaggle dual Tesla T4 (SM75)",
+      "kernel": "nivind/dee-cpp-deepseek-v4-flash-0731-ds5-trace",
+      "kernel_version": 6,
+      "local_validation": "16/16 DS5 tests pass; full suite 301 pass; evidence downloaded + preserved (verdict, evidence json w/ traceback, manifest, identity, module copies, kernel.log)",
+      "milestone": "DS5",
+      "notes": "Hardware-format blocker. The pinned OFFICIAL tilelang reference stack cannot launch on SM75: fp8_gemm requests 82,048 B dynamic shared (> 65,536 B ceiling); sparse_attn (h=64,d=512) needs ~280 KiB and indexer sparse_attn ~74 KiB, so no num_stages/pipelining tweak can fit the official attention path on T4. Every harness gate before the kernel launch passed. Iteration: v1 payload import path, v2 non-ASCII harness sha wrap, v3 shard-size pins (header overhead) + coverage check, v4/v5 apache-tvm-ffi<=0.1.9 pin + traceback capture, v6 blocker proven. DS5's contract forbids substituting a re-tiled kernel as the trusted reference; unblocking needs a non-T4 reference host, a product decision to fork/re-tile for SM75, or the sealed DS8/DS9 trusted-reference discipline. performance_comparable: false; no model TPS.",
+      "passed": false,
+      "performance_comparable": false,
+      "pinned_repository_commit": "27149e983c1cde13a351c4c6de89edf88ffd1115",
+      "precision_family": "A (official reference stack: BF16/FP8/FP4 tilelang kernels, n_layers=1 layer-0 subset)",
+      "run_id": "ds5-v6-hardware-blocker",
+      "terminal": "ERROR",
+      "verdict": "BLOCKED_HARDWARE_FORMAT"
+    },
+    {
       "archive_sha256": "f6992fbe1dcc9cf3504f8545802ab5294432279e7c8fa91570063b9b85687e6f",
       "branch_head_at_launch": "574827b1e6b039ff1fc5b7f915ea07a7d294b89b",
       "cache_representation": "none (direct shard load, no cache)",
