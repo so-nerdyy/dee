@@ -200,17 +200,42 @@ def bootstrap_deps() -> dict[str, Any]:
         except Exception:
             return False
 
-    wanted = ["tqdm", "fast_hadamard_transform", "tilelang==0.1.8"]
-    missing = [pkg for pkg in wanted if not _have(pkg.split("==")[0])]
+    def _have_ok(spec: str) -> bool:
+        name = spec.split("==")[0].split("<=")[0]
+        if not _have(name):
+            return False
+        version = _md.version(name)
+        if "<=" in spec and version > spec.split("<=")[1]:
+            return False  # installed, but too new for this pin
+        if "==" in spec and version != spec.split("==")[1]:
+            return False
+        return True
+
+    wanted = ["tqdm", "fast_hadamard_transform",
+              "apache-tvm-ffi<=0.1.9", "tilelang==0.1.8"]
+    missing = [pkg for pkg in wanted if not _have_ok(pkg)]
     results: dict[str, bool] = {}
-    for pkg in missing:
+    # Install apache-tvm-ffi pin FIRST so tilelang resolves against it.
+    # tilelang 0.1.8 is incompatible with apache-tvm-ffi >= 0.1.10 on
+    # Python 3.12 (tvm_ffi registry setattr '__dict__' crash at import);
+    # the compatible ceiling is apache-tvm-ffi <= 0.1.9.
+    ordered = [p for p in wanted if p.startswith("apache-tvm-ffi")] + \
+              [p for p in wanted if not p.startswith("apache-tvm-ffi")]
+    for pkg in ordered:
+        if pkg not in missing:
+            results[pkg] = True
+            continue
         run = subprocess.run(
             [sys.executable, "-m", "pip", "install", "-q", pkg],
             capture_output=True, text=True, timeout=900,
         )
         results[pkg] = run.returncode == 0
+        if not results[pkg]:
+            # surface the pip error tail for remote diagnosis
+            tail = (run.stderr or "").strip().splitlines()[-4:]
+            results[f"{pkg}_error"] = " ".join(tail)
     return {"missing_before": missing, "install_ok": results,
-            "all_present": not missing or all(results.values())}
+            "all_present": all(results.get(p, False) for p in wanted)}
 
 
 # ---------------------------------------------------------------------------
