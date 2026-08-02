@@ -40,7 +40,7 @@ M5G-v1/v2/v3 evidence is immutable. No M5H work until the DeepSeek campaign reac
 | DS6 | Freebuff tensor resolver for V4 | ✅ (Python ledger + C++ `TensorResolver` DEEPSEEK_V4 dialect, w1/w3/w2 + scale names) |
 | DS7 | One routed expert on T4 | ✅ (kernel v5 COMPLETE, verdict `MATCH_WITHIN_TOLERANCE`, evidence `ds7-smoke-v5`) |
 | DS8 | Expert cache + Dynamic Expert Eviction | ✅ (kernel v3 COMPLETE, verdict `ACCEPT_EXPERT_RUNTIME`, evidence `ds8-runtime-v3`) |
-| DS9 | Architecture bring-up → first token | 🔶 (kernel v9 COMPLETE, verdict `REJECT_ROUTER` — **state fixed** (v6/v8 `REJECT_STATE` was a harness snapshot-aliasing artifact); remaining: step-0 expert-ID boundary flip + MoE p99 tail; evidence `ds9-v9-reject-router`) |
+| DS9 | Architecture bring-up → first token | 🔶 (kernel v11 COMPLETE, verdict `REJECT_ROUTER` — **state fixed** (v9); **router cause PROVEN** (v10 isolation matrix + v11 classifier): router exact for identical input, top-k exact, selected expert SETS identical at all tokens — the exact-ID gate fails only on intra-set rank order (ordering artifact of bounded BF16 storage rounding); MoE p99 tail flip-independent (fails at step 16 despite exact IDs); evidence `ds9-v10-router-diag` + `ds9-v11-reject-router`) |
 | DS10 | Dual-T4 full-model decode | 🔲 |
 | DS11 | One-T4 path | 🔲 |
 | DS12 | DSpark speculative decoding | 🔲 |
@@ -222,6 +222,63 @@ compared them — manufacturing the phantom 0.387/0.548 divergence.
 - Attention (15 categories), router scores, exact window/compress indices,
   route agreement, and cache correctness all PASS. Candidate CUDA-resident,
   peak VRAM 4.47 GB, `performance_comparable: false`, no model TPS.
+
+## DS9 v10/v11 — router cause proven: exact router, input-driven flip (ordering within set)
+
+Kernels `nivind/dee-cpp-deepseek-v4-flash-0731-ds9-one-layer` v10 (focused
+router diagnostic, COMPLETE) and v11 (full-layer rerun, COMPLETE), verdict
+`REJECT_ROUTER` with the step-0 expert-ID failure now **fully diagnosed and
+proven**.
+
+**v10 — isolation matrix proves the router is exact.**
+
+- Full 256-score 5-stage capture (raw/softplus/sqrt/biased) with SHA256 per
+  side, per-stage error stats + fp32 hex, top-10 boundary ranks with
+  rank-6/7 margin + IEEE bits, symmetric difference, `torch.topk` tie audit,
+  and linearized sensitivity.
+- 4-way isolation matrix: `ref_in_ids_cpu_vs_cuda_equal` = True (all 16
+  rows), `cand_in_ids_cpu_vs_cuda_equal` = True, `topk_same_scores_...` =
+  True, captures faithful — **identical input → identical IDs on CPU and
+  CUDA**. The router implementation and top-k semantics are exact.
+- Per-token top-6 **SETS are identical at all 16 tokens**; only token 4 has
+  an intra-set rank swap (102 ↔ 198, `other_ranks_changed [4,5]`); the
+  selection (rank-6/7) margin is robust (0.015).
+- ULP trace: `attn_norm_in`/`attn_norm_out` **bitwise**; first divergence at
+  `attn_o` (CUDA fp32 accumulation vs CPU fp32, ~1 ULP) surfaced as 1-bf16-ulp
+  storage rounding; router input delta `max_abs 0.015625` = 2.0 bf16 steps at
+  max magnitude — bounded, non-compounding.
+- The v10 run self-labeled `REJECT_UPSTREAM_LAYOUT_OR_STATE` via the invalid
+  `max_ulp > 64` heuristic (one bf16 grid step spans 2¹⁶ fp32 ULPs). The v11
+  classifier (`bf16_storage_bound` absolute-error discriminator + isolation
+  fidelity guard) **reclassifies it** to
+  `ROUTER_IMPLEMENTATION_EXACT_INPUT_DRIVEN_FLIP` (`flip_scope
+  ORDERING_WITHIN_SET`) — see `ds9-v10-router-diag/ROUTER_RECLASSIFICATION.md`.
+
+**v11 — full-layer rerun with the corrected classifier (runtime unchanged).**
+
+- Pinned runtime commit `02673aa…` (harness `b6bd31d0…`); evidence
+  `benchmark_reports/deepseek-v4-flash-0731-t4/ds9-v11-reject-router/`
+  (manifest validated `96a99d7f…`, archive SHA256 `c3fd449b…`).
+- Step 0 diagnostic: `ROUTER_IMPLEMENTATION_EXACT_INPUT_DRIVEN_FLIP`
+  (`ORDERING_WITHIN_SET`, flip token 4, flip reproduced by the input delta
+  alone, bf16-bound 2.0 steps, fraction-within-one 0.99998).
+- Step 16 (decode): **`NO_FLIP_OBSERVED` — expert IDs exactly matched**;
+  state masks, boundary structural keys, window/compress indices exact at
+  both steps; 15/15 attention categories pass; router scores p99 ≈ 1e-4.
+- **MoE drift is now proven flip-independent**: `moe_out`/`shared_out`
+  p99_rel 0.068–0.099 vs the sealed 0.05 gate fail at **step 16 as well**,
+  where there is no flip at all. Per the DS9 procedure this opens a separate
+  expert-integration audit (FP16-expanded payloads vs CPU-FP32 reference).
+
+Remaining blockers for `ACCEPT_ONE_LAYER`, in order:
+
+1. step-0 exact expert-ID tuple gate — proven an **ordering artifact** of
+   bounded bf16 storage rounding (router exact, sets identical); changing the
+   gate (e.g. set-based route agreement) is a **product-policy decision**;
+2. `moe_out`/`shared_out` p99 tail — flip-independent, separate
+   expert-integration audit.
+
+`performance_comparable: false`, no model TPS.
 
 ## Precision families (measured, not assumed)
 
