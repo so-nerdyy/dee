@@ -1,0 +1,147 @@
+{
+  "artifacts": [
+    {
+      "bytes": 466,
+      "path": "bootstrap-environment.json",
+      "sha256": "cbe209719dd9a32ebf325110cf788a01ee2ad71c30d804b8b4d644149ba49190"
+    },
+    {
+      "bytes": 59,
+      "path": "cuda-capability-probe.json",
+      "sha256": "5f3a56f90e298f9976b3e34fb137f9d035b21ed3e87e9adf9d3ea5e7e901d4a7"
+    },
+    {
+      "bytes": 62521,
+      "path": "deepseek_v4_layer_runtime.py",
+      "sha256": "bdb54faa73aa7a256a65e027f6a5a14f95e87c38bee274dcbb63d492809b47ae"
+    },
+    {
+      "bytes": 17204,
+      "path": "deepseek_v4_module_cache.py",
+      "sha256": "c4d16b0cef031f1bbf8ed0c2a989e7a60394bc7f740973a85ed9a24e7271f0df"
+    },
+    {
+      "bytes": 50726,
+      "path": "deepseek_v4_module_contract.py",
+      "sha256": "12b007a88ced107aefd5f92409f5e61fe5955529243e1b3566cd6ffb4774bb5d"
+    },
+    {
+      "bytes": 4560,
+      "path": "deepseek_v4_module_corpus.py",
+      "sha256": "9ffdb43f736a7dbade969619af44c8e8d817038be194050e3106eb51aa6ea215"
+    },
+    {
+      "bytes": 8175,
+      "path": "deepseek_v4_module_expert_reference.py",
+      "sha256": "9c28375b17898a6908d61ca3a769f4ba2eab4104e4049439cfa76784eaa86ef5"
+    },
+    {
+      "bytes": 9215,
+      "path": "deepseek_v4_module_layer_candidate.py",
+      "sha256": "2da4e551b0c5f64fe34f0db1d63ec96d88c9508b250864a2b438508d6b248db3"
+    },
+    {
+      "bytes": 14997,
+      "path": "deepseek_v4_module_layer_common.py",
+      "sha256": "005c168e578724c4284a23c61273f65449a7a8b910e82782cbeb0100857121cc"
+    },
+    {
+      "bytes": 33569,
+      "path": "deepseek_v4_module_layer_reference.py",
+      "sha256": "d8d5a9de40ef4e7408ef228465c3ba496f7ee9408e14c575fe5ebe8738f2ae8b"
+    },
+    {
+      "bytes": 10063,
+      "path": "deepseek_v4_module_moe_reference.py",
+      "sha256": "895d1b1c97c201e45ab1ea2cfd1c9b16344e848b07d2469a5a88d5c7d037fb81"
+    },
+    {
+      "bytes": 24670,
+      "path": "deepseek_v4_module_support.py",
+      "sha256": "58161d1525a4bbea1ea19779447006690602154ea680649cd0c4ba9b438d639b"
+    },
+    {
+      "bytes": 83921,
+      "path": "ds9-one-layer-evidence.json",
+      "sha256": "f1269a64b3775265ad186b3536e2941e6f3bcd2bce6afb7ca979810d3124fe71"
+    },
+    {
+      "bytes": 1344,
+      "path": "environment.json",
+      "sha256": "7294e906107db93470143e383d006618a50352af0ec9241cff7c6da2da8f8aef"
+    },
+    {
+      "bytes": 161,
+      "path": "logs/pip-install.log",
+      "sha256": "377ff723917e7797e35ce58d6c804a40ac9510ccd4e6bd46b22ade0abe9def5d"
+    },
+    {
+      "bytes": 94,
+      "path": "manifest.sha256",
+      "sha256": "f443923d3b951bdd26c9d07e088ff31ccf2af8d16387b977eda2b14cb954f36e"
+    }
+  ],
+  "fatal_error": null,
+  "module_sha256": {
+    "cache": "c4d16b0cef031f1bbf8ed0c2a989e7a60394bc7f740973a85ed9a24e7271f0df",
+    "contract": "12b007a88ced107aefd5f92409f5e61fe5955529243e1b3566cd6ffb4774bb5d",
+    "corpus": "9ffdb43f736a7dbade969619af44c8e8d817038be194050e3106eb51aa6ea215",
+    "expert_reference": "9c28375b17898a6908d61ca3a769f4ba2eab4104e4049439cfa76784eaa86ef5",
+    "layer_candidate": "2da4e551b0c5f64fe34f0db1d63ec96d88c9508b250864a2b438508d6b248db3",
+    "layer_common": "005c168e578724c4284a23c61273f65449a7a8b910e82782cbeb0100857121cc",
+    "layer_reference": "d8d5a9de40ef4e7408ef228465c3ba496f7ee9408e14c575fe5ebe8738f2ae8b",
+    "moe_reference": "895d1b1c97c201e45ab1ea2cfd1c9b16344e848b07d2469a5a88d5c7d037fb81",
+    "support": "58161d1525a4bbea1ea19779447006690602154ea680649cd0c4ba9b438d639b"
+  },
+  "performance_comparable": false,
+  "repository_commit": "7cca1086ae0822a5a05ab1ca267b0e6a7f44665b",
+  "required_paths": [
+    {
+      "bytes": 466,
+      "path": "bootstrap-environment.json",
+      "present": true
+    },
+    {
+      "bytes": 59,
+      "path": "cuda-capability-probe.json",
+      "present": true
+    },
+    {
+      "bytes": 1344,
+      "path": "environment.json",
+      "present": true
+    },
+    {
+      "bytes": 83921,
+      "path": "ds9-one-layer-evidence.json",
+      "present": true
+    },
+    {
+      "bytes": 94,
+      "path": "manifest.sha256",
+      "present": true
+    },
+    {
+      "bytes": 161,
+      "path": "logs/pip-install.log",
+      "present": true
+    }
+  ],
+  "result": "FAIL",
+  "run_id": "20260731T120000Z-dsv4-ds9-one-layer",
+  "schema_version": 1,
+  "terminal_verdict": "REJECT_EXPERT_INTEGRATION",
+  "validation_failures": [
+    {
+      "details": {
+        "failing_categories": [
+          "step0:moe_out",
+          "step0:shared_out",
+          "step16:moe_out",
+          "step16:shared_out"
+        ]
+      },
+      "name": "category_gates"
+    }
+  ]
+}

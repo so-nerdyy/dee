@@ -445,6 +445,93 @@
       "terminal": "COMPLETE",
       "topk": 6,
       "verdict": "REJECT_ROUTER"
+    },
+    {
+      "archive_sha256": "8a8264e0ddf97d5568b340ccebb852bd20db39cd6d53f4bf1534aa004d4d5e28",
+      "attention_categories_pass": [
+        "layer_input",
+        "attn_norm_in",
+        "attn_norm_out",
+        "qr",
+        "q",
+        "kv",
+        "kv_compressed",
+        "attn_o",
+        "attn_out",
+        "attn_hc_out",
+        "ffn_norm_in",
+        "ffn_norm_out",
+        "router_scores",
+        "router_bias_scores",
+        "output"
+      ],
+      "branch_head_at_launch": "0641960bda3a9e576841b0a5401cf1b494d7fb12",
+      "cache": {
+        "evictions": 0,
+        "h2d_bytes": 3875536896,
+        "loads": 77,
+        "warm_output_identical": true,
+        "warm_reloaded_experts": 0
+      },
+      "cache_representation": "FP16-expanded active expert through DeepSeekExpertCache (77 loaded, 0 warm reloads, cold==warm bitwise)",
+      "candidate_executed_on_cuda": true,
+      "evidence_dir": "benchmark_reports/deepseek-v4-flash-0731-t4/ds9-v12-reject-expert-integration/",
+      "exact_gates": {
+        "attn_compress_idxs_exact": true,
+        "attn_window_idxs_exact": true,
+        "expert_ids_exact_step0": true,
+        "expert_ids_exact_step16": true,
+        "expert_ids_tuple_exact_step0": false,
+        "expert_ids_tuple_exact_step16": true,
+        "gate_semantics": "SET-based order-insensitive (product policy 2026-08-02); tuple recorded as expert_ids_tuple_exact"
+      },
+      "first_failing_component": "moe_out/shared_out p99_rel 0.068-0.099 vs the sealed 0.05 gate at BOTH steps - flip-independent (expert IDs now exact at both steps under the set-based policy; step16 has NO_FLIP_OBSERVED and still fails)",
+      "full_layer_attention_passes": true,
+      "generated_tokens": 0,
+      "gpu_count": 2,
+      "hardware": "Kaggle dual Tesla T4 (SM75)",
+      "harness_sha256": "bdb54faa73aa7a256a65e027f6a5a14f95e87c38bee274dcbb63d492809b47ae",
+      "integrity_gate": "identity_pin (harness + 9 modules)",
+      "kernel": "nivind/dee-cpp-deepseek-v4-flash-0731-ds9-one-layer",
+      "kernel_version": 12,
+      "layer": 20,
+      "local_validation": "manifest.sha256 validated; archive SHA256 8a8264e0...; environment pins repo 7cca1086 + harness bdb54faa",
+      "manifest_sha256": "f1269a64b3775265ad186b3536e2941e6f3bcd2bce6afb7ca979810d3124fe71",
+      "milestone": "DS9",
+      "moe_failures": {
+        "moe_out_cosine": "0.999998-0.9999999",
+        "p99_rel_gate": 0.05,
+        "shared_out_cosine": "0.999997-0.999998",
+        "step0_moe_out_p99_rel": 0.0739,
+        "step0_shared_out_p99_rel": 0.0677,
+        "step16_moe_out_p99_rel": 0.0995,
+        "step16_shared_out_p99_rel": 0.0817
+      },
+      "notes": "DS9 v12 full-layer rerun validating the SET-BASED expert-ID gate product policy (decision 2026-08-02). expert_ids_exact is now set-based (order-insensitive): True at BOTH steps. Step 0: tuple_exact False (the proven intra-set rank swap at token 4, recorded as evidence only; router diagnosis ROUTER_IMPLEMENTATION_EXACT_INPUT_DRIVEN_FLIP / ORDERING_WITHIN_SET). Step 16: tuple_exact True (NO_FLIP_OBSERVED). State masks, boundary structural keys, window/compress indices exact at both steps; 15/15 attention categories pass. Verdict re-attributed from REJECT_ROUTER to REJECT_EXPERT_INTEGRATION (exact routing passes; only moe_out/shared_out p99_rel 0.068-0.099 vs 0.05 fail - flip-independent, opening the user-approved expert-integration audit). NOTE: expert_ids_exact changed semantics to SET-based in v12; historical v1-v11 rows used tuple semantics (tuple now recorded separately as expert_ids_tuple_exact). performance_comparable: false; no model TPS.",
+      "passed": false,
+      "peak_vram_bytes": 4472804864,
+      "performance_comparable": false,
+      "pinned_repository_commit": "7cca1086ae0822a5a05ab1ca267b0e6a7f44665b",
+      "precision_family": "B (FP4-packed routed storage + F8_E4M3 shared storage, FP16-expanded payloads through DeepSeekExpertCache; torch-CUDA attention/compressor/indexer/mHC hybrid bridge)",
+      "route_agreement": true,
+      "router_diagnosis": {
+        "step0": "ROUTER_IMPLEMENTATION_EXACT_INPUT_DRIVEN_FLIP",
+        "step0_flip_scope": "ORDERING_WITHIN_SET",
+        "step0_flip_token": 4,
+        "step16": "NO_FLIP_OBSERVED"
+      },
+      "run_id": "ds9-v12-reject-expert-integration",
+      "shard": "model-00022-of-00048",
+      "state_diagnostics": {
+        "boundary_captures_ok_step0": true,
+        "boundary_captures_ok_step16": true,
+        "state_masks_ok_step0": true,
+        "state_masks_ok_step16": true,
+        "structural_keys_bitwise": true
+      },
+      "terminal": "COMPLETE",
+      "topk": 6,
+      "verdict": "REJECT_EXPERT_INTEGRATION"
     }
   ],
   "schema_version": 1

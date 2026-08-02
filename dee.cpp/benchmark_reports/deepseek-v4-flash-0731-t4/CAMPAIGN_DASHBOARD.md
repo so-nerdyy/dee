@@ -40,7 +40,7 @@ M5G-v1/v2/v3 evidence is immutable. No M5H work until the DeepSeek campaign reac
 | DS6 | Freebuff tensor resolver for V4 | ✅ (Python ledger + C++ `TensorResolver` DEEPSEEK_V4 dialect, w1/w3/w2 + scale names) |
 | DS7 | One routed expert on T4 | ✅ (kernel v5 COMPLETE, verdict `MATCH_WITHIN_TOLERANCE`, evidence `ds7-smoke-v5`) |
 | DS8 | Expert cache + Dynamic Expert Eviction | ✅ (kernel v3 COMPLETE, verdict `ACCEPT_EXPERT_RUNTIME`, evidence `ds8-runtime-v3`) |
-| DS9 | Architecture bring-up → first token | 🔶 (kernel v11 COMPLETE, verdict `REJECT_ROUTER` — **state fixed** (v9); **router cause PROVEN** (v10 isolation matrix + v11 classifier): router exact for identical input, top-k exact, selected expert SETS identical at all tokens — the exact-ID gate fails only on intra-set rank order (ordering artifact of bounded BF16 storage rounding); MoE p99 tail flip-independent (fails at step 16 despite exact IDs); evidence `ds9-v10-router-diag` + `ds9-v11-reject-router`) |
+| DS9 | Architecture bring-up → first token | 🔶 (kernel v12 COMPLETE, verdict `REJECT_EXPERT_INTEGRATION` — **state fixed** (v9); **router cause PROVEN** (v10/v11); **set-based expert-ID gate policy adopted** (v12, decision 2026-08-02): expert IDs now exact at both steps, verdict re-attributed; remaining: `moe_out`/`shared_out` p99 tail (flip-independent) → expert-integration audit; evidence `ds9-v10-router-diag` … `ds9-v12-reject-expert-integration`) |
 | DS10 | Dual-T4 full-model decode | 🔲 |
 | DS11 | One-T4 path | 🔲 |
 | DS12 | DSpark speculative decoding | 🔲 |
@@ -273,12 +273,39 @@ proven**.
 Remaining blockers for `ACCEPT_ONE_LAYER`, in order:
 
 1. step-0 exact expert-ID tuple gate — proven an **ordering artifact** of
-   bounded bf16 storage rounding (router exact, sets identical); changing the
-   gate (e.g. set-based route agreement) is a **product-policy decision**;
+   bounded bf16 storage rounding (router exact, sets identical); **product
+   policy decision 2026-08-02: the exact-ID gate is now SET-based
+   (order-insensitive)** — validated in v12;
 2. `moe_out`/`shared_out` p99 tail — flip-independent, separate
-   expert-integration audit.
+   expert-integration audit (approved as next focus).
 
 `performance_comparable: false`, no model TPS.
+
+## DS9 v12 — set-based expert-ID gate validated, verdict REJECT_EXPERT_INTEGRATION
+
+Kernel `nivind/dee-cpp-deepseek-v4-flash-0731-ds9-one-layer` v12 (full-layer
+rerun, COMPLETE) applies the product-policy decision of 2026-08-02: the exact
+expert-ID gate is redefined as the **selected expert SET, order-insensitive**
+(`expert_ids_exact` set-based; the ordered tuple is preserved as
+`expert_ids_tuple_exact` for evidence). Runtime unchanged.
+
+- **Expert-ID gate now PASSES at both steps**: step 0 `expert_ids_exact`
+  True (tuple False — the proven intra-set rank swap at token 4, recorded as
+  evidence only); step 16 True (tuple also True, `NO_FLIP_OBSERVED`).
+- State masks, boundary structural keys, window/compression indices exact at
+  both steps; 15/15 attention categories pass; router diagnosis unchanged
+  (`ROUTER_IMPLEMENTATION_EXACT_INPUT_DRIVEN_FLIP` / `ORDERING_WITHIN_SET`
+  at step 0).
+- **Verdict re-attributed**: `REJECT_EXPERT_INTEGRATION` — exact routing
+  passes; the only remaining failures are `moe_out`/`shared_out` p99_rel
+  0.068–0.099 vs the sealed 0.05 gate at **both** steps (flip-independent).
+- Pinned runtime commit `7cca1086…` (harness `bdb54faa…`); evidence
+  `benchmark_reports/deepseek-v4-flash-0731-t4/ds9-v12-reject-expert-integration/`
+  (manifest validated `f1269a64…`, archive SHA256 `8a8264e0…`).
+
+Next (user-approved): **expert-integration audit** — DS8 isolated-expert
+inputs vs DS9 integrated inputs, route weights, input dtype, accumulation
+order, FP4 unpack, FP16 execution, shared/routed combination.
 
 ## Precision families (measured, not assumed)
 
