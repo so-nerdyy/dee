@@ -265,12 +265,24 @@ class LazyRoutedExpertDict(dict):
         self.accessed: set[int] = set()
 
     def __missing__(self, eid: int) -> dict[str, torch.Tensor]:
+        # The resolver returns FULL official names
+        # (layers.<l>.ffn.experts.<eid>.w1.weight, ...).  Both consumers --
+        # the trusted reference (moe.routed_expert_forward_weighted) and the
+        # harness fp16 payload builder -- expect SHORT keys (w1.weight,
+        # w1.scale, ...).  v2 crashed with KeyError: 'w1.weight' at
+        # moe_reference.py:98 because this dict was keyed by the full names.
+        prefix = f"layers.{self._layer}.ffn.experts.{eid}."
         names = self._support.routed_expert_tensor_names(self._layer, eid)
         tensors: dict[str, torch.Tensor] = {}
         for name in names:
             if name not in self._keys:
                 raise KeyError(f"missing {name} in shard")
-            tensors[name] = self._handle.get_tensor(name).contiguous()
+            if not name.startswith(prefix):
+                raise ValueError(
+                    f"resolver returned unexpected tensor name {name!r} "
+                    f"for layer {self._layer} expert {eid}")
+            tensors[name[len(prefix):]] = self._handle.get_tensor(
+                name).contiguous()
         self[eid] = tensors
         self.accessed.add(int(eid))
         return self[eid]
