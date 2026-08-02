@@ -1,24 +1,24 @@
 {
-  "repository": "https://github.com/so-nerdyy/dee.git",
   "branch": "freebuff/deepseek-v4-flash-0731-t4",
-  "repository_commit": "9f4fbfa184a78270b882649bbc078b89ef580be7",
   "harness_file": "dee.cpp/kaggle/deepseek-v4-flash-0731/deepseek_v4_layer_runtime.py",
-  "harness_sha256": "9b67184533287e02397ba26110bb4cb5e5973c84ad7a8e733e97c155cc5cf4bd",
-  "module_sha256": {
-    "layer_common": "005c168e578724c4284a23c61273f65449a7a8b910e82782cbeb0100857121cc",
-    "layer_reference": "d8d5a9de40ef4e7408ef228465c3ba496f7ee9408e14c575fe5ebe8738f2ae8b",
-    "layer_candidate": "2da4e551b0c5f64fe34f0db1d63ec96d88c9508b250864a2b438508d6b248db3",
-    "moe_reference": "895d1b1c97c201e45ab1ea2cfd1c9b16344e848b07d2469a5a88d5c7d037fb81",
-    "expert_reference": "9c28375b17898a6908d61ca3a769f4ba2eab4104e4049439cfa76784eaa86ef5",
-    "cache": "c4d16b0cef031f1bbf8ed0c2a989e7a60394bc7f740973a85ed9a24e7271f0df",
-    "contract": "a293ddbabf3614e4340be301f38956ae0c263ce7cc52df29804459eaf5111dfa",
-    "corpus": "9ffdb43f736a7dbade969619af44c8e8d817038be194050e3106eb51aa6ea215",
-    "support": "58161d1525a4bbea1ea19779447006690602154ea680649cd0c4ba9b438d639b"
-  },
+  "harness_sha256": "b6bd31d0b5b9ae8d88423fef922c3fdf2f11a98ce5b2ddb6f408684340856d1d",
   "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
   "model_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+  "module_sha256": {
+    "cache": "c4d16b0cef031f1bbf8ed0c2a989e7a60394bc7f740973a85ed9a24e7271f0df",
+    "contract": "147c7b0145c0f60305ff9b2143a964054a7ed9cbc39ff7faf0e6d1f8663c5aa7",
+    "corpus": "9ffdb43f736a7dbade969619af44c8e8d817038be194050e3106eb51aa6ea215",
+    "expert_reference": "9c28375b17898a6908d61ca3a769f4ba2eab4104e4049439cfa76784eaa86ef5",
+    "layer_candidate": "2da4e551b0c5f64fe34f0db1d63ec96d88c9508b250864a2b438508d6b248db3",
+    "layer_common": "005c168e578724c4284a23c61273f65449a7a8b910e82782cbeb0100857121cc",
+    "layer_reference": "d8d5a9de40ef4e7408ef228465c3ba496f7ee9408e14c575fe5ebe8738f2ae8b",
+    "moe_reference": "895d1b1c97c201e45ab1ea2cfd1c9b16344e848b07d2469a5a88d5c7d037fb81",
+    "support": "58161d1525a4bbea1ea19779447006690602154ea680649cd0c4ba9b438d639b"
+  },
+  "repository": "https://github.com/so-nerdyy/dee.git",
+  "repository_commit": "02673aabbfb9dfba1835102b324f65dae2499968",
+  "schema_version": 1,
   "shards": [
     "model-00022-of-00048.safetensors"
-  ],
-  "schema_version": 1
+  ]
 }
