@@ -40,7 +40,7 @@ M5G-v1/v2/v3 evidence is immutable. No M5H work until the DeepSeek campaign reac
 | DS6 | Freebuff tensor resolver for V4 | ✅ (Python ledger + C++ `TensorResolver` DEEPSEEK_V4 dialect, w1/w3/w2 + scale names) |
 | DS7 | One routed expert on T4 | ✅ (kernel v5 COMPLETE, verdict `MATCH_WITHIN_TOLERANCE`, evidence `ds7-smoke-v5`) |
 | DS8 | Expert cache + Dynamic Expert Eviction | ✅ (kernel v3 COMPLETE, verdict `ACCEPT_EXPERT_RUNTIME`, evidence `ds8-runtime-v3`) |
-| DS9 | Architecture bring-up → first token | 🔶 (kernel v12 COMPLETE, verdict `REJECT_EXPERT_INTEGRATION` — **state fixed** (v9); **router cause PROVEN** (v10/v11); **set-based expert-ID gate policy adopted** (v12, decision 2026-08-02): expert IDs now exact at both steps, verdict re-attributed; remaining: `moe_out`/`shared_out` p99 tail (flip-independent) → expert-integration audit; evidence `ds9-v10-router-diag` … `ds9-v12-reject-expert-integration`) |
+| DS9 | Architecture bring-up → first token | 🔶 (kernel v13 COMPLETE, verdict `REJECT_EXPERT_INTEGRATION`, audit re-attributes to **`REJECT_NUMERICAL`** — state fixed (v9); router cause proven (v10/v11); set-based expert-ID gate adopted (v12); **expert-integration audit (v13): cause PROVEN** — the `moe_out`/`shared_out` p99 tail is driven by bounded BF16-storage-rounded input-boundary drift amplified by the FP32 weighted 6-expert+shared combination at near-cancellation elements; FP16 execution NOT the cause (kernel p99 0.021–0.023 on the reference input, within the 0.05 gate); storage/routing/order/capture all proven clean; evidence `ds9-v13-reject-numerical`) |
 | DS10 | Dual-T4 full-model decode | 🔲 |
 | DS11 | One-T4 path | 🔲 |
 | DS12 | DSpark speculative decoding | 🔲 |
@@ -306,6 +306,56 @@ expert-ID gate is redefined as the **selected expert SET, order-insensitive**
 Next (user-approved): **expert-integration audit** — DS8 isolated-expert
 inputs vs DS9 integrated inputs, route weights, input dtype, accumulation
 order, FP4 unpack, FP16 execution, shared/routed combination.
+
+## DS9 v13 — expert-integration audit: cause proven → REJECT_NUMERICAL
+
+Kernel `nivind/dee-cpp-deepseek-v4-flash-0731-ds9-one-layer` v13 (full pipeline
+COMPLETE, `fatal_error: null`, performance non-comparable). Repository pin
+`672c2f14`; evidence `ds9-v13-reject-numerical/`; archive
+`9a2b8b0d…`; 268 local tests (15 new audit tests).
+
+New device-authentic audit (`scripts/deepseek_v4_expert_audit.py` +
+`expert_integration_classify`) decomposes the ONLY remaining failures
+(`moe_out` p99 0.074/0.099, `shared_out` p99 0.068/0.082 vs the sealed 0.05
+gate) across steps 0 and 16:
+
+**Proven clean (both steps):** capture fidelity (replays bitwise reproduce the
+captured outputs on both sides); FP16 storage representability (FP4 grid ×
+e8m0 scales and E4M3 → FP16 lossless); accumulation-order sensitivity
+(~1e-7); routing-weight delta (≤0.0016); and — decisively — **FP16 kernel
+execution on the reference input: p99 0.0228 (step 0) / 0.0211 (step 16) =
+WITHIN the 0.05 gate**. FP16 execution precision is NOT the cause.
+
+**Proven cause — INTEGRATED_INPUT_DISTRIBUTION (re-attributed to
+REJECT_NUMERICAL):** the candidate's FFN input (`ffn_norm_out`) differs from
+the reference's by bounded BF16 storage rounding only (step 0: 3595/65536
+elements, 2.0 bf16 steps at max magnitude; step 16: 1.0 bf16 step;
+`within_bf16_storage_bound: true`). That bounded delta alone moves the PURE-
+FP32 reference over the gate: `ref_input_sensitivity` p99 = 0.0707 (step 0) /
+0.1094 (step 16); the dequantized-FP32 CUDA execution matches it exactly.
+The tail locator shows the over-gate elements are near-cancellation outputs
+of the weighted 6-expert + shared combination (cancellation ratio ~0.002; a
+~0.4% input perturbation shifts a near-cancelled sum by more than its own
+magnitude).
+
+**Terminal classification:** `REJECT_NUMERICAL` — semantics and integration
+are proven correct (every integration/storage/routing/order/capture defect is
+excluded by evidence); the sealed 0.05 p99 contract fails at the input-boundary
+sensitivity floor. The pre-audit gate chain reported `REJECT_EXPERT_INTEGRATION`;
+the audit re-attributes it. No runtime correction in the Phase-11 priority
+list applies (all excluded by evidence). Corpus is synthetic (official
+hidden-state traces are a DS5 dependency); the causal mechanism is proven
+independent of the corpus.
+
+**Product-policy decision requested** — options discussed with the user:
+(1) keep the sealed 0.05 gate and accept REJECT_NUMERICAL (no runtime fix
+can reduce the cross-backend BF16-storage-rounded input boundary below ~1
+bf16 step, which the FP32 combination amplifies past the gate);
+(2) re-baseline the expert contract to an input-invariant comparison (candidate
+kernels on the reference input pass at p99 ≤ 0.023 — this is what DS8-style
+isolated validation measures);
+(3) replace the synthetic DS9 corpus with official hidden-state traces (DS5)
+and re-measure before deciding.
 
 ## Precision families (measured, not assumed)
 

@@ -532,6 +532,67 @@
       "terminal": "COMPLETE",
       "topk": 6,
       "verdict": "REJECT_EXPERT_INTEGRATION"
+    },
+    {
+      "archive_sha256": "9a2b8b0d89e9762363e60bd8e71c8888a066af9bcc67cf1bf22825179c9e1a95",
+      "audit_attribution": "INTEGRATED_INPUT_DISTRIBUTION",
+      "branch_head_at_launch": "113499a4f991f33014861891470324bcb542ef70",
+      "cache": {
+        "evictions": 0,
+        "h2d_bytes": 3875536896,
+        "loads": 77,
+        "warm_reloaded_experts": 0
+      },
+      "candidate_executed_on_cuda": true,
+      "cause_summary": "moe_out/shared_out p99 tail is driven by bounded BF16-storage-rounded input-boundary drift (ffn_norm_out: 1-2 bf16 steps on 5-9% of elements, within_bf16_storage_bound true) amplified by the FP32 weighted 6-expert + shared combination at near-cancellation elements (cancellation ratio ~0.002; pure-FP32 reference on the candidate input already exceeds the 0.05 gate at p99 0.071/0.109). FP16 execution is not the cause. Semantics/integration proven correct; sealed tolerance contract fails.",
+      "corrected_terminal_classification": "REJECT_NUMERICAL",
+      "evidence_dir": "benchmark_reports/deepseek-v4-flash-0731-t4/ds9-v13-reject-numerical/",
+      "headline": {
+        "accumulation_order_max_rel": {
+          "step0": 1.1e-07,
+          "step16": 1.1e-07
+        },
+        "fp32exec_cand_input_p99": {
+          "step0": 0.070708,
+          "step16": 0.109405
+        },
+        "kernel_ref_input_p99": {
+          "step0": 0.022809,
+          "step16": 0.021073
+        },
+        "moe_out_p99": {
+          "step0": 0.073887,
+          "step16": 0.099457
+        },
+        "ref_input_sensitivity_p99": {
+          "step0": 0.07072,
+          "step16": 0.109401
+        },
+        "routing_substitution_p99": {
+          "step0": 0.01528,
+          "step16": 0.012809
+        },
+        "shared_out_p99": {
+          "step0": 0.067683,
+          "step16": 0.081726
+        }
+      },
+      "kernel": "nivind/dee-cpp-deepseek-v4-flash-0731-ds9-one-layer",
+      "kernel_version": 13,
+      "notes": "Corpus is synthetic (official hidden-state traces are a DS5 dependency). peak VRAM 4.65 GB, candidate CUDA resident.",
+      "peak_vram_bytes": 4647194112,
+      "performance_comparable": false,
+      "proved_clean": [
+        "capture fidelity (replays bitwise reproduce captured outputs)",
+        "FP16 storage representability (FP4 grid x e8m0 / E4M3 -> FP16 lossless)",
+        "accumulation-order sensitivity (~1e-7 rel)",
+        "routing-weight delta (<=0.00165 max abs)",
+        "FP16 kernel precision on the reference input (p99 0.021-0.023 <= 0.05 gate)"
+      ],
+      "repository_pin": "672c2f14e76d0aef573931c41a28ab3bd294b7cb",
+      "run_id": "ds9-v13-reject-numerical",
+      "terminal_state": "COMPLETE",
+      "terminal_verdict": "REJECT_EXPERT_INTEGRATION"
     }
   ],
   "schema_version": 1
