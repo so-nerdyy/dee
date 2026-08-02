@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/so-nerdyy/dee.git",
   "branch": "freebuff/deepseek-v4-flash-0731-t4",
-  "repository_commit": "PENDING_REPIN",
+  "repository_commit": "0180e489272c20730a5816137ef3842119255759",
   "harness_file": "dee.cpp/kaggle/deepseek-v4-flash-0731/deepseek_v4_layer_runtime.py",
   "harness_sha256": "7d825a16fdc328259710d4508b03d5ea116d519bfcf17705b085652db61b6d04",
   "module_sha256": {
