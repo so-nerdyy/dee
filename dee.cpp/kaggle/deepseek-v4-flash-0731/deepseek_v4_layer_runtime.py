@@ -590,74 +590,18 @@ def router_ulp_trace(rc: dict[str, Any], cc: dict[str, Any],
 
 def classify_router_diagnosis(diag: dict[str, Any],
                               iso: dict[str, Any]) -> dict[str, Any]:
-    """DS9 v10 diagnostic classification (campaign outcome rules).
+    """DS9 v10/v11 diagnostic classification.
 
-    Priority: topk semantics (identical scores, different ordering) ->
-    router implementation (identical input, different device result) ->
-    upstream layout/state (input drift is structural, not ULP) ->
-    input-driven flip (device agrees, input differs, flip reproduced).
+    Delegates to the contract module's router_diagnosis_classify (pure,
+    CPU-testable).  The v11 refinement replaces the v10 'max_ulp > 64'
+    heuristic with the bf16_storage_bound discriminator, which is required
+    for correctness: one bf16 rounding step at magnitude 2**e spans 2**16
+    fp32 ULPs, so any bf16-stored activation trivially exceeds a raw-ULP
+    threshold and the v10 rule mislabeled storage-rounded drift as a
+    layout/lifetime/transfer defect.
     """
-    flip = diag.get("first_flip_token")
-    ins = diag.get("input_summary") or {}
-    reasons: list[str] = []
-    if flip is None:
-        reasons.append("no expert-ID set difference in this step's tokens")
-        return {"verdict": "NO_FLIP_OBSERVED", "reasons": reasons}
-    # topk semantics: only the FLIP row matters (a tie on another row is not
-    # the operative cause); identical biased scores must produce the same
-    # top-k ids on CPU vs CUDA at the flip token.
-    topk_rowwise = iso.get("topk_same_scores_cpu_vs_cuda_rowwise")
-    if topk_rowwise is not None and not topk_rowwise[flip]:
-        verdict = "REJECT_TOPK_SEMANTICS"
-        reasons.append("identical biased scores produce different top-k "
-                       "ids on CPU vs CUDA at the flip token "
-                       "(tie/ordering semantics differ)")
-    else:
-        dev_diff: list[str] = []
-        for lbl in ("ref_in", "cand_in"):
-            rowwise = iso.get(f"{lbl}_ids_cpu_vs_cuda_rowwise")
-            if rowwise is not None and not rowwise[flip]:
-                dev_diff.append(lbl)
-        if dev_diff:
-            verdict = "REJECT_ROUTER_IMPLEMENTATION"
-            reasons.append("identical router input produces different "
-                           f"expert ids on CPU vs CUDA at the flip token "
-                           f"({', '.join(dev_diff)}); CUDA matmul "
-                           "reduction/order differs from CPU")
-        elif ins.get("count_diff", 0) == 0:
-            verdict = "INVALID_EXPERIMENT"
-            reasons.append("inputs bitwise identical and device agrees, "
-                           "yet ids differ (unobserved cause)")
-        elif (ins.get("max_ulp", 0) or 0) > 64:
-            verdict = "REJECT_UPSTREAM_LAYOUT_OR_STATE"
-            reasons.append(f"router input drift is not ULP-level "
-                           f"(max_ulp {ins.get('max_ulp')}); "
-                           "layout/lifetime/transfer suspected")
-        else:
-            cpu_ref = iso.get("ref_in_cpu_ids")
-            cpu_cand = iso.get("cand_in_cpu_ids")
-            if cpu_ref is not None and cpu_cand is not None \
-                    and cpu_ref != cpu_cand:
-                verdict = "ROUTER_IMPLEMENTATION_EXACT_INPUT_DRIVEN_FLIP"
-                reasons.append("router is exact for identical input (CPU "
-                               "and CUDA agree); the top-6 flip is "
-                               "reproduced by the measured ULP-level "
-                               "router-input drift alone")
-            else:
-                verdict = "INVALID_EXPERIMENT"
-                reasons.append("device agrees and inputs differ but the CPU "
-                               "router does not reproduce the flip "
-                               "(unobserved cause)")
-    sens = diag.get("sensitivity") or {}
-    return {
-        "verdict": verdict,
-        "reasons": reasons,
-        "flip_token": flip,
-        "input_max_ulp": ins.get("max_ulp"),
-        "input_count_diff": ins.get("count_diff"),
-        "sensitivity_explained": sens.get("flip_explained"),
-        "dx_vs_min_reverse_ratio": sens.get("dx_vs_min_reverse_ratio"),
-    }
+    from scripts import deepseek_v4_contract as v4contract  # noqa: E402
+    return v4contract.router_diagnosis_classify(diag, iso)
 
 
 def main() -> int:

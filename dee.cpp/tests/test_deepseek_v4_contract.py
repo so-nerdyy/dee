@@ -440,3 +440,151 @@ def test_corpus_official_trace_json_load() -> None:
         assert "loaded" in meta["official_trace_note"]
     finally:
         trace_path.unlink(missing_ok=True)
+
+
+def test_bf16_storage_bound_rounding_vs_structural() -> None:
+    rng = torch.Generator().manual_seed(11)
+    ref = (torch.randn(4096, generator=rng) * 0.5).clamp(-1.5, 1.5)
+    # ~5% of elements shifted by exactly one bf16 ulp at the tensor scale
+    # (2**-7 for magnitude in [1, 2)) -> rounding drift stays within bound.
+    cand = ref.clone()
+    idx = torch.randperm(4096, generator=rng)[:200]
+    cand[idx] = cand[idx] + 0.0078125
+    b = contract.bf16_storage_bound(ref, cand)
+    assert b["within_bf16_storage_bound"] is True
+    assert b["max_abs_in_bf16_steps"] <= 2.0
+    assert b["fraction_within_one_bf16_step"] >= 0.9
+    # near-zero element: large RELATIVE shift, tiny ABSOLUTE shift -> the
+    # absolute bound at the tensor scale still holds (no structural signal).
+    ref_near = ref.clone()
+    ref_near[0] = 0.0005
+    cand_near = ref_near.clone()
+    cand_near[0] = 0.0015
+    bn = contract.bf16_storage_bound(ref_near, cand_near)
+    assert bn["within_bf16_storage_bound"] is True
+    # structural: sign flips on the 50 largest-magnitude elements move values
+    # on the order of the full range.
+    top_idx = torch.topk(ref.abs(), 50).indices
+    bad = ref.clone()
+    bad[top_idx] = bad[top_idx] * -1.0
+    bb = contract.bf16_storage_bound(ref, bad)
+    assert bb["within_bf16_storage_bound"] is False
+    assert bb["max_abs_in_bf16_steps"] >= 64.0
+    # fraction discriminator: diffs of 4 bf16 grid steps on 85% of elements.
+    # max_abs_steps sits at the 4.0 threshold (within fp32 representation), so
+    # ONLY the fraction gate can reject this -> isolates the fraction gate.
+    many = ref.clone()
+    many[torch.randperm(4096, generator=rng)[:3500]] += 0.03125
+    bm = contract.bf16_storage_bound(ref, many)
+    assert bm["max_abs_in_bf16_steps"] <= 4.01
+    assert bm["fraction_within_one_bf16_step"] < 0.9
+    assert bm["within_bf16_storage_bound"] is False
+
+
+def _iso(topk_ok: bool = True, ref_ok: bool = True, cand_ok: bool = True,
+         ref_ids: list[int] | None = None,
+         cand_ids: list[int] | None = None) -> dict:
+    ok = [True] * 16
+    if not topk_ok:
+        ok[4] = False
+    ref_in_ok = [True] * 16
+    cand_in_ok = [True] * 16
+    if not ref_ok:
+        ref_in_ok[4] = False
+    if not cand_ok:
+        cand_in_ok[4] = False
+    return {
+        "topk_same_scores_cpu_vs_cuda_rowwise": ok,
+        "ref_in_ids_cpu_vs_cuda_rowwise": ref_in_ok,
+        "cand_in_ids_cpu_vs_cuda_rowwise": cand_in_ok,
+        "ref_in_cpu_ids": ref_ids if ref_ids is not None
+        else [6, 30, 78, 102, 198, 214],
+        "cand_in_cpu_ids": cand_ids if cand_ids is not None
+        else [6, 30, 78, 198, 102, 214],
+    }
+
+
+def _diag(*, within: bool = True, sym_diff: list[int] | None = None,
+          count_diff: int = 3595) -> dict:
+    return {
+        "first_flip_token": 4,
+        "input_summary": {
+            "count_diff": count_diff,
+            "max_ulp": 264634367,
+            "max_abs": 0.015625,
+            "bf16_storage_bound": {
+                "max_abs": 0.015625,
+                "max_magnitude": 1.84375,
+                "bf16_ulp_at_max_magnitude": 0.0078125,
+                "max_abs_in_bf16_steps": 2.0,
+                "fraction_within_one_bf16_step": 0.97,
+                "within_bf16_storage_bound": within,
+            },
+        },
+        "boundary": {
+            "symmetric_difference": sym_diff if sym_diff is not None else [],
+            "margin_ref": 0.0153,
+            "margin_cand": 0.0146,
+        },
+        "sensitivity": {"flip_explained": False},
+    }
+
+
+def test_router_diagnosis_classify_ordering_within_set() -> None:
+    out = contract.router_diagnosis_classify(_diag(), _iso())
+    assert out["verdict"] == "ROUTER_IMPLEMENTATION_EXACT_INPUT_DRIVEN_FLIP"
+    assert out["flip_scope"] == "ORDERING_WITHIN_SET"
+    assert out["sets_identical"] is True
+    assert out["flip_reproduced_by_input"] is True
+    assert out["flip_token"] == 4
+
+
+def test_router_diagnosis_classify_selection_flip_bounded() -> None:
+    out = contract.router_diagnosis_classify(_diag(sym_diff=[198]), _iso())
+    assert out["verdict"] == "ROUTER_IMPLEMENTATION_EXACT_INPUT_DRIVEN_FLIP"
+    assert out["flip_scope"] == "SELECTION_FLIP"
+    assert out["sets_identical"] is False
+
+
+def test_router_diagnosis_classify_unfaithful_capture_reject() -> None:
+    # The campaign's real structural signal: the isolation capture does not
+    # reproduce the device path -> layout/lifetime/transfer/stale data.
+    iso = _iso()
+    iso["captured_ref_matches_cpu_recompute"] = False
+    out = contract.router_diagnosis_classify(_diag(), iso)
+    assert out["verdict"] == "REJECT_UPSTREAM_LAYOUT_OR_STATE"
+    assert "unfaithful" in " ".join(out["reasons"])
+
+
+def test_router_diagnosis_classify_structural_reject() -> None:
+    # Defensive branch: input delta not storage-bounded AND the CPU router
+    # does not reproduce the flip (isolation/diag inconsistency) -> the
+    # operative input/path differs -> layout/lifetime/transfer.
+    out = contract.router_diagnosis_classify(
+        _diag(within=False, sym_diff=[198]),
+        _iso(ref_ids=[6, 30, 78, 102, 198, 214],
+             cand_ids=[6, 30, 78, 102, 198, 214]))
+    assert out["verdict"] == "REJECT_UPSTREAM_LAYOUT_OR_STATE"
+
+
+def test_router_diagnosis_classify_router_implementation_reject() -> None:
+    out = contract.router_diagnosis_classify(_diag(), _iso(cand_ok=False))
+    assert out["verdict"] == "REJECT_ROUTER_IMPLEMENTATION"
+
+
+def test_router_diagnosis_classify_topk_semantics_reject() -> None:
+    out = contract.router_diagnosis_classify(_diag(), _iso(topk_ok=False))
+    assert out["verdict"] == "REJECT_TOPK_SEMANTICS"
+
+
+def test_router_diagnosis_classify_identical_inputs_invalid() -> None:
+    out = contract.router_diagnosis_classify(_diag(count_diff=0), _iso())
+    assert out["verdict"] == "INVALID_EXPERIMENT"
+
+
+def test_router_diagnosis_classify_anomalous_but_input_driven() -> None:
+    # Not storage-bounded yet the flip is reproduced by the captured inputs:
+    # still an input-driven flip (isolation rules out structural), flagged.
+    out = contract.router_diagnosis_classify(_diag(within=False), _iso())
+    assert out["verdict"] == "ROUTER_IMPLEMENTATION_EXACT_INPUT_DRIVEN_FLIP"
+    assert "exceeds" in " ".join(out["reasons"])

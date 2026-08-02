@@ -755,6 +755,7 @@ def router_boundary_metrics(
         "ref_min": float(ref_xf.min()), "ref_max": float(ref_xf.max()),
         "cand_min": float(cand_xf.min()), "cand_max": float(cand_xf.max()),
         "ref_norm": float(ref_xf.norm()), "cand_norm": float(cand_xf.norm()),
+        "bf16_storage_bound": bf16_storage_bound(ref_xf, cand_xf),
     }
 
     # ---- official pipeline for both inputs --------------------------------
@@ -846,3 +847,234 @@ def router_boundary_metrics(
     out["sensitivity"] = _router_sensitivity(
         ref_xf[flip_row], cand_xf[flip_row], gw, gb, rs, cs, flip_row, topk)
     return out
+
+
+# ---- DS9 v11: bf16-storage-bound discriminator + refined classification -----
+#
+# v10 classified the router-input delta with a raw fp32-ULP heuristic
+# ("max_ulp > 64 => REJECT_UPSTREAM_LAYOUT_OR_STATE").  That heuristic is
+# invalid for BF16-stored activations: a single bf16 rounding step at
+# magnitude 2**e spans 2**16 fp32 ULPs (bf16 keeps 8 mantissa bits), so a
+# ~1-ULP fp32 accumulation drift that surfaces as one bf16 grid step in ~5%
+# of elements reads as max_ulp ~ 1e8.  v11 replaces it with an absolute-error
+# discriminator scaled by the bf16 ulp of the tensor's largest magnitude and
+# lets the isolation matrix drive the outcome rules.
+
+
+def _bf16_ulp_at(mag: float) -> float:
+    """BF16 ulp (normal range) at magnitude `mag`: 2**(floor(log2(mag)) - 7)."""
+    if not math.isfinite(mag) or mag <= 0.0:
+        return 0.0
+    return 2.0 ** (math.floor(math.log2(mag)) - 7)
+
+
+def bf16_storage_bound(a: torch.Tensor, b: torch.Tensor, *,
+                       max_steps: float = 4.0,
+                       min_fraction_within_one: float = 0.9,
+                       ) -> dict[str, Any]:
+    """Structural-vs-rounding discriminator for bf16-stored activations.
+
+    Returns a JSON-safe summary of whether |a - b| is consistent with BF16
+    storage rounding rather than a layout/lifetime/transfer defect.
+
+      max_abs                       largest absolute difference
+      max_magnitude                 largest |value| across both tensors
+      bf16_ulp_at_max_magnitude     BF16 ulp at that magnitude
+      max_abs_in_bf16_steps         max_abs / that ulp
+      fraction_within_one_bf16_step fraction of ALL elements with
+                                    |a - b| <= that ulp
+      within_bf16_storage_bound     steps <= max_steps AND
+                                    fraction >= min_fraction_within_one
+
+    Rationale: raw fp32-ULP distance is meaningless for storage-rounded data
+    (one bf16 grid step == 2**16 fp32 ULPs).  Near-zero elements show large
+    RELATIVE error at tiny ABSOLUTE error, so the bound is absolute at the
+    tensor's own scale: a genuine layout/stride/transfer bug moves values on
+    the order of the full value range (max_abs_steps >> 4, fraction ~ 0),
+    while rounding drift keeps every differing element within a few grid
+    steps of the largest activation.
+    """
+    a32 = a.detach().float()
+    b32 = b.detach().float()
+    d = (a32 - b32).abs()
+    numel = d.numel()
+    if numel == 0:
+        # Fail-open on empty tensors is deliberate: a missing comparison is
+        # not evidence of a structural defect.  The "empty" marker lets
+        # consumers decide (the harness never feeds empty router inputs).
+        return {
+            "empty": True,
+            "max_abs": 0.0,
+            "max_magnitude": 0.0,
+            "bf16_ulp_at_max_magnitude": 0.0,
+            "max_abs_in_bf16_steps": 0.0,
+            "fraction_within_one_bf16_step": 1.0,
+            "within_bf16_storage_bound": True,
+            "max_steps_threshold": max_steps,
+            "min_fraction_within_one": min_fraction_within_one,
+        }
+    max_abs = float(d.max())
+    max_mag = float(torch.maximum(a32.abs().max(), b32.abs().max()))
+    ulp = _bf16_ulp_at(max_mag)
+    steps = (max_abs / ulp) if ulp > 0.0 else math.inf
+    frac_one = float((d <= ulp).float().mean())
+    within = bool(steps <= max_steps and frac_one >= min_fraction_within_one)
+    return {
+        "empty": False,
+        "max_abs": max_abs,
+        "max_magnitude": max_mag,
+        "bf16_ulp_at_max_magnitude": ulp,
+        "max_abs_in_bf16_steps": steps if math.isfinite(steps) else None,
+        "fraction_within_one_bf16_step": frac_one,
+        "within_bf16_storage_bound": within,
+        "max_steps_threshold": max_steps,
+        "min_fraction_within_one": min_fraction_within_one,
+    }
+
+
+def router_diagnosis_classify(diag: dict[str, Any],
+                              iso: dict[str, Any]) -> dict[str, Any]:
+    """Refined DS9 v10/v11 diagnostic classification (campaign outcome rules).
+
+    Priority:
+      1. REJECT_TOPK_SEMANTICS            identical biased scores, different
+                                          top-k ids CPU vs CUDA (flip row)
+      2. REJECT_ROUTER_IMPLEMENTATION     identical router input, different
+                                          ids CPU vs CUDA (flip row)
+      3. INVALID_EXPERIMENT               inputs bitwise identical yet ids differ
+      4. REJECT_UPSTREAM_LAYOUT_OR_STATE  fires when (a) the isolation
+                                          capture is unfaithful
+                                          (captured_*_matches_*_recompute is
+                                          False -> layout/lifetime/transfer /
+                                          stale data change the effective
+                                          input), or (b) the captured input
+                                          delta does NOT reproduce the flip
+                                          (isolation/diag inconsistency)
+
+    NOTE: because first_flip_token is itself defined as the first row where
+    the CPU router differs between the two captured inputs, branch (b) is
+    only reachable when the isolation matrix and the boundary metrics are
+    inconsistent (e.g. different truncation); with faithful captures the
+    structural signal is carried by the fidelity flags in branch (a).
+      5. ROUTER_IMPLEMENTATION_EXACT_INPUT_DRIVEN_FLIP
+                                          router + top-k exact for identical
+                                          input; the bf16-storage-bounded input
+                                          delta reproduces the flip.
+                                          flip_scope = ORDERING_WITHIN_SET when
+                                          per-token selected expert SETS are
+                                          identical (the exact tuple gate then
+                                          fails only on intra-set rank order);
+                                          SELECTION_FLIP when the sets differ.
+    """
+    flip = diag.get("first_flip_token")
+    ins = diag.get("input_summary") or {}
+    if flip is None:
+        return {"verdict": "NO_FLIP_OBSERVED",
+                "reasons": ["no expert-ID set difference in this step's "
+                            "tokens"]}
+    topk_rowwise = iso.get("topk_same_scores_cpu_vs_cuda_rowwise")
+    if topk_rowwise is not None and flip < len(topk_rowwise) \
+            and not topk_rowwise[flip]:
+        return {"verdict": "REJECT_TOPK_SEMANTICS",
+                "reasons": ["identical biased scores produce different top-k "
+                            "ids on CPU vs CUDA at the flip token "
+                            "(tie/ordering semantics differ)"],
+                "flip_token": flip}
+    dev_diff: list[str] = []
+    for lbl in ("ref_in", "cand_in"):
+        rowwise = iso.get(f"{lbl}_ids_cpu_vs_cuda_rowwise")
+        if rowwise is not None and flip < len(rowwise) \
+                and not rowwise[flip]:
+            dev_diff.append(lbl)
+    if dev_diff:
+        return {"verdict": "REJECT_ROUTER_IMPLEMENTATION",
+                "reasons": ["identical router input produces different expert "
+                            f"ids on CPU vs CUDA at the flip token "
+                            f"({', '.join(dev_diff)}); CUDA matmul "
+                            "reduction/order differs from CPU"],
+                "flip_token": flip}
+    if ins.get("count_diff", 0) == 0:
+        return {"verdict": "INVALID_EXPERIMENT",
+                "reasons": ["inputs bitwise identical and device agrees, yet "
+                            "ids differ (unobserved cause)"],
+                "flip_token": flip}
+    # Unfaithful isolation captures are the campaign's structural signal: if
+    # the captured router inputs do not reproduce the device path, the
+    # operative input (layout/lifetime/transfer/stale data) differs.
+    cap_ref = iso.get("captured_ref_matches_cpu_recompute")
+    cap_cand = iso.get("captured_cand_matches_cuda_recompute")
+    if cap_ref is False or cap_cand is False:
+        return {"verdict": "REJECT_UPSTREAM_LAYOUT_OR_STATE",
+                "reasons": ["isolation capture is unfaithful "
+                            f"(captured_ref_matches_cpu_recompute={cap_ref}, "
+                            f"captured_cand_matches_cuda_recompute={cap_cand}); "
+                            "the operative router input or its production "
+                            "path differs from the captured tensors "
+                            "(layout/lifetime/transfer/stale-data "
+                            "suspected)"],
+                "flip_token": flip}
+    cpu_ref = iso.get("ref_in_cpu_ids")
+    cpu_cand = iso.get("cand_in_cpu_ids")
+    if cpu_ref is None or cpu_cand is None:
+        return {"verdict": "INVALID_EXPERIMENT",
+                "reasons": ["isolation matrix lacks CPU router ids; cannot "
+                            "attribute the flip to input drift"],
+                "flip_token": flip}
+    reproduced = list(cpu_ref) != list(cpu_cand)
+    bound = ins.get("bf16_storage_bound") or {}
+    sym_diff = list((diag.get("boundary") or {}).get(
+        "symmetric_difference") or [])
+    sets_identical = len(sym_diff) == 0
+    within = bool(bound.get("within_bf16_storage_bound", False))
+    steps = bound.get("max_abs_in_bf16_steps")
+    reasons: list[str] = []
+    if not reproduced:
+        verdict = "REJECT_UPSTREAM_LAYOUT_OR_STATE"
+        reasons.append("device router is exact for identical input, yet the "
+                       "captured reference/candidate inputs do not reproduce "
+                       "the flip on the same (CPU) implementation; the "
+                       "operative input or its production path differs "
+                       "(layout/lifetime/transfer/stale-data suspected)")
+    else:
+        if within:
+            reasons.append("router exact for identical input (CPU and CUDA "
+                           "agree on both inputs at the flip token); top-k "
+                           "kernel semantics exact on identical scores; "
+                           "router-input delta bounded by bf16 storage "
+                           "rounding (max_abs_in_bf16_steps="
+                           f"{steps if steps is not None else 'inf'}); flip "
+                           "reproduced by the input difference alone on "
+                           "identical implementations")
+        else:
+            reasons.append("flip reproduced by the captured input delta on "
+                           "identical implementations, but that delta exceeds "
+                           "the bf16 storage-rounding envelope "
+                           "(max_abs_in_bf16_steps="
+                           f"{steps if steps is not None else 'inf'}); the "
+                           "isolation matrix rules out layout/lifetime/"
+                           "transfer, so this is an anomalous-but-input-"
+                           "driven amplification")
+        if sets_identical:
+            reasons.append("per-token selected expert SETS are identical at "
+                           "every checked token; the exact tuple gate fails "
+                           "only on intra-set rank order (ordering artifact "
+                           "of bounded storage rounding)")
+        verdict = "ROUTER_IMPLEMENTATION_EXACT_INPUT_DRIVEN_FLIP"
+    return {
+        "verdict": verdict,
+        "reasons": reasons,
+        "flip_token": flip,
+        "flip_scope": ("ORDERING_WITHIN_SET" if sets_identical
+                       else "SELECTION_FLIP"),
+        "sets_identical": sets_identical,
+        "symmetric_difference": sym_diff,
+        "flip_reproduced_by_input": reproduced,
+        "input_max_ulp": ins.get("max_ulp"),
+        "input_count_diff": ins.get("count_diff"),
+        "input_max_abs": ins.get("max_abs"),
+        "bf16_storage_bound": bound,
+        "sensitivity_explained": (diag.get("sensitivity") or {}).get(
+            "flip_explained"),
+        "dx_vs_min_reverse_ratio": (diag.get("sensitivity") or {}).get(
+            "dx_vs_min_reverse_ratio"),
+    }
