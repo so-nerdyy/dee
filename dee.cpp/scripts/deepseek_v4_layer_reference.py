@@ -514,15 +514,29 @@ class DeepseekV4Layer:
         """CPU fp32 snapshots of every mutable state buffer (for cross-device
         bounded state agreement: the reference runs on CPU, the candidate on
         CUDA, so backend ULP drift means the buffers are compared with per-
-        buffer relative bounds, not bitwise)."""
+        buffer relative bounds, not bitwise).
+
+        DS9 v9 fix: every snapshot is CLONED.  ``detach().float().cpu()`` is
+        an identity for already-fp32 CPU tensors, so pre-v9 snapshots
+        ALIASED the live buffers; the warm-replay ``reset_state()`` then
+        zeroed/-inf-filled the aliased snapshots before the per-step gates
+        compared them, manufacturing the phantom structural state divergence
+        of v6/v8 (max_rel 0.387/0.548 on pristine buffers).  The boundary
+        captures proved the real state writes are identical modulo 1-7 ULP
+        cross-device reduction-order drift."""
         attn = self.attn
         return {
-            "attn_kv_cache": attn.kv_cache.detach().float().cpu(),
-            "compressor_kv_state": attn.compressor.kv_state.detach().float().cpu(),
-            "compressor_score_state": attn.compressor.score_state.detach().float().cpu(),
-            "indexer_kv_cache": attn.indexer.kv_cache.detach().float().cpu(),
-            "indexer_compressor_kv_state": attn.indexer.compressor.kv_state.detach().float().cpu(),
-            "indexer_compressor_score_state": attn.indexer.compressor.score_state.detach().float().cpu(),
+            "attn_kv_cache": attn.kv_cache.detach().float().cpu().clone(),
+            "compressor_kv_state":
+                attn.compressor.kv_state.detach().float().cpu().clone(),
+            "compressor_score_state":
+                attn.compressor.score_state.detach().float().cpu().clone(),
+            "indexer_kv_cache":
+                attn.indexer.kv_cache.detach().float().cpu().clone(),
+            "indexer_compressor_kv_state":
+                attn.indexer.compressor.kv_state.detach().float().cpu().clone(),
+            "indexer_compressor_score_state":
+                attn.indexer.compressor.score_state.detach().float().cpu().clone(),
         }
 
 

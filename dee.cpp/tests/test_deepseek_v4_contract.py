@@ -233,6 +233,33 @@ def test_state_mask_analysis_legitimate_sentinels_pass() -> None:
     assert out["score"]["first_value_divergence"] is None
 
 
+def test_state_mask_analysis_ulp_drift_passes_structural() -> None:
+    # DS9 v9: the reference (CPU fp32) and candidate (CUDA fp32) run the SAME
+    # module, so cross-device reduction order legitimately drifts state
+    # values by 1-7 ULP while every structural mask stays identical.  A tiny
+    # value drift with identical masks must PASS the structural gate
+    # (ok=True) with first_value_divergence preserved as the first-
+    # divergence locator payload; real mask divergence still fails (covered
+    # by the sentinel/written-slot tests above).
+    ref = {"score": torch.full((2, 4), float("-inf"))}
+    cand = torch.full((2, 4), float("-inf"))
+    ref["score"][0, 0] = 0.5
+    cand[0, 0] = 0.5 + 2.0**-24  # exactly 1 fp32 ULP above 0.5
+    out = contract.state_mask_analysis(
+        ref, {"score": cand}, init_values={"score": float("-inf")})
+    assert out["score"]["sentinel_mask_exact"] is True
+    assert out["score"]["written_slot_mask_exact"] is True
+    assert out["score"]["untouched_slot_mask_exact"] is True
+    assert out["score"]["mask_divergence"] is None
+    assert out["score"]["ok"] is True  # v9: structural masks only
+    fd = out["score"]["first_value_divergence"]
+    assert fd is not None  # locator evidence preserved
+    assert fd["flat_index"] == 0
+    assert fd["abs_error"] == 2.0**-24
+    assert fd["ulp"] == 1
+    assert fd["ref_bits"] != fd["cand_bits"]
+
+
 def test_corpus_distributions_shapes_and_seed_repro() -> None:
     cases, meta = corpus.build_corpus(6, 64, base_seed=7)
     assert meta["n_tokens"] == 6 and meta["hidden"] == 64

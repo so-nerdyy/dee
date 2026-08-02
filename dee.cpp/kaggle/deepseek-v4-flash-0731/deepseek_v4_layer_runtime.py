@@ -369,6 +369,16 @@ def boundary_captures_compare(ref_caps: dict[str, Any],
     different the first divergent element with ref/cand bits, values, abs /
     rel error and ULP distance (fail-closed per-key).
     """
+    # DS9 v9: keys whose bitwise equality is REQUIRED ("structural"): fresh
+    # inputs, the positional bias, and scalars carry NO state and no cross-
+    # device reduction, so they must be bitwise identical.  The raw
+    # projections (kv_raw/score_raw) and the pre-write state snapshots are
+    # LOCATOR evidence: the reference (CPU fp32) and candidate (CUDA fp32)
+    # run the same module, so those legitimately drift by 1-7 ULP from
+    # cross-device reduction order (v8 proved input/ape/scalars bitwise
+    # while kv_raw/score_raw drifted 1-7 ULP).  ``boundary_captures_ok``
+    # therefore gates ONLY the structural keys; the locator rows stay in
+    # the evidence with their ULP/first-divergent-element payload.
     result: dict[str, Any] = {}
 
     def _ulp(a: float, b: float) -> int:
@@ -379,23 +389,25 @@ def boundary_captures_compare(ref_caps: dict[str, Any],
         ib = ordered(struct.unpack("<I", struct.pack("<f", float(b)))[0])
         return abs(ia - ib)
 
-    def compare_one(key: str) -> None:
+    def compare_one(key: str, structural: bool) -> None:
         full = key
         rt = ref_caps.get(key)
         ct = cand_caps.get(key)
         if rt is None or ct is None:
-            result[full] = {"present": False}
+            result[full] = {"present": False, "structural": structural}
             return
         if not isinstance(rt, torch.Tensor) or not isinstance(ct, torch.Tensor):
             # scalar metadata (start_pos, should_compress): plain equality
             result[full] = {"bitwise_exact": bool(rt == ct),
-                            "reference": rt, "candidate": ct}
+                            "reference": rt, "candidate": ct,
+                            "structural": structural}
             return
         rf = rt.float().reshape(-1)
         cf = ct.float().reshape(-1)
         exact = bool(torch.equal(rf, cf))
         row: dict[str, Any] = {"bitwise_exact": exact,
-                               "numel": int(rf.numel())}
+                               "numel": int(rf.numel()),
+                               "structural": structural}
         if not exact:
             diff = (rf != cf).nonzero().squeeze(-1)
             flat = int(diff[0])
@@ -414,26 +426,37 @@ def boundary_captures_compare(ref_caps: dict[str, Any],
             })
         result[full] = row
 
-    for key in ("compressor_input", "compressor_kv_raw",
-                "compressor_score_raw", "compressor_ape",
-                "compressor_kv_state_pre", "compressor_score_state_pre",
-                "compressor_start_pos", "compressor_should_compress"):
-        compare_one(key)
+    for key, structural in (
+            ("compressor_input", True),
+            ("compressor_ape", True),
+            ("compressor_start_pos", True),
+            ("compressor_should_compress", True),
+            ("compressor_kv_raw", False),
+            ("compressor_score_raw", False),
+            ("compressor_kv_state_pre", False),
+            ("compressor_score_state_pre", False)):
+        compare_one(key, structural)
     rsub = ref_caps.get("indexer_compressor") or {}
     csub = cand_caps.get("indexer_compressor") or {}
-    for key in ("compressor_input", "compressor_kv_raw",
-                "compressor_score_raw", "compressor_ape",
-                "compressor_kv_state_pre", "compressor_score_state_pre"):
+    for key, structural in (
+            ("compressor_input", True),
+            ("compressor_ape", True),
+            ("compressor_kv_raw", False),
+            ("compressor_score_raw", False),
+            ("compressor_kv_state_pre", False),
+            ("compressor_score_state_pre", False)):
         if key not in rsub or key not in csub:
             # fail-closed: a missing capture on EITHER side is reported
             # (present: False), never silently skipped
-            result[f"indexer_compressor/{key}"] = {"present": False}
+            result[f"indexer_compressor/{key}"] = {
+                "present": False, "structural": structural}
             continue
         rt = rsub[key].float().reshape(-1)
         ct = csub[key].float().reshape(-1)
         exact = bool(torch.equal(rt, ct))
         row: dict[str, Any] = {"bitwise_exact": exact,
-                               "numel": int(rt.numel())}
+                               "numel": int(rt.numel()),
+                               "structural": structural}
         if not exact:
             diff = (rt != ct).nonzero().squeeze(-1)
             flat = int(diff[0])
@@ -862,10 +885,22 @@ def main() -> int:
             row["state_masks_ok"] = bool(state_masks_ok)
             boundary = boundary_captures_compare(rc, cc)
             row["boundary_captures"] = boundary
+            # DS9 v9: gate ONLY the structural keys (input/ape/scalars); the
+            # raw-projection and pre-write-state rows are locator evidence
+            # where 1-7 ULP cross-device drift is the finding, not a failure.
             boundary_ok = all(
                 (v.get("bitwise_exact", False) if v.get("present", True)
-                 else False) for v in boundary.values())
+                 else False)
+                for k, v in boundary.items() if v.get("structural", False))
             row["boundary_captures_ok"] = bool(boundary_ok)
+            row["boundary_locator_ulp"] = {
+                k: ({"ulp": v.get("ulp"), "abs_error": v.get("abs_error"),
+                     "reference": v.get("reference"),
+                     "candidate": v.get("candidate")}
+                    if v.get("present", True) else None)
+                for k, v in boundary.items()
+                if not v.get("structural", True)
+                and not v.get("bitwise_exact", True)}
             if not state_masks_ok:
                 failures.append({"name": f"step_{start_pos}_state_masks",
                                  "details": state_masks})

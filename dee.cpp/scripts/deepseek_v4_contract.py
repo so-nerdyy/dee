@@ -354,13 +354,16 @@ def state_mask_analysis(
                     "rel_error": float(abs(rv - cv) / (abs(rv) + 1e-12)),
                     "ulp": f32_ulp_distance(rv, cv),
                 }
-        # ok = structural mask agreement + no NaN/+inf + NO value divergence:
-        # the v7 focused diagnostic is fail-closed on ANY state divergence
-        # (mask OR value), so a finite-intersection value difference also
-        # marks the buffer as failed (with first_value_divergence as the
-        # evidence payload).
+        # DS9 v9: ok = STRUCTURAL mask agreement only (finite/sentinel/
+        # written/untouched masks exact, no NaN/+inf).  A finite-intersection
+        # VALUE divergence is NOT a structural failure: the reference (CPU
+        # fp32) and candidate (CUDA fp32) run the same module, so cross-
+        # device reduction order legitimately drifts state values by 1-7 ULP
+        # (v8 boundary-capture evidence).  Value BOUNDS are enforced by the
+        # separate predeclared state_agreement per-buffer relative gates
+        # (0.001); first_value_divergence remains in the record as the
+        # first-divergence locator evidence.
         ok = bool(sentinel_exact and written_slot_exact
-                  and first_value_div is None
                   and nan_ref == 0 and nan_cand == 0
                   and pinf_ref == 0 and pinf_cand == 0)
         out[name] = {

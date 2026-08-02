@@ -411,6 +411,42 @@ def test_full_layer_attention_boundaries_close() -> None:
                           atol=1e-2), "indexer_scores"
 
 
+def test_state_buffers_clone_independence() -> None:
+    # DS9 v9: state_buffers() must return CLONED snapshots.  Pre-v9 the
+    # already-fp32 buffers (kv_state/score_state) were returned by reference
+    # (detach().float().cpu() is identity for fp32 CPU tensors), so the
+    # warm-replay reset_state() corrupted the snapshots before the per-step
+    # gates compared them -- the phantom REJECT_STATE of DS9 v6/v8.
+    # Mutating the live buffers after the snapshot must NOT leak into the
+    # snapshot (pre-fix it did, because the snapshot aliased the buffer).
+    torch.manual_seed(7)
+    cfg = CFG
+    w, _, _ = make_synthetic_layer_weights(cfg, seed=3, n_experts=8)
+    layer = DeepseekV4Layer(cfg, w, device="cpu", max_batch=1)
+    x = torch.randn(1, 8, cfg.hc_mult, cfg.hidden, dtype=torch.bfloat16)
+    layer.forward(x, 0)  # execute the state write path
+    snap = layer.state_buffers()
+    pre = {k: v.clone() for k, v in snap.items()}
+    # mutate every live buffer in place
+    layer.attn.compressor.kv_state.fill_(123.0)
+    layer.attn.compressor.score_state.fill_(float("-inf"))
+    layer.attn.indexer.compressor.kv_state.fill_(-7.5)
+    layer.attn.indexer.compressor.score_state.fill_(float("inf"))
+    layer.attn.kv_cache.fill_(9.0)
+    layer.attn.indexer.kv_cache.fill_(-9.0)
+    # pre-mutation snapshots must be untouched (clone independence)
+    for k, v in snap.items():
+        assert torch.equal(v, pre[k]), f"snapshot {k} aliased the live buffer"
+    # sanity: the post-mutation snapshot reflects the mutations
+    after = layer.state_buffers()
+    assert float(after["compressor_kv_state"].flatten()[0]) == 123.0
+    assert float(after["compressor_score_state"].flatten()[0]) == float("-inf")
+    assert float(after["indexer_compressor_kv_state"].flatten()[0]) == -7.5
+    assert float(after["indexer_compressor_score_state"].flatten()[0]) == float("inf")
+    assert float(after["attn_kv_cache"].flatten()[0]) == 9.0
+    assert float(after["indexer_kv_cache"].flatten()[0]) == -9.0
+
+
 # ---------------------------------------------------------------------------
 # 12. tensor resolution + weight assembly
 # ---------------------------------------------------------------------------
