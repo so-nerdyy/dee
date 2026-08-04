@@ -712,12 +712,15 @@ def _walk(value: Any) -> int:
 
 
 def coverage_audit_report(source: TensorSource, *, n_layers: int = 43,
-                          n_hash_layers: int = 3) -> dict[str, Any]:
+                          n_hash_layers: int = 3,
+                          compress_ratios: Optional[tuple[int, ...]] = None) -> dict[str, Any]:
     """Reconstruct ledger rows from committed headers and run the DS10.1
     full-model coverage audit (identity only, no weight loading)."""
     rows = []
     for name in source.tensor_names():
         ident = source.tensor_identity(name)
+        plan = v4support.storage_plan_for_tensor(name, ident["dtype"],
+                                                 ident["shape"])
         rows.append({
             "tensor_name": name,
             "layer": v4support.layer_from_tensor_name(name),
@@ -728,11 +731,13 @@ def coverage_audit_report(source: TensorSource, *, n_layers: int = 43,
             "stored_dtype": ident["dtype"],
             "byte_offset": ident["offset"],
             "byte_length": ident["length"],
-            "scale_tensor": (v4support.scale_for_weight(name)
-                             if name.endswith(".weight") else None),
+            # scale linkage comes from storage_plan_for_tensor (F8/packed
+            # weights only) -- BF16 norms carry no scale tensor.
+            "scale_tensor": plan["scale_tensor"],
         })
     return v4support.full_model_coverage_audit(
-        rows, n_layers=n_layers, n_hash_layers=n_hash_layers)
+        rows, n_layers=n_layers, n_hash_layers=n_hash_layers,
+        compress_ratios=compress_ratios)
 
 
 def static_memory_plan(cfg: ModelConfig, source: TensorSource, *,

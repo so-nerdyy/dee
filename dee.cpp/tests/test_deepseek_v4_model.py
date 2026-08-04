@@ -28,6 +28,7 @@ from scripts.deepseek_v4_model import (
     DictTensorSource,
     ExpertProvider,
     ModelConfig,
+    coverage_audit_report,
     model_config_from_official,
     static_memory_plan,
 )
@@ -337,6 +338,35 @@ def test_model_memory_plan_bounded() -> None:
         assert row["dense_bytes"] > 0
         assert row["total_estimate_bytes"] > 0
         assert row["total_estimate_bytes"] < (14 << 30)
+
+
+def test_coverage_audit_real_headers_ratio_aware() -> None:
+    """The DS10.1 full-model coverage audit must use the REAL per-layer
+    compress_ratios from the official config (layer 0 is ratio 0 -> no
+    compressor tensors).  A default all-4 audit would demand
+    layers.0.attn.compressor.ape and fail -- the exact v1 remote bug."""
+    headers = REPORTS / "shard-headers"
+    cfg_path = REPORTS / "official-source" / "inference" / "config.json"
+    if not headers.is_dir() or not cfg_path.is_file():
+        return  # committed assets not present in this environment
+    cfg = model_config_from_official(cfg_path)
+    src = CommittedHeaderSource(headers)
+    audit = coverage_audit_report(
+        src, n_layers=cfg.n_layers, n_hash_layers=cfg.n_hash_layers,
+        compress_ratios=cfg.compress_ratios)
+    assert audit["all_resolved"] is True
+    assert audit["tensor_count"] == 72317
+    assert len(audit["layers"]) == 43
+    assert audit["layers"][0]["hash_layer"] is True
+    assert audit["layers"][2]["hash_layer"] is True
+    assert audit["layers"][3]["hash_layer"] is False
+    # dense_tensors includes the 6 shared-expert tensors (audit resolves
+    # dense + shared together): ratio-4 layer = 34 dense + 6 shared = 40;
+    # ratio-0 layer = 23 dense + 6 shared = 29.
+    assert audit["layers"][20]["dense_tensors"] == 40
+    assert audit["layers"][0]["dense_tensors"] == 29
+    assert audit["layers"][0]["shared_tensors"] == 6
+    assert audit["layers"][0]["routed_expert_tensors"] == 1536
 
 
 def test_static_memory_plan_from_real_headers_bounded() -> None:
