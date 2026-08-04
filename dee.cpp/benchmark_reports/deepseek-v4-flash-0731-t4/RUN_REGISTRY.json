@@ -29,6 +29,7 @@
       "pinned_repository_commit": "27149e983c1cde13a351c4c6de89edf88ffd1115",
       "precision_family": "A (official reference stack: BF16/FP8/FP4 tilelang kernels, n_layers=1 layer-0 subset)",
       "run_id": "ds5-v6-hardware-blocker",
+      "policy_resolution": "REFERENCE_POLICY 2026-08-04: sealed DS8/DS9 trusted-reference discipline adopted as the campaign reference; official tilelang stack no longer required (remains documented as non-SM75-runnable; optional on non-T4 host or after explicit fork/re-tile decision). See REFERENCE_POLICY.md.",
       "terminal": "ERROR",
       "verdict": "BLOCKED_HARDWARE_FORMAT"
     },

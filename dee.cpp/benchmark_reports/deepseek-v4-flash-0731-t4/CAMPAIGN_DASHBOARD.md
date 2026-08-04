@@ -1,10 +1,15 @@
 # CAMPAIGN — DeepSeek-V4-Flash-0731 on Tesla T4 via Dynamic Expert Eviction
 
 Status: **DS0–DS4, DS6, DS7, DS8 COMPLETE; DS9 terminated (REJECT_NUMERICAL
-accepted); DS5 BLOCKED (hardware-format)** — official tilelang kernels need
-dynamic shared memory above the T4 SM75 64 KiB ceiling (fp8_gemm 82,048 B;
-sparse_attn ~280 KiB), so the pinned official reference cannot execute on the
-campaign's only GPU (see `ds5-v6-hardware-blocker/DS5_BLOCKER_REPORT.md`).
+accepted); DS5 BLOCKED (hardware-format) → reference role superseded by
+REFERENCE_POLICY 2026-08-04 (sealed DS8/DS9 discipline)** — the official
+tilelang kernels need dynamic shared memory above the T4 SM75 64 KiB ceiling
+(fp8_gemm 82,048 B; sparse_attn ~280 KiB), so the pinned official reference
+cannot execute on the campaign's only GPU (see
+`ds5-v6-hardware-blocker/DS5_BLOCKER_REPORT.md`); by product decision the
+trusted reference is now the sealed DS8/DS9 discipline (official tensors +
+FP32 CPU reference + validated DS8/DS9 CUDA kernels), unblocking DS10
+(see `REFERENCE_POLICY.md`).
 
 ## Campaign identity
 
@@ -37,7 +42,7 @@ M5G-v1/v2/v3 evidence is immutable. No M5H work until the DeepSeek campaign reac
 | DS2 | Byte-accurate tensor ledger | ✅ |
 | DS3 | Checkpoint download / Kaggle dataset plan | ✅ (plan + resumable shard tool + header pin) |
 | DS4 | Tokenizer + encoding parity golden tests | ✅ (official `encoding_dsv4.py` + `tokenizer.json` pinned w/ SHA-256; wrapper `scripts/deepseek_v4_encoding.py`; 15 golden tests — exact IDs for chat/thinking/low/high/max reasoning/tool/multi-turn; parse roundtrips; pinned 2026-08-02) |
-| DS5 | Trusted reference traces | ⛔ **BLOCKED — hardware-format** (kernel v6, `ds5-v6-hardware-blocker/`): scaffold + 16 tests committed; identity/config/tokenizer/shard/convert/reference-load all PASS on Kaggle T4; the pinned official tilelang kernels cannot launch on SM75 (fp8_gemm requests 82,048 B dynamic shared > 64 KiB ceiling; sparse_attn h=64,d=512 needs ~280 KiB). Reference = official inference stack is not SM75-runnable; unblocking requires a non-T4 reference host, a documented kernel re-tile (product decision), or reusing the sealed DS8/DS9 trusted-reference discipline |
+| DS5 | Trusted reference traces | ⛔ **BLOCKED — hardware-format** (kernel v6, `ds5-v6-hardware-blocker/`): scaffold + 16 tests committed; identity/config/tokenizer/shard/convert/reference-load all PASS on Kaggle T4; the pinned official tilelang kernels cannot launch on SM75 (fp8_gemm requests 82,048 B dynamic shared > 64 KiB ceiling; sparse_attn h=64,d=512 needs ~280 KiB). **RESOLVED BY PRODUCT DECISION 2026-08-04** — reference role superseded by the sealed DS8/DS9 discipline (`REFERENCE_POLICY.md`); official-stack trace optional (non-T4 host or fork/re-tile only) |
 | DS6 | Freebuff tensor resolver for V4 | ✅ (Python ledger + C++ `TensorResolver` DEEPSEEK_V4 dialect, w1/w3/w2 + scale names) |
 | DS7 | One routed expert on T4 | ✅ (kernel v5 COMPLETE, verdict `MATCH_WITHIN_TOLERANCE`, evidence `ds7-smoke-v5`) |
 | DS8 | Expert cache + Dynamic Expert Eviction | ✅ (kernel v3 COMPLETE, verdict `ACCEPT_EXPERT_RUNTIME`, evidence `ds8-runtime-v3`) |
@@ -353,6 +358,13 @@ and re-tile the official kernels for SM75, or (3) reuse the sealed DS8/DS9
 trusted-reference discipline (official tensors + FP32 CPU reference) as the
 DS6+ parity basis, recording DS5 as blocked. See
 `ds5-v6-hardware-blocker/DS5_BLOCKER_REPORT.md` and `evidence/`.
+
+**Resolution (product decision 2026-08-04):** option (3) adopted — the
+sealed DS8/DS9 discipline is the campaign reference (`REFERENCE_POLICY.md`).
+DS5's official-stack trace is no longer a blocker; the DS9 p99 magnitudes
+will be re-measured on real hidden states produced by the campaign's own full
+forward path (DS10). Official-stack traces remain optional (non-T4 host or
+explicit fork/re-tile decision only).
 
 ## DS4 — tokenizer + encoding parity (official implementation pinned)
 
