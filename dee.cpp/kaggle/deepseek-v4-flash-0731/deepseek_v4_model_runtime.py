@@ -82,9 +82,12 @@ if STAGE not in ("v1", "v2", "v3", "v4", "v5", "v6", "final"):
 # envelope; the model's dense/state bytes come from the static memory plan.
 CACHE_BUDGET_BYTES = 2 << 30  # 2 GiB per GPU
 
-# Canonical prompt (short, for v5/v6/final stages).
+# Canonical prompt (short, for v5/v6/final stages).  Pure-ASCII escapes:
+# Kaggle's push API decodes the code file with the platform codec, so literal
+# tokenizer glyphs (U+FF5C fullwidth bar, U+2581 block) must NOT appear raw.
 CANONICAL_PROMPT = (
-    "<｜begin▁of▁sentence｜>Who is Alan Turing?<｜Assistant｜>")
+    "<\uFF5Cbegin\u2581of\u2581sentence\uFF5C>Who is Alan Turing?"
+    "<\uFF5CAssistant\uFF5C>")
 
 
 def sha256_file(path: Path) -> str:
