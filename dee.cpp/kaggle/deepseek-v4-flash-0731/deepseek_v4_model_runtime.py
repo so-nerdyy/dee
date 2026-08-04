@@ -176,7 +176,8 @@ def stage_v1() -> dict[str, Any]:
 
     # 1. Tensor coverage audit (identity only, zero checkpoint bytes).
     audit = vm.coverage_audit_report(
-        source, n_layers=cfg.n_layers, n_hash_layers=cfg.n_hash_layers)
+        source, n_layers=cfg.n_layers, n_hash_layers=cfg.n_hash_layers,
+        compress_ratios=cfg.compress_ratios)
     gates["coverage_audit"] = audit.get("ok", False)
     gates["coverage"] = {
         "total_tensors": audit.get("total_tensors"),
