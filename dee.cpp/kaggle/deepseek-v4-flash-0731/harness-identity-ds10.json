@@ -2,7 +2,7 @@
   "schema_version": 1,
   "repository": "https://github.com/so-nerdyy/dee.git",
   "branch": "freebuff/deepseek-v4-flash-0731-t4",
-  "repository_commit": "89cd8aea76ca663e7b1f8e9d4fc5ade817db4090",
+  "repository_commit": "9666e575e363144c510ef90b0e1695cdac20c4d3",
   "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
   "model_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
   "harness_file": "dee.cpp/kaggle/deepseek-v4-flash-0731/deepseek_v4_model_runtime.py",
@@ -14,7 +14,7 @@
     "layer_candidate": "965048ec2ebc6cc2f47602633b989dc792e362bb255f9f1df920917f45822c76",
     "layer_common": "9c318f77e4e4cb31eab7d3c46efc82c1de98eb170f5fe43612317170c63ccc94",
     "layer_reference": "d0a717487954b70116e5543ec43d60ce1581bc0c489f903427579c05e2f5b4e6",
-    "model": "f3a60d76eac341c093d4ecab1c9fecca87bf93679160ed417722cd3bf663ed9f",
+    "model": "8137b97f9bde86dff164c0e4598894b37033f3e488d9311828d06d62d11308ab",
     "moe_reference": "76db84137e806a527752c51d3484086544e246113527996f554ca97620b103dd",
     "support": "db12c12551b7a8da76f676225a4fbf07a73eb24875756b7e83b110cb9be29d6f"
   }
