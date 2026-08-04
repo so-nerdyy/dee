@@ -551,30 +551,45 @@ def expert_load_plan(
 # ---------------------------------------------------------------------------
 
 
-def layer_dense_tensor_names(layer: int) -> list[str]:
+def model_level_tensor_names() -> list[str]:
+    """Model-level (non-layer, non-mtp) tensors.
+
+    Verified against the ledger: embed.weight (shard 00001), and on shard
+    00045: hc_head_base [4] F32, hc_head_fn [4, 16384] F32,
+    hc_head_scale [1] F32, norm.weight [4096] BF16, head.weight
+    [129280, 4096] BF16.
+    """
+    return [
+        "embed.weight",
+        "hc_head_fn", "hc_head_base", "hc_head_scale",
+        "norm.weight",
+        "head.weight",
+    ]
+
+
+def layer_dense_tensor_names(layer: int, *, hash_layer: bool = False,
+                             compress_ratio: int = 4) -> list[str]:
     """All 34 non-expert dense tensors for one complete layer.
 
     Verified against the layer-20 ledger rows (shard model-00022):
     6 hc tensors, 2 layer norms, 8 attention sub-tensors + 6 scales,
     compressor (4), indexer (6 + 2 scales), router gate (2).
+
+    Hash-routed layers (``layer < n_hash_layers``) carry ``gate.tid2eid``
+    (I64 [vocab, topk]) instead of ``gate.bias``.
+
+    ``compress_ratio`` gates the optional sub-modules exactly as the official
+    code does: compressor exists when ``compress_ratio != 0``; the indexer
+    exists only when ``compress_ratio == 4``.
     """
     p = f"layers.{layer}"
+    gate = f"{p}.ffn.gate.tid2eid" if hash_layer else f"{p}.ffn.gate.bias"
     names = [
         f"{p}.attn_norm.weight",
         f"{p}.ffn_norm.weight",
         f"{p}.hc_attn_base", f"{p}.hc_attn_fn", f"{p}.hc_attn_scale",
         f"{p}.hc_ffn_base", f"{p}.hc_ffn_fn", f"{p}.hc_ffn_scale",
         f"{p}.attn.attn_sink",
-        f"{p}.attn.compressor.ape",
-        f"{p}.attn.compressor.norm.weight",
-        f"{p}.attn.compressor.wgate.weight",
-        f"{p}.attn.compressor.wkv.weight",
-        f"{p}.attn.indexer.compressor.ape",
-        f"{p}.attn.indexer.compressor.norm.weight",
-        f"{p}.attn.indexer.compressor.wgate.weight",
-        f"{p}.attn.indexer.compressor.wkv.weight",
-        f"{p}.attn.indexer.weights_proj.weight",
-        f"{p}.attn.indexer.wq_b.weight", f"{p}.attn.indexer.wq_b.scale",
         f"{p}.attn.kv_norm.weight",
         f"{p}.attn.q_norm.weight",
         f"{p}.attn.wkv.weight", f"{p}.attn.wkv.scale",
@@ -582,14 +597,33 @@ def layer_dense_tensor_names(layer: int) -> list[str]:
         f"{p}.attn.wo_b.weight", f"{p}.attn.wo_b.scale",
         f"{p}.attn.wq_a.weight", f"{p}.attn.wq_a.scale",
         f"{p}.attn.wq_b.weight", f"{p}.attn.wq_b.scale",
-        f"{p}.ffn.gate.weight", f"{p}.ffn.gate.bias",
     ]
+    if compress_ratio:
+        names += [
+            f"{p}.attn.compressor.ape",
+            f"{p}.attn.compressor.norm.weight",
+            f"{p}.attn.compressor.wgate.weight",
+            f"{p}.attn.compressor.wkv.weight",
+        ]
+        if compress_ratio == 4:
+            names += [
+                f"{p}.attn.indexer.compressor.ape",
+                f"{p}.attn.indexer.compressor.norm.weight",
+                f"{p}.attn.indexer.compressor.wgate.weight",
+                f"{p}.attn.indexer.compressor.wkv.weight",
+                f"{p}.attn.indexer.weights_proj.weight",
+                f"{p}.attn.indexer.wq_b.weight", f"{p}.attn.indexer.wq_b.scale",
+            ]
+    names += [f"{p}.ffn.gate.weight", gate]
     return names
 
 
 def resolve_layer_dense_tensors(
     by_name: dict[str, dict[str, Any]],
     layer: int,
+    *,
+    hash_layer: bool = False,
+    compress_ratio: int = 4,
 ) -> dict[str, dict[str, Any]]:
     """Resolve every dense + shared-expert tensor for one complete layer.
 
@@ -597,7 +631,9 @@ def resolve_layer_dense_tensors(
     the caller via index construction), any cross-shard split, or a scale
     tensor that is missing or points outside the layer's shard.
     """
-    names = layer_dense_tensor_names(layer) + shared_expert_tensor_names(layer)
+    names = layer_dense_tensor_names(
+        layer, hash_layer=hash_layer, compress_ratio=compress_ratio
+    ) + shared_expert_tensor_names(layer)
     resolved: dict[str, dict[str, Any]] = {}
     for name in names:
         row = by_name.get(name)
@@ -620,3 +656,110 @@ def resolve_layer_dense_tensors(
                 f"{name} scale {scale} spans shard "
                 f"{scale_row['source_shard']} != {row['source_shard']}")
     return resolved
+
+
+# ---------------------------------------------------------------------------
+# DS10: full-model tensor coverage audit.
+#
+# Every tensor of the FULL model (43 layers + model level + DSpark) must
+# resolve from the validated ledger rows: zero unresolved, zero duplicate,
+# correct shard/offset/dtype/shape/scale linkage, and correct component
+# classification.  The audit does NOT load weights; it validates identity
+# and produces the per-component/per-layer coverage report required by
+# DS10.1.
+# ---------------------------------------------------------------------------
+
+
+def full_model_coverage_audit(
+    rows: list[dict[str, Any]],
+    *,
+    n_layers: int = 43,
+    n_hash_layers: int = 3,
+    expected_shard_count: int = EXPECTED_SHARD_COUNT,
+    compress_ratios: tuple[int, ...] | None = None,
+) -> dict[str, Any]:
+    """Audit full-model tensor coverage from validated ledger rows.
+
+    Returns a report with per-component and per-layer coverage plus a
+    fail-closed ``all_resolved`` flag.  Raises ValueError on any unresolved
+    / duplicate / cross-shard tensor or scale mismatch.
+    """
+    if len(rows) != EXPECTED_TENSOR_COUNT:
+        raise ValueError(f"expected {EXPECTED_TENSOR_COUNT} rows, got {len(rows)}")
+    by_name = index_ledger_rows(rows)
+    names = set(by_name)
+    if len(names) != len(rows):
+        raise ValueError("duplicate tensor names in ledger rows")
+
+    shard_set = {row["source_shard"] for row in rows}
+    if len(shard_set) != expected_shard_count:
+        raise ValueError(f"coverage spans {len(shard_set)} shards, "
+                         f"expected {expected_shard_count}")
+
+    # per-layer resolution (dense + shared + router + every routed expert)
+    ratios = compress_ratios if compress_ratios is not None else (
+        tuple(4 for _ in range(n_layers)))
+    layer_rows: list[dict[str, Any]] = []
+    for layer in range(n_layers):
+        hash_layer = layer < n_hash_layers
+        dense = resolve_layer_dense_tensors(by_name, layer,
+                                            hash_layer=hash_layer,
+                                            compress_ratio=ratios[layer])
+        shared = resolve_shared_expert_tensors(by_name, layer)
+        router = resolve_router_tensors(by_name, layer,
+                                        hash_layers=n_hash_layers)
+        expert_rows = [r for r in rows if r["layer"] == layer
+                       and r["component"] == "routed_expert"]
+        for row in expert_rows:
+            marker = ".experts."
+            if marker not in row["tensor_name"]:
+                raise ValueError(f"unparseable routed row {row['tensor_name']}")
+            eid = int(row["tensor_name"].split(marker)[1].split(".")[0])
+            resolve_expert_tensors(by_name, layer, eid)
+        layer_rows.append({
+            "layer": layer,
+            "hash_layer": bool(hash_layer),
+            "dense_tensors": len(dense),
+            "shared_tensors": len(shared),
+            "router_tensors": len(router),
+            "routed_expert_tensors": len(expert_rows),
+            "resolved": True,
+        })
+
+    # model-level tensors
+    model_level = {}
+    for name in model_level_tensor_names():
+        row = by_name.get(name)
+        if row is None:
+            raise ValueError(f"model-level tensor missing: {name}")
+        model_level[name] = {
+            "shard": row["source_shard"], "shape": row["shape"],
+            "stored_dtype": row["stored_dtype"],
+            "byte_offset": row["byte_offset"],
+            "byte_length": row["byte_length"],
+        }
+
+    # aggregate by component
+    from collections import Counter  # noqa: PLC0415
+    component_counts: dict[str, int] = dict(Counter(
+        row["component"] for row in rows))
+    component_bytes: dict[str, int] = {}
+    for row in rows:
+        component_bytes[row["component"]] = (
+            component_bytes.get(row["component"], 0) + row["byte_length"])
+
+    dspark_rows = [r for r in rows if r["component"] == "dspark"]
+    return {
+        "all_resolved": True,
+        "tensor_count": len(rows),
+        "shard_count": len(shard_set),
+        "layers": layer_rows,
+        "model_level_tensors": model_level,
+        "components": {
+            comp: {"tensor_count": component_counts.get(comp, 0),
+                   "compressed_bytes": component_bytes.get(comp, 0)}
+            for comp in sorted(component_counts)
+        },
+        "dspark_tensor_count": len(dspark_rows),
+        "dspark_resolution_only": True,
+    }

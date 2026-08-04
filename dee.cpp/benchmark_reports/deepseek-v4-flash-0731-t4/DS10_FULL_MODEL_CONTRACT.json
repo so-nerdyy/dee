@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "phase": "DS10",
+  "name": "DS10_FULL_MODEL_CONTRACT",
+  "created": "2026-08-04",
+  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+  "branch": "freebuff/deepseek-v4-flash-0731-t4",
+  "reference_policy": "REFERENCE_POLICY.md (2026-08-04): sealed DS8/DS9 discipline is the trusted reference; official TileLang stack is NOT a DS10 prerequisite (DS5 hardware-format blocker preserved as evidence).",
+  "gpu_topology": {
+    "hardware": "Kaggle dual Tesla T4 (SM75)",
+    "gpu_count": 2,
+    "vram_per_gpu_bytes": 16106127360,
+    "peer_access": "not assumed; host-staged handoff is the default",
+    "memory_ceiling_per_gpu_bytes": 14680064000,
+    "memory_target_per_gpu_bytes": 12000000000
+  },
+  "layer_to_gpu_assignment": {
+    "gpu_0": {"role": "embed + early layers", "layers": [0, 20], "extra": ["embed.weight"]},
+    "gpu_1": {"role": "later layers + LM head", "layers": [21, 42], "extra": ["norm.weight", "hc_head_fn", "hc_head_base", "hc_head_scale", "head.weight"]},
+    "handoff": {
+      "method": "host-staged D2D copy (pinned staging + side stream + events)",
+      "tensor": "hidden state [b, s, hc_mult, dim] bf16",
+      "checksum": "sha256 of fp32 bytes before and after; must be bitwise equal",
+      "location": "between layer 20 and layer 21"
+    }
+  },
+  "precision_family": {
+    "source_storage": "official checkpoint: routed experts packed FP4 (I8 + F8_E8M0 scales), dense F8_E4M3 + F8_E8M0 scales, embed/head/norm BF16, hc_head F32",
+    "dense_execution": "FP16 on GPU (dequantized from official storage; DS10 family C/D hybrid)",
+    "embed_head_execution": "BF16 storage, FP32-accumulated matmuls (embed) / FP32 spot-checked head",
+    "expert_execution": "FP16-expanded active experts (sealed DS8 family C) with FP32 accumulation",
+    "accumulation": "FP32 throughout",
+    "bitwise_exact": false,
+    "note": "Explicitly NON-bitwise vs any FP32 reference; candidate-vs-reference token equality is NOT an acceptance gate."
+  },
+  "checkpoint_access": {
+    "strategy": "RemoteTensorSource: per-tensor HTTP Range fetches from the pinned HF revision, offsets from the committed shard headers (48/48 committed, header hashes verified)",
+    "alternative": "LocalDirTensorSource when shard files are already on disk",
+    "no_full_checkpoint_expansion": true,
+    "mapped_bytes": 0,
+    "host_rss_budget_bytes": 12000000000
+  },
+  "expert_cache": {
+    "representation": "fp16_expanded (sealed DS8 DeepSeekExpertCache + DeepSeekExpertLoader)",
+    "budget_per_gpu_bytes": 3000000000,
+    "shared_expert": "cache with priority, expert_id -1 per layer",
+    "miss_action": "on-demand fetch via RemoteTensorSource + async stage",
+    "fail_closed": ["invalid expert id", "missing tensor", "stale entry", "cross-shard split", "unbounded growth"]
+  },
+  "prompts": {
+    "canonical": "A concise explanation of what DeepSeek-V4-Flash is, in one paragraph.",
+    "prefill_tokens": 64,
+    "smoke_generated_tokens": 4,
+    "acceptance_generated_tokens": 16,
+    "decoding": "greedy argmax",
+    "stop": "EOS token id 1 or max tokens"
+  },
+  "correctness_gates": [
+    "full official tensor coverage (zero unresolved, zero duplicate)",
+    "every layer executes in order on the assigned GPU",
+    "correct state initialization + structural masks (DS9 discipline)",
+    "exact attention window/compression indices on sampled layers (DS9 exact gates)",
+    "exact selected expert SET on sampled layers (DS9 v12 set policy)",
+    "valid expert-to-weight association",
+    "no invalid cache behavior; cold==warm output equality",
+    "no host expert fallback; native backend report per component",
+    "finite final hidden state; finite LM-head logits",
+    "valid generated token IDs (in-vocab, decoded by the DS4 tokenizer)",
+    "deterministic replay (same input + runtime -> same tokens)",
+    "cold/warm cache token equality",
+    "bounded memory per GPU and bounded host RSS",
+    "complete evidence + hash validation"
+  ],
+  "spot_checks": [
+    {"target": "router logits", "layers": [0, 2, 10, 20, 30, 41], "reference": "CPU FP32 gate recompute on candidate input", "bound": "relative 2% or cosine 0.99"},
+    {"target": "shared expert output", "layers": [2, 20, 41], "reference": "CPU FP32 shared_expert_forward", "bound": "relative p99 5%"},
+    {"target": "routed expert output", "layers": [2, 20, 41], "reference": "CPU FP32 routed_expert_forward_weighted", "bound": "relative p99 5%"},
+    {"target": "RMS norms", "layers": [0, 20, 42], "reference": "CPU FP32 rms_norm", "bound": "relative 1%"},
+    {"target": "LM head top-k", "reference": "CPU FP32 head on candidate hidden state", "bound": "top-10 set overlap >= 8/10"}
+  ],
+  "self_consistency_checks": [
+    "deterministic rerun",
+    "cold/warm cache equivalence",
+    "cache-capacity variation (two budgets, same tokens)",
+    "single-layer replay through sealed DS8/DS9 harness on DS10 hidden states",
+    "CPU-FP32 spot checks (above)",
+    "tensor identity (official bytes + scale metadata)",
+    "state invariants (structural masks)",
+    "no fallback backend report"
+  ],
+  "staged_runs": {
+    "v1": "model-load + tensor-coverage smoke (all 72,317 tensors resolve; memory plan; state init)",
+    "v2": "first partition (layers 0-20 prefill, boundary state)",
+    "v3": "inter-GPU handoff (first partition -> one layer on GPU 1)",
+    "v4": "all layers + first logits",
+    "v5": "first generated token",
+    "v6": "continued decode >= 4 tokens",
+    "final": ">= 16 tokens + deterministic replay + cold/warm + bounded memory"
+  },
+  "terminal_verdicts": [
+    "ACCEPT_DUAL_T4_FIRST_TOKEN",
+    "ACCEPT_DUAL_T4_DECODE",
+    "REJECT_MODEL_LOAD",
+    "REJECT_ATTENTION_OR_STATE",
+    "REJECT_ROUTER_OR_EXPERT",
+    "REJECT_INTERGPU",
+    "REJECT_LM_HEAD",
+    "REJECT_GENERATION_STATE",
+    "REJECT_MEMORY",
+    "INVALID_EXPERIMENT"
+  ],
+  "performance": {
+    "performance_comparable": false,
+    "no_tps_claims": true,
+    "timing_collected_but_not_interpreted": true
+  },
+  "immutable": [
+    "DS5-v6 hardware-format blocker evidence",
+    "DS7 smoke evidence",
+    "DS8 runtime evidence + sealed tolerances",
+    "DS9 v1-v13 evidence + REJECT_NUMERICAL verdict",
+    "Ornith seal 9ff967e"
+  ]
+}

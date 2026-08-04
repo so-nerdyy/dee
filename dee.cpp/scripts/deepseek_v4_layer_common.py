@@ -342,6 +342,63 @@ def get_compress_topk_idxs(
 
 
 # ---------------------------------------------------------------------------
+# Router selection (official Gate.forward, both score and hash variants)
+# ---------------------------------------------------------------------------
+
+
+def router_select(
+    x: torch.Tensor,
+    gate_weight: torch.Tensor,
+    gate_bias: Optional[torch.Tensor],
+    *,
+    tid2eid: Optional[torch.Tensor] = None,
+    input_ids: Optional[torch.Tensor] = None,
+    topk: int = 6,
+    route_scale: float = 1.5,
+    score_func: str = "sqrtsoftplus",
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Official Gate.forward for both routing variants.
+
+    x: [n, dim].  Score layers: scores = sqrt(softplus(x @ W^T)); the bias
+    shifts ONLY the selection; weights come from the un-shifted scores,
+    normalized (non-softmax) and scaled by route_scale.
+
+    Hash layers (tid2eid given): selection = tid2eid[input_ids] (I64
+    [vocab, topk]); weights still come from the same score function on the
+    gate weight, gathered at the hash-selected indices.
+
+    Returns (selection_scores, selected_ids [n, topk], routing_weights
+    [n, topk]).  ``selection_scores`` is the biased scores for score layers
+    and the raw scores for hash layers.
+    """
+    scores = x.float() @ gate_weight.float().transpose(0, 1)
+    if score_func == "softmax":
+        scores = torch.softmax(scores, dim=-1)
+    elif score_func == "sigmoid":
+        scores = torch.sigmoid(scores)
+    elif score_func == "sqrtsoftplus":
+        scores = torch.nn.functional.softplus(scores).sqrt()
+    else:
+        raise ValueError(f"unknown score_func {score_func!r}")
+    original_scores = scores
+    if tid2eid is not None:
+        if input_ids is None:
+            raise ValueError("hash routing requires input_ids")
+        indices = tid2eid[input_ids].to(torch.long)  # [n, topk]
+        selection_scores = scores
+    else:
+        if gate_bias is not None:
+            scores = scores + gate_bias
+        indices = scores.topk(topk, dim=-1)[1]
+        selection_scores = scores
+    weights = original_scores.gather(1, indices)
+    if score_func != "softmax":
+        weights = weights / weights.sum(dim=-1, keepdim=True)
+    weights = weights * route_scale
+    return selection_scores, indices, weights
+
+
+# ---------------------------------------------------------------------------
 # Hyper-Connections split (official hc_split_sinkhorn_kernel, FP32 reference)
 # ---------------------------------------------------------------------------
 

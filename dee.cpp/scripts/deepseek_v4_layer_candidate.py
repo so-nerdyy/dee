@@ -39,7 +39,8 @@ class DeepseekV4CacheFfn:
     def __init__(self, *, cache: Any, loader: Any, layer_id: int,
                  fp16_payloads: dict[int, dict[str, torch.Tensor]],
                  shared_payload: dict[str, torch.Tensor],
-                 cfg: layer_ref.LayerConfig, device: str = "cuda"):
+                 cfg: layer_ref.LayerConfig, device: str = "cuda",
+                 provider: Any = None):
         self.cache = cache
         self.loader = loader
         self.layer_id = layer_id
@@ -47,6 +48,8 @@ class DeepseekV4CacheFfn:
         self.shared_payload = shared_payload
         self.cfg = cfg
         self.device = device
+        self.provider = provider
+        self.tid2eid: Optional[torch.Tensor] = None
         self.stats = {"requests": 0, "hits": 0, "misses": 0, "staging_waits": 0}
 
     def __call__(self, x: torch.Tensor, input_ids: torch.Tensor,
@@ -54,15 +57,31 @@ class DeepseekV4CacheFfn:
         cfg = self.cfg
         b, s, d = x.shape
         xf = x.reshape(-1, d).float()
-        scores, ids, weights = ds7.router_scores(
-            xf, self.gate_w, bias=self.gate_b, score_func="sqrtsoftplus",
-            topk=cfg.topk, route_scale=cfg.route_scale)
-        if capture is not None:
-            capture["router_scores"] = scores
-            capture["router_bias_scores"] = (
-                scores + self.gate_b if self.gate_b is not None else scores)
-            capture["expert_ids"] = ids
-            capture["routing_weights"] = weights
+        if self.tid2eid is not None:
+            # Hash-routed layer: selection from the learned table, weights
+            # from the official score function (no bias).
+            from scripts import deepseek_v4_layer_common as common
+            _, ids, weights = common.router_select(
+                xf, self.gate_w, None, tid2eid=self.tid2eid,
+                input_ids=input_ids.flatten(), topk=cfg.topk,
+                route_scale=cfg.route_scale, score_func="sqrtsoftplus")
+            scores = torch.nn.functional.softplus(
+                xf @ self.gate_w.float().transpose(0, 1)).sqrt()
+            if capture is not None:
+                capture["router_scores"] = scores
+                capture["router_bias_scores"] = scores
+                capture["expert_ids"] = ids
+                capture["routing_weights"] = weights
+        else:
+            scores, ids, weights = ds7.router_scores(
+                xf, self.gate_w, bias=self.gate_b, score_func="sqrtsoftplus",
+                topk=cfg.topk, route_scale=cfg.route_scale)
+            if capture is not None:
+                capture["router_scores"] = scores
+                capture["router_bias_scores"] = (
+                    scores + self.gate_b if self.gate_b is not None else scores)
+                capture["expert_ids"] = ids
+                capture["routing_weights"] = weights
         moe_out, shared_out = self._run_experts(xf, ids, weights)
         if capture is not None:
             # Same labels/units as the reference _ffn_fp32_direct: moe_out is
@@ -78,6 +97,9 @@ class DeepseekV4CacheFfn:
     def attach_gate(self, gate_w: torch.Tensor, gate_b: Optional[torch.Tensor]) -> None:
         self.gate_w = gate_w
         self.gate_b = gate_b
+
+    def attach_hash(self, tid2eid: Optional[torch.Tensor]) -> None:
+        self.tid2eid = tid2eid
 
     # -- expert execution --------------------------------------------------
     def _run_experts(self, xf: torch.Tensor, ids: torch.Tensor,
@@ -104,11 +126,16 @@ class DeepseekV4CacheFfn:
             if entry is None:
                 self.stats["misses"] += 1
                 if eid not in self.fp16_payloads:
-                    raise RuntimeError(
-                        f"candidate routed to expert {eid} outside the "
-                        f"reference-discovered union "
-                        f"{sorted(self.fp16_payloads)}; route divergence "
-                        f"between candidate and reference")
+                    if self.provider is not None:
+                        self.fp16_payloads[eid] = (
+                            self.provider.get_fp16_payload(
+                                self.layer_id, eid))
+                    else:
+                        raise RuntimeError(
+                            f"candidate routed to expert {eid} outside the "
+                            f"reference-discovered union "
+                            f"{sorted(self.fp16_payloads)}; route divergence "
+                            f"between candidate and reference")
                 entry = self.loader.stage(self.layer_id, eid,
                                           self.fp16_payloads[eid],
                                           metadata={"expert_type": "routed"})
@@ -136,6 +163,9 @@ class DeepseekV4CacheFfn:
         s_entry = self.cache.get(self.layer_id, skey)
         if s_entry is None:
             self.stats["misses"] += 1
+            if self.provider is not None:
+                self.shared_payload = self.provider.get_shared_fp16_payload(
+                    self.layer_id)
             s_entry = self.loader.stage(self.layer_id, skey, self.shared_payload,
                                         metadata={"expert_type": "shared"})
         else:
@@ -196,12 +226,19 @@ def make_candidate_layer(
     layer_id: int,
     fp16_payloads: dict[int, dict[str, torch.Tensor]],
     shared_payload: dict[str, torch.Tensor],
+    provider: Any = None,
 ) -> layer_ref.DeepseekV4Layer:
-    """Build the Freebuff candidate layer (cache-fp16 FFN backend)."""
+    """Build the Freebuff candidate layer (cache-fp16 FFN backend).
+
+    Hash-routed layers (``w["ffn"]["tid2eid"]`` set) use the learned table
+    for expert selection; ``provider`` enables on-demand expert fetches for
+    cache misses (DS10 full model).
+    """
     ffn = DeepseekV4CacheFfn(cache=cache, loader=loader, layer_id=layer_id,
                              fp16_payloads=fp16_payloads,
                              shared_payload=shared_payload, cfg=cfg,
-                             device=device)
+                             device=device, provider=provider)
     ffn.attach_gate(w["ffn"]["gate_w"], w["ffn"]["gate_b"])
+    ffn.attach_hash(w["ffn"].get("tid2eid"))
     return layer_ref.DeepseekV4Layer(cfg, w, device=device, max_batch=max_batch,
                                      ffn_fn=ffn)

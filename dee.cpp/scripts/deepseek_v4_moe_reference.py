@@ -27,6 +27,7 @@ from __future__ import annotations
 import torch
 
 from scripts import deepseek_v4_expert_reference as ds7
+from scripts import deepseek_v4_layer_common as common
 
 FP8_E4M3_BLOCK = 128  # official fp8 weight block size (per 128x128 scale tile)
 
@@ -121,6 +122,8 @@ def moe_layer_forward(
     score_func: str = "sqrtsoftplus",
     swiglu_limit: float = 10.0,
     keep_per_expert: bool = False,
+    tid2eid: torch.Tensor | None = None,
+    input_ids: torch.Tensor | None = None,
 ) -> dict[str, torch.Tensor]:
     """Official MoE FFN for one layer, in FP32.
 
@@ -128,9 +131,14 @@ def moe_layer_forward(
     FP4 tensors.  ``shared`` is the F8_E4M3 shared-expert tensors (may be
     None for tests without a shared expert).
 
+    Hash layers: pass ``tid2eid`` (I64 [vocab, topk]) and ``input_ids``
+    [n_tokens]; selection follows the hash table, weights come from the
+    sqrtsoftplus scores gathered at the hash-selected indices.
+
     Returns:
-      scores        [n, n_routed]  un-shifted sqrtsoftplus scores
-      bias_scores   [n, n_routed]  scores + bias (selection scores)
+      scores        [n, n_routed]  selection scores (biased for score
+                                    layers, raw for hash layers)
+      bias_scores   [n, n_routed]  scores + bias (== scores when no bias)
       expert_ids    [n, topk]
       routing_weights [n, topk]
       per_expert    dict[expert_id -> [n, hidden]] (only when keep_per_expert)
@@ -138,9 +146,22 @@ def moe_layer_forward(
       moe_output    [n, hidden]     weighted routed sum + shared
     """
     n = x.shape[0]
-    scores, indices, weights = ds7.router_scores(
-        x, gate_weight, bias=gate_bias, score_func=score_func,
-        topk=topk, route_scale=route_scale)
+    if tid2eid is not None:
+        # Hash routing: selection from the learned table, weights from the
+        # official score function (no bias in hash layers).
+        if input_ids is None:
+            raise ValueError("hash routing requires input_ids")
+        _, indices, weights = common.router_select(
+            x, gate_weight, None, tid2eid=tid2eid, input_ids=input_ids,
+            topk=topk, route_scale=route_scale, score_func=score_func)
+        scores = torch.nn.functional.softplus(
+            x.float() @ gate_weight.float().transpose(0, 1)).sqrt()
+        bias_scores = scores
+    else:
+        scores, indices, weights = ds7.router_scores(
+            x, gate_weight, bias=gate_bias, score_func=score_func,
+            topk=topk, route_scale=route_scale)
+        bias_scores = scores + gate_bias if gate_bias is not None else scores
 
     # Group tokens by selected expert (official MoE.forward pattern), so each
     # expert's weights are dequantized once and executed on all its tokens.
@@ -173,7 +194,7 @@ def moe_layer_forward(
 
     return {
         "scores": scores,
-        "bias_scores": scores + gate_bias if gate_bias is not None else scores,
+        "bias_scores": bias_scores,
         "expert_ids": indices,
         "routing_weights": weights,
         "per_expert": per_expert,
