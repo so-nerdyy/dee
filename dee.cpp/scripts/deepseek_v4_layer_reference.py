@@ -389,7 +389,7 @@ class DeepseekV4Attention:
                     x, qr, start_pos, offset, w["indexer"], capture=capture)
             else:
                 compress_idxs = common.get_compress_topk_idxs(
-                    ratio, bsz, seqlen, start_pos, offset)
+                    ratio, bsz, seqlen, start_pos, offset).to(x.device)
             topk_idxs = torch.cat([window_idxs, compress_idxs], dim=-1)
         else:
             topk_idxs = window_idxs

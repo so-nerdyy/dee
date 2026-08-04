@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 import torch
 
 from scripts.deepseek_v4_cache import DeepSeekExpertCache, DeepSeekExpertLoader
@@ -392,6 +393,38 @@ def test_static_memory_plan_from_real_headers_bounded() -> None:
     assert d1["total_estimate_gib"] > 5.0
     assert d0["dense_bytes"] > 0 and d1["dense_bytes"] > 0
     assert plan["split"] == 22  # (43 + 1) // 2
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),
+                    reason="requires CUDA (v2 device-cat regression)")
+def test_ratio128_reference_forward_cuda_no_device_cat_crash() -> None:
+    """Regression for the DS10 v2 remote failure: ratio-128 layers use
+    get_compress_topk_idxs which built on CPU, so the torch.cat with the
+    cuda window_idxs crashed ("Expected all tensors to be on the same
+    device").  The reference layer must move compress_idxs to x.device.
+    """
+    dev = "cuda:0"
+    lcfg = LayerConfig(
+        hidden=64, n_heads=4, head_dim=128, rope_head_dim=64,
+        q_lora_rank=32, o_lora_rank=32, o_groups=2, window_size=8,
+        compress_ratio=128, index_n_heads=2, index_head_dim=128,
+        index_topk=8, n_routed=16, topk=2, route_scale=1.5,
+        swiglu_limit=10.0, norm_eps=1e-6, hc_mult=2, hc_sinkhorn_iters=20,
+        hc_eps=1e-6, max_seq_len=300)
+    torch.manual_seed(0)
+    w, routed_raw, shared_raw = make_synthetic_layer_weights(
+        lcfg, seed=9, n_experts=8)
+    w = {k: (v.to(dev) if isinstance(v, torch.Tensor) else
+             {kk: vv.to(dev) for kk, vv in v.items()} if isinstance(v, dict)
+             else v) for k, v in w.items()}
+    from scripts.deepseek_v4_model import _cast_floats, _move_to_device
+    w = _move_to_device(_cast_floats(w, torch.float16), dev)
+    ref = DeepseekV4Layer(lcfg, w, device=dev, max_batch=1)
+    x = torch.randn(1, 140, lcfg.hc_mult, lcfg.hidden,
+                    dtype=torch.bfloat16, device=dev)
+    o = ref.forward(x, 0)  # prefill 140 exercises the ratio-128 compress cat
+    assert o.shape == x.shape
+    assert bool(torch.isfinite(o).all())
 
 
 def test_model_state_sentinels_preserved() -> None:
