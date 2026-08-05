@@ -133,6 +133,7 @@
     "no fallback backend report"
   ],
   "staged_runs": {
+    "ladder_input_token_ids": [0],
     "v1": "model-load + tensor-coverage smoke (all 72,317 tensors resolve; memory plan; state init)",
     "v2": "first partition (layers 0-21 prefill, boundary state)",
     "v3": "inter-GPU handoff (first partition -> one layer on GPU 1)",

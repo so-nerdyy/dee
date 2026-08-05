@@ -75,6 +75,7 @@ CONFIG_RELATIVE = ROOT / Path(
     "dee.cpp/benchmark_reports/deepseek-v4-flash-0731-t4/official-source/inference/config.json")
 
 VALID_STAGES = ("v1", "v2", "v3", "v4", "v5", "v6", "final")
+LADDER_INPUT_IDS = (0,)
 
 # Cache budgets per GPU (bytes): bounded, well under the 12-13 GiB bring-up
 # envelope; the model's dense/state bytes come from the static memory plan.
@@ -329,10 +330,11 @@ def stage_v2() -> dict[str, Any]:
     source = _build_remote_source()
     model, mem = _build_full_model(source, cfg)
     gates: dict[str, Any] = {"memory": mem}
-    input_ids = torch.tensor([[0, 1, 2, 3, 4, 5, 6, 7]], device="cuda:0").long()
+    input_ids = torch.tensor([LADDER_INPUT_IDS], device="cuda:0").long()
     start_pos = 0
     h = torch.nn.functional.embedding(input_ids, model.embed)
-    h = h.unsqueeze(2).expand(1, 8, cfg.hc_mult, h.size(-1)).contiguous()
+    h = h.unsqueeze(2).expand(
+        1, input_ids.size(1), cfg.hc_mult, h.size(-1)).contiguous()
     model.execution_trace = []
     try:
         for idx, layer in enumerate(model.layers0):
@@ -373,10 +375,11 @@ def stage_v3() -> dict[str, Any]:
     source = _build_remote_source()
     model, mem = _build_full_model(source, cfg)
     gates: dict[str, Any] = {"memory": mem}
-    input_ids = torch.tensor([[0, 1, 2, 3, 4, 5, 6, 7]], device="cuda:0").long()
+    input_ids = torch.tensor([LADDER_INPUT_IDS], device="cuda:0").long()
     start_pos = 0
     h = torch.nn.functional.embedding(input_ids, model.embed)
-    h = h.unsqueeze(2).expand(1, 8, cfg.hc_mult, h.size(-1)).contiguous()
+    h = h.unsqueeze(2).expand(
+        1, input_ids.size(1), cfg.hc_mult, h.size(-1)).contiguous()
     model.execution_trace = []
     try:
         for idx, layer in enumerate(model.layers0):
@@ -427,7 +430,7 @@ def stage_v4() -> dict[str, Any]:
     source = _build_remote_source()
     model, mem = _build_full_model(source, cfg)
     gates: dict[str, Any] = {"memory": mem}
-    input_ids = torch.tensor([[0, 1, 2, 3, 4, 5, 6, 7]], device="cuda:0").long()
+    input_ids = torch.tensor([LADDER_INPUT_IDS], device="cuda:0").long()
     try:
         captures: dict[int, dict[str, Any]] = {}
         logits = model.forward(input_ids, 0, captures=captures)
