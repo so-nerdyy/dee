@@ -8,8 +8,8 @@
   "branch": "freebuff/deepseek-v4-flash-0731-t4",
   "reference_policy": "REFERENCE_POLICY.md (2026-08-04): sealed DS8/DS9 discipline is the trusted reference; official TileLang stack is NOT a DS10 prerequisite (DS5 hardware-format blocker preserved as evidence).",
   "runtime_identity": {
-    "runtime_code_commit": "0268c4ff8b701df1fa953932c53059744535c8c0",
-    "harness_sha256": "a96e8e6f561f8e657d2ec7684bf919f1b9fe94180d6c1e1326f9e3e6962e9e13",
+    "runtime_code_commit": "baa5b38d97e4273355230e178b80397eb96b6ea6",
+    "harness_sha256": "3b68d22747a30de95dbb290ef9c0051bc61936102aa6f2a97080c55a8e212a5f",
     "identity_file": "dee.cpp/kaggle/deepseek-v4-flash-0731/harness-identity-ds10.json",
     "stage_source": "identity-pinned; environment overrides fail closed"
   },
