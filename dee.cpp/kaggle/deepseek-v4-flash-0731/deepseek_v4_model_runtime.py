@@ -585,21 +585,53 @@ def main() -> int:
                     "first_failing_gate": result.get("first_failing_gate"),
                     "run_id": RUN_ID})
         write_json(evidence_path, result)
+        shutil.copy2(Path(__file__).resolve(),
+                     out_dir / "deepseek_v4_model_runtime.py")
+        write_json(out_dir / "harness-identity-ds10.json",
+                   result.get("identity", {}))
+        contract_path = ROOT / Path(
+            "dee.cpp/benchmark_reports/deepseek-v4-flash-0731-t4/"
+            "DS10_FULL_MODEL_CONTRACT.json")
+        if contract_path.is_file():
+            shutil.copy2(contract_path, out_dir / contract_path.name)
+        for key, rel in MODULE_RELATIVES.items():
+            shutil.copy2(ROOT / rel,
+                         out_dir / f"deepseek_v4_module_{key}.py")
+        artifact_rows = [
+            {"path": path.relative_to(out_dir).as_posix(),
+             "bytes": path.stat().st_size,
+             "sha256": sha256_file(path)}
+            for path in sorted(out_dir.rglob("*"))
+            if path.is_file() and path.name != "ds10-artifact-manifest.json"
+        ]
         manifest = {
             "schema_version": 1,
             "run_id": RUN_ID,
             "stage": result.get("stage"),
             "verdict": result["verdict"],
+            "result": ("PASS" if str(result["verdict"]).startswith("ACCEPT")
+                       else "FAIL"),
             "performance_comparable": False,
             "repository_commit": result.get("identity", {}).get(
                 "repository_commit"),
-            "artifacts": {
-                path.name: {"bytes": path.stat().st_size,
-                            "sha256": sha256_file(path)}
-                for path in (verdict_path, evidence_path)
-            },
+            "required_paths": [
+                "ds10-verdict.json", "ds10-evidence.json",
+                "deepseek_v4_model_runtime.py", "harness-identity-ds10.json",
+                "DS10_FULL_MODEL_CONTRACT.json",
+            ],
+            "artifacts": artifact_rows,
         }
-        write_json(out_dir / "ds10-artifact-manifest.json", manifest)
+        manifest_path = out_dir / "ds10-artifact-manifest.json"
+        write_json(manifest_path, manifest)
+        archive = shutil.make_archive(str(out_dir), "gztar",
+                                      root_dir=out_dir.parent,
+                                      base_dir=out_dir.name)
+        write_json(out_dir / "archive-metadata.json", {
+            "archive": archive,
+            "archive_sha256": sha256_file(Path(archive)),
+            "manifest_sha256": sha256_file(manifest_path),
+            "excluded_from_archive": ["archive-metadata.json"],
+        })
         print("VERDICT:", result["verdict"], result.get("first_failing_gate", ""),
               flush=True)
     return 0 if str(result["verdict"]).startswith("ACCEPT") else 1
