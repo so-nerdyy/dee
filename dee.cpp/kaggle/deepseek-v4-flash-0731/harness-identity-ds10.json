@@ -3,7 +3,7 @@
   "repository": "https://github.com/so-nerdyy/dee.git",
   "branch": "freebuff/deepseek-v4-flash-0731-t4",
   "repository_commit": "38b321b5e65a80c3e0d47937f4194475cee7a63e",
-  "stage": "v4",
+  "stage": "v5",
   "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
   "model_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
   "harness_file": "dee.cpp/kaggle/deepseek-v4-flash-0731/deepseek_v4_model_runtime.py",
