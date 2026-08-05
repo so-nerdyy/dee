@@ -21,6 +21,8 @@ EXPECTED_MODEL_REVISION = "9e165c30e2704aec5d9d593cce3eebd58bbef1cb"
 EXPECTED_TENSORS = 72_317
 EXPECTED_SHARDS = 48
 EXPECTED_LAYERS = 43
+GPU_MEMORY_CEILING_BYTES = 14_680_064_000
+HOST_RSS_CEILING_BYTES = 12_000_000_000
 MODULE_FILES = {
     "cache": "deepseek_v4_module_cache.py",
     "encoding": "deepseek_v4_module_encoding.py",
@@ -169,7 +171,48 @@ def validate_runtime(runtime: Any) -> bool:
     return (backends.get("cpu_expert_execution") is False
             and backends.get("routed_experts") == "freebuff_ds8_cache_fp16_cuda"
             and all(cache.get("resident_bytes", 1) <= 2 << 30 for cache in caches)
-            and all(cache.get("fallbacks") == 0 for cache in caches))
+            and all(cache.get("fallbacks") == 0 for cache in caches)
+            and all(cache.get("checksum_failures") == 0 for cache in caches))
+
+
+def validate_host_memory(snapshot: Any) -> bool:
+    return (isinstance(snapshot, dict)
+            and snapshot.get("ceiling_bytes") == HOST_RSS_CEILING_BYTES
+            and snapshot.get("current_rss_bytes", HOST_RSS_CEILING_BYTES + 1)
+            <= HOST_RSS_CEILING_BYTES
+            and snapshot.get("peak_rss_bytes", HOST_RSS_CEILING_BYTES + 1)
+            <= HOST_RSS_CEILING_BYTES)
+
+
+def validate_build_memory(memory: Any) -> bool:
+    return (isinstance(memory, dict)
+            and memory.get("cuda0_reserved_gib", float("inf")) * (1 << 30)
+            <= GPU_MEMORY_CEILING_BYTES
+            and memory.get("cuda1_reserved_gib", float("inf")) * (1 << 30)
+            <= GPU_MEMORY_CEILING_BYTES
+            and validate_host_memory(memory.get("host_memory")))
+
+
+def validate_gpu_peaks(peaks: Any) -> bool:
+    return (isinstance(peaks, dict)
+            and all(peaks.get(device, float("inf")) * (1 << 30)
+                    <= GPU_MEMORY_CEILING_BYTES
+                    for device in ("cuda0", "cuda1")))
+
+
+def validate_generation_memory(gates: dict[str, Any]) -> bool:
+    release = gates.get("allocator_release", {})
+    return (gates.get("generation_memory_ceilings_ok") is True
+            and validate_build_memory(gates.get("memory"))
+            and validate_build_memory(gates.get("memory2"))
+            and validate_host_memory(gates.get("host_memory_after_primary"))
+            and validate_host_memory(gates.get("host_memory_after_release"))
+            and validate_host_memory(gates.get("host_memory_after_alternate"))
+            and validate_gpu_peaks(gates.get("peak_memory_primary_gib"))
+            and validate_gpu_peaks(gates.get("peak_memory_alternate_gib"))
+            and isinstance(release, dict)
+            and release.get("attempted") is True
+            and release.get("after") == gates.get("host_memory_after_release"))
 
 
 def stage_gates(evidence: dict[str, Any], expected_stage: str) -> dict[str, bool]:
@@ -233,9 +276,17 @@ def stage_gates(evidence: dict[str, Any], expected_stage: str) -> dict[str, bool
             "token_layers": all(validate_layer_trace(
                 trace.get(f"token_{idx}", {}).get("layers"),
                 list(range(EXPECTED_LAYERS))) for idx in range(len(tokens))),
-            "deterministic": gates.get("deterministic_rerun") is True,
-            "cold_warm": gates.get("cold_warm_equal") is True,
-            "cache_capacity": gates.get("cache_capacity_variation_equal") is True}
+            "deterministic": gates.get("deterministic_rerun") is True
+            and gates.get("rerun_tokens") == tokens,
+            "cold_warm": gates.get("cold_warm_equal") is True
+            and gates.get("warm_tokens") == tokens,
+            "cache_capacity": gates.get("cache_capacity_variation_equal") is True
+            and gates.get("alternate_cache_budget_bytes") == 1536 << 20
+            and gates.get("memory2", {}).get("cache_budget_bytes") == 1536 << 20,
+            "runtime_primary": validate_runtime(gates.get("runtime_after_warm")),
+            "runtime_alternate": validate_runtime(
+                gates.get("runtime_alternate_budget")),
+            "generation_memory": validate_generation_memory(gates)}
 
 
 def validate(input_dir: Path, expected_stage: str,

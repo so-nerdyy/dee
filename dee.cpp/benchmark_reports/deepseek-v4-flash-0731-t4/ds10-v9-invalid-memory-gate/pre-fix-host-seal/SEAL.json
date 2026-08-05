@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "result": "PASS",
+  "terminal_verdict": "ACCEPT_DUAL_T4_FIRST_TOKEN",
+  "stage": "v5",
+  "performance_comparable": false,
+  "evidence_dir": "dsv4-ds10-evidence-20260805T023525Z",
+  "identity": {
+    "repository_commit": "38b321b5e65a80c3e0d47937f4194475cee7a63e",
+    "stage": "v5",
+    "harness_sha256": "3b68d22747a30de95dbb290ef9c0051bc61936102aa6f2a97080c55a8e212a5f",
+    "module_count": 9
+  },
+  "manifest": {
+    "path": "ds10-artifact-manifest.json",
+    "sha256": "843b466778eef25bed035dbacf29caf4878a8445d389ad044c2e05cd0f6de78a",
+    "artifact_count": 14
+  },
+  "archive": {
+    "path": "dsv4-ds10-evidence-20260805T023525Z.tar.gz",
+    "bytes": 96232,
+    "sha256": "426d06fbfec904a0a6699b0ffd6f62d3eb8744ea0288cbb94127c9778e12d760",
+    "member_count": 16
+  },
+  "gates": {
+    "dual_t4": true,
+    "performance_not_comparable": true,
+    "verdict": true,
+    "token_count": true,
+    "token_ids": true,
+    "token_layers": true,
+    "deterministic": true,
+    "cold_warm": true,
+    "cache_capacity": true
+  },
+  "failed_gates": []
+}

@@ -80,7 +80,6 @@ LADDER_INPUT_IDS = (0,)
 # Cache budgets per GPU (bytes): bounded, well under the 12-13 GiB bring-up
 # envelope; the model's dense/state bytes come from the static memory plan.
 CACHE_BUDGET_BYTES = 2 << 30  # 2 GiB per GPU
-GPU_MEMORY_CEILING_BYTES = 14_680_064_000
 HOST_RSS_CEILING_BYTES = 12_000_000_000
 
 # Canonical prompt (short, for v5/v6/final stages).  Pure-ASCII escapes:
@@ -124,59 +123,6 @@ def _host_memory_snapshot() -> dict[str, int]:
         * 1024,
         "ceiling_bytes": HOST_RSS_CEILING_BYTES,
     }
-
-
-def _host_memory_within_ceiling(snapshot: Any) -> bool:
-    return (isinstance(snapshot, dict)
-            and snapshot.get("current_rss_bytes", HOST_RSS_CEILING_BYTES + 1)
-            <= HOST_RSS_CEILING_BYTES
-            and snapshot.get("peak_rss_bytes", HOST_RSS_CEILING_BYTES + 1)
-            <= HOST_RSS_CEILING_BYTES)
-
-
-def _build_memory_within_ceiling(memory: Any) -> bool:
-    if not isinstance(memory, dict):
-        return False
-    return (memory.get("cuda0_reserved_gib", float("inf")) * (1 << 30)
-            <= GPU_MEMORY_CEILING_BYTES
-            and memory.get("cuda1_reserved_gib", float("inf")) * (1 << 30)
-            <= GPU_MEMORY_CEILING_BYTES
-            and _host_memory_within_ceiling(memory.get("host_memory")))
-
-
-def _gpu_peaks_within_ceiling(peaks: Any) -> bool:
-    if not isinstance(peaks, dict):
-        return False
-    return all(peaks.get(device, float("inf")) * (1 << 30)
-               <= GPU_MEMORY_CEILING_BYTES
-               for device in ("cuda0", "cuda1"))
-
-
-def _trim_host_allocator() -> dict[str, Any]:
-    """Return freed glibc arenas before constructing an independent model.
-
-    PyTorch releases the first model's CPU tensors, but glibc may retain those
-    arenas in the process RSS.  A second full build would then look like two
-    host models even though Python has no live reference to the first one.
-    Linux ``malloc_trim`` makes the release observable and keeps the next
-    model inside the contract's real RSS ceiling.
-    """
-    before = _host_memory_snapshot()
-    result: dict[str, Any] = {"attempted": True, "before": before}
-    try:
-        import ctypes  # noqa: PLC0415
-        libc = ctypes.CDLL(None)
-        trim = libc.malloc_trim
-        trim.argtypes = [ctypes.c_size_t]
-        trim.restype = ctypes.c_int
-        result["return_code"] = int(trim(0))
-    except Exception as exc:  # noqa: BLE001
-        result["error"] = f"{type(exc).__name__}: {exc}"
-    after = _host_memory_snapshot()
-    result["after"] = after
-    result["current_rss_released_bytes"] = max(
-        0, before["current_rss_bytes"] - after["current_rss_bytes"])
-    return result
 
 
 def _safe_rmtree(path: Path) -> None:
@@ -277,7 +223,7 @@ def stage_v1() -> dict[str, Any]:
         cfg, source, budgets0=CACHE_BUDGET_BYTES, budgets1=CACHE_BUDGET_BYTES)
     gates["memory_plan"] = plan
     ceilings_ok = all(
-        row["total_estimate_gib"] * (1 << 30) <= GPU_MEMORY_CEILING_BYTES
+        row["total_estimate_gib"] <= 14.0
         for row in plan["devices"].values())
     gates["memory_ceilings_ok"] = ceilings_ok
     ok = ok and ceilings_ok
@@ -297,7 +243,13 @@ def stage_v1() -> dict[str, Any]:
         sig = model.state_signatures(list(range(cfg.n_layers)))
         build_gates["state_signatures"] = sig
         build_gates["state_count"] = len(sig)
-        actual_memory_ok = _build_memory_within_ceiling(mem)
+        actual_memory_ok = (
+            mem["cuda0_reserved_gib"] <= 14.0
+            and mem["cuda1_reserved_gib"] <= 14.0
+            and mem["host_memory"]["current_rss_bytes"]
+            <= HOST_RSS_CEILING_BYTES
+            and mem["host_memory"]["peak_rss_bytes"]
+            <= HOST_RSS_CEILING_BYTES)
         build_gates["actual_memory_ceilings_ok"] = actual_memory_ok
         build_ok = len(sig) == cfg.n_layers and actual_memory_ok
         build_gates["fetch_stats"] = dict(source.stats)
@@ -327,11 +279,7 @@ def _build_full_model(source: Any, cfg: Any, *,
     cache1 = DeepSeekExpertCache(cache_budget_bytes, device="cuda:1")
     loader0 = DeepSeekExpertLoader(cache0)
     loader1 = DeepSeekExpertLoader(cache1)
-    # The sealed v5 probe measured zero compact-host LRU hits over all three
-    # generation passes.  Retaining eight packed experts per layer therefore
-    # consumed 4.6 GB without avoiding a single fetch.  GPU expert caches stay
-    # bounded and authoritative; do not retain redundant compact host copies.
-    provider = vm.ExpertProvider(source, raw_experts_per_layer=0)
+    provider = vm.ExpertProvider(source)
     t0 = time.monotonic()
     model = vm.DeepseekV4Model.build_candidate(
         cfg, source, device0="cuda:0", device1="cuda:1",
@@ -549,7 +497,6 @@ def stage_generate(n_tokens: int, *, stage_name: str) -> dict[str, Any]:
             "cuda0": round(torch.cuda.max_memory_allocated(0) / (1 << 30), 3),
             "cuda1": round(torch.cuda.max_memory_allocated(1) / (1 << 30), 3),
         }
-        gates["host_memory_after_primary"] = _host_memory_snapshot()
         # Release the primary model before the independent rerun.  Keeping two
         # complete 43-layer candidates resident simultaneously leaves no T4
         # safety margin and made the original final-stage design OOM-prone.
@@ -557,25 +504,6 @@ def stage_generate(n_tokens: int, *, stage_name: str) -> dict[str, Any]:
         del model
         gc.collect()
         torch.cuda.empty_cache()
-        gates["allocator_release"] = _trim_host_allocator()
-        gates["host_memory_after_release"] = gates["allocator_release"]["after"]
-        primary_memory_ok = (
-            _build_memory_within_ceiling(mem)
-            and _host_memory_within_ceiling(
-                gates["host_memory_after_primary"])
-            and _host_memory_within_ceiling(
-                gates["host_memory_after_release"])
-            and _gpu_peaks_within_ceiling(
-                gates["peak_memory_primary_gib"])
-        )
-        if not primary_memory_ok:
-            gates["generation_memory_ceilings_ok"] = False
-            return {
-                "verdict": "REJECT_MEMORY",
-                "gates": gates,
-                "stage": stage_name,
-                "first_failing_gate": "generation_memory_primary",
-            }
         torch.cuda.reset_peak_memory_stats()
         # The independent rerun also uses a second valid cache budget, proving
         # output invariance across cache capacity without a third full build.
@@ -593,41 +521,21 @@ def stage_generate(n_tokens: int, *, stage_name: str) -> dict[str, Any]:
             "cuda0": round(torch.cuda.max_memory_allocated(0) / (1 << 30), 3),
             "cuda1": round(torch.cuda.max_memory_allocated(1) / (1 << 30), 3),
         }
-        gates["host_memory_after_alternate"] = _host_memory_snapshot()
-        memory_ok = (
-            primary_memory_ok
-            and _build_memory_within_ceiling(mem2)
-            and _host_memory_within_ceiling(
-                gates["host_memory_after_alternate"])
-            and _gpu_peaks_within_ceiling(
-                gates["peak_memory_alternate_gib"])
-        )
-        gates["generation_memory_ceilings_ok"] = memory_ok
-        functional_ok = (len(toks) >= n_tokens
-                         and gates["token_ids_in_vocab"]
-                         and gates["deterministic_rerun"]
-                         and gates["cold_warm_equal"]
-                         and gates["cache_capacity_variation_equal"])
-        ok = functional_ok and memory_ok
-        if not memory_ok:
-            verdict = "REJECT_MEMORY"
-        elif not functional_ok:
-            verdict = "REJECT_GENERATION_STATE"
-        elif n_tokens >= 16:
-            verdict = "ACCEPT_DUAL_T4_DECODE"
-        else:
-            verdict = "ACCEPT_DUAL_T4_FIRST_TOKEN"
+        ok = (len(toks) >= n_tokens
+              and gates["token_ids_in_vocab"]
+              and gates["deterministic_rerun"]
+              and gates["cold_warm_equal"]
+              and gates["cache_capacity_variation_equal"])
+        verdict = ("ACCEPT_DUAL_T4_DECODE"
+                   if ok and n_tokens >= 16
+                   else "ACCEPT_DUAL_T4_FIRST_TOKEN" if ok
+                   else "REJECT_GENERATION_STATE")
     except Exception as exc:  # noqa: BLE001
         ok = False
         verdict = "REJECT_GENERATION_STATE"
         gates["error"] = f"{type(exc).__name__}: {exc}"
         gates["traceback"] = traceback.format_exc()
-    result = {"verdict": verdict, "gates": gates, "stage": stage_name}
-    if not ok:
-        result["first_failing_gate"] = (
-            "generation_memory" if verdict == "REJECT_MEMORY"
-            else "generation_state")
-    return result
+    return {"verdict": verdict, "gates": gates, "stage": stage_name}
 
 
 def main() -> int:
