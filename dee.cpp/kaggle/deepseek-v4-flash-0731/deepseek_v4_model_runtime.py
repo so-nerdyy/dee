@@ -576,13 +576,30 @@ def main() -> int:
         result["traceback"] = traceback.format_exc()
         print("FATAL:", exc, flush=True)
     finally:
-        write_json(out_dir / "ds10-verdict.json",
+        verdict_path = out_dir / "ds10-verdict.json"
+        evidence_path = out_dir / "ds10-evidence.json"
+        write_json(verdict_path,
                    {"verdict": result["verdict"],
                     "stage": result.get("stage"),
                     "performance_comparable": False,
                     "first_failing_gate": result.get("first_failing_gate"),
                     "run_id": RUN_ID})
-        write_json(out_dir / "ds10-evidence.json", result)
+        write_json(evidence_path, result)
+        manifest = {
+            "schema_version": 1,
+            "run_id": RUN_ID,
+            "stage": result.get("stage"),
+            "verdict": result["verdict"],
+            "performance_comparable": False,
+            "repository_commit": result.get("identity", {}).get(
+                "repository_commit"),
+            "artifacts": {
+                path.name: {"bytes": path.stat().st_size,
+                            "sha256": sha256_file(path)}
+                for path in (verdict_path, evidence_path)
+            },
+        }
+        write_json(out_dir / "ds10-artifact-manifest.json", manifest)
         print("VERDICT:", result["verdict"], result.get("first_failing_gate", ""),
               flush=True)
     return 0 if str(result["verdict"]).startswith("ACCEPT") else 1
