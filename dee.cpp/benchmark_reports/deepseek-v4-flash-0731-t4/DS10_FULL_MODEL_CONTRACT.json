@@ -7,6 +7,18 @@
   "revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
   "branch": "freebuff/deepseek-v4-flash-0731-t4",
   "reference_policy": "REFERENCE_POLICY.md (2026-08-04): sealed DS8/DS9 discipline is the trusted reference; official TileLang stack is NOT a DS10 prerequisite (DS5 hardware-format blocker preserved as evidence).",
+  "runtime_identity": {
+    "runtime_code_commit": "a2212b118ff2d99017cb8e0923fcb35c9d7dd69c",
+    "harness_sha256": "7be16285c8687c8b331a2c8ab22dc0ef3ff50492726c6837f2d531d348a20c15",
+    "identity_file": "dee.cpp/kaggle/deepseek-v4-flash-0731/harness-identity-ds10.json",
+    "stage_source": "identity-pinned; environment overrides fail closed"
+  },
+  "tokenizer_encoding_identity": {
+    "model_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+    "tokenizer_json_sha256": "8f9f37ca37fdc4f5fd36d5cf4d3b0e8392edb4e894fd10cc0d70b4957c8633cf",
+    "encoding_dsv4_sha256": "abc0d26120250dda0ae077dc64aa28836026e61e970854aaeb792445e6a0dde6",
+    "golden_gate": "17/17 PASS"
+  },
   "gpu_topology": {
     "hardware": "Kaggle dual Tesla T4 (SM75)",
     "gpu_count": 2,
@@ -21,7 +33,7 @@
     "handoff": {
       "method": "host-staged D2D copy (pinned staging + side stream + events)",
       "tensor": "hidden state [b, s, hc_mult, dim] bf16",
-      "checksum": "sha256 of fp32 bytes before and after; must be bitwise equal",
+      "checksum": "sha256 of exact BF16 storage bytes before and after; must be bitwise equal",
       "location": "between layer 21 and layer 22"
     }
   },
@@ -39,7 +51,37 @@
     "alternative": "LocalDirTensorSource when shard files are already on disk",
     "no_full_checkpoint_expansion": true,
     "mapped_bytes": 0,
-    "host_rss_budget_bytes": 12000000000
+    "host_rss_budget_bytes": 12000000000,
+    "model_index_sha256": "98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b",
+    "checkpoint_manifest_sha256": "c5499dbd9588841c0956d8d38e02dea199f0ce30d859cc56fce1e80f1325c765",
+    "checkpoint_shards": 48,
+    "checkpoint_tensors": 72317
+  },
+  "persistent_tensor_placement": {
+    "gpu_0": ["embed.weight", "dense non-expert tensors for layers 0-21", "active routed/shared-expert cache for layers 0-21"],
+    "gpu_1": ["dense non-expert tensors for layers 22-42", "active routed/shared-expert cache for layers 22-42", "hc_head_fn", "hc_head_base", "hc_head_scale", "norm.weight", "head.weight"],
+    "host": ["committed shard headers", "bounded official packed routed-expert LRU", "one FP16 shared-expert payload per layer", "one pinned hidden-state handoff buffer"],
+    "forbidden": ["duplicate fully expanded model", "CPU expert execution", "implicit CPU-owned model state"]
+  },
+  "state_ownership": {
+    "owner": "the GPU that owns the corresponding layer; no state crosses the partition",
+    "buffers": ["attention KV cache", "compressor KV state", "compressor score state", "indexer KV cache", "indexer compressor KV state", "indexer compressor score state", "position and compression-index metadata"],
+    "dtype_shape": "derived exactly from the pinned config and layer compress ratio; emitted in state signatures",
+    "initialization": "zero for KV/state tensors; negative-infinity structural sentinel for unwritten score slots",
+    "update_point": "inside the owning layer attention/compressor/indexer forward",
+    "read_point": "the next prefill/decode call for the same layer",
+    "transfer_point": "none; only hidden state transfers between GPUs",
+    "reset": "zero/sentinel reset before every cold or deterministic run; warm run resets state but retains bounded expert cache",
+    "token_position": "explicit start_pos from prompt length and generated-token index",
+    "stream_rule": "owning-device current stream; explicit event chain only for the inter-GPU hidden-state handoff"
+  },
+  "staging_limits": {
+    "gpu_expert_cache_bytes_per_gpu": 2147483648,
+    "host_compact_experts_per_layer": 8,
+    "intergpu_buffers": 1,
+    "intergpu_dtype": "BF16 unchanged",
+    "intergpu_d2h_and_h2d_bytes": "exact hidden tensor storage bytes, emitted separately",
+    "full_checkpoint_expansions": 0
   },
   "expert_cache": {
     "representation": "fp16_expanded (sealed DS8 DeepSeekExpertCache + DeepSeekExpertLoader)",
@@ -51,7 +93,7 @@
   },
   "prompts": {
     "canonical": "<\uff5cbegin\u2581of\u2581sentence\uff5c>Who is Alan Turing?<\uff5cAssistant\uff5c>",
-    "prefill_tokens": 64,
+    "prefill_tokens": 7,
     "smoke_generated_tokens": 4,
     "acceptance_generated_tokens": 16,
     "decoding": "greedy argmax",
@@ -99,18 +141,18 @@
     "v6": "continued decode >= 4 tokens",
     "final": ">= 16 tokens + deterministic replay + cold/warm + bounded memory"
   },
-  "terminal_verdicts": [
-    "ACCEPT_DUAL_T4_FIRST_TOKEN",
-    "ACCEPT_DUAL_T4_DECODE",
-    "REJECT_MODEL_LOAD",
-    "REJECT_ATTENTION_OR_STATE",
-    "REJECT_ROUTER_OR_EXPERT",
-    "REJECT_INTERGPU",
-    "REJECT_LM_HEAD",
-    "REJECT_GENERATION_STATE",
-    "REJECT_MEMORY",
-    "INVALID_EXPERIMENT"
-  ],
+  "terminal_verdict_rules": {
+    "ACCEPT_DUAL_T4_FIRST_TOKEN": "all layers, accepted architecture path, finite logits, one genuine token, deterministic rerun, and bounded memory",
+    "ACCEPT_DUAL_T4_DECODE": "at least 16 genuine autoregressive tokens, deterministic and cold/warm equality, valid state carry, no unsupported fallback, bounded memory, and complete hashed evidence",
+    "REJECT_MODEL_LOAD": "checkpoint coverage, tensor loading, state initialization, or load-time memory gate fails",
+    "REJECT_ATTENTION_OR_STATE": "first failing layer is in attention, compression, indexer, mHC, or state invariants",
+    "REJECT_ROUTER_OR_EXPERT": "routing, expert identity, cache, staging, or expert execution fails",
+    "REJECT_INTERGPU": "explicit hidden-state transfer or exact storage checksum fails",
+    "REJECT_LM_HEAD": "all layers pass but final normalization or logits fail",
+    "REJECT_GENERATION_STATE": "first token succeeds but subsequent state carry, determinism, capacity invariance, or cold/warm equality fails",
+    "REJECT_MEMORY": "GPU ceiling, host RSS ceiling, or bounded staging cannot be maintained",
+    "INVALID_EXPERIMENT": "identity, topology, instrumentation, manifest, or execution-path evidence is incomplete"
+  },
   "performance": {
     "performance_comparable": false,
     "no_tps_claims": true,
