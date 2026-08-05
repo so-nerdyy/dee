@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "host_label": "ds10-v3-killed-20260804T2354Z",
+  "milestone": "DS10",
+  "stage": "v1-with-partition0-smoke",
+  "kernel": "nivind/dee-cpp-deepseek-v4-flash-0731-ds10-model-runtime",
+  "terminal_state": "ERROR",
+  "terminal_verdict": "INVALID_EXPERIMENT",
+  "performance_comparable": false,
+  "repository_commit": "6298ab6955d9f836ae540317ac790911e3f15fe6",
+  "harness_sha256": "9d91d80329c18a658f1839a23ffbd1c4d0211e34b1232348f8f7fbe00546ca34",
+  "elapsed_to_kill_seconds": 2623.642151822,
+  "observed_terminal_line": "Killed",
+  "remote_evidence_directory_present": false,
+  "first_failing_gate": null,
+  "classification_reason": "The worker was killed before the harness could write a verdict or evidence. Identity and artifact completeness are therefore insufficient for a component rejection.",
+  "probable_cause": {
+    "classification": "HOST_RSS_GROWTH_FROM_UNBOUNDED_EXPANDED_EXPERT_RETENTION",
+    "evidence_strength": "code-path diagnosis consistent with the OS kill; remote RSS was not emitted",
+    "detail": "The pinned provider retained every dynamically reached routed expert as expanded FP16 host tensors during the 8-token partition smoke. The map had no capacity bound. This can grow far beyond the 12 GB host-RSS contract before partition completion."
+  },
+  "corrective_changes": {
+    "runtime_commit": "03f659f4360e38b0b008ada0c57b9b1192d28533",
+    "manifested_runtime_commit": "0268c4ff8b701df1fa953932c53059744535c8c0",
+    "sealed_v1_branch_head": "bfa78c4",
+    "summary": "Dynamic routed experts now retain a bounded per-layer LRU of compact official tensors, expanded FP16 payloads are not accumulated on host, v1 no longer executes the v2 partition, host RSS is gated, and run artifacts are hashed and archived."
+  },
+  "log": {
+    "path": "kaggle-session.log",
+    "bytes": 1926,
+    "sha256": "bca224089775ce5595502b64694e9eb36c22398045854ffda903825ae5686e13"
+  }
+}
