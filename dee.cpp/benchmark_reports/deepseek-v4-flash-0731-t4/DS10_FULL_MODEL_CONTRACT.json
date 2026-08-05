@@ -16,13 +16,13 @@
     "memory_target_per_gpu_bytes": 12000000000
   },
   "layer_to_gpu_assignment": {
-    "gpu_0": {"role": "embed + early layers", "layers": [0, 20], "extra": ["embed.weight"]},
-    "gpu_1": {"role": "later layers + LM head", "layers": [21, 42], "extra": ["norm.weight", "hc_head_fn", "hc_head_base", "hc_head_scale", "head.weight"]},
+    "gpu_0": {"role": "embed + early layers", "layers": [0, 21], "extra": ["embed.weight"]},
+    "gpu_1": {"role": "later layers + LM head", "layers": [22, 42], "extra": ["norm.weight", "hc_head_fn", "hc_head_base", "hc_head_scale", "head.weight"]},
     "handoff": {
       "method": "host-staged D2D copy (pinned staging + side stream + events)",
       "tensor": "hidden state [b, s, hc_mult, dim] bf16",
       "checksum": "sha256 of fp32 bytes before and after; must be bitwise equal",
-      "location": "between layer 20 and layer 21"
+      "location": "between layer 21 and layer 22"
     }
   },
   "precision_family": {
@@ -43,13 +43,14 @@
   },
   "expert_cache": {
     "representation": "fp16_expanded (sealed DS8 DeepSeekExpertCache + DeepSeekExpertLoader)",
-    "budget_per_gpu_bytes": 3000000000,
+    "budget_per_gpu_bytes": 2147483648,
+    "host_compact_reuse": "official packed tensors, per-layer LRU, 8 routed experts per layer (six active plus two replacements)",
     "shared_expert": "cache with priority, expert_id -1 per layer",
     "miss_action": "on-demand fetch via RemoteTensorSource + async stage",
     "fail_closed": ["invalid expert id", "missing tensor", "stale entry", "cross-shard split", "unbounded growth"]
   },
   "prompts": {
-    "canonical": "A concise explanation of what DeepSeek-V4-Flash is, in one paragraph.",
+    "canonical": "<\uff5cbegin\u2581of\u2581sentence\uff5c>Who is Alan Turing?<\uff5cAssistant\uff5c>",
     "prefill_tokens": 64,
     "smoke_generated_tokens": 4,
     "acceptance_generated_tokens": 16,
@@ -91,7 +92,7 @@
   ],
   "staged_runs": {
     "v1": "model-load + tensor-coverage smoke (all 72,317 tensors resolve; memory plan; state init)",
-    "v2": "first partition (layers 0-20 prefill, boundary state)",
+    "v2": "first partition (layers 0-21 prefill, boundary state)",
     "v3": "inter-GPU handoff (first partition -> one layer on GPU 1)",
     "v4": "all layers + first logits",
     "v5": "first generated token",

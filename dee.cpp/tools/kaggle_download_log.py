@@ -12,12 +12,12 @@ def main():
     parser.add_argument("kernel", help="owner/kernel-slug")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
-    owner, slug = args.kernel.split("/", 1)
-
     api = KaggleApi()
     api.authenticate()
-    response = api.process_response(api.kernel_output_with_http_info(owner, slug))
-    log = response.get("log")
+    # Kaggle API 2.x exposes the persisted/current session log directly.
+    # The removed ``process_response(kernel_output_with_http_info(...))``
+    # path failed before it could inspect a running DS10 campaign.
+    log = api.kernels_logs(args.kernel)
     if not log:
         raise RuntimeError(f"Kaggle returned no log for {args.kernel}")
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -27,4 +27,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

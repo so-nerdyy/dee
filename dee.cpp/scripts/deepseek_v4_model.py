@@ -24,11 +24,11 @@ No latency interpretation: ``performance_comparable`` stays false.
 
 from __future__ import annotations
 
-import concurrent.futures
 import hashlib
 import json
 import urllib.error
 import urllib.request
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Protocol
@@ -38,8 +38,6 @@ import torch
 from scripts import deepseek_v4_layer_common as common
 from scripts import deepseek_v4_layer_reference as layer_ref
 from scripts import deepseek_v4_layer_candidate as v4cand
-from scripts import deepseek_v4_moe_reference as moe
-from scripts import deepseek_v4_expert_reference as ds7
 from scripts import deepseek_v4_support as v4support
 
 OFFICIAL_REPOSITORY = "deepseek-ai/DeepSeek-V4-Flash-0731"
@@ -67,6 +65,12 @@ DTYPE_MAP = {
 
 def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _tensor_storage_sha256(tensor: torch.Tensor) -> str:
+    """Hash the tensor's exact storage bytes without a dtype conversion."""
+    raw = tensor.detach().contiguous().view(torch.uint8).cpu().numpy().tobytes()
+    return _sha256_bytes(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -393,31 +397,53 @@ def model_config_from_official(config_path: Path | str) -> ModelConfig:
 class ExpertProvider:
     """Materializes FP16-expanded routed/shared payloads on demand.
 
-    ``fp16_payloads``/``shared_payload`` caches keep per-layer prebuilt
-    payloads (tests / prefill discovery); misses fall through to
-    ``source``-based dequantization.
+    Explicitly supplied ``fp16_payloads``/``shared_payloads`` are used by
+    tests and sealed replay.  Dynamic routed experts retain only their compact
+    official tensors in a per-layer LRU; retaining every expanded FP16 expert
+    reached during prefill would grow host RSS without bound.  Eight compact
+    experts per layer cover the six-expert decode set plus two replacements
+    while remaining inside the DS10 host budget.
     """
 
     def __init__(self, source: TensorSource, *,
                  fp16_payloads: Optional[dict[int, dict[int, dict[str, torch.Tensor]]]] = None,
-                 shared_payloads: Optional[dict[int, dict[str, torch.Tensor]]] = None):
+                 shared_payloads: Optional[dict[int, dict[str, torch.Tensor]]] = None,
+                 raw_experts_per_layer: int = 8):
+        if raw_experts_per_layer < 0:
+            raise ValueError("raw_experts_per_layer must be nonnegative")
         self.source = source
         self.fp16_payloads = fp16_payloads or {}
         self.shared_payloads = shared_payloads or {}
+        self.raw_experts_per_layer = int(raw_experts_per_layer)
+        self.raw_payloads: dict[
+            int, OrderedDict[int, dict[str, torch.Tensor]]] = {}
         self.fetch_count = 0
+        self.raw_hits = 0
+        self.raw_misses = 0
+        self.raw_evictions = 0
 
     def get_fp16_payload(self, layer: int, expert_id: int) -> dict[str, torch.Tensor]:
         layer_map = self.fp16_payloads.get(layer, {})
         if expert_id in layer_map:
             return layer_map[expert_id]
-        names = v4support.routed_expert_tensor_names(layer, expert_id)
-        raw = {n[len(f"layers.{layer}.ffn.experts.{expert_id}."):]:
-               self.source.get_tensor(n) for n in names}
-        payload = v4cand.build_fp16_payloads({expert_id: raw})[expert_id]
-        layer_map[expert_id] = payload
-        self.fp16_payloads[layer] = layer_map
-        self.fetch_count += 1
-        return payload
+        raw_layer = self.raw_payloads.setdefault(layer, OrderedDict())
+        raw = raw_layer.get(expert_id)
+        if raw is None:
+            self.raw_misses += 1
+            names = v4support.routed_expert_tensor_names(layer, expert_id)
+            raw = {n[len(f"layers.{layer}.ffn.experts.{expert_id}."):]:
+                   self.source.get_tensor(n) for n in names}
+            self.fetch_count += 1
+            if self.raw_experts_per_layer:
+                raw_layer[expert_id] = raw
+                raw_layer.move_to_end(expert_id)
+                while len(raw_layer) > self.raw_experts_per_layer:
+                    raw_layer.popitem(last=False)
+                    self.raw_evictions += 1
+        else:
+            self.raw_hits += 1
+            raw_layer.move_to_end(expert_id)
+        return v4cand.build_fp16_payloads({expert_id: raw})[expert_id]
 
     def get_shared_fp16_payload(self, layer: int) -> dict[str, torch.Tensor]:
         if layer in self.shared_payloads:
@@ -429,6 +455,21 @@ class ExpertProvider:
         self.shared_payloads[layer] = payload
         self.fetch_count += 1
         return payload
+
+    def stats(self) -> dict[str, int]:
+        raw_tensors = [tensor for layer in self.raw_payloads.values()
+                       for payload in layer.values()
+                       for tensor in payload.values()]
+        return {
+            "fetch_count": self.fetch_count,
+            "raw_hits": self.raw_hits,
+            "raw_misses": self.raw_misses,
+            "raw_evictions": self.raw_evictions,
+            "raw_entries": sum(len(layer) for layer in self.raw_payloads.values()),
+            "raw_bytes": sum(t.numel() * t.element_size() for t in raw_tensors),
+            "raw_experts_per_layer": self.raw_experts_per_layer,
+            "shared_fp16_layers": len(self.shared_payloads),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -458,6 +499,8 @@ class DeepseekV4Model:
         self.head = head
         self.handoff_stats: dict[str, Any] = {}
         self.captures: dict[int, dict[str, Any]] = {}
+        self.execution_trace: list[dict[str, Any]] = []
+        self.last_execution: dict[str, Any] = {"phase": "not_started"}
 
     # -- construction ------------------------------------------------------
     @classmethod
@@ -513,17 +556,23 @@ class DeepseekV4Model:
                 shared_payload=shared_payload, provider=provider)
             (layers0 if layer < split else layers1).append(layer_obj)
 
-        return cls(cfg, embed=embed.to(device0), layers0=layers0,
-                   layers1=layers1, hc_head_fn=hc_head_fn,
-                   hc_head_base=hc_head_base, hc_head_scale=hc_head_scale,
-                   norm_w=norm_w.to(device1), head=head.to(device1),
-                   device0=device0, device1=device1)
+        model = cls(cfg, embed=embed.to(device0), layers0=layers0,
+                    layers1=layers1, hc_head_fn=hc_head_fn,
+                    hc_head_base=hc_head_base, hc_head_scale=hc_head_scale,
+                    norm_w=norm_w.to(device1), head=head.to(device1),
+                    device0=device0, device1=device1)
+        model.provider = provider
+        model.cache0 = cache0
+        model.cache1 = cache1
+        return model
 
     # -- runtime -----------------------------------------------------------
     def reset_state(self) -> None:
         for layer in self.layers0 + self.layers1:
             layer.reset_state()
         self.handoff_stats = {}
+        self.execution_trace = []
+        self.last_execution = {"phase": "reset"}
 
     def layer(self, layer_id: int) -> Any:
         if layer_id < self.split:
@@ -552,27 +601,54 @@ class DeepseekV4Model:
         stream events.
         """
         h_src = h.detach()
-        pre_sha = _sha256_bytes(
-            h_src.float().cpu().contiguous().numpy().tobytes())
         cuda_cross = (h.is_cuda and dst != str(h.device)
                       and torch.cuda.is_available())
         if cuda_cross:
-            ev = torch.cuda.Event()
-            ev.record(torch.cuda.current_stream())
-            h_dst = h_src.to(dst, non_blocking=True)
-            torch.cuda.current_stream(dst).wait_event(ev)
-            torch.cuda.synchronize(dst)
+            src_device = h.device
+            dst_device = torch.device(dst)
+            nbytes = h.numel() * h.element_size()
+            host = torch.empty(h.shape, dtype=h.dtype, device="cpu",
+                               pin_memory=True)
+            src_stream = torch.cuda.current_stream(src_device)
+            d2h_done = torch.cuda.Event()
+            with torch.cuda.stream(src_stream):
+                host.copy_(h_src, non_blocking=True)
+                d2h_done.record(src_stream)
+            d2h_done.synchronize()
+            pre_sha = _tensor_storage_sha256(host)
+
+            dst_stream = torch.cuda.Stream(device=dst_device)
+            h_dst = torch.empty(h.shape, dtype=h.dtype, device=dst_device)
+            h2d_done = torch.cuda.Event()
+            with torch.cuda.stream(dst_stream):
+                h_dst.copy_(host, non_blocking=True)
+                h2d_done.record(dst_stream)
+            torch.cuda.current_stream(dst_device).wait_event(h2d_done)
+            h2d_done.synchronize()
+            p2p_available = bool(torch.cuda.can_device_access_peer(
+                src_device.index, dst_device.index))
+            method = "explicit_pinned_host_staging"
         else:
             h_dst = h_src.to(dst)
-        post_sha = _sha256_bytes(
-            h_dst.float().cpu().contiguous().numpy().tobytes())
+            nbytes = h.numel() * h.element_size()
+            pre_sha = _tensor_storage_sha256(h_src)
+            p2p_available = False
+            method = "same_device_copy"
+        post_sha = _tensor_storage_sha256(h_dst)
         self.handoff_stats = {
             "source_device": str(h.device),
             "destination_device": dst,
             "dtype": str(h.dtype),
             "shape": list(h.shape),
-            "bytes": h.numel() * h.element_size(),
-            "method": "host-staged D2D copy" if cuda_cross else "same-device copy",
+            "bytes": nbytes,
+            "d2h_bytes": nbytes if cuda_cross else 0,
+            "h2d_bytes": nbytes if cuda_cross else 0,
+            "d2d_bytes": 0,
+            "method": method,
+            "pinned_host_buffer": bool(cuda_cross),
+            "peer_to_peer_available": p2p_available,
+            "source_event_recorded": bool(cuda_cross),
+            "destination_event_waited": bool(cuda_cross),
             "pre_checksum": pre_sha,
             "post_checksum": post_sha,
             "checksum_bitwise_equal": pre_sha == post_sha,
@@ -580,26 +656,62 @@ class DeepseekV4Model:
         return h_dst
 
     def forward(self, input_ids: torch.Tensor, start_pos: int,
-                captures: Optional[dict[int, dict[str, Any]]] = None) -> torch.Tensor:
+                 captures: Optional[dict[int, dict[str, Any]]] = None) -> torch.Tensor:
         """Full forward; returns logits [b, vocab] for the LAST token."""
         cfg = self.cfg
         b, s = input_ids.shape
+        self.execution_trace = []
+        self.last_execution = {"phase": "embedding", "start_pos": start_pos,
+                               "sequence_length": s}
         h = torch.nn.functional.embedding(
             input_ids.to(self.device0), self.embed)
         h = h.unsqueeze(2).expand(b, s, cfg.hc_mult, h.size(-1)).contiguous()
         for idx, layer in enumerate(self.layers0):
+            self.last_execution = {"phase": "layer", "layer": idx,
+                                   "device": self.device0}
             cap = captures.setdefault(idx, {}) if captures is not None else None
             h = layer.forward(h, start_pos, input_ids.to(self.device0),
                               capture=cap)
+            finite = bool(torch.isfinite(h).all())
+            row = {"layer": idx, "order": len(self.execution_trace),
+                   "device": str(h.device), "dtype": str(h.dtype),
+                   "shape": list(h.shape), "finite": finite,
+                   "selected_experts": layer.ffn_fn.last_route.get("expert_ids"),
+                   "routing_weights": layer.ffn_fn.last_route.get("routing_weights"),
+                   "ffn_cache_counters": dict(layer.ffn_fn.stats)}
+            self.execution_trace.append(row)
+            if not finite:
+                raise FloatingPointError(f"non-finite hidden state after layer {idx}")
+        self.last_execution = {"phase": "handoff", "after_layer": self.split - 1,
+                               "before_layer": self.split}
         h = self._handoff(h, self.device1)
         for idx, layer in enumerate(self.layers1):
+            layer_id = self.split + idx
+            self.last_execution = {"phase": "layer", "layer": layer_id,
+                                   "device": self.device1}
             cap = (captures.setdefault(self.split + idx, {})
                    if captures is not None else None)
             h = layer.forward(h, start_pos, input_ids.to(self.device1),
                               capture=cap)
+            finite = bool(torch.isfinite(h).all())
+            row = {"layer": layer_id, "order": len(self.execution_trace),
+                   "device": str(h.device), "dtype": str(h.dtype),
+                   "shape": list(h.shape), "finite": finite,
+                   "selected_experts": layer.ffn_fn.last_route.get("expert_ids"),
+                   "routing_weights": layer.ffn_fn.last_route.get("routing_weights"),
+                   "ffn_cache_counters": dict(layer.ffn_fn.stats)}
+            self.execution_trace.append(row)
+            if not finite:
+                raise FloatingPointError(
+                    f"non-finite hidden state after layer {layer_id}")
+        self.last_execution = {"phase": "hc_head", "after_layer": cfg.n_layers - 1}
         h = self._hc_head(h)
+        self.last_execution = {"phase": "final_norm"}
         h = common.rms_norm(h, self.norm_w, cfg.norm_eps)
+        self.last_execution = {"phase": "lm_head"}
         logits = h[:, -1].float() @ self.head.float().transpose(0, 1)
+        self.last_execution = {"phase": "complete", "layers_executed":
+                               len(self.execution_trace)}
         return logits
 
     def generate(self, input_ids: torch.Tensor, max_new_tokens: int, *,
@@ -613,8 +725,12 @@ class DeepseekV4Model:
         generated = [tok]
         if trace is not None:
             trace["token_0"] = {"start_pos": 0, "token_id": tok,
-                                "logits_finite": bool(torch.isfinite(logits).all()),
-                                "top5": logits.topk(5, -1)[1][0].tolist()}
+                                 "logits_finite": bool(torch.isfinite(logits).all()),
+                                 "top5": logits.topk(5, -1)[1][0].tolist(),
+                                 "layers": list(self.execution_trace),
+                                 "handoff": dict(self.handoff_stats),
+                                 "state_hashes": self.state_signatures(
+                                     list(range(self.cfg.n_layers)))}
         for t in range(1, max_new_tokens):
             if tok == eos_id:
                 break
@@ -628,7 +744,11 @@ class DeepseekV4Model:
                 trace[f"token_{t}"] = {
                     "start_pos": seq_len + t - 1, "token_id": tok,
                     "logits_finite": bool(torch.isfinite(logits).all()),
-                    "top5": logits.topk(5, -1)[1][0].tolist()}
+                    "top5": logits.topk(5, -1)[1][0].tolist(),
+                    "layers": list(self.execution_trace),
+                    "handoff": dict(self.handoff_stats),
+                    "state_hashes": self.state_signatures(
+                        list(range(self.cfg.n_layers)))}
         return generated
 
     def state_buffers(self, layer_ids: list[int]) -> dict[int, dict[str, torch.Tensor]]:
@@ -636,6 +756,34 @@ class DeepseekV4Model:
 
     def state_signatures(self, layer_ids: list[int]) -> dict[int, dict[str, str]]:
         return {lid: self.layer(lid).state_signature() for lid in layer_ids}
+
+    def runtime_snapshot(self) -> dict[str, Any]:
+        """Bounded backend/cache/provider evidence for remote DS10 stages."""
+        shared_host_tensors = [tensor for layer in self.layers0 + self.layers1
+                               for tensor in layer.ffn_fn.shared_payload.values()]
+        return {
+            "backends": {
+                "attention_state": "torch_cuda_hybrid_bringup",
+                "router": "torch_cuda_validated_ds9_path",
+                "routed_experts": "freebuff_ds8_cache_fp16_cuda",
+                "shared_expert": "freebuff_ds8_cache_fp16_cuda",
+                "cpu_expert_execution": False,
+            },
+            "provider": self.provider.stats(),
+            "shared_expert_host": {
+                "layers": len(self.layers0) + len(self.layers1),
+                "fp16_bytes": sum(t.numel() * t.element_size()
+                                  for t in shared_host_tensors),
+            },
+            "cache0": {**dict(self.cache0.stats),
+                       "resident_bytes": self.cache0.used_bytes(),
+                       "peak_resident_bytes": self.cache0.peak_resident_bytes,
+                       "entries": len(self.cache0.entries)},
+            "cache1": {**dict(self.cache1.stats),
+                       "resident_bytes": self.cache1.used_bytes(),
+                       "peak_resident_bytes": self.cache1.peak_resident_bytes,
+                       "entries": len(self.cache1.entries)},
+        }
 
     def per_gpu_memory_plan(self, cache_budgets: dict[str, int]) -> dict[str, Any]:
         """Resident-bytes estimate per GPU (dense + embed/head + cache budget
@@ -740,6 +888,25 @@ def coverage_audit_report(source: TensorSource, *, n_layers: int = 43,
         compress_ratios=compress_ratios)
 
 
+def coverage_audit_passes(report: dict[str, Any], *, n_layers: int = 43) -> bool:
+    """Fail-closed DS10.1 acceptance check for a coverage-audit report.
+
+    ``full_model_coverage_audit`` deliberately uses ``all_resolved`` and
+    ``tensor_count`` as its canonical keys.  Keeping this check beside the
+    report producer prevents remote harnesses from accidentally accepting or
+    rejecting on a differently named summary field.
+    """
+    layers = report.get("layers")
+    return (
+        report.get("all_resolved") is True
+        and report.get("tensor_count") == v4support.EXPECTED_TENSOR_COUNT
+        and report.get("shard_count") == EXPECTED_SHARD_COUNT
+        and isinstance(layers, list)
+        and len(layers) == n_layers
+        and all(row.get("resolved") is True for row in layers)
+    )
+
+
 def static_memory_plan(cfg: ModelConfig, source: TensorSource, *,
                        budgets0: int, budgets1: int, split: Optional[int] = None,
                        dense_bytes_per_elt: int = 2) -> dict[str, Any]:
@@ -794,8 +961,8 @@ def static_memory_plan(cfg: ModelConfig, source: TensorSource, *,
 
     def gpu_plan(dev: str, layer_ids: list[int], budget: int,
                  extra: int) -> dict[str, Any]:
-        dense = sum(groups["dense"][l] for l in layer_ids)
-        state = sum(groups["state"][l] for l in layer_ids)
+        dense = sum(groups["dense"][layer_id] for layer_id in layer_ids)
+        state = sum(groups["state"][layer_id] for layer_id in layer_ids)
         act, ctx = 64 << 20, 512 << 20
         total = dense + state + budget + extra + act + ctx
         return {

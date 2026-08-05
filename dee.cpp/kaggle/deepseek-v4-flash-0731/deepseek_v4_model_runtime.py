@@ -1,6 +1,6 @@
 """DS10: full DeepSeek-V4-Flash-0731 model execution on dual T4 (Kaggle).
 
-Stage-driven harness (``DS10_STAGE`` env, default ``v1``) following the
+Stage-driven harness (stage pinned in ``harness-identity-ds10.json``) following the
 sealed DS5/DS9 repo-clone pattern: the push payload is ONLY this harness +
 kernel-metadata.  At runtime the harness clones the pinned repository commit
 into /kaggle/temp/dsv4-source, verifies harness + module SHA-256s against
@@ -74,13 +74,12 @@ HEADERS_DIR = ROOT / Path(
 CONFIG_RELATIVE = ROOT / Path(
     "dee.cpp/benchmark_reports/deepseek-v4-flash-0731-t4/official-source/inference/config.json")
 
-STAGE = os.environ.get("DS10_STAGE", "v1")
-if STAGE not in ("v1", "v2", "v3", "v4", "v5", "v6", "final"):
-    STAGE = "v1"
+VALID_STAGES = ("v1", "v2", "v3", "v4", "v5", "v6", "final")
 
 # Cache budgets per GPU (bytes): bounded, well under the 12-13 GiB bring-up
 # envelope; the model's dense/state bytes come from the static memory plan.
 CACHE_BUDGET_BYTES = 2 << 30  # 2 GiB per GPU
+HOST_RSS_CEILING_BYTES = 12_000_000_000
 
 # Canonical prompt (short, for v5/v6/final stages).  Pure-ASCII escapes:
 # Kaggle's push API decodes the code file with the platform codec, so literal
@@ -96,6 +95,33 @@ def sha256_file(path: Path) -> str:
 
 def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=1), encoding="utf-8")
+
+
+def _resolve_stage(identity: dict[str, Any]) -> str:
+    """Resolve the immutable campaign stage and reject unsealed overrides."""
+    stage = identity.get("stage")
+    if stage not in VALID_STAGES:
+        raise RuntimeError({"identity_stage": stage,
+                            "expected_one_of": list(VALID_STAGES)})
+    requested = os.environ.get("DS10_STAGE")
+    if requested is not None and requested != stage:
+        raise RuntimeError({"DS10_STAGE": requested, "identity_stage": stage,
+                            "reason": "stage override does not match identity"})
+    return str(stage)
+
+
+def _host_memory_snapshot() -> dict[str, int]:
+    """Linux RSS evidence (current + peak) in bytes for Kaggle runs."""
+    import resource  # noqa: PLC0415
+    page_size = int(os.sysconf("SC_PAGE_SIZE"))
+    resident_pages = int(Path("/proc/self/statm").read_text().split()[1])
+    return {
+        "current_rss_bytes": resident_pages * page_size,
+        # Linux ru_maxrss is KiB.
+        "peak_rss_bytes": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        * 1024,
+        "ceiling_bytes": HOST_RSS_CEILING_BYTES,
+    }
 
 
 def _safe_rmtree(path: Path) -> None:
@@ -168,26 +194,28 @@ def _build_remote_source() -> Any:
 def stage_v1() -> dict[str, Any]:
     """Model-load + tensor-resolution smoke (identity only, bounded fetch)."""
     from scripts import deepseek_v4_model as vm
-    from scripts import deepseek_v4_support as vs
     cfg = _load_cfg()
     source = _build_remote_source()
 
     gates: dict[str, Any] = {}
 
     # 1. Tensor coverage audit (identity only, zero checkpoint bytes).
-    audit = vm.coverage_audit_report(
-        source, n_layers=cfg.n_layers, n_hash_layers=cfg.n_hash_layers,
-        compress_ratios=cfg.compress_ratios)
-    gates["coverage_audit"] = audit.get("all_resolved", False)
-    gates["coverage"] = {
-        "total_tensors": audit.get("total_tensors"),
-        "unresolved": audit.get("unresolved", []),
-        "duplicates": audit.get("duplicates", []),
-        "by_component": audit.get("by_component"),
-        "summary": audit.get("summary"),
-    }
-    ok = audit.get("ok", False) and not audit.get("unresolved") \
-        and not audit.get("duplicates")
+    try:
+        audit = vm.coverage_audit_report(
+            source, n_layers=cfg.n_layers, n_hash_layers=cfg.n_hash_layers,
+            compress_ratios=cfg.compress_ratios)
+        coverage_ok = vm.coverage_audit_passes(audit, n_layers=cfg.n_layers)
+        gates["coverage_audit"] = coverage_ok
+        gates["coverage"] = audit
+    except Exception as exc:  # noqa: BLE001
+        gates["coverage_audit"] = False
+        gates["coverage"] = {
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc(),
+        }
+        return {"verdict": "REJECT_MODEL_LOAD", "gates": gates,
+                "stage": "v1", "first_failing_gate": "tensor_coverage"}
+    ok = coverage_ok
 
     # 2. Static per-GPU memory plan from headers (identity only).
     plan = vm.static_memory_plan(
@@ -208,23 +236,21 @@ def stage_v1() -> dict[str, Any]:
     try:
         model, mem = _build_full_model(source, cfg)
         build_gates["memory"] = mem
-        # Every layer's state buffers are allocated + initialized
+        # Every layer's state buffers are allocated + initialized.  Actual
+        # execution belongs to v2, so a layer failure cannot be mislabeled as
+        # a model-load failure here.
         sig = model.state_signatures(list(range(cfg.n_layers)))
         build_gates["state_signatures"] = sig
         build_gates["state_count"] = len(sig)
-        # bounded forward sanity on GPU0 partition only (no full generation):
-        # proves the built layers are callable with live weights
-        input_ids = torch.tensor([[0, 1, 2, 3, 4, 5, 6, 7]],
-                                 device="cuda:0").long()
-        h = torch.nn.functional.embedding(input_ids, model.embed)
-        h = h.unsqueeze(2).expand(1, 8, cfg.hc_mult, h.size(-1)).contiguous()
-        for idx, layer in enumerate(model.layers0):
-            h = layer.forward(h, 0, input_ids)
-        build_gates["partition0_smoke"] = {
-            "shape": list(h.shape), "dtype": str(h.dtype),
-            "finite": bool(torch.isfinite(h).all()),
-            "device": str(h.device)}
-        build_ok = bool(torch.isfinite(h).all())
+        actual_memory_ok = (
+            mem["cuda0_reserved_gib"] <= 14.0
+            and mem["cuda1_reserved_gib"] <= 14.0
+            and mem["host_memory"]["current_rss_bytes"]
+            <= HOST_RSS_CEILING_BYTES
+            and mem["host_memory"]["peak_rss_bytes"]
+            <= HOST_RSS_CEILING_BYTES)
+        build_gates["actual_memory_ceilings_ok"] = actual_memory_ok
+        build_ok = len(sig) == cfg.n_layers and actual_memory_ok
         build_gates["fetch_stats"] = dict(source.stats)
     except Exception as exc:  # noqa: BLE001
         build_ok = False
@@ -234,16 +260,22 @@ def stage_v1() -> dict[str, Any]:
     gates["model_load"] = build_gates
     ok = ok and build_ok
 
-    return {"verdict": "ACCEPT_MODEL_LOAD" if ok else "REJECT_MODEL_LOAD",
-            "gates": gates, "stage": "v1"}
+    result = {"verdict": "ACCEPT_MODEL_LOAD" if ok else "REJECT_MODEL_LOAD",
+              "gates": gates, "stage": "v1"}
+    if not ok:
+        result["first_failing_gate"] = (
+            "memory_plan" if not ceilings_ok else "model_load")
+    return result
 
 
-def _build_full_model(source: Any, cfg: Any) -> tuple[Any, dict[str, Any]]:
+def _build_full_model(source: Any, cfg: Any, *,
+                      cache_budget_bytes: int = CACHE_BUDGET_BYTES
+                      ) -> tuple[Any, dict[str, Any]]:
     """Build the full dual-GPU candidate and initialize all states."""
     from scripts import deepseek_v4_model as vm
     from scripts.deepseek_v4_cache import DeepSeekExpertCache, DeepSeekExpertLoader
-    cache0 = DeepSeekExpertCache(CACHE_BUDGET_BYTES, device="cuda:0")
-    cache1 = DeepSeekExpertCache(CACHE_BUDGET_BYTES, device="cuda:1")
+    cache0 = DeepSeekExpertCache(cache_budget_bytes, device="cuda:0")
+    cache1 = DeepSeekExpertCache(cache_budget_bytes, device="cuda:1")
     loader0 = DeepSeekExpertLoader(cache0)
     loader1 = DeepSeekExpertLoader(cache1)
     provider = vm.ExpertProvider(source)
@@ -269,13 +301,30 @@ def _build_full_model(source: Any, cfg: Any) -> tuple[Any, dict[str, Any]]:
         "device1": str(model.device1),
         "split": model.split,
         "n_layers": cfg.n_layers,
+        "cache_budget_bytes": cache_budget_bytes,
+        "host_memory": _host_memory_snapshot(),
     }
     return model, mem
 
 
+def _partition_trace_row(layer_id: int, layer: Any, hidden: Any,
+                         order: int) -> dict[str, Any]:
+    """Compact per-layer evidence without retaining activation captures."""
+    return {
+        "layer": layer_id,
+        "order": order,
+        "shape": list(hidden.shape),
+        "dtype": str(hidden.dtype),
+        "device": str(hidden.device),
+        "finite": bool(torch.isfinite(hidden).all()),
+        "selected_experts": layer.ffn_fn.last_route.get("expert_ids"),
+        "routing_weights": layer.ffn_fn.last_route.get("routing_weights"),
+        "ffn_cache_counters": dict(layer.ffn_fn.stats),
+    }
+
+
 def stage_v2() -> dict[str, Any]:
     """First GPU partition: layers 0..split-1 forward on GPU 0."""
-    from scripts import deepseek_v4_model as vm
     cfg = _load_cfg()
     source = _build_remote_source()
     model, mem = _build_full_model(source, cfg)
@@ -284,27 +333,42 @@ def stage_v2() -> dict[str, Any]:
     start_pos = 0
     h = torch.nn.functional.embedding(input_ids, model.embed)
     h = h.unsqueeze(2).expand(1, 8, cfg.hc_mult, h.size(-1)).contiguous()
+    model.execution_trace = []
     try:
         for idx, layer in enumerate(model.layers0):
+            model.last_execution = {"phase": "layer", "layer": idx,
+                                    "device": model.device0}
             h = layer.forward(h, start_pos, input_ids)
+            row = _partition_trace_row(idx, layer, h,
+                                       len(model.execution_trace))
+            model.execution_trace.append(row)
+            if not row["finite"]:
+                raise FloatingPointError(
+                    f"non-finite hidden state after layer {idx}")
         gates["partition0_forward_ok"] = True
         gates["hidden"] = {"shape": list(h.shape), "dtype": str(h.dtype),
                            "finite": bool(torch.isfinite(h).all()),
                            "device": str(h.device)}
         gates["state_signatures_0"] = model.state_signatures(
             list(range(model.split)))
+        gates["execution_trace"] = list(model.execution_trace)
+        gates["runtime"] = model.runtime_snapshot()
         ok = bool(torch.isfinite(h).all())
     except Exception as exc:  # noqa: BLE001
         ok = False
         gates["partition0_forward_ok"] = False
+        gates["first_failing_boundary"] = model.last_execution
         gates["error"] = f"{type(exc).__name__}: {exc}"
-    return {"verdict": "ACCEPT_PARTITION0" if ok else "REJECT_ATTENTION_OR_STATE",
-            "gates": gates, "stage": "v2"}
+        gates["traceback"] = traceback.format_exc()
+    result = {"verdict": "ACCEPT_PARTITION0" if ok else
+              "REJECT_ATTENTION_OR_STATE", "gates": gates, "stage": "v2"}
+    if not ok:
+        result["first_failing_gate"] = "partition0_layer"
+    return result
 
 
 def stage_v3() -> dict[str, Any]:
     """Inter-GPU handoff: GPU0 partition + one GPU1 layer with checksums."""
-    from scripts import deepseek_v4_model as vm
     cfg = _load_cfg()
     source = _build_remote_source()
     model, mem = _build_full_model(source, cfg)
@@ -313,29 +377,52 @@ def stage_v3() -> dict[str, Any]:
     start_pos = 0
     h = torch.nn.functional.embedding(input_ids, model.embed)
     h = h.unsqueeze(2).expand(1, 8, cfg.hc_mult, h.size(-1)).contiguous()
+    model.execution_trace = []
     try:
         for idx, layer in enumerate(model.layers0):
+            model.last_execution = {"phase": "layer", "layer": idx,
+                                    "device": model.device0}
             h = layer.forward(h, start_pos, input_ids)
+            row = _partition_trace_row(idx, layer, h,
+                                       len(model.execution_trace))
+            model.execution_trace.append(row)
+            if not row["finite"]:
+                raise FloatingPointError(
+                    f"non-finite hidden state after layer {idx}")
+        model.last_execution = {"phase": "handoff",
+                                "after_layer": model.split - 1,
+                                "before_layer": model.split}
         h = model._handoff(h, model.device1)
         gates["handoff"] = model.handoff_stats
         l1 = model.layer(model.split)
+        model.last_execution = {"phase": "layer", "layer": model.split,
+                                "device": model.device1}
         h = l1.forward(h, start_pos, input_ids.to(model.device1))
+        row = _partition_trace_row(model.split, l1, h,
+                                   len(model.execution_trace))
+        model.execution_trace.append(row)
         gates["one_gpu1_layer_ok"] = True
         gates["hidden_after"] = {"shape": list(h.shape), "dtype": str(h.dtype),
                                  "finite": bool(torch.isfinite(h).all()),
                                  "device": str(h.device)}
+        gates["execution_trace"] = list(model.execution_trace)
+        gates["runtime"] = model.runtime_snapshot()
         ok = (model.handoff_stats.get("checksum_bitwise_equal") is True
               and bool(torch.isfinite(h).all()))
     except Exception as exc:  # noqa: BLE001
         ok = False
+        gates["first_failing_boundary"] = model.last_execution
         gates["error"] = f"{type(exc).__name__}: {exc}"
-    return {"verdict": "ACCEPT_INTERGPU" if ok else "REJECT_INTERGPU",
-            "gates": gates, "stage": "v3"}
+        gates["traceback"] = traceback.format_exc()
+    result = {"verdict": "ACCEPT_INTERGPU" if ok else "REJECT_INTERGPU",
+              "gates": gates, "stage": "v3"}
+    if not ok:
+        result["first_failing_gate"] = model.last_execution.get("phase")
+    return result
 
 
 def stage_v4() -> dict[str, Any]:
     """All layers, first LM-head logits (no continued decode)."""
-    from scripts import deepseek_v4_model as vm
     cfg = _load_cfg()
     source = _build_remote_source()
     model, mem = _build_full_model(source, cfg)
@@ -350,19 +437,35 @@ def stage_v4() -> dict[str, Any]:
                                     logits.topk(5, -1)[1][0].tolist()]}
         gates["layer_captures_ok"] = {
             "n_layers_with_captures": len(captures),
-            "sample_l0_expert_ids": captures.get(0, {}).get("expert_ids", None),
+            "sample_l0_expert_ids": (
+                captures.get(0, {}).get("expert_ids").detach().cpu().tolist()
+                if captures.get(0, {}).get("expert_ids") is not None else None),
         }
+        gates["execution_trace"] = list(model.execution_trace)
+        gates["handoff"] = dict(model.handoff_stats)
+        gates["runtime"] = model.runtime_snapshot()
         ok = bool(torch.isfinite(logits).all())
     except Exception as exc:  # noqa: BLE001
         ok = False
+        gates["first_failing_boundary"] = model.last_execution
         gates["error"] = f"{type(exc).__name__}: {exc}"
-    return {"verdict": "ACCEPT_FIRST_LOGITS" if ok else "REJECT_LM_HEAD",
-            "gates": gates, "stage": "v4"}
+        gates["traceback"] = traceback.format_exc()
+    if ok:
+        verdict = "ACCEPT_FIRST_LOGITS"
+    elif model.last_execution.get("phase") == "lm_head":
+        verdict = "REJECT_LM_HEAD"
+    elif model.last_execution.get("phase") == "handoff":
+        verdict = "REJECT_INTERGPU"
+    else:
+        verdict = "REJECT_ATTENTION_OR_STATE"
+    result = {"verdict": verdict, "gates": gates, "stage": "v4"}
+    if not ok:
+        result["first_failing_gate"] = model.last_execution.get("phase")
+    return result
 
 
 def stage_generate(n_tokens: int, *, stage_name: str) -> dict[str, Any]:
     """Greedy generation: >= n_tokens, determinism, cold/warm, bounded memory."""
-    from scripts import deepseek_v4_model as vm
     cfg = _load_cfg()
     source = _build_remote_source()
     model, mem = _build_full_model(source, cfg)
@@ -377,23 +480,53 @@ def stage_generate(n_tokens: int, *, stage_name: str) -> dict[str, Any]:
         trace: dict[str, Any] = {}
         toks = model.generate(input_ids, max_new_tokens=n_tokens, trace=trace)
         gates["tokens"] = toks
+        gates["decoded_fragments"] = [tokenizer.decode([tok]) for tok in toks]
         gates["token_count"] = len(toks)
         gates["token_trace"] = trace
         gates["token_ids_in_vocab"] = all(0 <= t < cfg.vocab_size for t in toks)
-        # determinism: fresh model, same input -> same tokens
-        model2, mem2 = _build_full_model(source, cfg)
-        toks2 = model2.generate(input_ids, max_new_tokens=n_tokens)
-        gates["deterministic_rerun"] = toks == toks2
-        gates["memory2"] = mem2
         # cold == warm: reset + rerun through the same model/cache
         model.reset_state()
         toks_warm = model.generate(input_ids, max_new_tokens=n_tokens)
         gates["cold_warm_equal"] = toks == toks_warm
+        gates["warm_tokens"] = toks_warm
+        gates["runtime_after_warm"] = model.runtime_snapshot()
+        gates["peak_memory_primary_gib"] = {
+            "cuda0": round(torch.cuda.max_memory_allocated(0) / (1 << 30), 3),
+            "cuda1": round(torch.cuda.max_memory_allocated(1) / (1 << 30), 3),
+        }
+        # Release the primary model before the independent rerun.  Keeping two
+        # complete 43-layer candidates resident simultaneously leaves no T4
+        # safety margin and made the original final-stage design OOM-prone.
+        import gc  # noqa: PLC0415
+        del model
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+        # The independent rerun also uses a second valid cache budget, proving
+        # output invariance across cache capacity without a third full build.
+        alternate_budget = 1536 << 20
+        model2, mem2 = _build_full_model(
+            source, cfg, cache_budget_bytes=alternate_budget)
+        toks2 = model2.generate(input_ids, max_new_tokens=n_tokens)
+        gates["deterministic_rerun"] = toks == toks2
+        gates["cache_capacity_variation_equal"] = toks == toks2
+        gates["alternate_cache_budget_bytes"] = alternate_budget
+        gates["rerun_tokens"] = toks2
+        gates["memory2"] = mem2
+        gates["runtime_alternate_budget"] = model2.runtime_snapshot()
+        gates["peak_memory_alternate_gib"] = {
+            "cuda0": round(torch.cuda.max_memory_allocated(0) / (1 << 30), 3),
+            "cuda1": round(torch.cuda.max_memory_allocated(1) / (1 << 30), 3),
+        }
         ok = (len(toks) >= n_tokens
               and gates["token_ids_in_vocab"]
               and gates["deterministic_rerun"]
-              and gates["cold_warm_equal"])
-        verdict = "ACCEPT_DUAL_T4_DECODE" if ok else "REJECT_GENERATION_STATE"
+              and gates["cold_warm_equal"]
+              and gates["cache_capacity_variation_equal"])
+        verdict = ("ACCEPT_DUAL_T4_DECODE"
+                   if ok and n_tokens >= 16
+                   else "ACCEPT_DUAL_T4_FIRST_TOKEN" if ok
+                   else "REJECT_GENERATION_STATE")
     except Exception as exc:  # noqa: BLE001
         ok = False
         verdict = "REJECT_GENERATION_STATE"
@@ -404,14 +537,16 @@ def stage_generate(n_tokens: int, *, stage_name: str) -> dict[str, Any]:
 
 def main() -> int:
     result: dict[str, Any] = {"verdict": "INVALID_EXPERIMENT",
-                              "stage": STAGE, "performance_comparable": False}
+                              "stage": None, "performance_comparable": False}
     out_dir = EVIDENCE
     out_dir.mkdir(parents=True, exist_ok=True)
     try:
         identity = _acquire_source()
+        stage = _resolve_stage(identity)
         global torch
         import torch  # noqa: PLC0415
         result["identity"] = identity
+        result["stage"] = stage
         result["run_id"] = RUN_ID
         result["model_revision"] = REV
         result["cuda_available"] = bool(torch.cuda.is_available())
@@ -421,17 +556,17 @@ def main() -> int:
             result["verdict"] = "INVALID_EXPERIMENT"
             result["first_failing_gate"] = "cuda_dual_required"
         else:
-            if STAGE == "v1":
+            if stage == "v1":
                 result.update(stage_v1())
-            elif STAGE == "v2":
+            elif stage == "v2":
                 result.update(stage_v2())
-            elif STAGE == "v3":
+            elif stage == "v3":
                 result.update(stage_v3())
-            elif STAGE == "v4":
+            elif stage == "v4":
                 result.update(stage_v4())
-            elif STAGE == "v5":
+            elif stage == "v5":
                 result.update(stage_generate(1, stage_name="v5"))
-            elif STAGE == "v6":
+            elif stage == "v6":
                 result.update(stage_generate(4, stage_name="v6"))
             else:
                 result.update(stage_generate(16, stage_name="final"))

@@ -16,7 +16,6 @@ Covers the DS10 staged ladder locally (no checkpoint, no GPU):
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -30,20 +29,19 @@ from scripts.deepseek_v4_model import (
     ExpertProvider,
     ModelConfig,
     coverage_audit_report,
+    coverage_audit_passes,
     model_config_from_official,
     static_memory_plan,
 )
 from scripts.deepseek_v4_layer_reference import (
     DeepseekV4Layer,
     LayerConfig,
-    build_layer_weights_from_tensors,
     make_synthetic_hash_layer_weights,
     make_synthetic_layer_weights,
 )
 from scripts.deepseek_v4_layer_candidate import make_candidate_layer
 from scripts.deepseek_v4_support import (
     layer_dense_tensor_names,
-    resolve_layer_dense_tensors,
 )
 
 REPORTS = Path(__file__).resolve().parents[1] / "benchmark_reports" \
@@ -268,7 +266,7 @@ def test_model_hash_layer_routing() -> None:
 def test_model_greedy_generation_deterministic_cold_warm() -> None:
     cfg = CFG
     source = DictTensorSource(_make_synthetic_model(cfg, seed=5))
-    model, cache, _ = _build_cpu_candidate(cfg, source)
+    model, cache, provider = _build_cpu_candidate(cfg, source)
     input_ids = torch.tensor([[3, 7, 11]]).long()
     trace: dict = {}
     toks = model.generate(input_ids, max_new_tokens=5, trace=trace)
@@ -283,6 +281,13 @@ def test_model_greedy_generation_deterministic_cold_warm() -> None:
     model.reset_state()
     toks_warm = model.generate(input_ids, max_new_tokens=5)
     assert toks == toks_warm
+    # Dynamic routed experts must not accumulate expanded FP16 host payloads.
+    # Only the provider's bounded compact per-layer LRU survives an eviction.
+    pstats = provider.stats()
+    assert pstats["raw_entries"] <= cfg.n_layers * 8
+    assert pstats["raw_bytes"] > 0
+    assert all(not model.layer(i).ffn_fn.fp16_payloads
+               for i in range(cfg.n_layers))
 
 
 def test_ratio128_compressor_reference_vs_candidate() -> None:
@@ -334,7 +339,7 @@ def test_model_memory_plan_bounded() -> None:
     cfg = CFG
     source = DictTensorSource(_make_synthetic_model(cfg, seed=7))
     model, _, _ = _build_cpu_candidate(cfg, source)
-    plan = model.per_gpu_memory_plan({"cpu": 1 << 20, "cpu": 1 << 20})
+    plan = model.per_gpu_memory_plan({"cpu": 1 << 20})
     for dev, row in plan.items():
         assert row["dense_bytes"] > 0
         assert row["total_estimate_bytes"] > 0
@@ -356,6 +361,7 @@ def test_coverage_audit_real_headers_ratio_aware() -> None:
         src, n_layers=cfg.n_layers, n_hash_layers=cfg.n_hash_layers,
         compress_ratios=cfg.compress_ratios)
     assert audit["all_resolved"] is True
+    assert coverage_audit_passes(audit, n_layers=cfg.n_layers) is True
     assert audit["tensor_count"] == 72317
     assert len(audit["layers"]) == 43
     assert audit["layers"][0]["hash_layer"] is True
@@ -368,6 +374,12 @@ def test_coverage_audit_real_headers_ratio_aware() -> None:
     assert audit["layers"][0]["dense_tensors"] == 29
     assert audit["layers"][0]["shared_tensors"] == 6
     assert audit["layers"][0]["routed_expert_tensors"] == 1536
+
+    wrong_key_regression = dict(audit)
+    wrong_key_regression.pop("all_resolved")
+    wrong_key_regression["ok"] = True
+    assert coverage_audit_passes(
+        wrong_key_regression, n_layers=cfg.n_layers) is False
 
 
 def test_static_memory_plan_from_real_headers_bounded() -> None:

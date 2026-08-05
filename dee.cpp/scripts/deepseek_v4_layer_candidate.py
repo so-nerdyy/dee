@@ -51,6 +51,7 @@ class DeepseekV4CacheFfn:
         self.provider = provider
         self.tid2eid: Optional[torch.Tensor] = None
         self.stats = {"requests": 0, "hits": 0, "misses": 0, "staging_waits": 0}
+        self.last_route: dict[str, Any] = {}
 
     def __call__(self, x: torch.Tensor, input_ids: torch.Tensor,
                  capture: Optional[dict[str, Any]]) -> torch.Tensor:
@@ -82,6 +83,10 @@ class DeepseekV4CacheFfn:
                     scores + self.gate_b if self.gate_b is not None else scores)
                 capture["expert_ids"] = ids
                 capture["routing_weights"] = weights
+        self.last_route = {
+            "expert_ids": ids.detach().cpu().tolist(),
+            "routing_weights": weights.detach().float().cpu().tolist(),
+        }
         moe_out, shared_out = self._run_experts(xf, ids, weights)
         if capture is not None:
             # Same labels/units as the reference _ffn_fp32_direct: moe_out is
@@ -125,19 +130,22 @@ class DeepseekV4CacheFfn:
             entry = self.cache.get(self.layer_id, eid)
             if entry is None:
                 self.stats["misses"] += 1
-                if eid not in self.fp16_payloads:
-                    if self.provider is not None:
-                        self.fp16_payloads[eid] = (
-                            self.provider.get_fp16_payload(
-                                self.layer_id, eid))
-                    else:
-                        raise RuntimeError(
-                            f"candidate routed to expert {eid} outside the "
-                            f"reference-discovered union "
-                            f"{sorted(self.fp16_payloads)}; route divergence "
-                            f"between candidate and reference")
+                payload = self.fp16_payloads.get(eid)
+                if payload is None and self.provider is not None:
+                    # Dynamic DS10 experts retain only compact official bytes
+                    # in the provider's bounded per-layer LRU.  Do not insert
+                    # the expanded FP16 payload here: this dict is unbounded
+                    # across prefill routes and previously leaked host RSS.
+                    payload = self.provider.get_fp16_payload(
+                        self.layer_id, eid)
+                if payload is None:
+                    raise RuntimeError(
+                        f"candidate routed to expert {eid} outside the "
+                        f"reference-discovered union "
+                        f"{sorted(self.fp16_payloads)}; route divergence "
+                        f"between candidate and reference")
                 entry = self.loader.stage(self.layer_id, eid,
-                                          self.fp16_payloads[eid],
+                                          payload,
                                           metadata={"expert_type": "routed"})
             else:
                 self.stats["hits"] += 1
@@ -163,7 +171,7 @@ class DeepseekV4CacheFfn:
         s_entry = self.cache.get(self.layer_id, skey)
         if s_entry is None:
             self.stats["misses"] += 1
-            if self.provider is not None:
+            if not self.shared_payload and self.provider is not None:
                 self.shared_payload = self.provider.get_shared_fp16_payload(
                     self.layer_id)
             s_entry = self.loader.stage(self.layer_id, skey, self.shared_payload,
