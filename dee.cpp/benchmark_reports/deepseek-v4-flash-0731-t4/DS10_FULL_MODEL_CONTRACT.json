@@ -8,8 +8,8 @@
   "branch": "freebuff/deepseek-v4-flash-0731-t4",
   "reference_policy": "REFERENCE_POLICY.md (2026-08-04): sealed DS8/DS9 discipline is the trusted reference; official TileLang stack is NOT a DS10 prerequisite (DS5 hardware-format blocker preserved as evidence).",
   "runtime_identity": {
-    "runtime_code_commit": "baa5b38d97e4273355230e178b80397eb96b6ea6",
-    "harness_sha256": "3b68d22747a30de95dbb290ef9c0051bc61936102aa6f2a97080c55a8e212a5f",
+    "runtime_code_commit": "2056dc9ca8eb947a9121b73cda1e770b41bef3e5",
+    "harness_sha256": "8831a70de852c0ad50f78d56437947f9951961331d39331acc1e9ec1d5eb269d",
     "identity_file": "dee.cpp/kaggle/deepseek-v4-flash-0731/harness-identity-ds10.json",
     "stage_source": "identity-pinned; environment overrides fail closed"
   },
@@ -60,7 +60,7 @@
   "persistent_tensor_placement": {
     "gpu_0": ["embed.weight", "dense non-expert tensors for layers 0-21", "active routed/shared-expert cache for layers 0-21"],
     "gpu_1": ["dense non-expert tensors for layers 22-42", "active routed/shared-expert cache for layers 22-42", "hc_head_fn", "hc_head_base", "hc_head_scale", "norm.weight", "head.weight"],
-    "host": ["committed shard headers", "bounded official packed routed-expert LRU", "one FP16 shared-expert payload per layer", "one pinned hidden-state handoff buffer"],
+    "host": ["committed shard headers", "no retained compact routed-expert payloads during DS10 generation", "one FP16 shared-expert payload per layer", "one pinned hidden-state handoff buffer"],
     "forbidden": ["duplicate fully expanded model", "CPU expert execution", "implicit CPU-owned model state"]
   },
   "state_ownership": {
@@ -77,7 +77,7 @@
   },
   "staging_limits": {
     "gpu_expert_cache_bytes_per_gpu": 2147483648,
-    "host_compact_experts_per_layer": 8,
+    "host_compact_experts_per_layer": 0,
     "intergpu_buffers": 1,
     "intergpu_dtype": "BF16 unchanged",
     "intergpu_d2h_and_h2d_bytes": "exact hidden tensor storage bytes, emitted separately",
@@ -86,10 +86,17 @@
   "expert_cache": {
     "representation": "fp16_expanded (sealed DS8 DeepSeekExpertCache + DeepSeekExpertLoader)",
     "budget_per_gpu_bytes": 2147483648,
-    "host_compact_reuse": "official packed tensors, per-layer LRU, 8 routed experts per layer (six active plus two replacements)",
+    "host_compact_reuse": "disabled for DS10 generation after sealed v5 measured 0 hits and 4,599,054,336 retained bytes; official packed tensors are fetched only on GPU-cache misses and discarded after expansion",
     "shared_expert": "cache with priority, expert_id -1 per layer",
     "miss_action": "on-demand fetch via RemoteTensorSource + async stage",
     "fail_closed": ["invalid expert id", "missing tensor", "stale entry", "cross-shard split", "unbounded growth"]
+  },
+  "generation_memory_gate": {
+    "gpu_ceiling_bytes_each": 14680064000,
+    "host_current_and_process_peak_ceiling_bytes": 12000000000,
+    "required_snapshots": ["primary build", "after primary cold/warm inference", "after primary model deletion and allocator trim", "alternate-budget build", "after alternate-budget inference"],
+    "independent_rerun_release": "delete primary model, collect Python/CUDA objects, empty CUDA caches, call Linux malloc_trim, and record before/after RSS before constructing the alternate-budget model",
+    "acceptance_rule": "runtime verdict and independent host sealer must re-evaluate every recorded GPU and host ceiling; notebook booleans alone are insufficient"
   },
   "prompts": {
     "canonical": "<\uff5cbegin\u2581of\u2581sentence\uff5c>Who is Alan Turing?<\uff5cAssistant\uff5c>",
