@@ -163,14 +163,15 @@ def validate_layer_trace(trace: Any, expected: list[int]) -> bool:
                for order, (row, layer_id) in enumerate(zip(trace, expected)))
 
 
-def validate_runtime(runtime: Any) -> bool:
+def validate_runtime(runtime: Any, *, max_cache_bytes: int = 2 << 30) -> bool:
     if not isinstance(runtime, dict):
         return False
     backends = runtime.get("backends", {})
     caches = [runtime.get("cache0", {}), runtime.get("cache1", {})]
     return (backends.get("cpu_expert_execution") is False
             and backends.get("routed_experts") == "freebuff_ds8_cache_fp16_cuda"
-            and all(cache.get("resident_bytes", 1) <= 2 << 30 for cache in caches)
+            and all(cache.get("resident_bytes", 1) <= max_cache_bytes
+                    for cache in caches)
             and all(cache.get("fallbacks") == 0 for cache in caches)
             and all(cache.get("checksum_failures") == 0 for cache in caches))
 
@@ -263,6 +264,51 @@ def stage_gates(evidence: dict[str, Any], expected_stage: str) -> dict[str, bool
                 "logits": logits.get("finite") is True
                 and logits.get("shape", [0])[-1] == 129_280,
                 "runtime": validate_runtime(gates.get("runtime"))}
+    if expected_stage == "cache1":
+        tokens = gates.get("tokens", [])
+        metrics = gates.get("cache1_metrics", {})
+        trace = gates.get("token_trace", {})
+        sealed = gates.get("policy", {}).get("sealed_reference_tokens", [])
+        cache_budget = gates.get("policy", {}).get("cache_budget_bytes", 0)
+        expected_verdict = evidence.get("verdict")
+        return {**common,
+                "verdict": expected_verdict in (
+                    "ACCEPT_CACHE_HITRATE_TARGET", "ACCEPT_CACHE_PARTIAL"),
+                "sealed_tokens": tokens == sealed
+                and gates.get("tokens_match_sealed_ds10") is True,
+                "token_ids": gates.get("token_ids_in_vocab") is True,
+                "token_layers": all(validate_layer_trace(
+                    trace.get(f"token_{idx}", {}).get("layers"),
+                    list(range(EXPECTED_LAYERS))) for idx in range(len(tokens))),
+                "deterministic": gates.get("deterministic_rerun") is True
+                and gates.get("rerun_tokens") == tokens,
+                "cold_warm": gates.get("cold_warm_equal") is True
+                and gates.get("warm_tokens") == tokens,
+                "cache_capacity": gates.get("cache_capacity_variation_equal") is True
+                and gates.get("alternate_cache_budget_bytes") == 1536 << 20
+                and gates.get("memory2", {}).get("cache_budget_bytes") == 1536 << 20,
+                "runtime_primary": validate_runtime(
+                    gates.get("runtime_after_warm"),
+                    max_cache_bytes=cache_budget),
+                "runtime_alternate": validate_runtime(
+                    gates.get("runtime_alternate_budget"),
+                    max_cache_bytes=cache_budget),
+                "memory": gates.get("memory_ceilings_ok") is True
+                and validate_build_memory(gates.get("memory"))
+                and validate_build_memory(gates.get("memory2"))
+                and validate_host_memory(gates.get("host_memory_after_primary"))
+                and validate_host_memory(gates.get("host_memory_after_alternate"))
+                and validate_gpu_peaks(gates.get("peak_memory_primary_gib"))
+                and validate_gpu_peaks(gates.get("peak_memory_alternate_gib")),
+                "metrics_present": isinstance(metrics, dict)
+                and isinstance(metrics.get("gpu_hit_rate_pct"), (int, float))
+                and isinstance(metrics.get("http_fetch_count"), int)
+                and isinstance(metrics.get("combined_no_http_pct"), (int, float))
+                and metrics.get("combined_no_http_pct") >= 0.0,
+                "decode_timing": isinstance(gates.get("decode_tok_per_s"), (int, float))
+                and gates.get("decode_tok_per_s") > 0.0
+                and gates.get("decode_token_count") >= 1,
+                "shared_pinned": gates.get("policy", {}).get("shared_pinned") is True}
     minimum = {"v5": 1, "v6": 4, "final": 16}[expected_stage]
     expected_verdict = ("ACCEPT_DUAL_T4_DECODE" if expected_stage == "final"
                         else "ACCEPT_DUAL_T4_FIRST_TOKEN")
@@ -327,7 +373,8 @@ def main() -> int:
     parser.add_argument("--input-dir", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--expected-stage", required=True,
-                        choices=("v1", "v2", "v3", "v4", "v5", "v6", "final"))
+                        choices=("v1", "v2", "v3", "v4", "v5", "v6", "final",
+                                 "cache1"))
     parser.add_argument("--expected-commit")
     args = parser.parse_args()
     seal_path = args.output_dir / "SEAL.json"

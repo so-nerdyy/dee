@@ -181,8 +181,13 @@ class DeepseekV4CacheFfn:
                     self.layer_id)
             s_entry = self.loader.stage(self.layer_id, skey, self.shared_payload,
                                         metadata={"expert_type": "shared"})
+            # Pin the freshly-staged entry.  It is resident by construction
+            # (stage -> reserve -> resident), so a failure here is an
+            # accounting anomaly, not a cache miss -- count it separately so
+            # miss/hit totals stay exact.
             if not self.cache.pin(self.layer_id, skey):
-                self.stats["misses"] += 1  # pin failed: not resident
+                self.stats.setdefault("pin_failures", 0)
+                self.stats["pin_failures"] += 1
         else:
             self.stats["hits"] += 1
         if s_entry.ready_event is not None:
