@@ -630,7 +630,7 @@
    "milestone": "CACHE1.3-implemented",
    "status": "BLOCKED_GPU_QUOTA",
    "blob": "Kaggle weekly GPU quota 30h exhausted on 2026-08-06; kernel payload built and verified but push rejected",
-   "repository_commit": "cbbc857807f2c31075f5a3b972e0d89be446cff2",
+   "repository_commit": "cf7cf09d8b7a39928b387063996fa6b8a2804640",
    "identity_stage": "cache1",
    "policy": {
     "cache_budget_gib": 4,
@@ -642,7 +642,11 @@
     "ACCEPT_CACHE_PARTIAL",
     "REJECT_CACHE_CORRECTNESS"
    ],
-   "next_command": "kaggle kernels push -p tmp/ds10-kernel-payload-cache1 && kaggle kernels status nivind/dee-cpp-deepseek-v4-flash-0731-ds10-model-runtime"
+   "next_command": "kaggle kernels push -p tmp/ds10-kernel-payload-cache1 && kaggle kernels status nivind/dee-cpp-deepseek-v4-flash-0731-ds10-model-runtime",
+   "local_tests": "50 passed, 1 skipped (cache/layer/model/runtime/seal)",
+   "sha_chain_verified": true,
+   "payload": "tmp/ds10-kernel-payload-cache1 (built, push rejected by quota)",
+   "seal_tooling": "seal_deepseek_v4_ds10.py supports cache1 stage"
   }
  ],
  "schema_version": 1
