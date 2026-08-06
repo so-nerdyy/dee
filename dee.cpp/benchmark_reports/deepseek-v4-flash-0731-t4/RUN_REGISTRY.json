@@ -647,6 +647,31 @@
    "sha_chain_verified": true,
    "payload": "tmp/ds10-kernel-payload-cache1 (built, push rejected by quota)",
    "seal_tooling": "seal_deepseek_v4_ds10.py supports cache1 stage"
+  },
+  {
+   "run_id": "cache1-modal-20260806",
+   "campaign": "CACHE1",
+   "milestone": "CACHE1.3-on-modal",
+   "status": "RUNNING",
+   "platform": "modal",
+   "app": "dee-cpp-dsv4-cache1",
+   "gpu": "T4:2",
+   "volume": "dee-dsv4-cache1-evidence",
+   "log": "cache1-run.log",
+   "launched_utc": "2026-08-06T16:44:52Z",
+   "repository_commit": "cf7cf09d8b7a39928b387063996fa6b8a2804640",
+   "identity_stage": "cache1",
+   "policy": {
+    "cache_budget_gib": 4,
+    "raw_experts_per_layer": 16,
+    "shared_pinned": true
+   },
+   "expected_verdicts": [
+    "ACCEPT_CACHE_HITRATE_TARGET",
+    "ACCEPT_CACHE_PARTIAL",
+    "REJECT_CACHE_CORRECTNESS"
+   ],
+   "next_command": "modal volume get dee-dsv4-cache1-evidence cache1-run.log - ; then pull ds-v10 evidence dir and seal with scripts/seal_deepseek_v4_ds10.py"
   }
  ],
  "schema_version": 1
