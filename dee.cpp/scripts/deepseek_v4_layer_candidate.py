@@ -165,7 +165,12 @@ class DeepseekV4CacheFfn:
             h = ws.to(self.device) * h  # official: weight before w2
             out = (h.half() @ payload["w2.weight"].t()).float()
             moe[toks] += out
-        # shared expert (unweighted)
+        # shared expert (unweighted).  CACHE1: the shared expert runs every
+        # token, every layer (10.8% of all accesses on the sealed trace), so
+        # pin it permanently after the first stage -- the pin/unpin machinery
+        # already exists in DeepSeekExpertCache but was never called, which
+        # left the 43 shared experts (48 MiB each) churning through the budget
+        # and being re-fetched over HTTP every single token.
         self.stats["requests"] += 1
         skey = -1
         s_entry = self.cache.get(self.layer_id, skey)
@@ -176,6 +181,8 @@ class DeepseekV4CacheFfn:
                     self.layer_id)
             s_entry = self.loader.stage(self.layer_id, skey, self.shared_payload,
                                         metadata={"expert_type": "shared"})
+            if not self.cache.pin(self.layer_id, skey):
+                self.stats["misses"] += 1  # pin failed: not resident
         else:
             self.stats["hits"] += 1
         if s_entry.ready_event is not None:

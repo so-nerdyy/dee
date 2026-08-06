@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 import urllib.error
 import urllib.request
 from collections import OrderedDict
@@ -717,10 +718,21 @@ class DeepseekV4Model:
     def generate(self, input_ids: torch.Tensor, max_new_tokens: int, *,
                  eos_id: int = 1, captures: Optional[dict[int, dict[str, Any]]] = None,
                  per_step_captures: Optional[list[dict[int, dict[str, Any]]]] = None,
-                 trace: Optional[dict[str, Any]] = None) -> list[int]:
-        """Greedy autoregressive decode.  Returns generated token ids."""
+                 trace: Optional[dict[str, Any]] = None,
+                 decode_timings_ms: Optional[list[float]] = None) -> list[int]:
+        """Greedy autoregressive decode.  Returns generated token ids.
+
+        ``decode_timings_ms`` (CACHE1): appends one wall-clock sample per
+        generated token (decode step only, trace/serialization excluded),
+        enabling an honest decode-only TPS without attributing evidence
+        overhead to the cache policy.
+        """
         seq_len = input_ids.shape[1]
+        t0 = time.monotonic()
         logits = self.forward(input_ids, 0, captures=captures)
+        t1 = time.monotonic()
+        if decode_timings_ms is not None:
+            decode_timings_ms.append((t1 - t0) * 1000.0)
         tok = int(logits.argmax(-1).item())
         generated = [tok]
         if trace is not None:
@@ -737,7 +749,11 @@ class DeepseekV4Model:
             step_ids = torch.tensor([[tok]], device=input_ids.device,
                                     dtype=input_ids.dtype)
             cap_map = per_step_captures[t] if per_step_captures else None
+            t0 = time.monotonic()
             logits = self.forward(step_ids, seq_len + t - 1, captures=cap_map)
+            t1 = time.monotonic()
+            if decode_timings_ms is not None:
+                decode_timings_ms.append((t1 - t0) * 1000.0)
             tok = int(logits.argmax(-1).item())
             generated.append(tok)
             if trace is not None:

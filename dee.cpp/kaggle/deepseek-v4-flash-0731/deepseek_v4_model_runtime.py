@@ -74,12 +74,23 @@ HEADERS_DIR = ROOT / Path(
 CONFIG_RELATIVE = ROOT / Path(
     "dee.cpp/benchmark_reports/deepseek-v4-flash-0731-t4/official-source/inference/config.json")
 
-VALID_STAGES = ("v1", "v2", "v3", "v4", "v5", "v6", "final")
+VALID_STAGES = ("v1", "v2", "v3", "v4", "v5", "v6", "final", "cache1")
 LADDER_INPUT_IDS = (0,)
 
 # Cache budgets per GPU (bytes): bounded, well under the 12-13 GiB bring-up
 # envelope; the model's dense/state bytes come from the static memory plan.
-CACHE_BUDGET_BYTES = 2 << 30  # 2 GiB per GPU
+CACHE_BUDGET_BYTES = 2 << 30  # 2 GiB per GPU (DS10 sealed baseline)
+# CACHE1: measured alloc was 5.9 GiB / peak 8.1-9.7 GiB at 2 GiB budget,
+# ceiling 13.67 GiB -> 4 GiB cache budget is safe, 8 GiB is NOT (peak would
+# approach the ceiling).  See CACHE1_ANALYSIS.md policy matrix.
+CACHE1_BUDGET_BYTES = 4 << 30  # 4 GiB per GPU
+CACHE1_RAW_EXPERTS_PER_LAYER = 16
+# Sealed DS10 v12 canonical decode (ACCEPT_DUAL_T4_DECODE evidence): every
+# CACHE1 candidate must reproduce these exact token IDs.
+SEALED_DS10_TOKENS = [
+    666, 95140, 96807, 343, 4470, 20, 1127, 3298, 22, 22604, 515, 411,
+    3947, 85349, 14, 6341,
+]
 GPU_MEMORY_CEILING_BYTES = 14_680_064_000
 HOST_RSS_CEILING_BYTES = 12_000_000_000
 
@@ -318,7 +329,8 @@ def stage_v1() -> dict[str, Any]:
 
 
 def _build_full_model(source: Any, cfg: Any, *,
-                      cache_budget_bytes: int = CACHE_BUDGET_BYTES
+                      cache_budget_bytes: int = CACHE_BUDGET_BYTES,
+                      raw_experts_per_layer: int = 0
                       ) -> tuple[Any, dict[str, Any]]:
     """Build the full dual-GPU candidate and initialize all states."""
     from scripts import deepseek_v4_model as vm
@@ -328,10 +340,14 @@ def _build_full_model(source: Any, cfg: Any, *,
     loader0 = DeepSeekExpertLoader(cache0)
     loader1 = DeepSeekExpertLoader(cache1)
     # The sealed v5 probe measured zero compact-host LRU hits over all three
-    # generation passes.  Retaining eight packed experts per layer therefore
-    # consumed 4.6 GB without avoiding a single fetch.  GPU expert caches stay
-    # bounded and authoritative; do not retain redundant compact host copies.
-    provider = vm.ExpertProvider(source, raw_experts_per_layer=0)
+    # generation passes, and DS10 ran with raw_experts_per_layer=0 (every GPU
+    # miss = full HTTP range fetch).  CACHE1 analysis (sealed v12 trace) shows
+    # that was a DISABLED second-level cache, not a useless one: a per-layer
+    # host LRU of raw compact tensors converts 33-47% of GPU misses into host
+    # hits.  raw_experts_per_layer is therefore a policy knob here; DS10
+    # stages keep 0, the cache1 stage uses CACHE1_RAW_EXPERTS_PER_LAYER.
+    provider = vm.ExpertProvider(source,
+                                 raw_experts_per_layer=raw_experts_per_layer)
     t0 = time.monotonic()
     model = vm.DeepseekV4Model.build_candidate(
         cfg, source, device0="cuda:0", device1="cuda:1",
@@ -630,6 +646,175 @@ def stage_generate(n_tokens: int, *, stage_name: str) -> dict[str, Any]:
     return result
 
 
+def stage_cache1() -> dict[str, Any]:
+    """CACHE1: expert-cache policy candidate on the canonical 16-token decode.
+
+    Policy stack (from CACHE1.1 analysis of the sealed v12 trace):
+      - GPU cache budget 4 GiB/GPU (safe: alloc 5.9 -> ~7.9 GiB, peak
+        ~10.5 GiB, ceiling 13.67 GiB);
+      - host provider raw LRU enabled (raw_experts_per_layer=16) so a GPU
+        miss on a recently-fetched expert is a host hit, not an HTTP fetch;
+      - shared experts pinned permanently (deepseek_v4_layer_candidate.py
+        calls cache.pin on first stage; pin/unpin existed but were dead
+        code in DS10).
+
+    Gates (CACHE1.4 correctness is non-negotiable):
+      - token IDs identical to sealed DS10 (SEALED_DS10_TOKENS);
+      - cold == warm; deterministic rerun at alternate budget;
+      - memory ceilings;
+      - decode-only timing (wall clock per generated token, evidence
+        serialization excluded) for an honest CACHE1.5 TPS.
+
+    Verdicts: ACCEPT_CACHE_HITRATE_TARGET (combined GPU+provider hit rate
+    >= 70%) / ACCEPT_CACHE_PARTIAL (measurable gain below target) /
+    REJECT_CACHE_CORRECTNESS (any CACHE1.4 failure).
+    """
+    cfg = _load_cfg()
+    source = _build_remote_source()
+    model, mem = _build_full_model(
+        source, cfg, cache_budget_bytes=CACHE1_BUDGET_BYTES,
+        raw_experts_per_layer=CACHE1_RAW_EXPERTS_PER_LAYER)
+    gates: dict[str, Any] = {"memory": mem,
+                             "policy": {
+                                 "cache_budget_bytes": CACHE1_BUDGET_BYTES,
+                                 "raw_experts_per_layer":
+                                     CACHE1_RAW_EXPERTS_PER_LAYER,
+                                 "shared_pinned": True,
+                                 "sealed_reference_tokens":
+                                     list(SEALED_DS10_TOKENS)}}
+    try:
+        from scripts import deepseek_v4_encoding as enc
+        tokenizer = enc.load_tokenizer()
+        ids = tokenizer.encode(CANONICAL_PROMPT)
+        input_ids = torch.tensor([ids], device="cuda:0").long()
+        gates["prompt"] = CANONICAL_PROMPT
+        gates["prompt_len"] = len(ids)
+        n_tokens = len(SEALED_DS10_TOKENS)
+        trace: dict[str, Any] = {}
+        decode_ms: list[float] = []
+        toks = model.generate(input_ids, max_new_tokens=n_tokens, trace=trace,
+                              decode_timings_ms=decode_ms)
+        gates["tokens"] = toks
+        gates["tokens_match_sealed_ds10"] = (
+            toks == SEALED_DS10_TOKENS)
+        gates["decoded_fragments"] = [tokenizer.decode([tok]) for tok in toks]
+        gates["token_count"] = len(toks)
+        gates["token_trace"] = trace
+        gates["token_ids_in_vocab"] = all(0 <= t < cfg.vocab_size for t in toks)
+        # decode-only timing (excludes trace serialization / state hashing)
+        gates["decode_timings_ms"] = [round(t, 2) for t in decode_ms]
+        gates["decode_wall_s"] = round(sum(decode_ms) / 1000.0, 3)
+        gates["decode_tok_per_s"] = round(
+            len(decode_ms) / max(1e-9, sum(decode_ms) / 1000.0), 3)
+        # cold == warm: reset + rerun through the same model/cache
+        model.reset_state()
+        toks_warm = model.generate(input_ids, max_new_tokens=n_tokens)
+        gates["cold_warm_equal"] = toks == toks_warm
+        gates["warm_tokens"] = toks_warm
+        gates["runtime_after_warm"] = model.runtime_snapshot()
+        gates["peak_memory_primary_gib"] = {
+            "cuda0": round(torch.cuda.max_memory_allocated(0) / (1 << 30), 3),
+            "cuda1": round(torch.cuda.max_memory_allocated(1) / (1 << 30), 3),
+        }
+        gates["host_memory_after_primary"] = _host_memory_snapshot()
+        primary_memory_ok = (
+            _build_memory_within_ceiling(mem)
+            and _host_memory_within_ceiling(
+                gates["host_memory_after_primary"])
+            and _gpu_peaks_within_ceiling(
+                gates["peak_memory_primary_gib"])
+        )
+        if not primary_memory_ok:
+            gates["memory_ceilings_ok"] = False
+            return {"verdict": "REJECT_MEMORY", "gates": gates,
+                    "stage": "cache1",
+                    "first_failing_gate": "cache1_memory_primary"}
+        torch.cuda.reset_peak_memory_stats()
+        # capacity invariance at a second valid budget (no third build needed
+        # for correctness: reuse the alternate-budget rerun as DS10 did)
+        alternate_budget = 1536 << 20
+        model2, mem2 = _build_full_model(
+            source, cfg, cache_budget_bytes=alternate_budget,
+            raw_experts_per_layer=CACHE1_RAW_EXPERTS_PER_LAYER)
+        toks2 = model2.generate(input_ids, max_new_tokens=n_tokens)
+        gates["deterministic_rerun"] = toks == toks2
+        gates["cache_capacity_variation_equal"] = toks == toks2
+        gates["alternate_cache_budget_bytes"] = alternate_budget
+        gates["rerun_tokens"] = toks2
+        gates["memory2"] = mem2
+        gates["runtime_alternate_budget"] = model2.runtime_snapshot()
+        gates["peak_memory_alternate_gib"] = {
+            "cuda0": round(torch.cuda.max_memory_allocated(0) / (1 << 30), 3),
+            "cuda1": round(torch.cuda.max_memory_allocated(1) / (1 << 30), 3),
+        }
+        gates["host_memory_after_alternate"] = _host_memory_snapshot()
+        memory_ok = (primary_memory_ok
+                     and _build_memory_within_ceiling(mem2)
+                     and _host_memory_within_ceiling(
+                         gates["host_memory_after_alternate"])
+                     and _gpu_peaks_within_ceiling(
+                         gates["peak_memory_alternate_gib"]))
+        gates["memory_ceilings_ok"] = memory_ok
+
+        # ---- CACHE1.5 metrics (combined GPU + provider two-level cache) ----
+        c0 = gates["runtime_after_warm"]["cache0"]
+        c1 = gates["runtime_after_warm"]["cache1"]
+        prov = gates["runtime_after_warm"]["provider"]
+        total_requests = (c0.get("requests", 0) + c1.get("requests", 0)
+                          + c0.get("requests", 0) + c1.get("requests", 0)) // 2
+        gpu_hits = c0.get("hits", 0) + c1.get("hits", 0)
+        h2d_bytes = c0.get("h2d_bytes", 0) + c1.get("h2d_bytes", 0)
+        http_fetches = prov.get("fetch_count", 0)
+        raw_hits = prov.get("raw_hits", 0)
+        raw_misses = prov.get("raw_misses", 0)
+        gpu_hit_rate = 100.0 * gpu_hits / max(1, total_requests)
+        # combined: accesses served without an HTTP range fetch
+        provider_hit_rate = 100.0 * raw_hits / max(1, raw_hits + raw_misses)
+        combined_no_http = gpu_hit_rate + provider_hit_rate * (
+            1.0 - gpu_hit_rate / 100.0)
+        gates["cache1_metrics"] = {
+            "gpu_requests": total_requests,
+            "gpu_hits": gpu_hits,
+            "gpu_hit_rate_pct": round(gpu_hit_rate, 2),
+            "provider_raw_hits": raw_hits,
+            "provider_raw_misses": raw_misses,
+            "provider_hit_rate_pct": round(provider_hit_rate, 2),
+            "combined_no_http_pct": round(combined_no_http, 2),
+            "http_fetch_count": http_fetches,
+            "h2d_bytes_total": h2d_bytes,
+            "h2d_gib": round(h2d_bytes / (1 << 30), 3),
+            "baseline_http_fetch_count": 10202,
+            "baseline_h2d_gib": round(582739820544 / (1 << 30), 3),
+        }
+
+        functional_ok = (
+            gates["tokens_match_sealed_ds10"]
+            and gates["token_ids_in_vocab"]
+            and gates["deterministic_rerun"]
+            and gates["cold_warm_equal"]
+            and gates["cache_capacity_variation_equal"])
+        ok = functional_ok and memory_ok
+        if not memory_ok:
+            verdict = "REJECT_MEMORY"
+        elif not functional_ok:
+            verdict = "REJECT_CACHE_CORRECTNESS"
+        elif combined_no_http >= 70.0:
+            verdict = "ACCEPT_CACHE_HITRATE_TARGET"
+        else:
+            verdict = "ACCEPT_CACHE_PARTIAL"
+    except Exception as exc:  # noqa: BLE001
+        ok = False
+        verdict = "REJECT_CACHE_CORRECTNESS"
+        gates["error"] = f"{type(exc).__name__}: {exc}"
+        gates["traceback"] = traceback.format_exc()
+    result = {"verdict": verdict, "gates": gates, "stage": "cache1"}
+    if not ok:
+        result["first_failing_gate"] = (
+            "cache1_memory" if verdict == "REJECT_MEMORY"
+            else "cache1_correctness")
+    return result
+
+
 def main() -> int:
     result: dict[str, Any] = {"verdict": "INVALID_EXPERIMENT",
                               "stage": None, "performance_comparable": False}
@@ -663,6 +848,8 @@ def main() -> int:
                 result.update(stage_generate(1, stage_name="v5"))
             elif stage == "v6":
                 result.update(stage_generate(4, stage_name="v6"))
+            elif stage == "cache1":
+                result.update(stage_cache1())
             else:
                 result.update(stage_generate(16, stage_name="final"))
     except Exception as exc:  # noqa: BLE001
