@@ -290,6 +290,69 @@ def test_model_greedy_generation_deterministic_cold_warm() -> None:
                for i in range(cfg.n_layers))
 
 
+def test_expert_provider_global_byte_cap() -> None:
+    """CACHE1b: raw_max_bytes bounds the host raw LRU across ALL layers.
+
+    The v13 remote run retained 688 raw experts (9.2 GB host RSS) because
+    only a per-layer COUNT cap existed.  The global byte cap must evict the
+    oldest entry from ANY layer until total retained raw bytes fit, so a
+    43-layer model cannot exceed the 12 GB host ceiling.
+    """
+    cfg = CFG
+    source = DictTensorSource(_make_synthetic_model(cfg, seed=17, n_experts=8))
+    # Measure one expert's retained raw bytes, then cap at EXACTLY that so
+    # the second fetch (any layer) must evict the globally-oldest entry.
+    probe = ExpertProvider(source, raw_experts_per_layer=16,
+                           raw_max_bytes=None)
+    probe.get_fp16_payload(0, 0)
+    one_entry = probe.raw_bytes()
+    assert one_entry > 0
+    cap = one_entry
+    provider = ExpertProvider(source, raw_experts_per_layer=16,
+                              raw_max_bytes=cap)
+    # First fetch: layer 0 expert 0 (miss, retained)
+    p0 = provider.get_fp16_payload(0, 0)
+    assert p0 and provider.stats()["raw_entries"] == 1
+    assert provider.raw_bytes() > 0
+    # Second fetch in a DIFFERENT layer must trip the byte cap -> evicts the
+    # oldest (layer 0 expert 0), never exceeding the cap.
+    provider.get_fp16_payload(1, 1)
+    assert provider.stats()["raw_entries"] == 1
+    assert provider.raw_bytes() <= cap
+    # A third fetch across layers also stays within the cap (LRU: the most
+    # recently used entry survives).
+    provider.get_fp16_payload(2, 2)
+    assert provider.stats()["raw_entries"] == 1
+    assert provider.raw_bytes() <= cap
+    # Re-touching the CURRENT survivor (2,2) is a raw HIT (no re-fetch) and
+    # keeps it as the newest entry.
+    hits0 = provider.stats()["raw_hits"]
+    provider.get_fp16_payload(2, 2)
+    assert provider.stats()["raw_hits"] == hits0 + 1
+    assert provider.stats()["raw_entries"] == 1
+    # A larger cap (2 entries) keeps the two most recent across layers.
+    provider3 = ExpertProvider(source, raw_experts_per_layer=16,
+                               raw_max_bytes=cap * 2)
+    provider3.get_fp16_payload(0, 0)
+    provider3.get_fp16_payload(1, 1)
+    provider3.get_fp16_payload(2, 2)
+    assert provider3.stats()["raw_entries"] == 2
+    assert provider3.raw_bytes() <= cap * 2
+    # re-touching (1,1) (still resident under a 2-entry cap) is a HIT
+    hits3 = provider3.stats()["raw_hits"]
+    provider3.get_fp16_payload(1, 1)
+    assert provider3.stats()["raw_hits"] == hits3 + 1
+    # Per-layer count still applies on top of the byte cap.
+    provider2 = ExpertProvider(source, raw_experts_per_layer=2,
+                               raw_max_bytes=None)
+    for eid in range(8):
+        provider2.get_fp16_payload(3, eid)
+    assert provider2.stats()["raw_entries"] == 2
+    # raw_max_bytes=0 is rejected
+    with pytest.raises(ValueError):
+        ExpertProvider(source, raw_max_bytes=0)
+
+
 def test_ratio128_compressor_reference_vs_candidate() -> None:
     lcfg = LayerConfig(
         hidden=64, n_heads=4, head_dim=128, rope_head_dim=64,

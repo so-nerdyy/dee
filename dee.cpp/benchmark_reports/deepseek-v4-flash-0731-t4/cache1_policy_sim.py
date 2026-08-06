@@ -103,15 +103,29 @@ class GpuCache:
         return False
 
 
-class ProviderLru:
-    """Host raw-payload LRU per layer (raw_experts_per_layer)."""
+RAW_ENTRY_BYTES = 13421772  # measured v13: 9,198,108,672 / 688 entries
 
-    def __init__(self, per_layer: int):
+
+class ProviderLru:
+    """Host raw-payload LRU per layer (raw_experts_per_layer) with an
+    optional GLOBAL byte cap (raw_max_bytes) matching ExpertProvider CACHE1b."""
+
+    def __init__(self, per_layer: int, max_bytes: int | None = None):
         self.per_layer = per_layer
+        self.max_bytes = max_bytes
         self.entries: dict[int, dict[int, int]] = defaultdict(dict)  # layer -> eid -> tick
+        self.order: list[tuple[int, int]] = []  # global recency (oldest first)
         self.tick = 0
         self.hits = 0
         self.misses = 0
+        self.raw_bytes = 0
+
+    def _drop(self, layer: int, eid: int) -> None:
+        self.entries[layer].pop(eid, None)
+        if not self.entries[layer]:
+            self.entries.pop(layer, None)
+        self.order = [(l, e) for (l, e) in self.order if (l, e) != (layer, eid)]
+        self.raw_bytes -= RAW_ENTRY_BYTES
 
     def access(self, layer: int, eid: int) -> bool:
         self.tick += 1
@@ -119,13 +133,22 @@ class ProviderLru:
         if eid in m:
             self.hits += 1
             m[eid] = self.tick
+            self.order = [(l, e) for (l, e) in self.order
+                          if (l, e) != (layer, eid)] + [(layer, eid)]
             return True
         self.misses += 1
         m[eid] = self.tick
+        self.order.append((layer, eid))
+        self.raw_bytes += RAW_ENTRY_BYTES
         while len(m) > self.per_layer:
-            # evict smallest tick (oldest)
+            # evict smallest tick (oldest) of THIS layer
             victim = min(m, key=m.get)
-            del m[victim]
+            self._drop(layer, victim)
+        while self.max_bytes is not None and self.raw_bytes > self.max_bytes:
+            # evict globally-oldest
+            if not self.order:
+                break
+            self._drop(*self.order[0])
         return False
 
 
@@ -153,6 +176,7 @@ def build_stream(d: dict) -> tuple[list, int, int]:
 
 def run_policy(stream: list, split: int, *, label: str,
                budget: int, pin_shared: bool, provider_per_layer: int,
+               provider_max_bytes: int | None = None,
                popular_per_layer: int = 0, lfu: bool = False) -> dict:
     # popularity from full trace (oracle info; only used if popular_per_layer)
     _ = None
@@ -186,8 +210,8 @@ def run_policy(stream: list, split: int, *, label: str,
         # key trick in GpuCache._score via a flag.
         for c in (c0, c1):
             c.lfu = True
-    prov0 = ProviderLru(provider_per_layer)
-    prov1 = ProviderLru(provider_per_layer)
+    prov0 = ProviderLru(provider_per_layer, max_bytes=provider_max_bytes)
+    prov1 = ProviderLru(provider_per_layer, max_bytes=provider_max_bytes)
     gpu_hits = gpu_misses = prov_hits = http = 0
     for _, key in stream:
         lid, eid = key
@@ -262,6 +286,12 @@ def main() -> int:
                budget=4 << 30, pin_shared=True, provider_per_layer=8)
     run_policy(stream, split, label="pin_shared+prov16 (8GiB)",
                budget=8 << 30, pin_shared=True, provider_per_layer=16)
+    # CACHE1b byte-cap variants at the v13 budget (4 GiB GPU, 16/layer)
+    for cap_gib in (2, 3, 4):
+        run_policy(stream, split,
+                   label=f"v13(4GiB,pin)+prov16+cap{cap_gib}GiB",
+                   budget=4 << 30, pin_shared=True, provider_per_layer=16,
+                   provider_max_bytes=cap_gib << 30)
     # eviction-policy variants at 2 GiB (capacity-bound regime)
     run_policy(stream, split, label="pin_shared+LFU+prov8 (2GiB)",
                budget=2 << 30, pin_shared=True, provider_per_layer=8, lfu=True)

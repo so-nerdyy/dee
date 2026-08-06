@@ -45,7 +45,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 REPOSITORY = "https://github.com/so-nerdyy/dee.git"
 BRANCH = "freebuff/deepseek-v4-flash-0731-t4"
@@ -85,6 +85,11 @@ CACHE_BUDGET_BYTES = 2 << 30  # 2 GiB per GPU (DS10 sealed baseline)
 # approach the ceiling).  See CACHE1_ANALYSIS.md policy matrix.
 CACHE1_BUDGET_BYTES = 4 << 30  # 4 GiB per GPU
 CACHE1_RAW_EXPERTS_PER_LAYER = 16
+# CACHE1b: global byte cap on the host raw-expert LRU.  The v13 run held 688
+# raw experts (9.2 GB) which pushed host RSS to 28.1 GB > 12 GB ceiling.
+# 3 GiB caps the LRU at ~224 experts; with the 6.4 GB base this keeps the
+# process well inside the ceiling (see CACHE1_ANALYSIS.md v13 diagnosis).
+CACHE1_RAW_MAX_BYTES = 3 << 30  # 3 GiB total across all layers
 # Sealed DS10 v12 canonical decode (ACCEPT_DUAL_T4_DECODE evidence): every
 # CACHE1 candidate must reproduce these exact token IDs.
 SEALED_DS10_TOKENS = [
@@ -328,9 +333,27 @@ def stage_v1() -> dict[str, Any]:
     return result
 
 
+def _host_hygiene(tag: str = "") -> dict[str, Any]:
+    """gc + CUDA empty_cache + glibc malloc_trim (CACHE1b RSS bound).
+
+    ``ru_maxrss`` is a process high-water mark: a peak reached during decode
+    cannot be undone by trimming before the snapshot.  stage_cache1 therefore
+    runs this after every decode step AND before each memory snapshot so the
+    process never crosses the 12 GB ceiling in the first place.
+    """
+    import gc  # noqa: PLC0415
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    trim = _trim_host_allocator()
+    return {"tag": tag, "after": trim["after"],
+            "released_bytes": trim["current_rss_released_bytes"]}
+
+
 def _build_full_model(source: Any, cfg: Any, *,
                       cache_budget_bytes: int = CACHE_BUDGET_BYTES,
-                      raw_experts_per_layer: int = 0
+                      raw_experts_per_layer: int = 0,
+                      raw_max_bytes: Optional[int] = None
                       ) -> tuple[Any, dict[str, Any]]:
     """Build the full dual-GPU candidate and initialize all states."""
     from scripts import deepseek_v4_model as vm
@@ -347,7 +370,8 @@ def _build_full_model(source: Any, cfg: Any, *,
     # hits.  raw_experts_per_layer is therefore a policy knob here; DS10
     # stages keep 0, the cache1 stage uses CACHE1_RAW_EXPERTS_PER_LAYER.
     provider = vm.ExpertProvider(source,
-                                 raw_experts_per_layer=raw_experts_per_layer)
+                                 raw_experts_per_layer=raw_experts_per_layer,
+                                 raw_max_bytes=raw_max_bytes)
     t0 = time.monotonic()
     model = vm.DeepseekV4Model.build_candidate(
         cfg, source, device0="cuda:0", device1="cuda:1",
@@ -673,12 +697,14 @@ def stage_cache1() -> dict[str, Any]:
     source = _build_remote_source()
     model, mem = _build_full_model(
         source, cfg, cache_budget_bytes=CACHE1_BUDGET_BYTES,
-        raw_experts_per_layer=CACHE1_RAW_EXPERTS_PER_LAYER)
+        raw_experts_per_layer=CACHE1_RAW_EXPERTS_PER_LAYER,
+        raw_max_bytes=CACHE1_RAW_MAX_BYTES)
     gates: dict[str, Any] = {"memory": mem,
                              "policy": {
                                  "cache_budget_bytes": CACHE1_BUDGET_BYTES,
                                  "raw_experts_per_layer":
                                      CACHE1_RAW_EXPERTS_PER_LAYER,
+                                 "raw_max_bytes": CACHE1_RAW_MAX_BYTES,
                                  "shared_pinned": True,
                                  "sealed_reference_tokens":
                                      list(SEALED_DS10_TOKENS)}}
@@ -692,8 +718,15 @@ def stage_cache1() -> dict[str, Any]:
         n_tokens = len(SEALED_DS10_TOKENS)
         trace: dict[str, Any] = {}
         decode_ms: list[float] = []
+        hygiene_steps: list[dict[str, Any]] = []
+
+        def _step_hygiene(step: int) -> None:
+            hygiene_steps.append(_host_hygiene(tag=f"step_{step}"))
+
         toks = model.generate(input_ids, max_new_tokens=n_tokens, trace=trace,
-                              decode_timings_ms=decode_ms)
+                              decode_timings_ms=decode_ms,
+                              post_step_hook=_step_hygiene)
+        gates["hygiene_steps"] = hygiene_steps
         gates["tokens"] = toks
         gates["tokens_match_sealed_ds10"] = (
             toks == SEALED_DS10_TOKENS)
@@ -715,9 +748,17 @@ def stage_cache1() -> dict[str, Any]:
         gates["decode_token_count"] = len(decode_ms_only)
         # cold == warm: reset + rerun through the same model/cache
         model.reset_state()
-        toks_warm = model.generate(input_ids, max_new_tokens=n_tokens)
+        hygiene_warm: list[dict[str, Any]] = []
+
+        def _warm_hygiene(step: int) -> None:
+            hygiene_warm.append(_host_hygiene(tag=f"warm_step_{step}"))
+
+        toks_warm = model.generate(input_ids, max_new_tokens=n_tokens,
+                                   post_step_hook=_warm_hygiene)
         gates["cold_warm_equal"] = toks == toks_warm
         gates["warm_tokens"] = toks_warm
+        gates["hygiene_warm_steps"] = hygiene_warm
+        gates["allocator_release"] = _host_hygiene(tag="after_warm")
         gates["runtime_after_warm"] = model.runtime_snapshot()
         gates["peak_memory_primary_gib"] = {
             "cuda0": round(torch.cuda.max_memory_allocated(0) / (1 << 30), 3),
@@ -738,16 +779,35 @@ def stage_cache1() -> dict[str, Any]:
                     "first_failing_gate": "cache1_memory_primary"}
         torch.cuda.reset_peak_memory_stats()
         # capacity invariance at a second valid budget (no third build needed
-        # for correctness: reuse the alternate-budget rerun as DS10 did)
+        # for correctness: reuse the alternate-budget rerun as DS10 did).
+        # CACHE1b: release the primary model BEFORE the independent build so
+        # two full 43-layer candidates are never resident simultaneously
+        # (v13 leaked host RSS partly because this step was missing).
+        import gc  # noqa: PLC0415
+        del model
+        gc.collect()
+        torch.cuda.empty_cache()
+        gates["allocator_release_primary"] = _host_hygiene(
+            tag="after_primary_release")
         alternate_budget = 1536 << 20
         model2, mem2 = _build_full_model(
             source, cfg, cache_budget_bytes=alternate_budget,
-            raw_experts_per_layer=CACHE1_RAW_EXPERTS_PER_LAYER)
-        toks2 = model2.generate(input_ids, max_new_tokens=n_tokens)
+            raw_experts_per_layer=CACHE1_RAW_EXPERTS_PER_LAYER,
+            raw_max_bytes=CACHE1_RAW_MAX_BYTES)
+        hygiene2: list[dict[str, Any]] = []
+
+        def _hygiene2(step: int) -> None:
+            hygiene2.append(_host_hygiene(tag=f"alt_step_{step}"))
+
+        toks2 = model2.generate(input_ids, max_new_tokens=n_tokens,
+                                post_step_hook=_hygiene2)
         gates["deterministic_rerun"] = toks == toks2
         gates["cache_capacity_variation_equal"] = toks == toks2
         gates["alternate_cache_budget_bytes"] = alternate_budget
         gates["rerun_tokens"] = toks2
+        gates["hygiene_alternate_steps"] = hygiene2
+        gates["allocator_release_alternate"] = _host_hygiene(
+            tag="after_alternate")
         gates["memory2"] = mem2
         gates["runtime_alternate_budget"] = model2.runtime_snapshot()
         gates["peak_memory_alternate_gib"] = {

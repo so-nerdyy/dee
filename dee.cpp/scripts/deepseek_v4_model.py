@@ -409,19 +409,45 @@ class ExpertProvider:
     def __init__(self, source: TensorSource, *,
                  fp16_payloads: Optional[dict[int, dict[int, dict[str, torch.Tensor]]]] = None,
                  shared_payloads: Optional[dict[int, dict[str, torch.Tensor]]] = None,
-                 raw_experts_per_layer: int = 8):
+                 raw_experts_per_layer: int = 8,
+                 raw_max_bytes: Optional[int] = None):
         if raw_experts_per_layer < 0:
             raise ValueError("raw_experts_per_layer must be nonnegative")
+        if raw_max_bytes is not None and raw_max_bytes <= 0:
+            raise ValueError(f"raw_max_bytes must be positive, got {raw_max_bytes}")
         self.source = source
         self.fp16_payloads = fp16_payloads or {}
         self.shared_payloads = shared_payloads or {}
         self.raw_experts_per_layer = int(raw_experts_per_layer)
+        # Global byte cap on the retained raw tensors (CACHE1b): the per-layer
+        # count LRU alone allowed 16 x 43 = 688 raw experts (9.2 GB host RSS)
+        # which, on top of the 6.4 GB base + transient FP16 payload churn,
+        # exceeded the 12 GB host ceiling.  When set, the oldest raw entry
+        # across ALL layers is evicted until total retained bytes fit.
+        self.raw_max_bytes = raw_max_bytes
         self.raw_payloads: dict[
             int, OrderedDict[int, dict[str, torch.Tensor]]] = {}
+        self._raw_order: OrderedDict[tuple[int, int], None] = OrderedDict()
         self.fetch_count = 0
         self.raw_hits = 0
         self.raw_misses = 0
         self.raw_evictions = 0
+
+    def _raw_entry_bytes(self, raw: dict[str, torch.Tensor]) -> int:
+        return sum(t.numel() * t.element_size() for t in raw.values())
+
+    def _evict_raw_order_front(self) -> None:
+        """Evict the globally-oldest retained raw expert (count or byte cap)."""
+        while self._raw_order:
+            (lyr, eid), _ = next(iter(self._raw_order.items()))
+            del self._raw_order[(lyr, eid)]
+            layer_map = self.raw_payloads.get(lyr)
+            if layer_map is not None:
+                layer_map.pop(eid, None)
+                if not layer_map:
+                    self.raw_payloads.pop(lyr, None)
+            self.raw_evictions += 1
+            return
 
     def get_fp16_payload(self, layer: int, expert_id: int) -> dict[str, torch.Tensor]:
         layer_map = self.fp16_payloads.get(layer, {})
@@ -438,12 +464,23 @@ class ExpertProvider:
             if self.raw_experts_per_layer:
                 raw_layer[expert_id] = raw
                 raw_layer.move_to_end(expert_id)
+                self._raw_order[(layer, expert_id)] = None
+                self._raw_order.move_to_end((layer, expert_id))
                 while len(raw_layer) > self.raw_experts_per_layer:
-                    raw_layer.popitem(last=False)
+                    # evict the oldest entry of THIS layer (per-layer count)
+                    victim = next(iter(raw_layer))
+                    del raw_layer[victim]
+                    self._raw_order.pop((layer, victim), None)
                     self.raw_evictions += 1
+                # then enforce the GLOBAL byte cap across all layers
+                if self.raw_max_bytes is not None:
+                    while self.raw_bytes() > self.raw_max_bytes:
+                        self._evict_raw_order_front()
         else:
             self.raw_hits += 1
             raw_layer.move_to_end(expert_id)
+            if (layer, expert_id) in self._raw_order:
+                self._raw_order.move_to_end((layer, expert_id))
         return v4cand.build_fp16_payloads({expert_id: raw})[expert_id]
 
     def get_shared_fp16_payload(self, layer: int) -> dict[str, torch.Tensor]:
@@ -457,18 +494,22 @@ class ExpertProvider:
         self.fetch_count += 1
         return payload
 
+    def raw_bytes(self) -> int:
+        return sum(t.numel() * t.element_size()
+                   for layer in self.raw_payloads.values()
+                   for payload in layer.values()
+                   for t in payload.values())
+
     def stats(self) -> dict[str, int]:
-        raw_tensors = [tensor for layer in self.raw_payloads.values()
-                       for payload in layer.values()
-                       for tensor in payload.values()]
         return {
             "fetch_count": self.fetch_count,
             "raw_hits": self.raw_hits,
             "raw_misses": self.raw_misses,
             "raw_evictions": self.raw_evictions,
             "raw_entries": sum(len(layer) for layer in self.raw_payloads.values()),
-            "raw_bytes": sum(t.numel() * t.element_size() for t in raw_tensors),
+            "raw_bytes": self.raw_bytes(),
             "raw_experts_per_layer": self.raw_experts_per_layer,
+            "raw_max_bytes": self.raw_max_bytes or 0,
             "shared_fp16_layers": len(self.shared_payloads),
         }
 
@@ -719,13 +760,20 @@ class DeepseekV4Model:
                  eos_id: int = 1, captures: Optional[dict[int, dict[str, Any]]] = None,
                  per_step_captures: Optional[list[dict[int, dict[str, Any]]]] = None,
                  trace: Optional[dict[str, Any]] = None,
-                 decode_timings_ms: Optional[list[float]] = None) -> list[int]:
+                 decode_timings_ms: Optional[list[float]] = None,
+                 post_step_hook: Optional[Any] = None) -> list[int]:
         """Greedy autoregressive decode.  Returns generated token ids.
 
         ``decode_timings_ms`` (CACHE1): appends one wall-clock sample per
         generated token (decode step only, trace/serialization excluded),
         enabling an honest decode-only TPS without attributing evidence
         overhead to the cache policy.
+
+        ``post_step_hook`` (CACHE1b): optional ``callable(step_index)`` run
+        after each forward (prefill + every decode step).  The cache1 stage
+        uses it to bound process RSS DURING decode (gc + cuda empty_cache +
+        malloc_trim), because ``ru_maxrss`` is a high-water mark: trimming
+        only before the snapshot cannot undo a peak already reached.
         """
         seq_len = input_ids.shape[1]
         t0 = time.monotonic()
@@ -733,6 +781,8 @@ class DeepseekV4Model:
         t1 = time.monotonic()
         if decode_timings_ms is not None:
             decode_timings_ms.append((t1 - t0) * 1000.0)
+        if post_step_hook is not None:
+            post_step_hook(0)
         tok = int(logits.argmax(-1).item())
         generated = [tok]
         if trace is not None:
@@ -754,6 +804,8 @@ class DeepseekV4Model:
             t1 = time.monotonic()
             if decode_timings_ms is not None:
                 decode_timings_ms.append((t1 - t0) * 1000.0)
+            if post_step_hook is not None:
+                post_step_hook(t)
             tok = int(logits.argmax(-1).item())
             generated.append(tok)
             if trace is not None:
