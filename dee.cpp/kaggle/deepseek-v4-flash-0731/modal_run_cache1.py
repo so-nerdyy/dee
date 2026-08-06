@@ -30,7 +30,7 @@ from pathlib import Path
 
 import modal
 
-PINNED_COMMIT = "cf7cf09d8b7a39928b387063996fa6b8a2804640"
+PINNED_COMMIT = "710e82d26b5d2c5c15bfba6c8ce0ee64c626944b"
 BRANCH = "freebuff/deepseek-v4-flash-0731-t4"
 REPOSITORY = "https://github.com/so-nerdyy/dee.git"
 RUNNER_DIR = "/kaggle/temp/dsv4-runner"
@@ -38,9 +38,10 @@ HARNESS_REL = "dee.cpp/kaggle/deepseek-v4-flash-0731/deepseek_v4_model_runtime.p
 LOG_PATH = "/kaggle/working/cache1-run.log"
 
 image = (
-    modal.Image.pytorch(python_version="3.11")
+    modal.Image.debian_slim(python_version="3.11")
     .apt_install("git")
-    .pip_install("transformers", "safetensors", "requests", "huggingface_hub")
+    .pip_install("torch", "transformers", "safetensors", "requests",
+                 "huggingface_hub")
 )
 
 app = modal.App("dee-cpp-dsv4-cache1")
@@ -51,7 +52,7 @@ evidence_volume = modal.Volume.from_name(
 @app.function(
     image=image,
     gpu="T4:2",
-    timeout=6 * 3600,  # 6h cap; DS10 v12 wall was ~7h incl 3 builds + HTTP churn
+    timeout=8 * 3600,  # 8h cap; v13 took ~4.4h (build + cold/warm + alternate)
     volumes={"/kaggle/working": evidence_volume},
     retries=0,
 )
