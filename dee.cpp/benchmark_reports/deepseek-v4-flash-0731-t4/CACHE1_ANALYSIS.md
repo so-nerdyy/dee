@@ -88,3 +88,54 @@ checks passing (deterministic rerun, cold==warm, budget invariance,
 identical token IDs vs sealed DS10).
 
 Artifacts: `cache1_analysis.py`, `cache1_policy_sim.py` (this directory).
+
+## 7. v13 remote run (Modal dual-T4, 2026-08-06): REJECT_MEMORY — diagnosis
+
+First implementation of the policy stack (4 GiB/GPU, provider raw=16,
+shared pinned) ran on Modal and produced **REJECT_MEMORY
+(cache1_memory_primary)**: host RSS after the warm decode was **28.1 GB**
+vs the 12 GB sealed ceiling.  Critically, **correctness held**:
+`tokens_match_sealed_ds10: true`, `cold_warm_equal: true`, all logits
+finite, GPU peaks 10.1/11.8 GiB < 13.67 GiB ceiling.
+
+### What pushed host RSS to 28.1 GB
+
+| component | bytes | notes |
+|---|---|---|
+| post-build base | 6.4 GB | incl. 43 shared FP16 payloads (2.16 GB) |
+| provider raw LRU | 9.2 GB | 688 entries × 13.4 MB (16/layer × 43) |
+| transient churn | ~12 GB | ~10,245 FP16 payload builds (50 MB each) held by glibc arenas + torch pinned/payload allocators; `ru_maxrss` is a high-water mark so post-hoc trim cannot undo it |
+
+DS10 (2 GiB budget, raw LRU disabled) measured only 6.97 GB at the same
+snapshot point — the 9.2 GB raw LRU plus missing per-step RSS hygiene are
+both new in cache1.
+
+### Measured cache behavior (v13, primary model, cold+warm)
+
+- GPU cache: `hits: 0`, `loads: 5,252+4,993` — every access cold-stages; the
+  per-token routed working set (~258 × 50 MB ≈ 12.9 GB) exceeds even the
+  4 GiB budget, so the GPU level still turns over fully each token.
+  (FFN-level `get()` hits for pinned shared experts are counted in per-layer
+  `ffn_cache_counters`, not the cache-level reserve counter.)
+- Provider raw LRU: **4,330 raw hits** vs DS10's 0 — HTTP fetches dropped
+  10,202 → **5,872** (measured; sim predicted 5,308 at 16/layer).
+- Decode was HTTP-bound: ~288 s/token (5,872 range fetches over ~15 tokens).
+
+### CACHE1b fix (commit 710e82d, run 20260806T224102Z)
+
+1. **Global byte cap** `raw_max_bytes=3 GiB` on the provider raw LRU
+   (evicts the globally-oldest entry across ALL layers).  Sim: 16/layer
+   uncapped ≈ 53% fetches; **cap 3 GiB ≈ 60%** — nearly the same hit rate
+   at one third the host footprint (9.2 → 3 GB).
+2. **Per-step RSS hygiene**: `post_step_hook` in `generate()` runs
+   `gc.collect() + torch.cuda.empty_cache() + malloc_trim` after every
+   forward (prefill + each decode step) so the process never crosses the
+   12 GB ceiling mid-run (`ru_maxrss` cannot be trimmed afterwards).
+3. **Release primary model before the alternate-budget build** (mirrors
+   DS10 `stage_generate`; v13 skipped this and kept two full candidates
+   resident during the rerun phase).
+4. `cache1_policy_sim.py` gained a byte-cap mode; a unit test pins the
+   global-byte-cap eviction semantics.
+
+Expected v14 outcome: host RSS ≈ 6.4 + 3.0 + bounded transient < 12 GB,
+HTTP fetches ≈ 3,474 (60%), provider hits ≈ 28.9% → **ACCEPT_CACHE_PARTIAL**.
