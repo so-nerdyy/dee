@@ -628,7 +628,7 @@
    "run_id": "cache1-pending",
    "campaign": "CACHE1",
    "milestone": "CACHE1.3-implemented",
-   "status": "BLOCKED_GPU_QUOTA",
+   "status": "SUPERSEDED_BY_CACHE1B",
    "blob": "Kaggle weekly GPU quota 30h exhausted on 2026-08-06; kernel payload built and verified but push rejected",
    "repository_commit": "cf7cf09d8b7a39928b387063996fa6b8a2804640",
    "identity_stage": "cache1",
@@ -652,7 +652,7 @@
    "run_id": "cache1-modal-20260806",
    "campaign": "CACHE1",
    "milestone": "CACHE1.3-on-modal",
-   "status": "RUNNING",
+   "status": "DONE_REJECT_MEMORY",
    "platform": "modal",
    "app": "dee-cpp-dsv4-cache1",
    "gpu": "T4:2",
@@ -671,7 +671,41 @@
     "ACCEPT_CACHE_PARTIAL",
     "REJECT_CACHE_CORRECTNESS"
    ],
-   "next_command": "modal volume get dee-dsv4-cache1-evidence cache1-run.log - ; then pull ds-v10 evidence dir and seal with scripts/seal_deepseek_v4_ds10.py"
+   "next_command": "modal volume get dee-dsv4-cache1-evidence cache1-run.log - ; then pull ds-v10 evidence dir and seal with scripts/seal_deepseek_v4_ds10.py",
+   "verdict": "REJECT_MEMORY",
+   "first_failing_gate": "cache1_memory_primary",
+   "host_rss_gib_after_warm": 26.18,
+   "host_ceiling_gib": 12.0,
+   "tokens_match_sealed_ds10": true,
+   "cold_warm_equal": true,
+   "diagnosis": "provider raw LRU 688 entries (9.2 GB) + glibc/pinned churn pushed host RSS to 28.1 GB > 12 GB ceiling; correctness held",
+   "fix": "CACHE1b: raw_max_bytes=3GiB global byte cap + per-step gc/empty_cache/malloc_trim + release primary before alternate build (710e82d)"
+  },
+  {
+   "run_id": "cache1b-modal-20260806",
+   "campaign": "CACHE1",
+   "milestone": "CACHE1.3b-memory-fix",
+   "status": "RUNNING",
+   "platform": "modal",
+   "app": "dee-cpp-dsv4-cache1",
+   "gpu": "T4:2",
+   "volume": "dee-dsv4-cache1-evidence",
+   "evidence_dir": "dsv4-ds10-evidence-20260806T224102Z",
+   "launched_utc": "2026-08-06T22:41:02Z",
+   "repository_commit": "710e82d26b5d2c5c15bfba6c8ce0ee64c626944b",
+   "identity_stage": "cache1",
+   "policy": {
+    "cache_budget_gib": 4,
+    "raw_experts_per_layer": 16,
+    "raw_max_bytes": 3221225472,
+    "shared_pinned": true
+   },
+   "expected_verdicts": [
+    "ACCEPT_CACHE_HITRATE_TARGET",
+    "ACCEPT_CACHE_PARTIAL",
+    "REJECT_CACHE_CORRECTNESS",
+    "REJECT_MEMORY"
+   ]
   }
  ],
  "schema_version": 1
