@@ -87,9 +87,13 @@ CACHE1_BUDGET_BYTES = 4 << 30  # 4 GiB per GPU
 CACHE1_RAW_EXPERTS_PER_LAYER = 16
 # CACHE1b: global byte cap on the host raw-expert LRU.  The v13 run held 688
 # raw experts (9.2 GB) which pushed host RSS to 28.1 GB > 12 GB ceiling.
-# 3 GiB caps the LRU at ~224 experts; with the 6.4 GB base this keeps the
-# process well inside the ceiling (see CACHE1_ANALYSIS.md v13 diagnosis).
-CACHE1_RAW_MAX_BYTES = 3 << 30  # 3 GiB total across all layers
+# CACHE1c (3 GiB) still sat ~13.3 GiB steady / 15.67 GiB peak because the
+# eager 43 x 48 MiB shared-FP16 host copies (2.06 GiB) plus the LRU plus
+# pinned staging exceeded the ceiling (see CACHE1_ANALYSIS.md v13/v14).
+# CACHE1d: 2 GiB cap (sim: provider hits 29%->22.6%, http 59.9%->66.2%; the
+# 1.5 GiB cliff at 0% hits rules out going lower) + lazy shared payloads
+# that free the host copy after the GPU entry is pinned.
+CACHE1_RAW_MAX_BYTES = 2 << 30  # 2 GiB total across all layers
 # Sealed DS10 v12 canonical decode (ACCEPT_DUAL_T4_DECODE evidence): every
 # CACHE1 candidate must reproduce these exact token IDs.
 SEALED_DS10_TOKENS = [

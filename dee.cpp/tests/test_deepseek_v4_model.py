@@ -353,6 +353,47 @@ def test_expert_provider_global_byte_cap() -> None:
         ExpertProvider(source, raw_max_bytes=0)
 
 
+def test_shared_payload_freed_after_pin() -> None:
+    """CACHE1d: the host shared-FP16 payload is freed once the GPU cache
+    entry is pinned, and re-staging after reset reuses the pinned entry.
+
+    The CACHE1c run retained 43 x 48 MiB eager shared copies (2.06 GiB) for
+    the whole run.  With a lazy payload, the first forward builds it, stages
+    + pins it, then drops the host reference; the warm rerun hits the pinned
+    entry and must NOT rebuild the host payload.
+    """
+    cfg = CFG
+    source = DictTensorSource(_make_synthetic_model(cfg, seed=23))
+    cache = DeepSeekExpertCache(1 << 30, device="cpu")
+    loader = DeepSeekExpertLoader(cache)
+    provider = ExpertProvider(source, raw_experts_per_layer=16)
+    model = DeepseekV4Model.build_candidate(
+        cfg, source, device0="cpu", device1="cpu", cache0=cache, loader0=loader,
+        cache1=cache, loader1=loader, provider=provider,
+        dense_dtype=torch.float16, embed_head_dtype=torch.bfloat16, split=2)
+    input_ids = torch.randint(0, cfg.vocab_size, (1, 4)).long()
+    # First forward: shared experts staged + pinned, host copies freed.
+    model.forward(input_ids, 0)
+    for i in range(cfg.n_layers):
+        ffn = model.layer(i).ffn_fn
+        assert ffn.shared_payload is None, \
+            f"layer {i} must free the host shared payload after pin"
+        assert ffn.stats["shared_host_freed"] == 1
+        assert ffn.stats["hits"] >= 0
+    # The provider no longer retains the expanded copies either.
+    assert len(provider.shared_payloads) == 0
+    # Warm rerun: pinned entries are hit, no new host payloads built.
+    model.reset_state()
+    model.forward(input_ids, 0)
+    for i in range(cfg.n_layers):
+        ffn = model.layer(i).ffn_fn
+        assert ffn.shared_payload is None
+        # stage was a HIT on the warm pass (pinned entry survived reset)
+        assert ffn.stats["hits"] >= 1
+    # GPU entries are pinned and resident.
+    assert cache.pinned_count() == cfg.n_layers
+
+
 def test_ratio128_compressor_reference_vs_candidate() -> None:
     lcfg = LayerConfig(
         hidden=64, n_heads=4, head_dim=128, rope_head_dim=64,

@@ -188,6 +188,16 @@ class DeepseekV4CacheFfn:
             if not self.cache.pin(self.layer_id, skey):
                 self.stats.setdefault("pin_failures", 0)
                 self.stats["pin_failures"] += 1
+            else:
+                # CACHE1d: the GPU entry is now pinned permanently (survives
+                # reset_state), so the host FP16 copy is dead weight.  Free it
+                # to keep host RSS inside the 12 GB ceiling: 43 layers x 48 MiB
+                # of eager shared copies were the second-largest RSS driver.
+                self.stats.setdefault("shared_host_freed", 0)
+                self.stats["shared_host_freed"] += 1
+                self.shared_payload = None
+                if self.provider is not None:
+                    self.provider.shared_payloads.pop(self.layer_id, None)
         else:
             self.stats["hits"] += 1
         if s_entry.ready_event is not None:

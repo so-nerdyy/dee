@@ -587,15 +587,17 @@ class DeepseekV4Model:
             # dtype; integer tensors (hash tid2eid) stay exact.
             w = _cast_floats(w, dense_dtype)
             w_cuda = _move_to_device(w, device)
-            shared_raw = {}
-            for name in v4support.shared_expert_tensor_names(layer):
-                shared_raw[name[len(f"layers.{layer}.ffn.shared_experts."):]] = (
-                    source.get_tensor(name))
-            shared_payload = v4cand.build_shared_fp16_payload(shared_raw)
+            # CACHE1d: build the shared expert's FP16 payload LAZILY on the
+            # first forward (provider.get_shared_fp16_payload) instead of
+            # eagerly for all 43 layers here.  Eager building retained 43 x
+            # 48 MiB = 2.06 GiB of host FP16 copies for the whole run, which
+            # on top of the raw LRU pushed host RSS past the 12 GB ceiling.
+            # The layer frees the host copy after the GPU entry is pinned,
+            # so only the raw FP8 tensors (13.4 MB x 43) stay resident.
             layer_obj = v4cand.make_candidate_layer(
                 lcfg, w_cuda, device=device, max_batch=1, cache=cache,
                 loader=loader, layer_id=layer, fp16_payloads={},
-                shared_payload=shared_payload, provider=provider)
+                shared_payload=None, provider=provider)
             (layers0 if layer < split else layers1).append(layer_obj)
 
         model = cls(cfg, embed=embed.to(device0), layers0=layers0,

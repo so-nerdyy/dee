@@ -139,3 +139,46 @@ both new in cache1.
 
 Expected v14 outcome: host RSS ≈ 6.4 + 3.0 + bounded transient < 12 GB,
 HTTP fetches ≈ 3,474 (60%), provider hits ≈ 28.9% → **ACCEPT_CACHE_PARTIAL**.
+
+## 8. v14 remote run (CACHE1c, 2026-08-07T181447Z): REJECT_MEMORY — diagnosis
+
+Second implementation (commit `710e82d`, raw cap 3 GiB + per-step hygiene
++ release-before-alternate) ran on Modal dual-T4 with a **16 h timeout and
+a 10-min heartbeat** (liveness + GPU util/mem + harness RSS).  It failed
+the primary memory gate again: **steady decode RSS ~13.3 GB, peak 15.67 GB
+vs the 12 GB ceiling**, so `cache1_memory_primary` → REJECT_MEMORY even
+though the workload stayed healthy (harness_alive=True throughout; build
+finished ~1.3 h, then HTTP-stalled decode at 0% GPU util).
+
+### Why 3 GiB cap was still too fat
+
+The 3 GiB cap fixed only ONE RSS driver.  The measured steady state:
+
+| component | bytes | notes |
+|---|---|---|
+| DS10 sealed baseline | 6.49 GiB | current, post-primary (peak 6.93) |
+| raw LRU (cap 3 GiB) | ~3 GiB | fills during first-token fetch storm |
+| **eager shared-FP16 host copies** | **2.06 GiB** | 43 layers × 48 MiB, built in `build_candidate`, retained for the whole run |
+| torch pinned/staging churn | ~1.7 GiB | `pin_memory()` per staged payload + glibc arenas; per-step hygiene only trims to ~13.3 GB |
+
+Peak 15.67 GB occurred at 19:34–19:55Z (first-token storm: raw LRU fills
++ eager shared copies already resident + staging).  `ru_maxrss` is a
+process-wide high-water mark, so the peak is locked in regardless of
+post-decode trimming.
+
+### CACHE1d fix (local, ready to commit)
+
+1. **Lazy shared-FP16 payloads**: `build_candidate` no longer builds all
+   43 shared FP16 payloads eagerly.  The layer builds the payload on first
+   forward (`provider.get_shared_fp16_payload`), stages + **pins** it, then
+   frees the host copy (`shared_payload = None` and pops the provider's
+   copy).  Pins survive `reset_state` (cache is not cleared), so the cold==
+   warm rerun hits pinned entries without re-building host payloads.
+   Saves ~2.06 GiB steady AND cuts the first-token build peak.
+2. **Raw cap 3 → 2 GiB**: sim shows 1.5 GiB is a hard cliff (0% provider
+   hits — global LRU thrashes); 2 GiB keeps 22.6% provider hits / 66.2%
+   HTTP vs 29.0% / 59.9% at 3 GiB.  One GiB saved.
+
+Expected v15: steady RSS ≈ 6.49 + 2.0 + ~1.7 churn ≈ 10.2 GiB, peak
+≈ 11.5 GiB → **under the 12 GB ceiling with margin**; HTTP ≈ 3,830
+(66.2%), provider hits ≈ 22.6% → `ACCEPT_CACHE_PARTIAL`.
