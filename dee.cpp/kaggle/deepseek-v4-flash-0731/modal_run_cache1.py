@@ -1,7 +1,7 @@
 """CACHE1 campaign run on Modal dual-T4 (Kaggle weekly GPU quota exhausted).
 
 Launches the sealed DS10 harness (identity stage=cache1, pinned commit
-cf7cf09d8...) inside a Modal container with 2x NVIDIA T4, mirroring the
+710e82d...) inside a Modal container with 2x NVIDIA T4, mirroring the
 Kaggle kernel contract:
 
   - the container runs as root, so it can create /kaggle/temp + /kaggle/working
@@ -15,7 +15,17 @@ Usage:
     modal run dee.cpp/kaggle/deepseek-v4-flash-0731/modal_run_cache1.py
     modal run --detach dee.cpp/kaggle/deepseek-v4-flash-0731/modal_run_cache1.py
 
-Expected cost: 2x T4 ($0.59/h each) for ~1.5-4h -> roughly $2-5 total.
+History:
+  - v1 (cf7cf09): 8h timeout was too tight. CACHE1b workload = 2 full model
+    builds + 3x 16-token decodes at ~240-494s/token (HTTP-bound expert
+    fetches) needs ~7-10h; the function was killed at 8h with ZERO evidence
+    (the harness only serializes evidence in its finally block).
+  - v2 (this file): timeout=16h, heartbeat thread every 10 min that logs
+    elapsed time + harness process liveness + per-GPU util/mem (nvidia-smi)
+    + harness RSS, and commits the volume so progress is observable even
+    while the harness prints nothing.
+
+Expected cost: 2x T4 ($0.59/h each) for ~7-12h -> roughly $8-14.
 Expected verdict: ACCEPT_CACHE_PARTIAL (the >=70% target is structurally
 unreachable on the canonical 16-token trace, per CACHE1_ANALYSIS.md).
 """
@@ -25,6 +35,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -36,6 +47,8 @@ REPOSITORY = "https://github.com/so-nerdyy/dee.git"
 RUNNER_DIR = "/kaggle/temp/dsv4-runner"
 HARNESS_REL = "dee.cpp/kaggle/deepseek-v4-flash-0731/deepseek_v4_model_runtime.py"
 LOG_PATH = "/kaggle/working/cache1-run.log"
+HEARTBEAT_SECONDS = 600  # 10 min
+FUNCTION_TIMEOUT_SECONDS = 16 * 3600  # v2: 16h (workload needs ~7-10h)
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -52,7 +65,7 @@ evidence_volume = modal.Volume.from_name(
 @app.function(
     image=image,
     gpu="T4:2",
-    timeout=8 * 3600,  # 8h cap; v13 took ~4.4h (build + cold/warm + alternate)
+    timeout=FUNCTION_TIMEOUT_SECONDS,
     volumes={"/kaggle/working": evidence_volume},
     retries=0,
 )
@@ -62,12 +75,36 @@ def run_cache1() -> dict:
     os.makedirs("/kaggle/temp", exist_ok=True)
     os.makedirs("/kaggle/working", exist_ok=True)
     log_path = Path(LOG_PATH)
+    lock = threading.Lock()
 
     def log(line: str) -> None:
         ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        with log_path.open("a", encoding="utf-8") as fh:
-            fh.write(f"[{ts}] {line}\n")
+        with lock:
+            with log_path.open("a", encoding="utf-8") as fh:
+                fh.write(f"[{ts}] {line}\n")
         print(line, flush=True)
+
+    def _gpu_snapshot() -> str:
+        try:
+            out = subprocess.run(
+                ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,"
+                 "memory.total,power.draw",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=15).stdout.strip()
+            lines = [l.strip() for l in out.splitlines() if l.strip()]
+            return " ; ".join(lines) if lines else "nvidia-smi: no GPUs"
+        except Exception as exc:  # noqa: BLE001
+            return f"nvidia-smi unavailable: {type(exc).__name__}"
+
+    def _rss_mb(pid: int) -> str:
+        try:
+            with open(f"/proc/{pid}/status", encoding="utf-8") as fh:
+                for line in fh:
+                    if line.startswith("VmRSS:"):
+                        return line.split()[1]
+        except Exception:  # noqa: BLE001
+            pass
+        return "?"
 
     summary: dict = {"pinned_commit": PINNED_COMMIT, "stage": "cache1"}
 
@@ -100,16 +137,38 @@ def run_cache1() -> dict:
             [sys.executable, str(harness)], env=env, cwd="/kaggle/working",
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             bufsize=1)
+
+        # Heartbeat thread: proves the container is alive and working even
+        # though the harness prints nothing for hours during build/decode.
+        stop_heartbeat = threading.Event()
+
+        def _heartbeat() -> None:
+            last_line = [0.0]
+            while not stop_heartbeat.wait(HEARTBEAT_SECONDS):
+                elapsed_h = round((time.monotonic() - t0) / 3600.0, 2)
+                alive = proc.poll() is None
+                snap = _gpu_snapshot()
+                rss = _rss_mb(proc.pid) if alive else "exited"
+                log(f"heartbeat: elapsed={elapsed_h}h harness_alive={alive} "
+                    f"harness_rss_kB={rss} gpu=[{snap}]")
+                try:
+                    evidence_volume.commit()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        hb = threading.Thread(target=_heartbeat, daemon=True)
+        hb.start()
+
         tail: list[str] = []
         assert proc.stdout is not None
         for line in proc.stdout:
             line = line.rstrip("\n")
-            with log_path.open("a", encoding="utf-8") as fh:
-                fh.write(f"[harness] {line}\n")
+            log(f"[harness] {line}")
             tail.append(line)
             if len(tail) > 60:
                 tail.pop(0)
         code = proc.wait()
+        stop_heartbeat.set()
         wall_s = round(time.monotonic() - t0, 1)
         log(f"harness exit code {code} after {wall_s}s")
         summary["exit_code"] = code
