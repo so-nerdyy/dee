@@ -685,7 +685,7 @@
    "run_id": "cache1b-modal-20260806",
    "campaign": "CACHE1",
    "milestone": "CACHE1.3b-memory-fix",
-   "status": "RUNNING",
+   "status": "DONE_TIMEOUT_KILLED",
    "platform": "modal",
    "app": "dee-cpp-dsv4-cache1",
    "gpu": "T4:2",
@@ -705,7 +705,18 @@
     "ACCEPT_CACHE_PARTIAL",
     "REJECT_CACHE_CORRECTNESS",
     "REJECT_MEMORY"
-   ]
+   ],
+   "verdict": "NO_VERDICT_TIMEOUT",
+   "timeout_hours": 8,
+   "killed_expected_utc": "2026-08-07T06:41:02Z",
+   "evidence": {
+    "evidence_dir": "dsv4-ds10-evidence-20260806T224102Z",
+    "dir_state": "EMPTY (harness writes only in finally block)",
+    "tarball": false,
+    "verdict": null
+   },
+   "diagnosis": "Modal function timeout=8h fired before the harness reached its finally block. v13 measured ~4.75 min/token decode (240-494s per token, HTTP-bound); CACHE1b runs 3 decodes + 2 full model builds (cold, warm, alternate-budget) which needs ~8-10h total. Zero evidence written because the harness only serializes evidence at the end.",
+   "next_command": "relaunch with timeout=16h + heartbeat logging"
   }
  ],
  "schema_version": 1
