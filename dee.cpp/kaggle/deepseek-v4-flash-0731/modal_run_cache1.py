@@ -20,18 +20,30 @@ History:
     builds + 3x 16-token decodes at ~240-494s/token (HTTP-bound expert
     fetches) needs ~7-10h; the function was killed at 8h with ZERO evidence
     (the harness only serializes evidence in its finally block).
-  - v2 (this file): timeout=16h, heartbeat thread every 10 min that logs
+  - v2 (34d3d1d): timeout=16h, heartbeat thread every 10 min that logs
     elapsed time + harness process liveness + per-GPU util/mem (nvidia-smi)
     + harness RSS, and commits the volume so progress is observable even
     while the harness prints nothing.
+  - v3 (this file): CACHE1c ended INVALID_EXPERIMENT because the heartbeat
+    thread died at 01:05Z on an unbounded evidence_volume.commit() and the
+    harness then ran silently to the 16h timeout (zero gates).  Fixes:
+      * volume.commit() now runs under a 120s hard timeout in a dedicated
+        executor so a hung commit can never kill the heartbeat thread;
+      * heartbeat loop is fully exception-guarded (keeps logging forever);
+      * FUNCTION_TIMEOUT_SECONDS raised to 20h (CACHE1c was still in
+        decode at 16h);
+      * the harness itself now prints [cache1] progress lines per decode
+        step (primary/warm/alternate) which the runner tails as
+        [harness] lines, so progress is visible even without the heartbeat.
 
-Expected cost: 2x T4 ($0.59/h each) for ~7-12h -> roughly $8-14.
+Expected cost: 2x T4 ($0.59/h each) for ~8-14h -> roughly $9-17.
 Expected verdict: ACCEPT_CACHE_PARTIAL (the >=70% target is structurally
 unreachable on the canonical 16-token trace, per CACHE1_ANALYSIS.md).
 """
 
 from __future__ import annotations
 
+import concurrent.futures
 import os
 import subprocess
 import sys
@@ -48,7 +60,8 @@ RUNNER_DIR = "/kaggle/temp/dsv4-runner"
 HARNESS_REL = "dee.cpp/kaggle/deepseek-v4-flash-0731/deepseek_v4_model_runtime.py"
 LOG_PATH = "/kaggle/working/cache1-run.log"
 HEARTBEAT_SECONDS = 600  # 10 min
-FUNCTION_TIMEOUT_SECONDS = 16 * 3600  # v2: 16h (workload needs ~7-10h)
+COMMIT_TIMEOUT_SECONDS = 120  # volume commit must never hang the heartbeat
+FUNCTION_TIMEOUT_SECONDS = 20 * 3600  # v3: 20h (CACHE1c hit 16h in decode)
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -140,21 +153,46 @@ def run_cache1() -> dict:
 
         # Heartbeat thread: proves the container is alive and working even
         # though the harness prints nothing for hours during build/decode.
+        # v3: volume.commit() runs under a hard timeout via ThreadPoolExecutor
+        # so a hung commit can NEVER kill the heartbeat (CACHE1c: heartbeat
+        # died at 01:05Z on an unbounded commit() and the run went dark).
         stop_heartbeat = threading.Event()
+        commit_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+        def _commit_volume_bounded() -> str:
+            """Commit with a hard timeout; returns status string."""
+            try:
+                fut = commit_pool.submit(evidence_volume.commit)
+                try:
+                    fut.result(timeout=COMMIT_TIMEOUT_SECONDS)
+                    return "ok"
+                except concurrent.futures.TimeoutError:
+                    log("WARN volume.commit() exceeded "
+                        f"{COMMIT_TIMEOUT_SECONDS}s; continuing without commit")
+                    return "timeout"
+            except Exception as exc:  # noqa: BLE001
+                log(f"WARN volume.commit() failed: {type(exc).__name__}: {exc}")
+                return f"error:{type(exc).__name__}"
+
+        last_commit_ok = [time.monotonic()]
 
         def _heartbeat() -> None:
-            last_line = [0.0]
             while not stop_heartbeat.wait(HEARTBEAT_SECONDS):
-                elapsed_h = round((time.monotonic() - t0) / 3600.0, 2)
-                alive = proc.poll() is None
-                snap = _gpu_snapshot()
-                rss = _rss_mb(proc.pid) if alive else "exited"
-                log(f"heartbeat: elapsed={elapsed_h}h harness_alive={alive} "
-                    f"harness_rss_kB={rss} gpu=[{snap}]")
                 try:
-                    evidence_volume.commit()
-                except Exception:  # noqa: BLE001
-                    pass
+                    elapsed_h = round((time.monotonic() - t0) / 3600.0, 2)
+                    alive = proc.poll() is None
+                    snap = _gpu_snapshot()
+                    rss = _rss_mb(proc.pid) if alive else "exited"
+                    log(f"heartbeat: elapsed={elapsed_h}h harness_alive={alive} "
+                        f"harness_rss_kB={rss} gpu=[{snap}]")
+                    commit_status = _commit_volume_bounded()
+                    if commit_status == "ok":
+                        last_commit_ok[0] = time.monotonic()
+                    # watchdog: if a commit keeps failing, still keep logging
+                    # every heartbeat so the run never goes dark again.
+                except Exception as exc:  # noqa: BLE001
+                    log(f"heartbeat error (continuing): "
+                        f"{type(exc).__name__}: {exc}")
 
         hb = threading.Thread(target=_heartbeat, daemon=True)
         hb.start()

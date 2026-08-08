@@ -717,6 +717,38 @@
    },
    "diagnosis": "Modal function timeout=8h fired before the harness reached its finally block. v13 measured ~4.75 min/token decode (240-494s per token, HTTP-bound); CACHE1b runs 3 decodes + 2 full model builds (cold, warm, alternate-budget) which needs ~8-10h total. Zero evidence written because the harness only serializes evidence at the end.",
    "next_command": "relaunch with timeout=16h + heartbeat logging"
+  },
+  {
+   "run_id": "cache1c-modal-20260807",
+   "campaign": "CACHE1",
+   "milestone": "CACHE1.3c-heartbeat+16h-timeout",
+   "status": "DONE_INVALID_EXPERIMENT",
+   "platform": "modal",
+   "app": "dee-cpp-dsv4-cache1",
+   "gpu": "T4:2",
+   "volume": "dee-dsv4-cache1-evidence",
+   "evidence_dir": "dsv4-ds10-evidence-20260807T181447Z",
+   "local_archive": "benchmark_reports/deepseek-v4-flash-0731-t4/ds10-cache1c-invalid-20260807T181447Z",
+   "launched_utc": "2026-08-07T18:14:47Z",
+   "terminated_utc": "2026-08-08T01:05:46Z last heartbeat; SIGTERM at 16h timeout",
+   "repository_commit": "710e82d26b5d2c5c15bfba6c8ce0ee64c626944b",
+   "identity_stage": "cache1",
+   "policy": {
+    "cache_budget_gib": 4,
+    "raw_experts_per_layer": 16,
+    "raw_max_bytes": 3221225472,
+    "shared_pinned": true
+   },
+   "expected_verdicts": [
+    "ACCEPT_CACHE_HITRATE_TARGET",
+    "ACCEPT_CACHE_PARTIAL",
+    "REJECT_CACHE_CORRECTNESS"
+   ],
+   "verdict": "INVALID_EXPERIMENT",
+   "first_failing_gate": null,
+   "gates": null,
+   "diagnosis": "Evidence stub written by main() finally (manifest+tarball present) but stage_cache1 never returned and no exception was caught: heartbeat thread died at 01:05Z (6.85h) - likely hung on unbounded evidence_volume.commit() inside the 10-min heartbeat; harness then ran silently until the 16h Modal timeout SIGTERM (SystemExit, not caught by except Exception, but finally ran) -> INVALID_EXPERIMENT stub with zero gates. Heartbeats showed RSS 13-14 GiB steady / 15.67 GiB peak over the 12 GiB ceiling, so even a completed run would have REJECT_MEMORY.",
+   "next_action": "CACHE1d relaunch with hardened runner (commit timeout/watchdog, harness progress prints, 20h timeout) + lazy shared payload + raw cap 2 GiB"
   }
  ],
  "schema_version": 1

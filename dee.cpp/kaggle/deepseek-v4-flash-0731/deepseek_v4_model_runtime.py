@@ -726,10 +726,21 @@ def stage_cache1() -> dict[str, Any]:
 
         def _step_hygiene(step: int) -> None:
             hygiene_steps.append(_host_hygiene(tag=f"step_{step}"))
+            print(f"[cache1] primary decode step {step}/{n_tokens}",
+                  flush=True)
 
+        print(f"[cache1] primary build complete: {mem.get('build_seconds')}s "
+              f"fetch={mem.get('fetch_stats', {}).get('requests')} reqs "
+              f"{round(mem.get('fetch_stats', {}).get('bytes', 0) / (1 << 30), 2)} GiB",
+              flush=True)
+        print(f"[cache1] primary decode starting (prompt_len={len(ids)}, "
+              f"tokens={n_tokens})", flush=True)
         toks = model.generate(input_ids, max_new_tokens=n_tokens, trace=trace,
                               decode_timings_ms=decode_ms,
                               post_step_hook=_step_hygiene)
+        print(f"[cache1] primary decode done: "
+              f"{round(decode_ms[0], 0) if decode_ms else 0}ms prefill / "
+              f"{round(sum(decode_ms[1:]) / 1000.0, 1)}s decode", flush=True)
         gates["hygiene_steps"] = hygiene_steps
         gates["tokens"] = toks
         gates["tokens_match_sealed_ds10"] = (
@@ -756,9 +767,12 @@ def stage_cache1() -> dict[str, Any]:
 
         def _warm_hygiene(step: int) -> None:
             hygiene_warm.append(_host_hygiene(tag=f"warm_step_{step}"))
+            print(f"[cache1] warm decode step {step}/{n_tokens}", flush=True)
 
+        print("[cache1] warm decode starting (cold==warm rerun)", flush=True)
         toks_warm = model.generate(input_ids, max_new_tokens=n_tokens,
                                    post_step_hook=_warm_hygiene)
+        print("[cache1] warm decode done", flush=True)
         gates["cold_warm_equal"] = toks == toks_warm
         gates["warm_tokens"] = toks_warm
         gates["hygiene_warm_steps"] = hygiene_warm
@@ -802,9 +816,16 @@ def stage_cache1() -> dict[str, Any]:
 
         def _hygiene2(step: int) -> None:
             hygiene2.append(_host_hygiene(tag=f"alt_step_{step}"))
+            print(f"[cache1] alternate decode step {step}/{n_tokens}", flush=True)
 
+        print(f"[cache1] alternate build complete: "
+              f"{mem2.get('build_seconds')}s "
+              f"fetch={mem2.get('fetch_stats', {}).get('requests')} reqs",
+              flush=True)
+        print("[cache1] alternate decode starting", flush=True)
         toks2 = model2.generate(input_ids, max_new_tokens=n_tokens,
                                 post_step_hook=_hygiene2)
+        print("[cache1] alternate decode done", flush=True)
         gates["deterministic_rerun"] = toks == toks2
         gates["cache_capacity_variation_equal"] = toks == toks2
         gates["alternate_cache_budget_bytes"] = alternate_budget
