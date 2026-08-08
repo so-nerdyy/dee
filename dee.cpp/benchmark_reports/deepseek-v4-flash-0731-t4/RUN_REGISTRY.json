@@ -749,6 +749,33 @@
    "gates": null,
    "diagnosis": "Evidence stub written by main() finally (manifest+tarball present) but stage_cache1 never returned and no exception was caught: heartbeat thread died at 01:05Z (6.85h) - likely hung on unbounded evidence_volume.commit() inside the 10-min heartbeat; harness then ran silently until the 16h Modal timeout SIGTERM (SystemExit, not caught by except Exception, but finally ran) -> INVALID_EXPERIMENT stub with zero gates. Heartbeats showed RSS 13-14 GiB steady / 15.67 GiB peak over the 12 GiB ceiling, so even a completed run would have REJECT_MEMORY.",
    "next_action": "CACHE1d relaunch with hardened runner (commit timeout/watchdog, harness progress prints, 20h timeout) + lazy shared payload + raw cap 2 GiB"
+  },
+  {
+   "run_id": "cache1d-kaggle-20260808",
+   "campaign": "CACHE1",
+   "milestone": "CACHE1.3d-kaggle",
+   "status": "RUNNING",
+   "platform": "kaggle",
+   "gpu": "T4:2",
+   "kernel": "nivind/dee-cpp-deepseek-v4-flash-0731-ds10-model-runtime",
+   "kernel_version": 14,
+   "launched_utc": "2026-08-08T18:34:02Z",
+   "repository_commit": "a756dd16385a75783e2e568cf4f60a44a09649ac",
+   "identity_stage": "cache1",
+   "policy": {
+    "cache_budget_gib": 4,
+    "raw_experts_per_layer": 16,
+    "raw_max_bytes": 2147483648,
+    "shared_pinned": true,
+    "timeout_hours": 20,
+    "runner_v3": true
+   },
+   "expected_verdicts": [
+    "ACCEPT_CACHE_HITRATE_TARGET",
+    "ACCEPT_CACHE_PARTIAL",
+    "REJECT_CACHE_CORRECTNESS"
+   ],
+   "path": "Modal spend limit exceeded; relocated to Kaggle (free weekly GPU quota reset) with same pinned commit + identity"
   }
  ],
  "schema_version": 1
