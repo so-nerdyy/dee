@@ -3,6 +3,10 @@
   "repository": "https://github.com/so-nerdyy/dee.git",
   "branch": "freebuff/deepseek-v4-flash-0731-t4",
   "repository_commit": "f83d4ff9a1100d5b0cada8cfd07d63ba194646db",
+  "stage": "cache1",
+  "model": "DeepSeek-V4-Flash-0731",
+  "model_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+  "harness_file": "deepseek_v4_model_runtime.py",
   "harness_sha256": "a7f3b30946da26687eaa1228a153206f6d53239c1991cf7fbe72121d2f6e2673",
   "module_sha256": {
     "cache": "c4d16b0cef031f1bbf8ed0c2a989e7a60394bc7f740973a85ed9a24e7271f0df",
