@@ -182,3 +182,56 @@ post-decode trimming.
 Expected v15: steady RSS ≈ 6.49 + 2.0 + ~1.7 churn ≈ 10.2 GiB, peak
 ≈ 11.5 GiB → **under the 12 GB ceiling with margin**; HTTP ≈ 3,830
 (66.2%), provider hits ≈ 22.6% → `ACCEPT_CACHE_PARTIAL`.
+
+## 9. v15 remote run (Kaggle dual-T4, 20260808T183416Z): REJECT_CACHE_CORRECTNESS — false positive
+
+Third implementation (commit `a756dd1`, lazy shared FP16 + raw cap 2 GiB +
+per-step hygiene + runner v3) ran on **Kaggle (free weekly quota)** with a
+20 h timeout and hardened heartbeat.  All decode passes completed
+(primary 16 tokens + warm 16 tokens), then the evidence stage crashed in
+`runtime_snapshot()` — `layer.ffn_fn.shared_payload.values()` on `None` —
+because CACHE1d **frees the shared host FP16 copy after pinning**
+(`shared_payload = None`).  The crash tripped the fail-closed exception
+handler → verdict **REJECT_CACHE_CORRECTNESS** with zero remaining gates
+computed, **even though every correctness gate that ran passed**.
+
+### Measured (from the sealed evidence)
+
+| gate | value |
+|---|---|
+| tokens_match_sealed_ds10 | **true (16/16 exact)** |
+| cold_warm_equal | **true** |
+| token_ids_in_vocab | true |
+| peak host RSS | 11.24 GiB < 12 GiB ceiling ✓ |
+| GPU allocated | 5.95 / 5.77 GiB ✓ |
+| GPU hit rate (total) | **11.1%** (645/5789) — exactly the sim's pin-shared prediction |
+| routed GPU hit rate | **0.0%** — every routed access cold-staged |
+| shared pins | 43/43 hit every token (the only hits) |
+| decode wall | 10,158 s primary / 13,032 s warm (HTTP-bound) |
+| build | 587.5 s, 1,351 reqs, 7.23 GiB |
+
+Per-token delta is constant at **+301 requests, +43 hits** — the 43 hits
+are precisely the pinned shared experts; all 258 routed accesses miss at
+GPU level every token.
+
+### Verdict correction
+
+This is **not** a genuine correctness rejection: `runtime_snapshot()`
+never guarded for the CACHE1d-freed host payload.  Fix committed:
+`deepseek_v4_model.py` `runtime_snapshot()` now tolerates `None`
+`shared_payload` (counts 0 shared-host bytes).  The re-run (v16) should
+produce the designed **ACCEPT_CACHE_PARTIAL** verdict with the full
+CACHE1.5 metrics block computed.
+
+### Why routed hits stay 0% (measured evidence, matches sim)
+
+- Budget 2 GiB/GPU = 42 routed slots (48 MiB FP16 each), minus shared pins.
+- Prefill (token_0) touches ~1,231 unique routed experts — the 42-slot
+  cache churns completely before decode starts.
+- Per-token routed working set ≈ 258 × 48 MiB ≈ 12.1 GiB ≫ 2 GiB budget,
+  so LRU retains nothing across tokens (reuse distance ≫ capacity).
+- Consecutive-token reuse of 37.5% is real but unreachable by retention
+  at this budget; it must be captured by **provider raw LRU** (host) or
+  **router-ahead prefetch** — the next campaign phase.
+
+Artifacts: `ds10-cache1d-kaggle-20260808T183416Z/` (evidence archive).

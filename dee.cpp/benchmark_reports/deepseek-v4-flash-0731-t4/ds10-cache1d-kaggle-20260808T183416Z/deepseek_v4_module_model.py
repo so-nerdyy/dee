@@ -829,15 +829,8 @@ class DeepseekV4Model:
 
     def runtime_snapshot(self) -> dict[str, Any]:
         """Bounded backend/cache/provider evidence for remote DS10 stages."""
-        shared_host_tensors = []
-        for layer in self.layers0 + self.layers1:
-            # CACHE1d: the shared expert's host FP16 copy is freed after the
-            # GPU entry is pinned (shared_payload -> None), so a snapshot must
-            # tolerate lazily-materialized/None payloads instead of crashing
-            # the evidence stage after all correctness gates have passed.
-            sp = layer.ffn_fn.shared_payload
-            if sp:
-                shared_host_tensors.extend(sp.values())
+        shared_host_tensors = [tensor for layer in self.layers0 + self.layers1
+                               for tensor in layer.ffn_fn.shared_payload.values()]
         return {
             "backends": {
                 "attention_state": "torch_cuda_hybrid_bringup",

@@ -776,6 +776,29 @@
     "REJECT_CACHE_CORRECTNESS"
    ],
    "path": "Modal spend limit exceeded; relocated to Kaggle (free weekly GPU quota reset) with same pinned commit + identity"
+  },
+  {
+   "run_id": "cache1d-kaggle-20260808T183416Z",
+   "campaign": "CACHE1",
+   "milestone": "CACHE1.4-correctness-false-positive",
+   "status": "DONE",
+   "platform": "kaggle",
+   "gpu": "T4:2",
+   "kernel": "nivind/dee-cpp-deepseek-v4-flash-0731-ds10-model-runtime",
+   "kernel_version": 14,
+   "launched_utc": "2026-08-08T18:34:02Z",
+   "terminated_utc": "2026-08-09T12:51:05Z",
+   "repository_commit": "a756dd16385a75783e2e568cf4f60a44a09649ac",
+   "verdict": "REJECT_CACHE_CORRECTNESS (false positive: evidence-stage snapshot crash after all correctness gates passed)",
+   "evidence_dir": "dsv4-ds10-evidence-20260808T183416Z",
+   "local_archive": "benchmark_reports/deepseek-v4-flash-0731-t4/ds10-cache1d-kaggle-20260808T183416Z",
+   "gates_summary": {
+    "tokens_match_sealed_ds10": true,
+    "cold_warm_equal": true,
+    "gpu_hit_rate_pct": 11.1,
+    "routed_hit_rate_pct": 0.0
+   },
+   "next": "v16 relaunch after runtime_snapshot None-guard fix + identity re-seal"
   }
  ],
  "schema_version": 1
