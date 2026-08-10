@@ -68,11 +68,22 @@ MODULE_RELATIVES = {
     "model": Path("dee.cpp/scripts/deepseek_v4_model.py"),
     "moe_reference": Path("dee.cpp/scripts/deepseek_v4_moe_reference.py"),
     "support": Path("dee.cpp/scripts/deepseek_v4_support.py"),
+    "staging": Path("dee.cpp/scripts/deepseek_v4_staging.py"),
 }
 HEADERS_DIR = ROOT / Path(
     "dee.cpp/benchmark_reports/deepseek-v4-flash-0731-t4/shard-headers")
 CONFIG_RELATIVE = ROOT / Path(
     "dee.cpp/benchmark_reports/deepseek-v4-flash-0731-t4/official-source/inference/config.json")
+# CACHE1f: committed staging manifest (deterministic, from the sealed DS10
+# trace + committed shard headers) and the kernel-local staging directory.
+STAGING_MANIFEST_RELATIVE = ROOT / Path(
+    "dee.cpp/benchmark_reports/deepseek-v4-flash-0731-t4/cache1-staging-manifest.json")
+STAGING_DIR = Path("/kaggle/working/staged-shards")
+# Leave headroom for the evidence dir + archive + slack.  The DS10 storage
+# probe measured ~19.5 GiB shared by /kaggle/working + /kaggle/input, so the
+# staging budget adapts to the ACTUAL free space at runtime.
+STAGING_RESERVE_BYTES = 5 << 30
+STAGING_MIN_BUDGET_BYTES = 6 << 30
 
 VALID_STAGES = ("v1", "v2", "v3", "v4", "v5", "v6", "final", "cache1")
 LADDER_INPUT_IDS = (0,)
@@ -264,6 +275,49 @@ def _load_cfg() -> Any:
 def _build_remote_source() -> Any:
     from scripts import deepseek_v4_model as vm
     return vm.RemoteTensorSource(HEADERS_DIR, revision=REV)
+
+
+def _build_source_with_staging() -> tuple[Any, dict[str, Any]]:
+    """CACHE1f: stage budget-selected tensors to local disk, then return a
+    HybridTensorSource (local-first, HTTP fallback) plus staging gates.
+
+    The committed staging manifest lists the deterministic build-time set
+    (top-level + dense + shared) first, then routed-expert tensors ordered by
+    access frequency in the sealed DS10 trace.  The staging budget adapts to
+    the kernel's actual free disk.  Any failure falls back to the sealed
+    remote source, so correctness never depends on staging.
+    """
+    from scripts import deepseek_v4_staging as vst
+    gates: dict[str, Any] = {"enabled": False, "mode": "remote"}
+    try:
+        if not STAGING_MANIFEST_RELATIVE.is_file():
+            gates["error"] = f"manifest missing: {STAGING_MANIFEST_RELATIVE}"
+            return _build_remote_source(), gates
+        manifest = json.loads(
+            STAGING_MANIFEST_RELATIVE.read_text(encoding="utf-8"))
+        usage = shutil.disk_usage("/kaggle/working")
+        free_gib = round(usage.free / (1 << 30), 2)
+        budget = max(STAGING_MIN_BUDGET_BYTES,
+                     usage.free - STAGING_RESERVE_BYTES)
+        budget = min(budget, manifest["total_bytes"] + (1 << 30))
+        gates["disk_free_gib"] = free_gib
+        gates["budget_bytes"] = budget
+        print(f"[staging] free={free_gib} GiB, budget="
+              f"{round(budget / (1 << 30), 2)} GiB", flush=True)
+        st = vst.stage_partial_shards(
+            manifest, HEADERS_DIR, STAGING_DIR, budget_bytes=budget,
+            revision=REV)
+        gates.update({"enabled": True, "mode": "hybrid", **st})
+        print(f"[staging] staged {st['staged_tensors']} tensors "
+              f"({st['staged_gib']} GiB) in {st['wall_seconds']}s, "
+              f"http={st['http_requests']} reqs", flush=True)
+        source = vst.HybridTensorSource(HEADERS_DIR, STAGING_DIR, revision=REV)
+        return source, gates
+    except Exception as exc:  # noqa: BLE001
+        gates["error"] = f"{type(exc).__name__}: {exc}"
+        gates["traceback"] = traceback.format_exc()
+        print(f"[staging] FAILED, falling back to remote: {exc}", flush=True)
+        return _build_remote_source(), gates
 
 
 def stage_v1() -> dict[str, Any]:
@@ -698,12 +752,13 @@ def stage_cache1() -> dict[str, Any]:
     REJECT_CACHE_CORRECTNESS (any CACHE1.4 failure).
     """
     cfg = _load_cfg()
-    source = _build_remote_source()
+    source, staging_gates = _build_source_with_staging()
     model, mem = _build_full_model(
         source, cfg, cache_budget_bytes=CACHE1_BUDGET_BYTES,
         raw_experts_per_layer=CACHE1_RAW_EXPERTS_PER_LAYER,
         raw_max_bytes=CACHE1_RAW_MAX_BYTES)
     gates: dict[str, Any] = {"memory": mem,
+                             "staging": staging_gates,
                              "policy": {
                                  "cache_budget_bytes": CACHE1_BUDGET_BYTES,
                                  "raw_experts_per_layer":
