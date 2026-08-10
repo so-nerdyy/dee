@@ -235,3 +235,34 @@ CACHE1.5 metrics block computed.
   **router-ahead prefetch** — the next campaign phase.
 
 Artifacts: `ds10-cache1d-kaggle-20260808T183416Z/` (evidence archive).
+
+## 10. CACHE1f (2026-08-10): tensor-level LOCAL weight staging -- design & expected numbers
+
+User proposal: pre-load checkpoint shards as Kaggle datasets / kernel-local
+files so decode reads are local instead of HTTP.  Measured reality:
+
+- Full checkpoint: 166.9 GB / 48 shards (committed headers).  Kaggle dataset
+  cap 20 GB -> ~9 datasets; account storage cap ~100 GB -> does not fit.
+- Minimal SHARD set for the sealed 16-token trace: 45/48 shards = 145.3 GiB
+  (the canonical trace touches 2,365 unique (layer, expert) = 14,190 unique
+  routed-expert tensors; prefill alone is 7 positions x 6 experts x 43 layers).
+  The kernel's /kaggle/working + /kaggle/input share ~19.5 GiB -> shard-level
+  staging is IMPOSSIBLE (11.6% coverage at 19.5 GB).
+- TENSOR-level staging (partial safetensors per shard, staged tensors only):
+  the full needed set is 15,754 tensors = 37.69 GiB.  Greedy by access
+  frequency within the kernel disk:
+      budget 12 GiB -> 42.3% | 16 GiB -> 60.9% | 18 GiB -> 66.6%
+      19.5 GiB -> ~69.5% | 24 GiB -> 80.7% | 38 GiB -> 100%
+  Must-stage build-time set (dense 5.26 + shared 1.01 + top-level 1.97 =
+  8.24 GiB) is staged FIRST, so ALL build-time HTTP is eliminated; only the
+  decode-time routed long tail remains remote (HybridTensorSource fallback).
+
+Implementation (commit a156a9e): scripts/deepseek_v4_staging.py (manifest
+builder, partial-shard writer, HybridTensorSource local-first/HTTP-fallback),
+committed cache1-staging-manifest.json (15,754 tensors, 37.69 GiB),
+runtime _build_source_with_staging() in stage_cache1, staging gates.  v18
+queued after v17.  Correctness is invariant: staging is a pure performance
+change; any unstaged tensor falls back to the sealed remote path, and the
+CACHE1.4 gates (tokens==SEALED_DS10_TOKENS, cold==warm, deterministic
+rerun, memory ceilings) all still apply.  Local tests 5/5 staging + 40 pass
+1 skip (model/runtime/support/cache).
