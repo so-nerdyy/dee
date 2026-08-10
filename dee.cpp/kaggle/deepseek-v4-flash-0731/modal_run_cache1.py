@@ -53,7 +53,7 @@ from pathlib import Path
 
 import modal
 
-PINNED_COMMIT = "f83d4ff9a1100d5b0cada8cfd07d63ba194646db"  # CACHE1d
+PINNED_COMMIT = "a156a9eac7047a354fbc617d8d418ebc6b12bccc"  # CACHE1f
 BRANCH = "freebuff/deepseek-v4-flash-0731-t4"
 REPOSITORY = "https://github.com/so-nerdyy/dee.git"
 RUNNER_DIR = "/kaggle/temp/dsv4-runner"
