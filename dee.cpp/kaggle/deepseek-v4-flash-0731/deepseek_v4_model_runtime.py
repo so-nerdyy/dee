@@ -78,10 +78,17 @@ CONFIG_RELATIVE = ROOT / Path(
 # trace + committed shard headers) and the kernel-local staging directory.
 STAGING_MANIFEST_RELATIVE = ROOT / Path(
     "dee.cpp/benchmark_reports/deepseek-v4-flash-0731-t4/cache1-staging-manifest.json")
-STAGING_DIR = Path("/kaggle/working/staged-shards")
-# Leave headroom for the evidence dir + archive + slack.  The DS10 storage
-# probe measured ~19.5 GiB shared by /kaggle/working + /kaggle/input, so the
-# staging budget adapts to the ACTUAL free space at runtime.
+# CACHE1f v19: staging lives under /kaggle/temp (the root overlay, ~1 TB
+# free per the DS10 storage probe) instead of /kaggle/working.  Two wins:
+#  1. /kaggle/working + /kaggle/input share a ~19.5 GiB loop disk; the
+#     overlay has ~1 TB, so the FULL committed manifest (37.7 GiB) fits and
+#     decode becomes 100% local reads.
+#  2. Kaggle kernel output is the /kaggle/working tree; staging under
+#     /kaggle/temp keeps the 37.7 GiB of partial shards OUT of the output
+#     tarball (v18 uploaded 14+ GiB and the output download stalled).
+STAGING_DIR = Path("/kaggle/temp/dsv4-staged-shards")
+# Leave headroom for the source clone + evidence; budget adapts to ACTUAL
+# free space at runtime.
 STAGING_RESERVE_BYTES = 5 << 30
 STAGING_MIN_BUDGET_BYTES = 6 << 30
 
@@ -295,23 +302,44 @@ def _build_source_with_staging() -> tuple[Any, dict[str, Any]]:
             return _build_remote_source(), gates
         manifest = json.loads(
             STAGING_MANIFEST_RELATIVE.read_text(encoding="utf-8"))
-        usage = shutil.disk_usage("/kaggle/working")
+        # Pick the staging root with the most free space: /kaggle/temp (root
+        # overlay, ~1 TB) first, /kaggle/working (19.5 GiB loop) as fallback.
+        candidates = [STAGING_DIR, Path("/kaggle/working/staged-shards")]
+        usage = None
+        chosen = STAGING_DIR
+        for cand in candidates:
+            try:
+                cand.mkdir(parents=True, exist_ok=True)
+                u = shutil.disk_usage(cand)
+                if usage is None or u.free > usage.free:
+                    usage = u
+                    chosen = cand
+            except OSError:
+                continue
+        if usage is None:
+            raise RuntimeError("no writable staging location")
         free_gib = round(usage.free / (1 << 30), 2)
         budget = max(STAGING_MIN_BUDGET_BYTES,
                      usage.free - STAGING_RESERVE_BYTES)
+        # Cap at the full manifest: v18 proved even 14.4 GiB of the top-
+        # frequency set left decode HTTP-bound; the overlay allows the FULL
+        # canonical-trace set, making decode 100% local.
         budget = min(budget, manifest["total_bytes"] + (1 << 30))
+        gates["staging_root"] = str(chosen)
         gates["disk_free_gib"] = free_gib
         gates["budget_bytes"] = budget
-        print(f"[staging] free={free_gib} GiB, budget="
-              f"{round(budget / (1 << 30), 2)} GiB", flush=True)
+        print(f"[staging] root={chosen} free={free_gib} GiB, budget="
+              f"{round(budget / (1 << 30), 2)} GiB (manifest "
+              f"{manifest['total_gib']} GiB)", flush=True)
         st = vst.stage_partial_shards(
-            manifest, HEADERS_DIR, STAGING_DIR, budget_bytes=budget,
-            revision=REV)
+            manifest, HEADERS_DIR, chosen, budget_bytes=budget,
+            revision=REV, max_workers=8)
         gates.update({"enabled": True, "mode": "hybrid", **st})
         print(f"[staging] staged {st['staged_tensors']} tensors "
               f"({st['staged_gib']} GiB) in {st['wall_seconds']}s, "
-              f"http={st['http_requests']} reqs", flush=True)
-        source = vst.HybridTensorSource(HEADERS_DIR, STAGING_DIR, revision=REV)
+              f"http={st['http_requests']} reqs, errors={len(st['errors'])}",
+              flush=True)
+        source = vst.HybridTensorSource(HEADERS_DIR, chosen, revision=REV)
         return source, gates
     except Exception as exc:  # noqa: BLE001
         gates["error"] = f"{type(exc).__name__}: {exc}"

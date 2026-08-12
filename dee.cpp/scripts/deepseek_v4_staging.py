@@ -197,7 +197,7 @@ def stage_partial_shards(
     budget_bytes: int,
     revision: str = vm.OFFICIAL_REVISION,
     repository: str = vm.OFFICIAL_REPOSITORY,
-    max_workers: int = 32,
+    max_workers: int = 8,
     max_attempts: int = 6,
 ) -> dict[str, Any]:
     """Download the budget-selected tensors and write partial shard files.
@@ -227,6 +227,7 @@ def stage_partial_shards(
     staged_bytes = 0
     files_written = 0
     errors: list[str] = []
+    failed_rows: list[dict[str, Any]] = []
     for shard, rows in sorted(selected_by_shard.items()):
         blobs: dict[str, tuple[bytes, str, list[int]]] = {}
         with ThreadPoolExecutor(max_workers=min(max_workers, len(rows))) as ex:
@@ -243,11 +244,48 @@ def stage_partial_shards(
                             f"{row['name']}: {len(data)} bytes, expected {row['length']}")
                     blobs[row["name"]] = (data, row["dtype"], row["shape"])
                 except Exception as exc:  # noqa: BLE001
+                    failed_rows.append(row)
                     errors.append(f"{row['name']}: {type(exc).__name__}: {exc}")
         if blobs:
             _write_partial_shard(dest_dir / shard, blobs)
             files_written += 1
             staged_bytes += sum(len(b) for b, _, _ in blobs.values())
+
+    # Serial retry pass: tensors that failed under concurrency (typically
+    # HTTP 429 rate limits) get a fresh window with only ONE outstanding
+    # request at a time, letting HF's rate limiter cool down.  Retried
+    # tensors are written to a ``<shard>.retry`` partial file merged into
+    # the hybrid source, so no big file is ever rewritten.
+    if failed_rows:
+        print(f"[staging] retry pass: {len(failed_rows)} failed tensors serially",
+              flush=True)
+        retried_files: dict[str, dict[str, tuple[bytes, str, list[int]]]] = {}
+        retried_count = 0
+        for row in failed_rows:
+            last_error: Exception | None = None
+            for attempt in range(max_attempts):
+                try:
+                    data = remote._fetch_bytes(row["name"])
+                    if len(data) != row["length"]:
+                        raise RuntimeError(
+                            f"{row['name']}: {len(data)} bytes, expected {row['length']}")
+                    retried_files.setdefault(row["shard"], {})[row["name"]] = (
+                        data, row["dtype"], row["shape"])
+                    staged_bytes += len(data)
+                    retried_count += 1
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    last_error = exc
+                    time.sleep(1.5 * (2 ** attempt))
+            else:
+                if last_error is not None:
+                    errors.append(
+                        f"{row['name']}: {type(last_error).__name__}: {last_error}")
+        for shard, blobs in retried_files.items():
+            _write_partial_shard(dest_dir / f"{shard}.retry", blobs)
+            files_written += 1
+        print(f"[staging] retry pass: recovered {retried_count}/"
+              f"{len(failed_rows)} tensors", flush=True)
 
     dt = time.monotonic() - t0
     return {
@@ -295,35 +333,59 @@ class HybridTensorSource(vm.CommittedHeaderSource):
         self.remote = vm.RemoteTensorSource(
             headers_dir, revision=revision, repository=repository,
             max_workers=max_workers, max_attempts=max_attempts)
-        # shard -> (parsed header dict, data bytes) parsed once per shard.
-        self._handles: dict[str, tuple[dict[str, Any], bytes]] = {}
+        # shard -> [(file path, header length, parsed safetensors header)]
+        # for the main partial shard AND any ``<shard>.retry`` file.  Only
+        # the small JSON header is retained in RAM; tensor data is read by
+        # byte range on demand so host RSS never holds the whole partial
+        # shard files (~320 MiB each, 14+ GiB total across all shards).
+        self._views: dict[str, list[tuple[Path, int, dict[str, Any]]]] = {}
         self._local_hits = 0
         self._local_misses = 0
 
     # -- CommittedHeaderSource overrides -----------------------------------
-    def _load_shard(self, shard: str) -> tuple[dict[str, Any], bytes]:
-        if shard not in self._handles:
+    @staticmethod
+    def _parse_header(path: Path) -> tuple[int, dict[str, Any]]:
+        """Return (header length, parsed header dict) from a partial shard."""
+        with open(path, "rb") as fh:
+            raw = fh.read(8)
+        hlen = struct.unpack("<Q", raw)[0]
+        with open(path, "rb") as fh:
+            header = json.loads(fh.read(8 + hlen)[8:].decode("utf-8"))
+        return hlen, header
+
+    def _shard_views(self, shard: str) -> list[tuple[Path, int, dict[str, Any]]]:
+        if shard not in self._views:
+            views: list[tuple[Path, int, dict[str, Any]]] = []
             path = self.shards_dir / shard
-            if not path.is_file():
+            if path.is_file():
+                views.append((path, *self._parse_header(path)))
+            retry = self.shards_dir / f"{shard}.retry"
+            if retry.is_file():
+                views.append((retry, *self._parse_header(retry)))
+            if not views:
                 raise FileNotFoundError(f"staged shard missing: {path}")
-            raw = path.read_bytes()
-            hlen = struct.unpack("<Q", raw[:8])[0]
-            header = json.loads(raw[8:8 + hlen].decode("utf-8"))
-            self._handles[shard] = (header, raw[8 + hlen:])
-        return self._handles[shard]
+            self._views[shard] = views
+        return self._views[shard]
 
     def _fetch_bytes(self, name: str) -> bytes:
         row = self.tensor_identity(name)
         shard = row["shard"]
         try:
-            header, data = self._load_shard(shard)
-            meta = header.get(name)
-            if meta is None:
-                raise KeyError(f"{name} not staged in {shard}")
-            d0, d1 = meta["data_offsets"]
-            blob = bytes(data[d0:d1])
-            self._local_hits += 1
-            return blob
+            for path, hlen, header in self._shard_views(shard):
+                meta = header.get(name)
+                if meta is None:
+                    continue
+                d0, d1 = meta["data_offsets"]
+                with open(path, "rb") as fh:
+                    fh.seek(8 + hlen + d0)
+                    blob = fh.read(d1 - d0)
+                if len(blob) != d1 - d0:
+                    raise RuntimeError(
+                        f"{name}: staged read {len(blob)} bytes, "
+                        f"expected {d1 - d0}")
+                self._local_hits += 1
+                return blob
+            raise KeyError(f"{name} not staged in {shard}")
         except (KeyError, FileNotFoundError):
             self._local_misses += 1
             return self.remote._fetch_bytes(name)

@@ -149,3 +149,58 @@ def test_hybrid_local_read(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError):
         hybrid._fetch_bytes(another)
     assert hybrid._local_misses == 2
+
+
+def test_hybrid_retry_file_merge(tmp_path: Path) -> None:
+    """A ``<shard>.retry`` partial file (from the staging retry pass) is
+    merged into the hybrid source and served locally, with the main file
+    untouched and no remote requests."""
+    if not HEADERS.is_dir():
+        pytest.skip("committed shard headers absent")
+    from scripts.deepseek_v4_model import CommittedHeaderSource
+    src = CommittedHeaderSource(HEADERS)
+    name = "norm.weight"
+    row = src.tensor_identity(name)
+    shard = row["shard"]
+    staged_dir = tmp_path / "staged"
+    # Main file holds one tensor; retry file holds a DIFFERENT tensor in the
+    # same shard (hc_head_scale, tiny), simulating the serial retry pass.
+    main_blob = _fake_bytes(row["length"])
+    _write_partial_shard(staged_dir / shard,
+                         {name: (main_blob, row["dtype"], row["shape"])})
+    other = "hc_head_scale"
+    orow = src.tensor_identity(other)
+    assert orow["shard"] == shard
+    retry_blob = _fake_bytes(orow["length"])
+    _write_partial_shard(staged_dir / f"{shard}.retry",
+                         {other: (retry_blob, orow["dtype"], orow["shape"])})
+    hybrid = HybridTensorSource(HEADERS, staged_dir)
+    assert hybrid._fetch_bytes(name) == main_blob
+    assert hybrid._fetch_bytes(other) == retry_blob
+    assert hybrid._local_hits == 2
+    assert hybrid._local_misses == 0
+    assert hybrid.stats["requests"] == 0
+
+
+def test_hybrid_ranged_read_matches_raw_bytes(tmp_path: Path) -> None:
+    """The ranged read path returns byte-exact tensor data for a shard whose
+    header length is non-trivial (offset arithmetic bug would corrupt the
+    read).  Uses a real committed tensor identity with fake bytes."""
+    if not HEADERS.is_dir():
+        pytest.skip("committed shard headers absent")
+    from scripts.deepseek_v4_model import CommittedHeaderSource
+    src = CommittedHeaderSource(HEADERS)
+    name = "norm.weight"
+    row = src.tensor_identity(name)
+    shard = row["shard"]
+    staged_dir = tmp_path / "staged"
+    # Pad the header with many extra keys so 8 + hlen + d0 is not trivially
+    # equal to d0 (forces correct offset arithmetic).
+    pad = {f"pad.{i}.weight": (_fake_bytes(64), "BF16", [4, 8]) for i in range(20)}
+    fake = _fake_bytes(row["length"])
+    pad[name] = (fake, row["dtype"], row["shape"])
+    _write_partial_shard(staged_dir / shard, pad)
+    hybrid = HybridTensorSource(HEADERS, staged_dir)
+    assert hybrid._fetch_bytes(name) == fake
+    assert hybrid._local_hits == 1
+    assert hybrid._local_misses == 0
