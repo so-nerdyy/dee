@@ -111,7 +111,12 @@ CACHE1_RAW_EXPERTS_PER_LAYER = 16
 # CACHE1d: 2 GiB cap (sim: provider hits 29%->22.6%, http 59.9%->66.2%; the
 # 1.5 GiB cliff at 0% hits rules out going lower) + lazy shared payloads
 # that free the host copy after the GPU entry is pinned.
-CACHE1_RAW_MAX_BYTES = 2 << 30  # 2 GiB total across all layers
+# CACHE1g: 2 GiB -> 1 GiB.  The v20 run measured raw_hits=0 (routed experts
+# are unique per token on the canonical trace, so the host raw LRU never
+# serves a repeat), while the 2 GiB cap contributed ~2 GiB of steady host
+# RSS.  1 GiB keeps a host-tier for longer real trajectories while shaving
+# ~1 GiB off the base that v20 needed for the memory ceiling.
+CACHE1_RAW_MAX_BYTES = 1 << 30  # 1 GiB total across all layers
 # Sealed DS10 v12 canonical decode (ACCEPT_DUAL_T4_DECODE evidence): every
 # CACHE1 candidate must reproduce these exact token IDs.
 SEALED_DS10_TOKENS = [
@@ -812,6 +817,20 @@ def stage_cache1() -> dict[str, Any]:
             print(f"[cache1] primary decode step {step}/{n_tokens}",
                   flush=True)
 
+        # CACHE1g: per-layer host hygiene (gc + malloc_trim) inside every
+        # forward bounds the transient FP16 payload churn of a full 43-layer
+        # prefill.  v20 reached host peak RSS 11.40 GiB during prefill (vs
+        # the 11.18 GiB binary ceiling) because ~7 GiB of transient payloads
+        # accumulated before the per-token hygiene; trimming per layer keeps
+        # ru_maxrss inside the contract.  Host-only: the churn is CPU-side,
+        # so skip the (slow) per-layer torch.cuda.empty_cache() -- the per-
+        # token hygiene still runs the full gc + empty_cache + trim.
+        import gc as _gc  # noqa: PLC0415
+
+        def _layer_hygiene(layer_id: int) -> None:
+            _gc.collect()
+            _trim_host_allocator()
+
         print(f"[cache1] primary build complete: {mem.get('build_seconds')}s "
               f"fetch={mem.get('fetch_stats', {}).get('requests')} reqs "
               f"{round(mem.get('fetch_stats', {}).get('bytes', 0) / (1 << 30), 2)} GiB",
@@ -820,7 +839,8 @@ def stage_cache1() -> dict[str, Any]:
               f"tokens={n_tokens})", flush=True)
         toks = model.generate(input_ids, max_new_tokens=n_tokens, trace=trace,
                               decode_timings_ms=decode_ms,
-                              post_step_hook=_step_hygiene)
+                              post_step_hook=_step_hygiene,
+                              post_layer_hook=_layer_hygiene)
         print(f"[cache1] primary decode done: "
               f"{round(decode_ms[0], 0) if decode_ms else 0}ms prefill / "
               f"{round(sum(decode_ms[1:]) / 1000.0, 1)}s decode", flush=True)
@@ -854,7 +874,8 @@ def stage_cache1() -> dict[str, Any]:
 
         print("[cache1] warm decode starting (cold==warm rerun)", flush=True)
         toks_warm = model.generate(input_ids, max_new_tokens=n_tokens,
-                                   post_step_hook=_warm_hygiene)
+                                   post_step_hook=_warm_hygiene,
+                                   post_layer_hook=_layer_hygiene)
         print("[cache1] warm decode done", flush=True)
         gates["cold_warm_equal"] = toks == toks_warm
         gates["warm_tokens"] = toks_warm
@@ -907,7 +928,8 @@ def stage_cache1() -> dict[str, Any]:
               flush=True)
         print("[cache1] alternate decode starting", flush=True)
         toks2 = model2.generate(input_ids, max_new_tokens=n_tokens,
-                                post_step_hook=_hygiene2)
+                                post_step_hook=_hygiene2,
+                                post_layer_hook=_layer_hygiene)
         print("[cache1] alternate decode done", flush=True)
         gates["deterministic_rerun"] = toks == toks2
         gates["cache_capacity_variation_equal"] = toks == toks2
@@ -932,11 +954,30 @@ def stage_cache1() -> dict[str, Any]:
         gates["memory_ceilings_ok"] = memory_ok
 
         # ---- CACHE1.5 metrics (combined GPU + provider two-level cache) ----
+        # The cache-level ``hits`` counter only increments inside ``reserve()``;
+        # the FFN's hit path calls ``cache.get()`` directly and never
+        # ``reserve()``, so cache0/cache1 ``hits`` stay 0 even when pinned
+        # shared experts hit every token.  The AUTHORITATIVE counters are the
+        # per-layer FFN stats.  ``token_trace`` snapshots ``ffn_fn.stats`` at
+        # every step; the LAST token's per-layer counters are the cumulative
+        # totals for the whole primary run (one snapshot per forward).
+        last_tok = f"token_{n_tokens - 1}"
+        ffn_requests = 0
+        ffn_hits = 0
+        ffn_misses = 0
+        for lrow in trace.get(last_tok, {}).get("layers", []):
+            ffc = lrow.get("ffn_cache_counters", {})
+            ffn_requests += ffc.get("requests", 0)
+            ffn_hits += ffc.get("hits", 0)
+            ffn_misses += ffc.get("misses", 0)
         c0 = gates["runtime_after_warm"]["cache0"]
         c1 = gates["runtime_after_warm"]["cache1"]
         prov = gates["runtime_after_warm"]["provider"]
-        total_requests = c0.get("requests", 0) + c1.get("requests", 0)
-        gpu_hits = c0.get("hits", 0) + c1.get("hits", 0)
+        # ``requests`` at the cache level = reserve() calls (loads + misses
+        # that went through stage); FFN ``requests`` = every expert access
+        # (get hits + misses).  Use the FFN totals for the honest rate.
+        total_requests = ffn_requests
+        gpu_hits = ffn_hits
         h2d_bytes = c0.get("h2d_bytes", 0) + c1.get("h2d_bytes", 0)
         http_fetches = prov.get("fetch_count", 0)
         raw_hits = prov.get("raw_hits", 0)
@@ -944,11 +985,12 @@ def stage_cache1() -> dict[str, Any]:
         gpu_hit_rate = 100.0 * gpu_hits / max(1, total_requests)
         provider_hit_rate = 100.0 * raw_hits / max(1, raw_hits + raw_misses)
         # provider raw hits serve GPU misses without an HTTP range fetch;
-        # every GPU hit also avoids HTTP.  Exact combined fraction:
+        # every FFN hit also avoids HTTP.  Exact combined fraction:
         combined_no_http = 100.0 * (gpu_hits + raw_hits) / max(1, total_requests)
-        # (routed-only raw counters slightly undercount the denominator, so
-        # this is the conservative exact-arithmetic bound)
         gates["cache1_metrics"] = {
+            "ffn_requests": ffn_requests,
+            "ffn_hits": ffn_hits,
+            "ffn_misses": ffn_misses,
             "gpu_requests": total_requests,
             "gpu_hits": gpu_hits,
             "gpu_hit_rate_pct": round(gpu_hit_rate, 2),

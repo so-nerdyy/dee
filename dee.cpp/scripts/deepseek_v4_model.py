@@ -700,8 +700,16 @@ class DeepseekV4Model:
         return h_dst
 
     def forward(self, input_ids: torch.Tensor, start_pos: int,
-                 captures: Optional[dict[int, dict[str, Any]]] = None) -> torch.Tensor:
-        """Full forward; returns logits [b, vocab] for the LAST token."""
+                 captures: Optional[dict[int, dict[str, Any]]] = None,
+                 post_layer_hook: Optional[Any] = None) -> torch.Tensor:
+        """Full forward; returns logits [b, vocab] for the LAST token.
+
+        ``post_layer_hook`` (CACHE1g): optional ``callable(layer_id)`` run
+        after every layer.  The cache1 stage uses it to bound host RSS DURING
+        a forward (gc.collect + malloc_trim per layer).  Without it, the
+        transient FP16 payload churn of a full 43-layer prefill accumulates
+        until the per-token hygiene, spiking ru_maxrss past the ceiling.
+        """
         cfg = self.cfg
         b, s = input_ids.shape
         self.execution_trace = []
@@ -724,6 +732,8 @@ class DeepseekV4Model:
                    "routing_weights": layer.ffn_fn.last_route.get("routing_weights"),
                    "ffn_cache_counters": dict(layer.ffn_fn.stats)}
             self.execution_trace.append(row)
+            if post_layer_hook is not None:
+                post_layer_hook(idx)
             if not finite:
                 raise FloatingPointError(f"non-finite hidden state after layer {idx}")
         self.last_execution = {"phase": "handoff", "after_layer": self.split - 1,
@@ -745,6 +755,8 @@ class DeepseekV4Model:
                    "routing_weights": layer.ffn_fn.last_route.get("routing_weights"),
                    "ffn_cache_counters": dict(layer.ffn_fn.stats)}
             self.execution_trace.append(row)
+            if post_layer_hook is not None:
+                post_layer_hook(layer_id)
             if not finite:
                 raise FloatingPointError(
                     f"non-finite hidden state after layer {layer_id}")
@@ -763,7 +775,8 @@ class DeepseekV4Model:
                  per_step_captures: Optional[list[dict[int, dict[str, Any]]]] = None,
                  trace: Optional[dict[str, Any]] = None,
                  decode_timings_ms: Optional[list[float]] = None,
-                 post_step_hook: Optional[Any] = None) -> list[int]:
+                 post_step_hook: Optional[Any] = None,
+                 post_layer_hook: Optional[Any] = None) -> list[int]:
         """Greedy autoregressive decode.  Returns generated token ids.
 
         ``decode_timings_ms`` (CACHE1): appends one wall-clock sample per
@@ -779,7 +792,8 @@ class DeepseekV4Model:
         """
         seq_len = input_ids.shape[1]
         t0 = time.monotonic()
-        logits = self.forward(input_ids, 0, captures=captures)
+        logits = self.forward(input_ids, 0, captures=captures,
+                              post_layer_hook=post_layer_hook)
         t1 = time.monotonic()
         if decode_timings_ms is not None:
             decode_timings_ms.append((t1 - t0) * 1000.0)
@@ -802,7 +816,8 @@ class DeepseekV4Model:
                                     dtype=input_ids.dtype)
             cap_map = per_step_captures[t] if per_step_captures else None
             t0 = time.monotonic()
-            logits = self.forward(step_ids, seq_len + t - 1, captures=cap_map)
+            logits = self.forward(step_ids, seq_len + t - 1, captures=cap_map,
+                                  post_layer_hook=post_layer_hook)
             t1 = time.monotonic()
             if decode_timings_ms is not None:
                 decode_timings_ms.append((t1 - t0) * 1000.0)
