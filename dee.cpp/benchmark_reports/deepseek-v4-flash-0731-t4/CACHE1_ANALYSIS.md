@@ -266,3 +266,26 @@ change; any unstaged tensor falls back to the sealed remote path, and the
 CACHE1.4 gates (tokens==SEALED_DS10_TOKENS, cold==warm, deterministic
 rerun, memory ceilings) all still apply.  Local tests 5/5 staging + 40 pass
 1 skip (model/runtime/support/cache).
+
+## 11. CACHE1e v18 (2026-08-10): staging run verdict REJECT_MEMORY -- defects + v19 fixes
+
+v18 (pinned a156a9e) sealed REJECT_MEMORY at gate cache1_memory_primary.
+What WORKED (important):
+  - staging build phase 100% local: 1,306 local hits, 0 HTTP for staged
+    tensors; 4,585 tensors / 14.44 GiB staged in 263 s.
+  - 16/16 token IDs match sealed DS10; cold == warm.
+Two concrete defects caused the rejection:
+  1. RSS: HybridTensorSource._load_shard() did path.read_bytes() on each
+     partial shard (~320 MiB avg) and cached all of them in RAM forever ->
+     host RSS current 20.7 GiB / peak 27.7 GiB vs 12 GiB ceiling.
+  2. Decode: 32 layer-20 expert tensors failed staging (all HTTP 429 under
+     32-way concurrency). Every decode step re-fetched them with 6-attempt
+     exponential backoff -> decode_tok_per_s 0.003 (the 429 storm).
+v19 fixes (pinned a2e536e):
+  - HybridTensorSource reads by byte range (only JSON headers in RAM).
+  - stage_partial_shards: serial retry pass + max_workers=8.
+  - STAGING_DIR -> /kaggle/temp (root overlay ~1 TB per probe), full
+    37.7 GiB manifest staged => decode 100% local; staged data excluded
+    from kernel output (fixes the v18 output-download bloat too).
+  - Fixed latent NameError: provider_hit_rate undefined in cache1_metrics
+    (would have fired on any run that passed the memory gate).
