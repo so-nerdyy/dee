@@ -942,6 +942,7 @@ def stage_cache1() -> dict[str, Any]:
         raw_hits = prov.get("raw_hits", 0)
         raw_misses = prov.get("raw_misses", 0)
         gpu_hit_rate = 100.0 * gpu_hits / max(1, total_requests)
+        provider_hit_rate = 100.0 * raw_hits / max(1, raw_hits + raw_misses)
         # provider raw hits serve GPU misses without an HTTP range fetch;
         # every GPU hit also avoids HTTP.  Exact combined fraction:
         combined_no_http = 100.0 * (gpu_hits + raw_hits) / max(1, total_requests)
