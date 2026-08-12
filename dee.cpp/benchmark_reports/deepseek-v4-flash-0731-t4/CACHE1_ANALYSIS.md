@@ -289,3 +289,50 @@ v19 fixes (pinned a2e536e):
     from kernel output (fixes the v18 output-download bloat too).
   - Fixed latent NameError: provider_hit_rate undefined in cache1_metrics
     (would have fired on any run that passed the memory gate).
+
+## 12. CACHE1e v20 (2026-08-12): staging WORKS, REJECT_MEMORY by 243 MiB + metrics bug
+
+v20 (pinned a2e536e, dual T4 restored after v19's single-GPU INVALID) sealed
+REJECT_MEMORY at cache1_memory_primary.  The staging story is now COMPLETE:
+  - 15,754 tensors / 37.685 GiB staged on /kaggle/temp in 1,481 s;
+  - build phase 100% local: 0 HTTP requests, 1,306 local hits;
+  - 32 staging tensors failed under the 8-worker pass with HTTP 429, ALL
+    32 recovered by the serial retry pass;
+  - 16/16 token IDs match sealed DS10; cold == warm.
+
+The rejection is precise and fixable:
+  - host peak RSS 12,242,874,368 bytes = 11.40 GiB vs the 12,000,000,000
+    byte (11.18 GiB binary) ceiling -> over by only ~243 MiB.
+  - RSS trend shows the spike was reached DURING PREFILL: step_0 (the
+    7-position prompt forward) released 7.01 GiB at its end-hygiene.  The
+    transient FP16 payload churn of a 43-layer prefill accumulates before
+    the per-token hygiene runs; ru_maxrss is a high-water mark so it stuck.
+
+Also found: cache1_metrics was never computed (the early REJECT_MEMORY
+return skips it) AND the metric formula would have been wrong: the
+cache-level hits counter stays 0 BY DESIGN because the FFN hit path calls
+cache.get() directly and never reserve() (which is the only place cache
+hits is incremented).  The authoritative counters are the per-layer FFN
+stats: 645 FFN hits / 5,789 requests = 11.1%, ALL from the 43 pinned shared
+experts (+43/token exactly, pin works); routed hits = 0 (near-uniform
+selection, as CACHE1.1 predicted).
+
+## 13. CACHE1g v21 (2026-08-12): per-layer hygiene + honest metrics
+
+v21 (pinned 6bb7c00) fixes three things:
+  1. post_layer_hook on forward/generate: gc + malloc_trim after EVERY layer
+     so transient FP16 churn is bounded inside the 43-layer prefill instead
+     of accumulating to the step-end hygiene.  (Host-only: skips the slow
+     per-layer empty_cache; the per-token hygiene keeps the full stack.)
+  2. CACHE1_RAW_MAX_BYTES 2 -> 1 GiB: v20 measured raw_hits=0 (routed
+     experts are unique per token on the canonical trace, so the host raw
+     LRU contributes RSS, not hits).  Saves ~1 GiB of base RSS.
+  3. cache1_metrics aggregates the authoritative per-layer FFN counters
+     from token_trace (last token's cumulative snapshot), reporting the
+     honest shared-pin hit rate instead of the always-zero cache hits
+     artifact.
+
+Expected verdict: ACCEPT_CACHE_PARTIAL with combined_no_http ~11% (the 43
+pinned shared experts hit every token; routed selection is near-uniform, so
+>70% is unreachable on a 16-token trajectory per the CACHE1.1 Belady
+analysis).
