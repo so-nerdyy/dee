@@ -41,8 +41,10 @@ int failures = 0;
     else { std::printf("  [FAIL] %s\n", msg); ++failures; } \
 } while (0)
 
-constexpr int kHidden = 64;   // logical hidden width
-constexpr int kInter  = 32;   // MoE intermediate width
+// Both must be multiples of 64: the fp4_e2m1_to_f16_cuda kernel requires
+// `in % 64 == 0` for whole-byte packed/block alignment (real model: 2048/4096).
+constexpr int kHidden = 128;  // logical hidden width
+constexpr int kInter  = 64;   // MoE intermediate width
 
 // Deterministic nibble + scale patterns. Values stay small so the official
 // swiglu_limit=10 clamp is a no-op (the engine's SwiGLU does not clamp; that
