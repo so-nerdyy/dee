@@ -139,13 +139,17 @@ bool write_v4_shard(const std::string& path) {
 // Wd[o,i] * silu(sum_j Wg[i,j] x[j]) * (sum_j Wu[i,j] x[j]).
 void reference_swiglu(const std::vector<float>& Wg, const std::vector<float>& Wu,
                       const std::vector<float>& Wd, const std::vector<float>& x,
-                      std::vector<float>& y) {
+                      float swiglu_limit, std::vector<float>& y) {
     std::vector<float> h(kInter, 0.0f);
     for (int i = 0; i < kInter; ++i) {
         float g = 0.0f, u = 0.0f;
         for (int j = 0; j < kHidden; ++j) {
             g += Wg[(size_t)i * kHidden + j] * x[j];
             u += Wu[(size_t)i * kHidden + j] * x[j];
+        }
+        if (swiglu_limit > 0.0f) {
+            g = std::min(g, swiglu_limit);
+            u = std::min(std::max(u, -swiglu_limit), swiglu_limit);
         }
         h[i] = (g / (1.0f + std::exp(-g))) * u;
     }
@@ -182,58 +186,63 @@ int main() {
     decode_proj(gate, Wg);
     decode_proj(up, Wu);
     decode_proj(down, Wd);
-    std::vector<float> reference;
-    reference_swiglu(Wg, Wu, Wd, x, reference);
+    std::vector<float> reference, clamped_reference;
+    reference_swiglu(Wg, Wu, Wd, x, 0.0f, reference);
+    reference_swiglu(Wg, Wu, Wd, x, 1.0f, clamped_reference);
 
     const std::string shard_path = "tests/data/dsv4_fp4_expert.safetensors";
     CHECK(write_v4_shard(shard_path), "mini DEEPSEEK_V4 FP4 shard written");
 
-    dee::EngineConfig cfg;
-    cfg.shard_path = shard_path;
-    cfg.oracle_path = "";          // real-model integration mode (caller owns router)
-    cfg.num_tokens = 1;
-    cfg.num_layers = 1;
-    cfg.base_layer = 0;
-    cfg.hidden = kHidden;
-    cfg.inter = kInter;
-    cfg.num_experts = 1;
-    cfg.topk = 1;
-    cfg.use_cuda = true;
-    cfg.cache_dtype = dee::DeviceCacheDType::Fp16;
-    cfg.transfer_dtype = dee::WeightTransferDType::Fp4E2m1;
-    cfg.budget_bytes = 2 * 3ULL * kInter * kHidden * sizeof(uint16_t);
+    auto run_and_check = [&](float swiglu_limit, const std::vector<float>& ref,
+                             const char* label) {
+        dee::EngineConfig cfg;
+        cfg.shard_path = shard_path;
+        cfg.oracle_path = "";       // real-model integration mode (caller owns router)
+        cfg.num_tokens = 1;
+        cfg.num_layers = 1;
+        cfg.base_layer = 0;
+        cfg.hidden = kHidden;
+        cfg.inter = kInter;
+        cfg.num_experts = 1;
+        cfg.topk = 1;
+        cfg.use_cuda = true;
+        cfg.cache_dtype = dee::DeviceCacheDType::Fp16;
+        cfg.transfer_dtype = dee::WeightTransferDType::Fp4E2m1;
+        cfg.swiglu_limit = swiglu_limit;
+        cfg.budget_bytes = 2 * 3ULL * kInter * kHidden * sizeof(uint16_t);
 
-    dee::Engine engine;
-    CHECK(engine.init(cfg), "engine init (DEEPSEEK_V4 FP4, CUDA, FP16 cache)");
-    if (failures) return 1;
+        dee::Engine engine;
+        CHECK(engine.init(cfg), label);
+        if (failures) return;
+        std::vector<float> out(kHidden, 0.0f);
+        CHECK(engine.moe_forward_experts(0, x.data(), out.data(), std::vector<int>{0}),
+              "native FP4 routed-expert SwiGLU executes");
 
-    std::vector<float> out(kHidden, 0.0f);
-    CHECK(engine.moe_forward_experts(0, x.data(), out.data(), std::vector<int>{0}),
-          "native FP4 routed-expert SwiGLU executes");
+        bool finite = true;
+        double max_abs = 0.0, ss_err = 0.0, ss_ref = 0.0, dot = 0.0, nr = 0.0, ng = 0.0;
+        for (int o = 0; o < kHidden; ++o) {
+            if (!std::isfinite(out[o])) finite = false;
+            const double err = (double)out[o] - ref[o];
+            max_abs = std::max(max_abs, std::fabs(err));
+            ss_err += err * err;
+            ss_ref += (double)ref[o] * ref[o];
+            dot += (double)out[o] * ref[o];
+            nr += (double)out[o] * out[o];
+            ng += (double)ref[o] * ref[o];
+        }
+        const double rel_rmse = std::sqrt(ss_err / std::max(ss_ref, 1e-12));
+        const double cosine = dot / std::max(std::sqrt(nr * ng), 1e-12);
+        std::printf("  [%s] max_abs_err=%.6g rel_rmse=%.6g cosine=%.9f\n",
+                    label, max_abs, rel_rmse, cosine);
+        CHECK(finite, "native output is finite");
+        CHECK(rel_rmse < 0.02, "native FP4 expert matches FP32 reference (rel RMSE < 2%)");
+        CHECK(cosine > 0.999, "native FP4 expert cosine similarity > 0.999");
+    };
 
-    // Compare against the FP32 reference.  The native path rounds the input,
-    // gate/up, and activation to FP16 (weights are exact: every e2m1fn value
-    // times a power-of-two e8m0 scale is representable in FP16), so we allow
-    // a generous-but-meaningful quantization tolerance.
-    bool finite = true;
-    double max_abs = 0.0, ss_err = 0.0, ss_ref = 0.0, dot = 0.0, nr = 0.0, ng = 0.0;
-    for (int o = 0; o < kHidden; ++o) {
-        if (!std::isfinite(out[o])) finite = false;
-        const double err = (double)out[o] - reference[o];
-        max_abs = std::max(max_abs, std::fabs(err));
-        ss_err += err * err;
-        ss_ref += (double)reference[o] * reference[o];
-        dot += (double)out[o] * reference[o];
-        nr += (double)out[o] * out[o];
-        ng += (double)reference[o] * reference[o];
-    }
-    const double rel_rmse = std::sqrt(ss_err / std::max(ss_ref, 1e-12));
-    const double cosine = dot / std::max(std::sqrt(nr * ng), 1e-12);
-
-    std::printf("  max_abs_err=%.6g rel_rmse=%.6g cosine=%.9f\n", max_abs, rel_rmse, cosine);
-    CHECK(finite, "native output is finite");
-    CHECK(rel_rmse < 0.02, "native FP4 expert matches FP32 reference (rel RMSE < 2%)");
-    CHECK(cosine > 0.999, "native FP4 expert cosine similarity > 0.999");
+    run_and_check(0.0f, reference,
+                  "engine init + unclamped SwiGLU (DEEPSEEK_V4 FP4, CUDA, FP16)");
+    run_and_check(1.0f, clamped_reference,
+                  "engine init + clamped SwiGLU (swiglu_limit=1.0)");
 
     if (failures) {
         std::printf("### %d FAILED ###\n", failures);

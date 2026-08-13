@@ -13,31 +13,49 @@ namespace {
 
 constexpr int kThreads = 256;
 
-__global__ void swiglu_activation_kernel(float* gate, const float* up, int inter) {
+__global__ void swiglu_activation_kernel(float* gate, const float* up, int inter,
+                                          float swiglu_limit) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= inter) return;
-    const float g = gate[i];
-    gate[i] = (g / (1.0f + expf(-g))) * up[i];
+    float g = gate[i];
+    float u = up[i];
+    if (swiglu_limit > 0.0f) {
+        g = fminf(g, swiglu_limit);
+        u = fminf(fmaxf(u, -swiglu_limit), swiglu_limit);
+    }
+    gate[i] = (g / (1.0f + expf(-g))) * u;
 }
 
 __global__ void swiglu_activation_fp16_kernel(const __half* gate, const __half* up,
-                                               __half* activation, int inter) {
+                                               __half* activation, int inter,
+                                               float swiglu_limit) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= inter) return;
-    const float g = __half2float(gate[i]);
+    float g = __half2float(gate[i]);
+    float u = __half2float(up[i]);
+    if (swiglu_limit > 0.0f) {
+        g = fminf(g, swiglu_limit);
+        u = fminf(fmaxf(u, -swiglu_limit), swiglu_limit);
+    }
     // Match torch FP16 eager semantics: SiLU is rounded to FP16 before the
     // elementwise multiply, whose result is rounded to FP16 again.
     const __half silu = __float2half_rn(g / (1.0f + expf(-g)));
-    activation[i] = __hmul(silu, up[i]);
+    activation[i] = __float2half_rn(__half2float(silu) * u);
 }
 
 __global__ void swiglu_activation_batch_fp16_kernel(
-        const __half* gate, const __half* up, __half* activation, int elements) {
+        const __half* gate, const __half* up, __half* activation, int elements,
+        float swiglu_limit) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= elements) return;
-    const float g = __half2float(gate[i]);
+    float g = __half2float(gate[i]);
+    float u = __half2float(up[i]);
+    if (swiglu_limit > 0.0f) {
+        g = fminf(g, swiglu_limit);
+        u = fminf(fmaxf(u, -swiglu_limit), swiglu_limit);
+    }
     const __half silu = __float2half_rn(g / (1.0f + expf(-g)));
-    activation[i] = __hmul(silu, up[i]);
+    activation[i] = __float2half_rn(__half2float(silu) * u);
 }
 
 __global__ void combine_kernel(const float* ybuf, float* output, int experts, int hidden) {
@@ -252,7 +270,8 @@ bool gemv_row_major(cublasHandle_t handle, const float* matrix, int rows, int co
 
 bool swiglu_expert_cuda(cublasHandle_t handle, const float* d_weights, const float* d_x,
                         float* d_gate, float* d_up, float* d_y,
-                        int inter, int hidden, cudaStream_t stream, StageProfiler* profiler) {
+                        int inter, int hidden, cudaStream_t stream, StageProfiler* profiler,
+                        float swiglu_limit) {
     if (!handle || !d_weights || !d_x || !d_gate || !d_up || !d_y || !stream || inter <= 0 || hidden <= 0) {
         std::fprintf(stderr, "[cuda] invalid cuBLAS SwiGLU arguments (inter=%d hidden=%d)\n", inter, hidden);
         return false;
@@ -264,7 +283,8 @@ bool swiglu_expert_cuda(cublasHandle_t handle, const float* d_weights, const flo
                         GpuStage::UpProjection, profiler)) return false;
     const size_t activation_ticket = profiler && profiler->enabled()
         ? profiler->cuda_begin(GpuStage::SiluMultiply, static_cast<void*>(stream)) : static_cast<size_t>(-1);
-    swiglu_activation_kernel<<<grid_for(inter), kThreads, 0, stream>>>(d_gate, d_up, inter);
+    swiglu_activation_kernel<<<grid_for(inter), kThreads, 0, stream>>>(
+        d_gate, d_up, inter, swiglu_limit);
     if (profiler && profiler->enabled()) profiler->note_kernel_launch();
     if (!DEE_CUDA_CHECK_LAUNCH("swiglu_activation_kernel launch")) return false;
     if (profiler && profiler->enabled() &&
@@ -282,7 +302,7 @@ bool swiglu_expert_fp16_cuda(cublasHandle_t handle, const void* d_weights,
                              const void* d_x, float* d_gate, float* d_up,
                              void* d_activation, float* d_y,
                              int inter, int hidden, cudaStream_t stream,
-                             StageProfiler* profiler) {
+                             StageProfiler* profiler, float swiglu_limit) {
     if (!handle || !d_weights || !d_x || !d_gate || !d_up || !d_activation ||
         !d_y || !stream || inter <= 0 || hidden <= 0) {
         std::fprintf(stderr, "[cuda] invalid FP16 cuBLAS SwiGLU arguments (inter=%d hidden=%d)\n",
@@ -303,7 +323,7 @@ bool swiglu_expert_fp16_cuda(cublasHandle_t handle, const void* d_weights,
         ? profiler->cuda_begin(GpuStage::SiluMultiply, static_cast<void*>(stream))
         : static_cast<size_t>(-1);
     swiglu_activation_fp16_kernel<<<grid_for(inter), kThreads, 0, stream>>>(
-        gate, up, activation, inter);
+        gate, up, activation, inter, swiglu_limit);
     if (profiler && profiler->enabled()) profiler->note_kernel_launch();
     if (!DEE_CUDA_CHECK_LAUNCH("swiglu_activation_fp16_kernel launch")) return false;
     if (profiler && profiler->enabled() &&
@@ -323,7 +343,7 @@ bool swiglu_expert_batch_fp16_cuda(
         cublasHandle_t handle, const void* d_weights, const void* d_x,
         void* d_gate, void* d_up, void* d_activation, float* d_y,
         int tokens, int inter, int hidden, cudaStream_t stream,
-        StageProfiler* profiler) {
+        StageProfiler* profiler, float swiglu_limit) {
     if (!handle || !d_weights || !d_x || !d_gate || !d_up || !d_activation ||
         !d_y || !stream || tokens <= 0 || inter <= 0 || hidden <= 0) {
         std::fprintf(stderr,
@@ -349,7 +369,7 @@ bool swiglu_expert_batch_fp16_cuda(
         : static_cast<size_t>(-1);
     swiglu_activation_batch_fp16_kernel<<<
         grid_for(activation_elements), kThreads, 0, stream>>>(
-            gate, up, activation, activation_elements);
+            gate, up, activation, activation_elements, swiglu_limit);
     if (profiler && profiler->enabled()) profiler->note_kernel_launch();
     if (!DEE_CUDA_CHECK_LAUNCH("swiglu_activation_batch_fp16_kernel launch")) return false;
     if (profiler && profiler->enabled() &&
@@ -373,7 +393,7 @@ bool swiglu_expert_pointer_batch_fp16_cuda(
         const void* d_activation_ptrs, const void* d_raw_output_ptrs,
         void* d_gate, void* d_up, void* d_activation,
         int experts, int inter, int hidden, cudaStream_t stream,
-        StageProfiler* profiler) {
+        StageProfiler* profiler, float swiglu_limit) {
     if (!handle || !d_gate_weight_ptrs || !d_up_weight_ptrs ||
         !d_down_weight_ptrs || !d_input_ptrs || !d_gate_output_ptrs ||
         !d_up_output_ptrs || !d_activation_ptrs || !d_raw_output_ptrs ||
@@ -406,7 +426,7 @@ bool swiglu_expert_pointer_batch_fp16_cuda(
             static_cast<const __half*>(d_gate),
             static_cast<const __half*>(d_up),
             static_cast<__half*>(d_activation),
-            activation_elements);
+            activation_elements, swiglu_limit);
     if (profiler && profiler->enabled()) profiler->note_kernel_launch();
     if (!DEE_CUDA_CHECK_LAUNCH(
             "swiglu_activation_pointer_batch_fp16_kernel launch")) {

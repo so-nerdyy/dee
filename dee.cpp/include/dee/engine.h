@@ -101,6 +101,9 @@ struct EngineConfig {
     bool        prepack_quantized_source = true;
     BenchmarkScenario scenario = BenchmarkScenario::EndToEnd;
     float       oracle_strict_margin = 0.0f; // <=0=raw GPU; >0=boundary fallback
+    // DeepSeek-V4-Flash activation clamp: gate=max(limit), up=+-limit before
+    // SiLU. 0 disables (Ornith has no clamp). Caller sets 10.0 for DeepSeek-V4.
+    float       swiglu_limit = 0.0f;
 };
 
 // Copy of OracleScheduler::BoundaryStats so EngineStats can hold it without

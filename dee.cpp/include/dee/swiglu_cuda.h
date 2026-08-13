@@ -20,10 +20,14 @@ namespace dee {
 //   y[o] = Σ_i Wd[o*inter + i] * h[i]                 (phase 2)
 // W layout: [gate: inter*hidden][up: inter*hidden][down: hidden*inter].
 // d_hbuf is a caller-owned inter-float scratch buffer (reused across experts).
+// ``swiglu_limit`` (>0) applies the DeepSeek-V4-Flash activation clamp:
+// gate = clamp(gate, max=limit), up = clamp(up, -limit..limit), before SiLU.
+// 0 (default) preserves the Ornith (no-clamp) semantics.
 bool swiglu_expert_cuda(cublasHandle_t handle, const float* d_W, const float* d_x,
                         float* d_gate, float* d_up, float* d_y,
                         int inter, int hidden, cudaStream_t stream,
-                        StageProfiler* profiler = nullptr);
+                        StageProfiler* profiler = nullptr,
+                        float swiglu_limit = 0.0f);
 
 // FP16 cache path: weights and input/activation remain FP16 while cuBLAS
 // accumulates each projection into FP32 outputs.
@@ -31,7 +35,8 @@ bool swiglu_expert_fp16_cuda(cublasHandle_t handle, const void* d_W,
                              const void* d_x, float* d_gate, float* d_up,
                              void* d_activation, float* d_y,
                              int inter, int hidden, cudaStream_t stream,
-                             StageProfiler* profiler = nullptr);
+                             StageProfiler* profiler = nullptr,
+                             float swiglu_limit = 0.0f);
 
 // Batched equivalent of the eager Transformers expert path. Every projection
 // consumes [tokens, features] FP16 rows and produces FP16 rows so GEMM shape
@@ -40,7 +45,7 @@ bool swiglu_expert_batch_fp16_cuda(
     cublasHandle_t handle, const void* d_W, const void* d_x,
     void* d_gate, void* d_up, void* d_activation, float* d_y,
     int tokens, int inter, int hidden, cudaStream_t stream,
-    StageProfiler* profiler = nullptr);
+    StageProfiler* profiler = nullptr, float swiglu_limit = 0.0f);
 
 // M5F token-1 pointer-batched path. Each pointer-array argument is a
 // device-resident array of `experts` pointers. It executes all selected
@@ -55,7 +60,7 @@ bool swiglu_expert_pointer_batch_fp16_cuda(
     const void* d_activation_ptrs, const void* d_raw_output_ptrs,
     void* d_gate, void* d_up, void* d_activation,
     int experts, int inter, int hidden, cudaStream_t stream,
-    StageProfiler* profiler = nullptr);
+    StageProfiler* profiler = nullptr, float swiglu_limit = 0.0f);
 
 // Match torch.nn.functional.linear for an FP16 [tokens, hidden] input and
 // FP16 [experts, hidden] router matrix. Output is row-major [tokens, experts].
