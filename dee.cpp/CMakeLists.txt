@@ -96,6 +96,7 @@ if(DEE_BUILD_TESTS)
         tests/test_smoke.cpp
         tests/test_weight_mmap.cpp
         tests/test_deepseek_v4_resolver.cpp
+        tests/test_deepseek_v4_fp4_decode.cpp
         tests/test_vram_cache.cpp
         tests/test_async_prefetcher.cpp
         tests/test_oracle.cpp

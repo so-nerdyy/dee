@@ -205,9 +205,75 @@ bool int4_to_f16_cuda(const uint8_t* source, void* destination, size_t elements,
 #endif
 }
 
+__device__ __forceinline__ float fp4_nibble_value(uint8_t nibble) {
+    // Official 16-entry e2m1fn table (convert.py).  Positive half indices
+    // 0..7, negative half 8..15; index 0 and 8 both decode to 0.0.
+    const float table[16] = {
+        0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,
+        0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f,
+    };
+    return table[nibble & 0x0F];
+}
+
+__device__ __forceinline__ float fp4_scale_value(uint8_t bits) {
+    // ue8m0: 2^(bits - 127).  Realistic bytes 0x7d..0x82; clamp extremes.
+    const int exponent = static_cast<int>(bits) - 127;
+    if (exponent >= 127) return __int_as_float(0x7F7FFFFFu);
+    if (exponent <= -127) return 0.0f;
+    return __uint_as_float(static_cast<unsigned int>(exponent + 127) << 23);
+}
+
+__global__ void fp4_e2m1_to_f16_kernel(const uint8_t* packed, const uint8_t* scale,
+                                       __half* destination, size_t out, size_t in) {
+    const size_t index = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const size_t total = out * in;
+    if (index >= total) return;
+    const size_t o = index / in;
+    const size_t i = index % in;
+    const uint8_t byte = packed[o * (in / 2) + i / 2];
+    const uint8_t nibble = (i & 1) ? (byte >> 4) : (byte & 0x0F);
+    const float value = fp4_nibble_value(nibble);
+    const float s = fp4_scale_value(scale[o * (in / 32) + i / 32]);
+    destination[index] = __float2half_rn(value * s);
+}
+
 __global__ void oracle_relu_kernel(float* x, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n && x[i] < 0.0f) x[i] = 0.0f;
+}
+
+bool fp4_e2m1_to_f16_cuda(const uint8_t* packed, const uint8_t* scale,
+                          void* destination, size_t out, size_t in,
+                          cudaStream_t stream, StageProfiler* profiler) {
+    const size_t elements = out * in;
+    if (!packed || !scale || !destination || !stream || elements == 0) {
+        std::fprintf(stderr, "[cuda] invalid FP4-e2m1 conversion arguments (out=%zu in=%zu)\n",
+                     out, in);
+        return false;
+    }
+    if ((in % 64) != 0) {
+        // in must be a multiple of 64 for the packed (in/2) and block (in/32)
+        // layouts to be whole-byte aligned (real model: 2048/4096).
+        std::fprintf(stderr, "[cuda] FP4-e2m1 requires in multiple of 64, got %zu\n", in);
+        return false;
+    }
+    const unsigned int blocks = conversion_blocks(elements, "FP4-e2m1 conversion");
+    if (!blocks) return false;
+    const size_t ticket = profiler && profiler->enabled()
+        ? profiler->cuda_begin(GpuStage::WeightConversion, static_cast<void*>(stream))
+        : static_cast<size_t>(-1);
+    fp4_e2m1_to_f16_kernel<<<blocks, kConversionThreads, 0, stream>>>(
+        packed, scale, static_cast<__half*>(destination), out, in);
+    if (profiler && profiler->enabled()) profiler->note_kernel_launch();
+    if (!DEE_CUDA_CHECK_LAUNCH("fp4_e2m1_to_f16_kernel launch")) return false;
+    if (profiler && profiler->enabled() &&
+        !profiler->cuda_end(ticket, static_cast<void*>(stream))) return false;
+#ifdef DEE_CUDA_VALIDATE
+    return DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(stream),
+                                "cudaStreamSynchronize(FP4-e2m1 conversion validation)");
+#else
+    return true;
+#endif
 }
 
 void oracle_relu_cuda(float* data, int n, cudaStream_t stream) {

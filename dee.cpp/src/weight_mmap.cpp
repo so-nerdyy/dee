@@ -69,6 +69,52 @@ float f16_to_f32(uint16_t h) {
     return f;
 }
 
+// ---- DeepSeek-V4 FP4 (e2m1fn) decode -------------------------------------
+// Official 16-entry table (convert.py): positive half indices 0..7, negative
+// half indices 8..15.  Index 0 and 8 both decode to 0.0 (official quirk).
+const float* fp4_e2m1_table() {
+    static const float table[16] = {
+        0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,
+        0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f,
+    };
+    return table;
+}
+
+float fp4_nibble_to_f32(uint8_t nibble) {
+    return fp4_e2m1_table()[nibble & 0x0F];
+}
+
+float e8m0_to_f32(uint8_t bits) {
+    // ue8m0: value = 2^(bits - 127).  Realistic scale bytes are 0x7d..0x82
+    // (exponents -2..3); clamp the extremes so hostile inputs produce 0 or a
+    // finite max instead of inf/NaN/negative-shift UB.
+    int exponent = static_cast<int>(bits) - 127;
+    if (exponent >= 127) exponent = 127;
+    if (exponent <= -127) return 0.0f;
+    uint32_t u = static_cast<uint32_t>(exponent + 127) << 23;
+    float f;
+    std::memcpy(&f, &u, sizeof(f));
+    return f;
+}
+
+void fp4_e2m1_dequantize(const uint8_t* packed, const uint8_t* scale,
+                         size_t out, size_t in, float* dst) {
+    const size_t packed_in = in / 2;
+    const size_t scale_in = in / 32;
+    for (size_t o = 0; o < out; ++o) {
+        const uint8_t* row_packed = packed + o * packed_in;
+        const uint8_t* row_scale = scale + o * scale_in;
+        float* row_dst = dst + o * in;
+        for (size_t i = 0; i < in; ++i) {
+            const uint8_t byte = row_packed[i / 2];
+            const uint8_t nibble = (i & 1) ? (byte >> 4) : (byte & 0x0F);
+            const float value = fp4_nibble_to_f32(nibble);
+            const float s = e8m0_to_f32(row_scale[i / 32]);
+            row_dst[i] = value * s;
+        }
+    }
+}
+
 // ---- WeightMmap -----------------------------------------------------------
 WeightMmap::WeightMmap() = default;
 

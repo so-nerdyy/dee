@@ -156,4 +156,36 @@ float bf16_to_f32(uint16_t h);
 // F16 -> float32 (IEEE half).
 float f16_to_f32(uint16_t h);
 
+// ---------------------------------------------------------------------------
+// DeepSeek-V4-Flash-0731 FP4 expert-weight decode (e2m1fn table + e8m0 block
+// scales).  Mirrors scripts/deepseek_v4_expert_reference.py EXACTLY:
+//
+//   - packed weight is I8 [out, in//2]; low nibble -> column 2i, high nibble
+//     -> column 2i+1, decoded through the official 16-entry e2m1fn table
+//     (indices 0..7 positive, 8..15 negative).
+//   - scale is F8_E8M0 [out, in//32]; value = 2^(bits - 127), one scale per
+//     block of 32 input columns.
+//   - w[o, i] = fp4_table[nibble] * scale[o, i//32].
+//
+// These are the authoritative semantics shared by the host reference and the
+// native CUDA kernel (cuda_convert.cu), so the two can be validated against
+// each other and against the Python reference without a GPU.
+// ---------------------------------------------------------------------------
+
+// The official 16-entry e2m1fn lookup table (positive half then negative half).
+const float* fp4_e2m1_table();
+
+// Decode one packed nibble to its FP32 value via the e2m1fn table.
+float fp4_nibble_to_f32(uint8_t nibble);
+
+// Decode one F8_E8M0 (ue8m0) byte to FP32: 2^(bits - 127).
+float e8m0_to_f32(uint8_t bits);
+
+// Dequantize a full packed FP4 expert weight to FP32 [out, in].
+//   packed: I8 [out, in//2] (low nibble = col 2i, high nibble = col 2i+1)
+//   scale:  F8_E8M0 [out, in//32] (block size 32 on the in axis)
+//   dst:    float [out, in] (caller-sized; out*in elements)
+void fp4_e2m1_dequantize(const uint8_t* packed, const uint8_t* scale,
+                         size_t out, size_t in, float* dst);
+
 } // namespace dee
