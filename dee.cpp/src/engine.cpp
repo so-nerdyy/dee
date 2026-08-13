@@ -2943,6 +2943,13 @@ bool Engine::init(const EngineConfig& cfg) {
         extra_mmaps_.push_back(std::move(mapping));
     }
 
+    // DeepSeek-V4-Flash-0731 stores routed experts as pre-packed FP4 (I8)
+    // weights + per-block F8_E8M0 scales under a different tensor naming.
+    // Fp4E2m1 is that checkpoint's only transfer dtype, so key the resolver
+    // dialect off it (Ornith keeps the default ORNITH naming).
+    const bool deepseek_v4 = cfg.transfer_dtype == WeightTransferDType::Fp4E2m1;
+    if (deepseek_v4) resolver_.set_model(TensorResolver::Model::DEEPSEEK_V4);
+
     // verify expert dims against the shard; derive inter_/hidden_ from it
     TensorView gv = resolver_.resolve_expert(cfg_.base_layer, 0, TensorResolver::GATE_PROJ);
     if (!gv.ok()) {
@@ -2953,8 +2960,10 @@ bool Engine::init(const EngineConfig& cfg) {
         fprintf(stderr, "[engine] gate_proj shape rank != 2\n");
         return false;
     }
+    // Packed FP4 gate is I8 [inter, hidden//2]: two e2m1fn values per byte, so
+    // the logical input width is twice the stored column count.
     inter_  = (int)gv.shape[0];
-    hidden_ = (int)gv.shape[1];
+    hidden_ = (int)(deepseek_v4 ? gv.shape[1] * 2 : gv.shape[1]);
     blob_elems_ = 3ULL * (size_t)inter_ * hidden_;
     blob_bytes_ = blob_elems_ * sizeof(float);
     cache_blob_bytes_ = cfg.cache_dtype == DeviceCacheDType::Fp16
