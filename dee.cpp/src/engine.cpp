@@ -2597,8 +2597,11 @@ const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int exp
             if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
             return nullptr;
         }
+        // Packed I8 [out, in//2]: the stored column count is half the
+        // logical input width (two e2m1fn values per byte).  The scale is
+        // F8_E8M0 [out, in//32] (block size 32 on the in axis).
         quantized.fp4[p].out = static_cast<size_t>(w.shape[0]);
-        quantized.fp4[p].in  = static_cast<size_t>(w.shape[1]);
+        quantized.fp4[p].in  = static_cast<size_t>(w.shape[1]) * 2;
         quantized.fp4[p].packed_offset = packed_total;
         packed_total += w.nbytes;
         scale_total += s.nbytes;
