@@ -336,3 +336,37 @@ Expected verdict: ACCEPT_CACHE_PARTIAL with combined_no_http ~11% (the 43
 pinned shared experts hit every token; routed selection is near-uniform, so
 >70% is unreachable on a 16-token trajectory per the CACHE1.1 Belady
 analysis).
+
+## 13. CACHE1g v22 (2026-08-12): ACCEPT_CACHE_PARTIAL — terminal state
+
+v22 (pinned 6bb7c00, dual T4 restored with the exact v20 machine_spec template)
+sealed **ACCEPT_CACHE_PARTIAL**. This is the CACHE1 campaign terminal verdict.
+
+What worked:
+  - Staging: 15,754 tensors / 37.685 GiB staged on /kaggle/temp in 1,619 s;
+    16,104 HTTP requests with 40 failures, all 40 recovered by the serial
+    retry pass. Build phase 100% local (fetch=0 requests, 1,306 local hits).
+  - Correctness: 16/16 token IDs match sealed DS10; cold == warm;
+    deterministic rerun holds.
+  - Memory: host peak RSS 5.20 GiB << 11.18 GiB ceiling (v20 was 12.24 GiB,
+    rejected by ~243 MiB). Per-layer host hygiene + raw-LRU cap 2->1 GiB fixed
+    the transient FP16 payload churn that peaked RSS during prefill.
+  - GPU: cuda0 peak 10.07 GiB, cuda1 peak 11.73 GiB; both within ceiling.
+
+Honest hit metrics (authoritative per-layer FFN counters):
+  - ffn_requests 5,789 / ffn_hits 645 = 11.14% GPU hit rate.
+  - All hits come from the 43 pinned shared experts (one per layer, hit every
+    token); routed experts are near-uniform => provider raw_hits 0, exactly as
+    the CACHE1.1 access-pattern analysis predicted.
+  - H2D 480.23 GiB vs 542.72 GiB baseline (~11.5% reduction, all from pinning).
+
+Verdict: ACCEPT_CACHE_PARTIAL — measurable, correctness-preserving gain
+(11.14% hit rate, 11.5% H2D cut, 0 HTTP during build) below the 70%
+ACCEPT_CACHE_HITRATE_TARGET. First blocking constraint: near-uniform routed
+expert selection means LRU/LFU/ARC cannot exceed the shared-expert pin rate;
+the next real lever is router-ahead prefetch + download/compute overlap, which
+requires decoupling fetch latency from the serial decode loop.
+
+performance_comparable remains false: decode wall-clock (969.5 s for 16 tokens
+on dual T4) is the torch correctness path, not a throughput claim.
+
