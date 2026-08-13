@@ -182,7 +182,8 @@ void AsyncPrefetcher::record_request(RequestKind kind, int token, int logical_la
 long AsyncPrefetcher::prefetch(int layer, int expert, const void* src, size_t nbytes,
                                int priority, int token, int logical_layer) {
     return prefetch_impl(layer, expert, src, nbytes, nbytes, false, false,
-                         false, false, 0, nullptr, false, priority, token, logical_layer);
+                         false, false, false, nullptr, nullptr, nullptr, nullptr,
+                         0, nullptr, false, priority, token, logical_layer);
 }
 
 long AsyncPrefetcher::prefetch_bf16_to_f32(int layer, int expert, const uint16_t* src,
@@ -195,8 +196,9 @@ long AsyncPrefetcher::prefetch_bf16_to_f32(int layer, int expert, const uint16_t
     }
     if (elements > std::numeric_limits<size_t>::max() / sizeof(float)) return -1;
     return prefetch_impl(layer, expert, src, elements * sizeof(uint16_t),
-                         elements * sizeof(float), true, false, false, false, 0, nullptr,
-                         source_pinned, priority, token, logical_layer);
+                         elements * sizeof(float), true, false, false, false,
+                         false, nullptr, nullptr, nullptr, nullptr,
+                         0, nullptr, source_pinned, priority, token, logical_layer);
 }
 
 long AsyncPrefetcher::prefetch_bf16_to_f16(int layer, int expert, const uint16_t* src,
@@ -209,8 +211,9 @@ long AsyncPrefetcher::prefetch_bf16_to_f16(int layer, int expert, const uint16_t
     }
     if (elements > std::numeric_limits<size_t>::max() / sizeof(uint16_t)) return -1;
     return prefetch_impl(layer, expert, src, elements * sizeof(uint16_t),
-                         elements * sizeof(uint16_t), true, true, false, false, 0, nullptr,
-                         source_pinned, priority, token, logical_layer);
+                         elements * sizeof(uint16_t), true, true, false, false,
+                         false, nullptr, nullptr, nullptr, nullptr,
+                         0, nullptr, source_pinned, priority, token, logical_layer);
 }
 
 long AsyncPrefetcher::prefetch_int8_to_f16(int layer, int expert, const int8_t* src,
@@ -225,7 +228,8 @@ long AsyncPrefetcher::prefetch_int8_to_f16(int layer, int expert, const int8_t* 
     if (!scales || projection_elements == 0 || elements != 3 * projection_elements ||
         elements > std::numeric_limits<size_t>::max() / sizeof(uint16_t)) return -1;
     return prefetch_impl(layer, expert, src, elements, elements * sizeof(uint16_t),
-                         false, true, true, false, projection_elements, scales,
+                         false, true, true, false, false, nullptr, nullptr,
+                         nullptr, nullptr, projection_elements, scales,
                          source_pinned, priority, token, logical_layer);
 }
 
@@ -242,14 +246,43 @@ long AsyncPrefetcher::prefetch_int4_to_f16(int layer, int expert, const uint8_t*
         elements > std::numeric_limits<size_t>::max() / sizeof(uint16_t)) return -1;
     return prefetch_impl(layer, expert, src, (elements + 1) / 2,
                          elements * sizeof(uint16_t), false, true, false, true,
+                         false, nullptr, nullptr, nullptr, nullptr,
                          projection_elements, scales, source_pinned, priority,
                          token, logical_layer);
+}
+
+long AsyncPrefetcher::prefetch_fp4_to_f16(int layer, int expert, const uint8_t* src,
+                                          size_t source_nbytes,
+                                          const size_t packed_offsets[3],
+                                          const size_t scale_offsets[3],
+                                          const size_t out[3], const size_t in[3],
+                                          int priority, int token, int logical_layer,
+                                          bool source_pinned) {
+    if (!use_cuda_) {
+        std::fprintf(stderr, "AsyncPrefetcher: FP4-e2m1 conversion requires CUDA\n");
+        return -1;
+    }
+    if (!src || !packed_offsets || !scale_offsets || !out || !in) return -1;
+    size_t destination_elems = 0;
+    for (int p = 0; p < 3; ++p) {
+        if (out[p] == 0 || in[p] == 0) return -1;
+        destination_elems += out[p] * in[p];
+    }
+    if (destination_elems > std::numeric_limits<size_t>::max() / sizeof(uint16_t)) return -1;
+    return prefetch_impl(layer, expert, src, source_nbytes,
+                         destination_elems * sizeof(uint16_t),
+                         false, true, false, false, true,
+                         packed_offsets, scale_offsets, out, in,
+                         0, nullptr, source_pinned, priority, token, logical_layer);
 }
 
 long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
                                     size_t source_nbytes, size_t destination_nbytes,
                                     bool expand_bf16, bool cache_fp16, bool dequantize_int8,
-                                    bool dequantize_int4,
+                                    bool dequantize_int4, bool dequantize_fp4,
+                                    const size_t* fp4_packed_offsets,
+                                    const size_t* fp4_scale_offsets,
+                                    const size_t* fp4_out, const size_t* fp4_in,
                                     size_t projection_elements, const float* quant_scales,
                                     bool source_pinned,
                                     int priority, int token,
@@ -317,6 +350,11 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
         transfer.cache_fp16 = cache_fp16;
         transfer.dequantize_int8 = dequantize_int8;
         transfer.dequantize_int4 = dequantize_int4;
+        transfer.dequantize_fp4 = dequantize_fp4;
+        if (fp4_packed_offsets) std::copy(fp4_packed_offsets, fp4_packed_offsets + 3, transfer.fp4_packed_offsets);
+        if (fp4_scale_offsets) std::copy(fp4_scale_offsets, fp4_scale_offsets + 3, transfer.fp4_scale_offsets);
+        if (fp4_out) std::copy(fp4_out, fp4_out + 3, transfer.fp4_out);
+        if (fp4_in) std::copy(fp4_in, fp4_in + 3, transfer.fp4_in);
         transfer.projection_elements = projection_elements;
         if (quant_scales) std::copy(quant_scales, quant_scales + 3, transfer.quant_scales);
         transfer.source_pinned = source_pinned;
@@ -356,6 +394,11 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
     transfer.cache_fp16 = cache_fp16;
     transfer.dequantize_int8 = dequantize_int8;
     transfer.dequantize_int4 = dequantize_int4;
+    transfer.dequantize_fp4 = dequantize_fp4;
+    if (fp4_packed_offsets) std::copy(fp4_packed_offsets, fp4_packed_offsets + 3, transfer.fp4_packed_offsets);
+    if (fp4_scale_offsets) std::copy(fp4_scale_offsets, fp4_scale_offsets + 3, transfer.fp4_scale_offsets);
+    if (fp4_out) std::copy(fp4_out, fp4_out + 3, transfer.fp4_out);
+    if (fp4_in) std::copy(fp4_in, fp4_in + 3, transfer.fp4_in);
     transfer.projection_elements = projection_elements;
     if (quant_scales) std::copy(quant_scales, quant_scales + 3, transfer.quant_scales);
     transfer.source_pinned = source_pinned;
@@ -586,7 +629,8 @@ bool AsyncPrefetcher::cuda_submit(long index) {
     }
 
     PinnedStagingSlot& slot = staging_slots_[chosen];
-    if ((transfer.expand_bf16 || transfer.dequantize_int8 || transfer.dequantize_int4) &&
+    if ((transfer.expand_bf16 || transfer.dequantize_int8 || transfer.dequantize_int4 ||
+         transfer.dequantize_fp4) &&
         slot.device_bytes < transfer.source_nbytes) {
         if (slot.device_ptr &&
             !DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(slot.device_ptr, "slot"),
@@ -626,7 +670,7 @@ bool AsyncPrefetcher::cuda_submit(long index) {
     const size_t h2d_ticket = profiler_ && profiler_->enabled()
         ? profiler_->cuda_begin(GpuStage::H2D, stream_) : static_cast<size_t>(-1);
     void* copy_destination = (transfer.expand_bf16 || transfer.dequantize_int8 ||
-                              transfer.dequantize_int4)
+                              transfer.dequantize_int4 || transfer.dequantize_fp4)
         ? slot.device_ptr : transfer.dst;
     if (!DEE_CUDA_CHECK_NAMED(cudaMemcpyAsync(copy_destination, h2d_source, transfer.source_nbytes,
                                               cudaMemcpyHostToDevice, static_cast<cudaStream_t>(stream_)),
@@ -652,6 +696,20 @@ bool AsyncPrefetcher::cuda_submit(long index) {
                           transfer.nbytes / sizeof(uint16_t), transfer.projection_elements,
                           transfer.quant_scales, static_cast<cudaStream_t>(stream_),
                           profiler_)) return false;
+    if (transfer.dequantize_fp4) {
+        uint16_t* dst16 = static_cast<uint16_t*>(transfer.dst);
+        size_t decoded_elems_before = 0;
+        for (int p = 0; p < 3; ++p) {
+            const uint8_t* packed = static_cast<const uint8_t*>(slot.device_ptr) +
+                                    transfer.fp4_packed_offsets[p];
+            const uint8_t* scale  = static_cast<const uint8_t*>(slot.device_ptr) +
+                                    transfer.fp4_scale_offsets[p];
+            if (!fp4_e2m1_to_f16_cuda(packed, scale, dst16 + decoded_elems_before,
+                                      transfer.fp4_out[p], transfer.fp4_in[p],
+                                      static_cast<cudaStream_t>(stream_), profiler_)) return false;
+            decoded_elems_before += transfer.fp4_out[p] * transfer.fp4_in[p];
+        }
+    }
     if (!DEE_CUDA_CHECK_NAMED(cudaEventRecord(event, static_cast<cudaStream_t>(stream_)),
                               "cudaEventRecord(prefetch completion)")) return false;
     if (profiler_ && profiler_->enabled()) {

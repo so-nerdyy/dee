@@ -66,7 +66,8 @@ PYBIND11_MODULE(pydee_core, m) {
     py::enum_<dee::WeightTransferDType>(m, "WeightTransferDType")
         .value("Bf16", dee::WeightTransferDType::Bf16)
         .value("Int8", dee::WeightTransferDType::Int8)
-        .value("Int4", dee::WeightTransferDType::Int4);
+        .value("Int4", dee::WeightTransferDType::Int4)
+        .value("Fp4E2m1", dee::WeightTransferDType::Fp4E2m1);
 
     py::class_<dee::EngineConfig>(m, "EngineConfig")
         .def(py::init<>())

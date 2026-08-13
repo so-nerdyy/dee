@@ -65,6 +65,7 @@ def configure(shard_path: str,
         "bf16": pydee.WeightTransferDType.Bf16,
         "int8": pydee.WeightTransferDType.Int8,
         "int4": pydee.WeightTransferDType.Int4,
+        "fp4": pydee.WeightTransferDType.Fp4E2m1,
     }[transfer_dtype]
     cfg.cache_dtype = {
         "fp32": pydee.DeviceCacheDType.Fp32,

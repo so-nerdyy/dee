@@ -70,7 +70,8 @@ const char* device_cache_dtype_name(DeviceCacheDType dtype);
 enum class WeightTransferDType {
     Bf16,
     Int8,
-    Int4
+    Int4,
+    Fp4E2m1  // DeepSeek-V4-Flash-0731 packed e2m1fn weights + per-block e8m0 scales
 };
 
 const char* weight_transfer_dtype_name(WeightTransferDType dtype);
@@ -462,6 +463,18 @@ private:
         std::vector<int8_t> host;
         void* pinned = nullptr;
         float scales[3] = {1.0f, 1.0f, 1.0f};
+        // FP4 e2m1 (DEEPSEEK_V4): the contiguous staging buffer holds
+        // [gate_packed][up_packed][down_packed][gate_scale][up_scale][down_scale].
+        // Each projection records its offsets into that buffer plus its
+        // (out, in) shape.  gate/up are [inter, hidden]; down is [hidden, inter].
+        struct Fp4Proj {
+            size_t packed_offset = 0;
+            size_t scale_offset  = 0;
+            size_t out = 0;
+            size_t in  = 0;
+        };
+        Fp4Proj fp4[3];
+        size_t fp4_total_nbytes = 0;  // packed + scale staging buffer length
     };
     std::unordered_map<uint64_t, QuantizedExpert> staging_int8_;
     size_t pinned_staging_bytes_ = 0;
@@ -487,6 +500,7 @@ private:
     const uint16_t* get_staging_bf16(int source_layer, int expert);
     const QuantizedExpert* get_staging_int8(int source_layer, int expert);
     const QuantizedExpert* get_staging_int4(int source_layer, int expert);
+    const QuantizedExpert* get_staging_fp4(int source_layer, int expert);
     bool prepack_quantized_sources();
     StageProfile external_profile_snapshot(double total_wall_ms);
 

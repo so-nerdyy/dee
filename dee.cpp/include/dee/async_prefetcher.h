@@ -36,8 +36,16 @@ struct Transfer {
     bool      cache_fp16 = false;
     bool      dequantize_int8 = false;
     bool      dequantize_int4 = false;
+    bool      dequantize_fp4 = false;
     size_t    projection_elements = 0;
     float     quant_scales[3] = {1.0f, 1.0f, 1.0f};
+    // FP4 e2m1 (DEEPSEEK_V4): per-projection (out, in) shapes; the scale is a
+    // per-block F8_E8M0 tensor laid out contiguously after the packed weights
+    // inside the single staging buffer (offsets computed at submit time).
+    size_t    fp4_out[3] = {0, 0, 0};
+    size_t    fp4_in[3]  = {0, 0, 0};
+    size_t    fp4_packed_offsets[3] = {0, 0, 0};
+    size_t    fp4_scale_offsets[3]  = {0, 0, 0};
     bool      source_pinned = false;
     bool      done     = false;    // mock event "signaled"
     bool      abandoned = false;
@@ -95,6 +103,22 @@ public:
                               const float scales[3], int priority = 0,
                               int token = -1, int logical_layer = -1,
                               bool source_pinned = false);
+
+    // DeepSeek-V4-Flash-0731 FP4 e2m1 transfer.  ``src`` is one contiguous
+    // staging buffer holding [gate_packed][up_packed][down_packed] followed by
+    // [gate_scale][up_scale][down_scale]; ``packed_offsets``/``scale_offsets``
+    // are byte offsets into that buffer for each of the three projections,
+    // and ``out``/``in`` are each projection's decoded [out, in] shape
+    // (gate/up [inter, hidden], down [hidden, inter]).  The scale is the
+    // per-block e8m0 tensor, NOT three scalars, which is why this is a
+    // dedicated path rather than reusing prefetch_int4_to_f16.
+    long prefetch_fp4_to_f16(int layer, int expert, const uint8_t* src,
+                             size_t source_nbytes,
+                             const size_t packed_offsets[3],
+                             const size_t scale_offsets[3],
+                             const size_t out[3], const size_t in[3],
+                             int priority = 0, int token = -1,
+                             int logical_layer = -1, bool source_pinned = false);
 
     // Delimit one logical expert batch for duplicate-request accounting.
     void begin_batch() { batch_keys_.clear(); }
@@ -205,7 +229,10 @@ private:
     long   prefetch_impl(int layer, int expert, const void* src,
                          size_t source_nbytes, size_t destination_nbytes,
                          bool expand_bf16, bool cache_fp16, bool dequantize_int8,
-                         bool dequantize_int4,
+                         bool dequantize_int4, bool dequantize_fp4,
+                         const size_t* fp4_packed_offsets,
+                         const size_t* fp4_scale_offsets,
+                         const size_t* fp4_out, const size_t* fp4_in,
                          size_t projection_elements, const float* quant_scales,
                          bool source_pinned,
                          int priority, int token,

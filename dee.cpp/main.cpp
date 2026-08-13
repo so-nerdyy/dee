@@ -108,8 +108,9 @@ bool parse_transfer_dtype(const char* text, dee::WeightTransferDType& out) {
     if (value == "bf16") out = dee::WeightTransferDType::Bf16;
     else if (value == "int8") out = dee::WeightTransferDType::Int8;
     else if (value == "int4") out = dee::WeightTransferDType::Int4;
+    else if (value == "fp4") out = dee::WeightTransferDType::Fp4E2m1;
     else {
-        std::fprintf(stderr, "[cli] invalid --transfer-dtype value: %s (expected bf16, int8, or int4)\n", text);
+        std::fprintf(stderr, "[cli] invalid --transfer-dtype value: %s (expected bf16, int8, int4, or fp4)\n", text);
         return false;
     }
     return true;

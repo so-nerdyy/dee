@@ -220,6 +220,7 @@ const char* weight_transfer_dtype_name(WeightTransferDType dtype) {
         case WeightTransferDType::Bf16: return "bf16";
         case WeightTransferDType::Int8: return "int8";
         case WeightTransferDType::Int4: return "int4";
+        case WeightTransferDType::Fp4E2m1: return "fp4";
     }
     return "unknown";
 }
@@ -2555,6 +2556,77 @@ const Engine::QuantizedExpert* Engine::get_staging_int4(int source_layer, int ex
     return &inserted.first->second;
 }
 
+const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int expert) {
+    const auto profile_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
+    const uint64_t key = staging_key(source_layer, expert);
+    auto existing = staging_int8_.find(key);
+    if (existing != staging_int8_.end()) {
+        if (profiler_.enabled()) {
+            const auto resolution_end = StageProfiler::now();
+            profiler_.add_cpu_ms(CpuStage::TensorResolution,
+                std::chrono::duration<double, std::milli>(resolution_end - profile_begin).count());
+            profiler_.note_cpu_timeline_interval(CpuTimelineKind::TensorResolution,
+                profile_begin, resolution_end, current_token_, source_layer, expert);
+        }
+        return &existing->second;
+    }
+
+    // DEEPSEEK_V4 FP4 (e2m1fn): the weights are already packed on disk
+    // (dtype I8 [out, in//2]) with a matching per-block F8_E8M0 scale tensor
+    // (dtype F8 [out, in//32]).  No host-side quantization: stage them verbatim
+    // into one contiguous buffer [gate_packed][up_packed][down_packed]
+    // [gate_scale][up_scale][down_scale] and let the CUDA transfer stream decode.
+    TensorView weights[3] = {
+        resolver_.resolve_expert(source_layer, expert, TensorResolver::GATE_PROJ),
+        resolver_.resolve_expert(source_layer, expert, TensorResolver::UP_PROJ),
+        resolver_.resolve_expert(source_layer, expert, TensorResolver::DOWN_PROJ)};
+    TensorView scales[3] = {
+        resolver_.resolve_expert_scale(source_layer, expert, TensorResolver::GATE_PROJ),
+        resolver_.resolve_expert_scale(source_layer, expert, TensorResolver::UP_PROJ),
+        resolver_.resolve_expert_scale(source_layer, expert, TensorResolver::DOWN_PROJ)};
+
+    QuantizedExpert quantized;
+    size_t packed_total = 0;
+    size_t scale_total = 0;
+    for (int p = 0; p < 3; ++p) {
+        const TensorView& w = weights[p];
+        const TensorView& s = scales[p];
+        if (!w.ok() || w.dtype != DType::I8 || w.shape.size() < 2 ||
+            !s.ok() || s.dtype != DType::F8 || s.shape.size() < 2) {
+            std::fprintf(stderr, "[engine] expert %d has unsupported FP4 source layout\n", expert);
+            if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
+            return nullptr;
+        }
+        quantized.fp4[p].out = static_cast<size_t>(w.shape[0]);
+        quantized.fp4[p].in  = static_cast<size_t>(w.shape[1]);
+        quantized.fp4[p].packed_offset = packed_total;
+        packed_total += w.nbytes;
+        scale_total += s.nbytes;
+    }
+    size_t scale_accum = 0;
+    for (int p = 0; p < 3; ++p) {
+        quantized.fp4[p].scale_offset = packed_total + scale_accum;
+        scale_accum += scales[p].nbytes;
+    }
+    quantized.fp4_total_nbytes = packed_total + scale_total;
+    quantized.host.resize(quantized.fp4_total_nbytes);
+    auto* dst = reinterpret_cast<uint8_t*>(quantized.host.data());
+    for (int p = 0; p < 3; ++p) {
+        std::memcpy(dst + quantized.fp4[p].packed_offset, weights[p].data, weights[p].nbytes);
+    }
+    for (int p = 0; p < 3; ++p) {
+        std::memcpy(dst + quantized.fp4[p].scale_offset, scales[p].data, scales[p].nbytes);
+    }
+    if (profiler_.enabled()) {
+        profiler_.add_cpu_ms(CpuStage::TensorResolution,
+            std::chrono::duration<double, std::milli>(
+                StageProfiler::now() - profile_begin).count());
+        profiler_.note_mmap_copy(quantized.fp4_total_nbytes);
+    }
+    auto inserted = staging_int8_.emplace(key, std::move(quantized));
+    return &inserted.first->second;
+}
+
 bool Engine::prepack_quantized_sources() {
     if (!cfg_.prepack_quantized_source || !cfg_.use_cuda ||
         cfg_.transfer_dtype == WeightTransferDType::Bf16) return true;
@@ -2563,8 +2635,11 @@ bool Engine::prepack_quantized_sources() {
     for (int layer = 0; layer < cfg_.num_layers; ++layer) {
         source_layers.insert(avail_layer(layer));
     }
-    const size_t bytes_per_expert = cfg_.transfer_dtype == WeightTransferDType::Int4
-        ? (blob_elems_ + 1) / 2 : blob_elems_ * sizeof(int8_t);
+    const size_t bytes_per_expert =
+        cfg_.transfer_dtype == WeightTransferDType::Int4 ? (blob_elems_ + 1) / 2
+        : cfg_.transfer_dtype == WeightTransferDType::Fp4E2m1
+            ? blob_elems_ / 2 + (blob_elems_ + 31) / 32  // packed I8 + e8m0 scales
+            : blob_elems_ * sizeof(int8_t);
     const size_t physical_experts = source_layers.size() *
                                     static_cast<size_t>(oracle_.num_experts());
     if (physical_experts > std::numeric_limits<size_t>::max() / bytes_per_expert) {
@@ -2584,9 +2659,12 @@ bool Engine::prepack_quantized_sources() {
     const auto begin = std::chrono::steady_clock::now();
     for (int source_layer : source_layers) {
         for (int expert = 0; expert < oracle_.num_experts(); ++expert) {
-            const QuantizedExpert* packed = cfg_.transfer_dtype == WeightTransferDType::Int4
-                ? get_staging_int4(source_layer, expert)
-                : get_staging_int8(source_layer, expert);
+            const QuantizedExpert* packed =
+                cfg_.transfer_dtype == WeightTransferDType::Int4
+                    ? get_staging_int4(source_layer, expert)
+                    : cfg_.transfer_dtype == WeightTransferDType::Fp4E2m1
+                        ? get_staging_fp4(source_layer, expert)
+                        : get_staging_int8(source_layer, expert);
             if (!packed) {
                 std::fprintf(stderr,
                     "[engine] quantized source prepack failed for layer %d expert %d\n",
@@ -2633,6 +2711,26 @@ bool Engine::stage_expert(int logical_layer, int source_layer, int expert, int p
             return prefetcher_.prefetch_int8_to_f16(
                        source_layer, expert, source, blob_elems_,
                        static_cast<size_t>(inter_) * hidden_, quantized->scales,
+                       priority, current_token_, logical_layer,
+                       quantized->pinned != nullptr) >= 0;
+        }
+        if (cfg_.transfer_dtype == WeightTransferDType::Fp4E2m1) {
+            const QuantizedExpert* quantized = get_staging_fp4(source_layer, expert);
+            if (!quantized) return false;
+            const auto* source = reinterpret_cast<const uint8_t*>(quantized->host.data());
+            size_t packed_offsets[3];
+            size_t scale_offsets[3];
+            size_t out[3];
+            size_t in[3];
+            for (int p = 0; p < 3; ++p) {
+                packed_offsets[p] = quantized->fp4[p].packed_offset;
+                scale_offsets[p]  = quantized->fp4[p].scale_offset;
+                out[p] = quantized->fp4[p].out;
+                in[p]  = quantized->fp4[p].in;
+            }
+            return prefetcher_.prefetch_fp4_to_f16(
+                       source_layer, expert, source, quantized->fp4_total_nbytes,
+                       packed_offsets, scale_offsets, out, in,
                        priority, current_token_, logical_layer,
                        quantized->pinned != nullptr) >= 0;
         }
