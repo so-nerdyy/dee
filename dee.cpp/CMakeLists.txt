@@ -108,7 +108,8 @@ if(DEE_BUILD_TESTS)
             tests/test_rmsnorm_cuda.cpp
             tests/test_router_cuda.cpp
             tests/test_expert_batch_cuda.cpp
-            tests/test_profiling_cuda.cpp)
+            tests/test_profiling_cuda.cpp
+            tests/test_deepseek_v4_fp4_cuda.cpp)
     endif()
     foreach(test_source IN LISTS DEE_TEST_SOURCES)
         get_filename_component(test_name ${test_source} NAME_WE)
