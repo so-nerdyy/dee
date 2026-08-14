@@ -299,15 +299,16 @@ bool Engine::moe_forward_experts(int layer, const float* h_in, float* experts_ou
                 if (!cache_.pin(source_layer, expert)) return false;
                 pinned.push_back(expert);
                 const void* d_blob = cache_.data(source_layer, expert);
+                StageProfiler* prof = profiler_.enabled() ? &profiler_ : nullptr;
                 const bool ok = d_blob && (cfg_.cache_dtype == DeviceCacheDType::Fp16
                     ? swiglu_expert_fp16_cuda(
                           cublas_handle_, d_blob, d_h_in_half_, d_hbuf_, d_ubuf_,
                           d_activation_half_, d_ybuf_ + (size_t)k * hidden_,
-                          inter_, hidden_, compute_stream_, nullptr, cfg_.swiglu_limit)
+                          inter_, hidden_, compute_stream_, prof, cfg_.swiglu_limit)
                     : swiglu_expert_cuda(
                           cublas_handle_, static_cast<const float*>(d_blob), d_h_in_,
                           d_hbuf_, d_ubuf_, d_ybuf_ + (size_t)k * hidden_,
-                           inter_, hidden_, compute_stream_, nullptr, cfg_.swiglu_limit));
+                           inter_, hidden_, compute_stream_, prof, cfg_.swiglu_limit));
                 if (!ok) return false;
                 prefetcher_.mark_consumed(source_layer, expert);
             }
