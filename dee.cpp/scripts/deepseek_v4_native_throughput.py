@@ -121,6 +121,8 @@ def main() -> int:
     ap.add_argument("--shard", required=True)
     ap.add_argument("--tokens", type=int, default=5)
     ap.add_argument("--budget-bytes", type=int, default=8 * 3 * INTER * HIDDEN * 2)
+    ap.add_argument("--profile", action="store_true",
+                    help="enable stage profiling and dump the per-stage breakdown")
     args = ap.parse_args()
 
     try:
@@ -152,6 +154,8 @@ def main() -> int:
         hidden=HIDDEN, inter=INTER, use_cuda=(dev == "cuda"),
         transfer_dtype="fp4", cache_dtype="fp16", topk=TOPK,
         budget_bytes=args.budget_bytes, swiglu_limit=SWIGLU_LIMIT)
+    if args.profile:
+        cfg.profile_stages = True
     engine = pydee.new_engine(cfg)
     print(f"[tp] native engine initialized (hidden={engine.hidden_dim()}, "
           f"inter={engine.inter_dim()})", flush=True)
@@ -165,6 +169,9 @@ def main() -> int:
     for i, eids in enumerate(token_experts):
         ndt, _ = bench_native(engine, h_in, eids, args.budget_bytes)
         native_ms.append(ndt)
+        if args.profile:
+            prof = engine.external_profile_json(ndt)
+            print(f"[tp] token {i} profile: {prof}", flush=True)
         hdt, hb = bench_host(experts, eids, x.to(dev))
         host_ms.append(hdt)
         host_breakdown.append(hb)
