@@ -45,7 +45,8 @@ def configure(shard_path: str,
               transfer_dtype: str = "bf16",
               cache_dtype: str = "fp32",
               topk: int = 8,
-              budget_bytes: int = 0) -> "EngineConfig":
+              budget_bytes: int = 0,
+              swiglu_limit: float = 0.0) -> "EngineConfig":
     """Convenience: build the EngineConfig the adapter expects."""
     import pydee
     if EngineConfig is None:
@@ -73,6 +74,7 @@ def configure(shard_path: str,
     }[cache_dtype]
     cfg.topk = topk
     cfg.budget_bytes = budget_bytes
+    cfg.swiglu_limit = swiglu_limit
     return cfg
 
 

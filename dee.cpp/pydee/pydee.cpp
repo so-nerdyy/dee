@@ -91,7 +91,9 @@ PYBIND11_MODULE(pydee_core, m) {
         .def_readwrite("profile_stages", &dee::EngineConfig::profile_stages)
         .def_readwrite("trace_requests", &dee::EngineConfig::trace_requests)
         .def_readwrite("profile_timeline", &dee::EngineConfig::profile_timeline)
-        .def_readwrite("debug_validate_cache", &dee::EngineConfig::debug_validate_cache);
+        .def_readwrite("debug_validate_cache", &dee::EngineConfig::debug_validate_cache)
+        .def_readwrite("prepack_quantized_source", &dee::EngineConfig::prepack_quantized_source)
+        .def_readwrite("swiglu_limit", &dee::EngineConfig::swiglu_limit);
 
     py::class_<dee::Engine>(m, "Engine")
         .def(py::init<>())

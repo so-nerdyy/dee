@@ -21,8 +21,10 @@ stays false for DS9.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Optional
 
+import numpy as np
 import torch
 
 from scripts import deepseek_v4_expert_reference as ds7
@@ -214,6 +216,85 @@ class DeepseekV4CacheFfn:
         return moe + shared_out, shared_out
 
 
+class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
+    """Routed experts via pydee.Engine.moe_forward_experts (native FP4 decode
+    + SwiGLU on CUDA); router + shared expert follow the DS8 torch path.
+
+    The engine mmaps the same safetensors shards the harness loads, decodes the
+    packed I8 + per-block F8_E8M0 weights on the transfer stream, and runs the
+    SwiGLU expert forward natively.  Per-expert outputs are returned unweighted;
+    the combine here applies the routing weight AFTER the down projection, which
+    is exact because the official weight-before-w2 placement commutes with the
+    linear w2 (``w * (h @ w2.T) == (w * h) @ w2.T``).
+    """
+
+    def __init__(self, *, engine: Any, layer_id: int, cfg: layer_ref.LayerConfig,
+                 device: str = "cuda", shared_payload: Optional[dict[str, torch.Tensor]] = None,
+                 provider: Any = None):
+        # Deliberately bypass the parent __init__: the native backend needs no
+        # cache/loader/fp16_payloads for routed experts (the engine owns those).
+        self.engine = engine
+        self.layer_id = layer_id
+        self.cfg = cfg
+        self.device = device
+        self.shared_payload = shared_payload
+        self.provider = provider
+        self.tid2eid: Optional[torch.Tensor] = None
+        self.stats = {"requests": 0, "hits": 0, "misses": 0,
+                      "native_fwd_ms": 0.0, "native_calls": 0}
+        self.last_route: dict[str, Any] = {}
+
+    def _run_experts(self, xf: torch.Tensor, ids: torch.Tensor,
+                     weights: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        cfg = self.cfg
+        n, d = xf.shape
+        moe = torch.zeros(n, d, dtype=torch.float32, device=self.device)
+        h_in_np = np.empty((d,), dtype=np.float32)
+        for tok in range(n):
+            eids = [int(e) for e in ids[tok].tolist()]
+            ws = [float(w) for w in weights[tok].float().tolist()]
+            keep = [(e, w) for e, w in zip(eids, ws) if w != 0.0]
+            if not keep:
+                continue
+            keids = [e for e, _ in keep]
+            k = len(keids)
+            h_in_fp32 = xf[tok].float().cpu().numpy()
+            np.copyto(h_in_np, np.ascontiguousarray(h_in_fp32, dtype=np.float32))
+            # pydee validates experts_out.size == len(experts) * hidden_dim, so
+            # size the output buffer to the (filtered) expert count.
+            out_np = np.empty((k * d,), dtype=np.float32)
+            t0 = time.perf_counter()
+            ok = self.engine.moe_forward_experts(self.layer_id, h_in_np, out_np, keids)
+            self.stats["native_fwd_ms"] += (time.perf_counter() - t0) * 1000.0
+            self.stats["native_calls"] += 1
+            self.stats["requests"] += 1
+            if not ok:
+                raise RuntimeError(
+                    f"native moe_forward_experts failed layer={self.layer_id} tok={tok}")
+            out = torch.from_numpy(out_np.reshape(k, d).copy()).to(self.device, torch.float32)
+            wv = torch.tensor([w for _, w in keep], dtype=torch.float32,
+                              device=self.device)
+            moe[tok] = torch.einsum("k,kh->h", wv, out)
+        shared_out = self._shared_forward(xf)
+        return moe + shared_out, shared_out
+
+    def _shared_forward(self, xf: torch.Tensor) -> torch.Tensor:
+        """Shared expert (F8_E4M3) stays on the torch path (already FP16-expanded)."""
+        n, d = xf.shape
+        if not self.shared_payload and self.provider is not None:
+            self.shared_payload = self.provider.get_shared_fp16_payload(self.layer_id)
+        if not self.shared_payload:
+            return torch.zeros(n, d, dtype=torch.float32, device=self.device)
+        sp = self.shared_payload
+        xc = xf.half().to(self.device)
+        gate = torch.clamp((xc @ sp["w1.weight"].t()).float(),
+                           max=self.cfg.swiglu_limit)
+        up = torch.clamp((xc @ sp["w3.weight"].t()).float(),
+                         min=-self.cfg.swiglu_limit, max=self.cfg.swiglu_limit)
+        h = torch.nn.functional.silu(gate) * up
+        return (h.half() @ sp["w2.weight"].t()).float()
+
+
 def build_fp16_payloads(
     routed_raw: dict[int, dict[str, torch.Tensor]],
 ) -> dict[int, dict[str, torch.Tensor]]:
@@ -268,6 +349,28 @@ def make_candidate_layer(
                              fp16_payloads=fp16_payloads,
                              shared_payload=shared_payload, cfg=cfg,
                              device=device, provider=provider)
+    ffn.attach_gate(w["ffn"]["gate_w"], w["ffn"]["gate_b"])
+    ffn.attach_hash(w["ffn"].get("tid2eid"))
+    return layer_ref.DeepseekV4Layer(cfg, w, device=device, max_batch=max_batch,
+                                     ffn_fn=ffn)
+
+
+def make_native_candidate_layer(
+    cfg: layer_ref.LayerConfig,
+    w: dict[str, torch.Tensor],
+    *,
+    engine: Any,
+    layer_id: int,
+    device: str = "cuda",
+    max_batch: int = 1,
+    shared_payload: Optional[dict[str, torch.Tensor]] = None,
+    provider: Any = None,
+) -> layer_ref.DeepseekV4Layer:
+    """Build the native-engine candidate layer (routed experts via
+    pydee.Engine.moe_forward_experts; router + shared expert on torch)."""
+    ffn = DeepseekV4NativeFfn(engine=engine, layer_id=layer_id, cfg=cfg,
+                              device=device, shared_payload=shared_payload,
+                              provider=provider)
     ffn.attach_gate(w["ffn"]["gate_w"], w["ffn"]["gate_b"])
     ffn.attach_hash(w["ffn"].get("tid2eid"))
     return layer_ref.DeepseekV4Layer(cfg, w, device=device, max_batch=max_batch,
