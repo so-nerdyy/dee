@@ -174,10 +174,11 @@ def main() -> int:
 
     native_med = float(np.median(native_ms))
     host_med = float(np.median(host_ms))
-    # Compressed FP4 bytes per expert (3 projections, packed I8 + e8m0 scales).
-    comp_per_expert = (3 * (INTER * HIDDEN // 2) + (INTER * HIDDEN // 32)
-                       + (INTER * HIDDEN // 32) + (HIDDEN * INTER // 2)
-                       + (HIDDEN * INTER // 32) + (HIDDEN * INTER // 32))
+    # Compressed FP4 bytes per expert: 3 packed-I8 projections
+    # (w1/w3 [inter, hidden//2], w2 [hidden, inter//2]) + 3 e8m0 scales.
+    comp_per_expert = (3 * (INTER * HIDDEN // 2)
+                       + 2 * (INTER * HIDDEN // 32)
+                       + (HIDDEN * INTER // 32))
     fp16_per_expert = 3 * INTER * HIDDEN * 2
     h2d_native_per_token = comp_per_expert * TOPK
     h2d_host_per_token = fp16_per_expert * TOPK
