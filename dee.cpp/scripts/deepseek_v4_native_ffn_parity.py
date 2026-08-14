@@ -97,8 +97,8 @@ def _write_mini_shard(path: Path, routed: dict[int, dict[str, np.ndarray]]) -> N
 
 
 def _metrics(candidate: torch.Tensor, reference: torch.Tensor) -> dict[str, float]:
-    c = candidate.detach().float().flatten()
-    r = reference.detach().float().flatten()
+    c = candidate.detach().float().cpu().flatten()
+    r = reference.detach().float().cpu().flatten()
     err = (c - r).abs()
     max_abs = float(err.max())
     ss_err = float((c - r).pow(2).sum())
