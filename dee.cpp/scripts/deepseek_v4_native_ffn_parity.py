@@ -25,6 +25,7 @@ import os
 import struct
 import sys
 from pathlib import Path
+from typing import Any
 
 # `scripts` is a namespace package: ensure the dee.cpp root (parent of
 # scripts/) is importable regardless of how this file is invoked.
@@ -38,7 +39,6 @@ import torch
 from scripts import deepseek_v4_expert_reference as ds7
 from scripts import deepseek_v4_layer_reference as layer_ref
 from scripts import deepseek_v4_moe_reference as moe
-from scripts import deepseek_v4_staging as staging
 from scripts.deepseek_v4_layer_candidate import DeepseekV4NativeFfn
 
 # Both 64-aligned: the fp4_e2m1_to_f16_cuda kernel requires `in % 64 == 0`.
@@ -68,17 +68,32 @@ def _packed_proj(rng, out, in_dim, name):
 
 
 def _write_mini_shard(path: Path, routed: dict[int, dict[str, np.ndarray]]) -> None:
-    """Write a mini DEEPSEEK_V4 shard (layer 0 routed experts) to disk."""
-    tensors: dict[str, tuple[bytes, str, list[int]]] = {}
+    """Write a mini DEEPSEEK_V4 shard (layer 0 routed experts) to disk.
+
+    Standard safetensors layout: 8-byte LE header length, JSON header with
+    the official dtype strings ("I8" packed weights, "F8_E8M0" scales), then
+    the concatenated tensor bytes.  (Inlined from deepseek_v4_staging to keep
+    this test free of the full model-stack import chain.)
+    """
+    header: dict[str, Any] = {}
+    data = bytearray()
     for eid, t in routed.items():
         for kind in ("w1", "w3", "w2"):
-            tensors[f"layers.0.ffn.experts.{eid}.{kind}.weight"] = (
-                t[f"{kind}.weight"].tobytes(), "I8",
-                list(t[f"{kind}.weight"].shape))
-            tensors[f"layers.0.ffn.experts.{eid}.{kind}.scale"] = (
-                t[f"{kind}.scale"].tobytes(), "F8_E8M0",
-                list(t[f"{kind}.scale"].shape))
-    staging._write_partial_shard(path, tensors)
+            for suffix, dtype in (("weight", "I8"), ("scale", "F8_E8M0")):
+                blob = t[f"{kind}.{suffix}"].tobytes()
+                start = len(data)
+                header[f"layers.0.ffn.experts.{eid}.{kind}.{suffix}"] = {
+                    "dtype": dtype,
+                    "shape": [int(d) for d in t[f"{kind}.{suffix}"].shape],
+                    "data_offsets": [start, start + len(blob)],
+                }
+                data += blob
+    header_json = json.dumps(header, separators=(",", ":")).encode("utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as fh:
+        fh.write(struct.pack("<Q", len(header_json)))
+        fh.write(header_json)
+        fh.write(bytes(data))
 
 
 def _metrics(candidate: torch.Tensor, reference: torch.Tensor) -> dict[str, float]:
