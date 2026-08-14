@@ -205,15 +205,13 @@ bool int4_to_f16_cuda(const uint8_t* source, void* destination, size_t elements,
 #endif
 }
 
-__device__ __forceinline__ float fp4_nibble_value(uint8_t nibble) {
-    // Official 16-entry e2m1fn table (convert.py).  Positive half indices
-    // 0..7, negative half 8..15; index 0 and 8 both decode to 0.0.
-    const float table[16] = {
-        0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,
-        0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f,
-    };
-    return table[nibble & 0x0F];
-}
+// Official 16-entry e2m1fn lookup table (convert.py), in constant memory so
+// every thread reads it through the broadcast path (no local-memory spill on
+// a runtime-indexed table, which was the dominant dequant cost).
+__constant__ float kFp4E2m1Table[16] = {
+    0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,
+    0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f,
+};
 
 __device__ __forceinline__ float fp4_scale_value(uint8_t bits) {
     // ue8m0: 2^(bits - 127).  Realistic bytes 0x7d..0x82; clamp extremes.
@@ -223,18 +221,25 @@ __device__ __forceinline__ float fp4_scale_value(uint8_t bits) {
     return __uint_as_float(static_cast<unsigned int>(exponent + 127) << 23);
 }
 
+// Decode packed I8 [out, in//2] + e8m0 scale [out, in//32] -> FP16 [out, in].
+// One thread per 32-element scale block (16 packed bytes): a single scale
+// load, one packed-byte load per 2 outputs, no per-element 64-bit div/mod.
 __global__ void fp4_e2m1_to_f16_kernel(const uint8_t* packed, const uint8_t* scale,
                                        __half* destination, size_t out, size_t in) {
-    const size_t index = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    const size_t total = out * in;
-    if (index >= total) return;
-    const size_t o = index / in;
-    const size_t i = index % in;
-    const uint8_t byte = packed[o * (in / 2) + i / 2];
-    const uint8_t nibble = (i & 1) ? (byte >> 4) : (byte & 0x0F);
-    const float value = fp4_nibble_value(nibble);
-    const float s = fp4_scale_value(scale[o * (in / 32) + i / 32]);
-    destination[index] = __float2half_rn(value * s);
+    const size_t o = blockIdx.y;                     // output row
+    const size_t half_in = in >> 1;                  // packed bytes per row
+    const size_t scale_stride = in >> 5;             // scale entries per row
+    const size_t block = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (block >= scale_stride) return;
+    const float s = fp4_scale_value(scale[o * scale_stride + block]);
+    const uint8_t* p = packed + o * half_in + (block << 4);  // 16 packed bytes
+    __half* d = destination + o * in + (block << 5);          // 32 elements
+    #pragma unroll
+    for (int b = 0; b < 16; ++b) {
+        const uint8_t byte = p[b];
+        d[(b << 1)]     = __float2half_rn(kFp4E2m1Table[byte & 0x0F] * s);
+        d[(b << 1) + 1] = __float2half_rn(kFp4E2m1Table[byte >> 4] * s);
+    }
 }
 
 __global__ void oracle_relu_kernel(float* x, int n) {
@@ -257,12 +262,17 @@ bool fp4_e2m1_to_f16_cuda(const uint8_t* packed, const uint8_t* scale,
         std::fprintf(stderr, "[cuda] FP4-e2m1 requires in multiple of 64, got %zu\n", in);
         return false;
     }
-    const unsigned int blocks = conversion_blocks(elements, "FP4-e2m1 conversion");
-    if (!blocks) return false;
+    // 2D grid: blockIdx.y walks rows (out), blockIdx.x walks the row's
+    // scale blocks. No per-thread division; one thread = one 32-element block.
+    const size_t scale_stride = in >> 5;
+    if (scale_stride == 0 || out > static_cast<size_t>(std::numeric_limits<unsigned int>::max())) return false;
+    const dim3 grid(static_cast<unsigned int>(
+                        (scale_stride + kConversionThreads - 1) / kConversionThreads),
+                    static_cast<unsigned int>(out));
     const size_t ticket = profiler && profiler->enabled()
         ? profiler->cuda_begin(GpuStage::WeightConversion, static_cast<void*>(stream))
         : static_cast<size_t>(-1);
-    fp4_e2m1_to_f16_kernel<<<blocks, kConversionThreads, 0, stream>>>(
+    fp4_e2m1_to_f16_kernel<<<grid, kConversionThreads, 0, stream>>>(
         packed, scale, static_cast<__half*>(destination), out, in);
     if (profiler && profiler->enabled()) profiler->note_kernel_launch();
     if (!DEE_CUDA_CHECK_LAUNCH("fp4_e2m1_to_f16_kernel launch")) return false;
