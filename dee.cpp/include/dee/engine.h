@@ -478,6 +478,14 @@ private:
         };
         Fp4Proj fp4[3];
         size_t fp4_total_nbytes = 0;  // packed + scale staging buffer length
+        // FP4 gather sources: 6 non-contiguous mmap regions (gate_w, up_w,
+        // down_w, gate_scale, up_scale, down_scale). No host copy is made here;
+        // the prefetcher gathers them straight into its persistent pinned slot.
+        struct Fp4Region {
+            const void* data = nullptr;
+            size_t nbytes = 0;
+        };
+        Fp4Region fp4_regions[6];
     };
     std::unordered_map<uint64_t, QuantizedExpert> staging_int8_;
     size_t pinned_staging_bytes_ = 0;

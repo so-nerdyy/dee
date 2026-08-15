@@ -46,6 +46,11 @@ struct Transfer {
     size_t    fp4_in[3]  = {0, 0, 0};
     size_t    fp4_packed_offsets[3] = {0, 0, 0};
     size_t    fp4_scale_offsets[3]  = {0, 0, 0};
+    // When set, cuda_submit gathers these six non-contiguous mmap regions into
+    // the pinned slot at fp4_packed_offsets/fp4_scale_offsets (single copy, no
+    // intermediate heap staging) instead of copying one contiguous `src`.
+    const void* fp4_region_src[6]    = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    size_t      fp4_region_nbytes[6] = {0, 0, 0, 0, 0, 0};
     bool      source_pinned = false;
     bool      done     = false;    // mock event "signaled"
     bool      abandoned = false;
@@ -119,6 +124,21 @@ public:
                              const size_t out[3], const size_t in[3],
                              int priority = 0, int token = -1,
                              int logical_layer = -1, bool source_pinned = false);
+
+    // FP4 e2m1 transfer from six non-contiguous mmap regions (gate/up/down
+    // packed weights + their per-block e8m0 scales).  The prefetcher gathers
+    // them into its persistent pinned slot in one pass, then H2Ds + decodes.
+    // `region_src`/`region_nbytes` are ordered gate_w, up_w, down_w,
+    // gate_scale, up_scale, down_scale.
+    long prefetch_fp4_regions_to_f16(int layer, int expert,
+                                     const void* const region_src[6],
+                                     const size_t region_nbytes[6],
+                                     size_t source_nbytes,
+                                     const size_t packed_offsets[3],
+                                     const size_t scale_offsets[3],
+                                     const size_t out[3], const size_t in[3],
+                                     int priority = 0, int token = -1,
+                                     int logical_layer = -1);
 
     // Delimit one logical expert batch for duplicate-request accounting.
     void begin_batch() { batch_keys_.clear(); }
@@ -236,7 +256,9 @@ private:
                          size_t projection_elements, const float* quant_scales,
                          bool source_pinned,
                          int priority, int token,
-                         int logical_layer);
+                         int logical_layer,
+                         const void* const* fp4_region_src = nullptr,
+                         const size_t* fp4_region_nbytes = nullptr);
     void   drain_until(int idx);   // mock: run copies up to idx (inclusive)
     bool   cuda_init();            // guarded real init
     bool   cuda_submit(long idx);  // guarded real submit + event record

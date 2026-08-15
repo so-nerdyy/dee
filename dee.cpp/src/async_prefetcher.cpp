@@ -276,6 +276,33 @@ long AsyncPrefetcher::prefetch_fp4_to_f16(int layer, int expert, const uint8_t* 
                          0, nullptr, source_pinned, priority, token, logical_layer);
 }
 
+long AsyncPrefetcher::prefetch_fp4_regions_to_f16(
+        int layer, int expert, const void* const region_src[6],
+        const size_t region_nbytes[6], size_t source_nbytes,
+        const size_t packed_offsets[3], const size_t scale_offsets[3],
+        const size_t out[3], const size_t in[3],
+        int priority, int token, int logical_layer) {
+    if (!use_cuda_) {
+        std::fprintf(stderr, "AsyncPrefetcher: FP4-e2m1 regions conversion requires CUDA\n");
+        return -1;
+    }
+    if (!region_src || !region_nbytes || !packed_offsets || !scale_offsets || !out || !in) return -1;
+    size_t destination_elems = 0;
+    for (int p = 0; p < 3; ++p) {
+        if (out[p] == 0 || in[p] == 0) return -1;
+        destination_elems += out[p] * in[p];
+    }
+    if (destination_elems > std::numeric_limits<size_t>::max() / sizeof(uint16_t)) return -1;
+    // src is nullptr; the prefetcher gathers the six regions into its pinned
+    // slot. source_pinned=false keeps the existing single-copy H2D path.
+    return prefetch_impl(layer, expert, nullptr, source_nbytes,
+                         destination_elems * sizeof(uint16_t),
+                         false, true, false, false, true,
+                         packed_offsets, scale_offsets, out, in,
+                         0, nullptr, false, priority, token, logical_layer,
+                         region_src, region_nbytes);
+}
+
 long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
                                     size_t source_nbytes, size_t destination_nbytes,
                                     bool expand_bf16, bool cache_fp16, bool dequantize_int8,
@@ -286,8 +313,11 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
                                     size_t projection_elements, const float* quant_scales,
                                     bool source_pinned,
                                     int priority, int token,
-                                    int logical_layer) {
-    if (!src || source_nbytes == 0 || destination_nbytes == 0) {
+                                    int logical_layer,
+                                    const void* const* fp4_region_src,
+                                    const size_t* fp4_region_nbytes) {
+    const bool has_regions = fp4_region_src != nullptr && fp4_region_nbytes != nullptr;
+    if ((!src && !has_regions) || source_nbytes == 0 || destination_nbytes == 0) {
         std::fprintf(stderr, "AsyncPrefetcher: invalid source for expert (%d,%d)\n", layer, expert);
         return -1;
     }
@@ -355,6 +385,12 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
         if (fp4_scale_offsets) std::copy(fp4_scale_offsets, fp4_scale_offsets + 3, transfer.fp4_scale_offsets);
         if (fp4_out) std::copy(fp4_out, fp4_out + 3, transfer.fp4_out);
         if (fp4_in) std::copy(fp4_in, fp4_in + 3, transfer.fp4_in);
+        if (has_regions) {
+            for (int r = 0; r < 6; ++r) {
+                transfer.fp4_region_src[r] = fp4_region_src[r];
+                transfer.fp4_region_nbytes[r] = fp4_region_nbytes[r];
+            }
+        }
         transfer.projection_elements = projection_elements;
         if (quant_scales) std::copy(quant_scales, quant_scales + 3, transfer.quant_scales);
         transfer.source_pinned = source_pinned;
@@ -644,7 +680,19 @@ bool AsyncPrefetcher::cuda_submit(long index) {
     if (!transfer.source_pinned) {
         const auto copy_begin = profiler_ && profiler_->enabled()
             ? StageProfiler::now() : StageProfiler::TimePoint{};
-        std::memcpy(slot.ptr, transfer.src, transfer.source_nbytes);
+        if (transfer.fp4_region_src[0] != nullptr) {
+            // Gather the six non-contiguous mmap regions into the pinned slot
+            // at their destination offsets in one pass (no heap intermediate).
+            auto* dst = static_cast<uint8_t*>(slot.ptr);
+            for (int p = 0; p < 3; ++p) {
+                std::memcpy(dst + transfer.fp4_packed_offsets[p],
+                            transfer.fp4_region_src[p], transfer.fp4_region_nbytes[p]);
+                std::memcpy(dst + transfer.fp4_scale_offsets[p],
+                            transfer.fp4_region_src[3 + p], transfer.fp4_region_nbytes[3 + p]);
+            }
+        } else {
+            std::memcpy(slot.ptr, transfer.src, transfer.source_nbytes);
+        }
         h2d_source = slot.ptr;
         if (profiler_ && profiler_->enabled()) {
             profiler_->add_cpu(CpuStage::MmapToPinned, copy_begin);

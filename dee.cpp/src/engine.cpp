@@ -2613,19 +2613,22 @@ const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int exp
         scale_accum += scales[p].nbytes;
     }
     quantized.fp4_total_nbytes = packed_total + scale_total;
-    quantized.host.resize(quantized.fp4_total_nbytes);
-    auto* dst = reinterpret_cast<uint8_t*>(quantized.host.data());
-    for (int p = 0; p < 3; ++p) {
-        std::memcpy(dst + quantized.fp4[p].packed_offset, weights[p].data, weights[p].nbytes);
-    }
-    for (int p = 0; p < 3; ++p) {
-        std::memcpy(dst + quantized.fp4[p].scale_offset, scales[p].data, scales[p].nbytes);
-    }
+    // No host gather: record the six mmap regions verbatim and let the
+    // prefetcher gather them into its persistent pinned slot in one pass
+    // (avoids the fresh heap vector's zeroing + first-touch page faults and
+    // the second heap->pinned memcpy).
+    quantized.fp4_regions[0] = {weights[0].data, weights[0].nbytes};
+    quantized.fp4_regions[1] = {weights[1].data, weights[1].nbytes};
+    quantized.fp4_regions[2] = {weights[2].data, weights[2].nbytes};
+    quantized.fp4_regions[3] = {scales[0].data, scales[0].nbytes};
+    quantized.fp4_regions[4] = {scales[1].data, scales[1].nbytes};
+    quantized.fp4_regions[5] = {scales[2].data, scales[2].nbytes};
     if (profiler_.enabled()) {
         profiler_.add_cpu_ms(CpuStage::TensorResolution,
             std::chrono::duration<double, std::milli>(
                 StageProfiler::now() - profile_begin).count());
-        profiler_.note_mmap_copy(quantized.fp4_total_nbytes);
+        // The actual mmap->pinned gather is accounted for in the prefetcher's
+        // cuda_submit (single copy); nothing is copied on the host here.
     }
     auto inserted = staging_int8_.emplace(key, std::move(quantized));
     return &inserted.first->second;
@@ -2721,22 +2724,27 @@ bool Engine::stage_expert(int logical_layer, int source_layer, int expert, int p
         if (cfg_.transfer_dtype == WeightTransferDType::Fp4E2m1) {
             const QuantizedExpert* quantized = get_staging_fp4(source_layer, expert);
             if (!quantized) return false;
-            const auto* source = reinterpret_cast<const uint8_t*>(quantized->host.data());
+            const void* region_src[6];
+            size_t region_nbytes[6];
             size_t packed_offsets[3];
             size_t scale_offsets[3];
             size_t out[3];
             size_t in[3];
+            for (int r = 0; r < 6; ++r) {
+                region_src[r] = quantized->fp4_regions[r].data;
+                region_nbytes[r] = quantized->fp4_regions[r].nbytes;
+            }
             for (int p = 0; p < 3; ++p) {
                 packed_offsets[p] = quantized->fp4[p].packed_offset;
                 scale_offsets[p]  = quantized->fp4[p].scale_offset;
                 out[p] = quantized->fp4[p].out;
                 in[p]  = quantized->fp4[p].in;
             }
-            return prefetcher_.prefetch_fp4_to_f16(
-                       source_layer, expert, source, quantized->fp4_total_nbytes,
+            return prefetcher_.prefetch_fp4_regions_to_f16(
+                       source_layer, expert, region_src, region_nbytes,
+                       quantized->fp4_total_nbytes,
                        packed_offsets, scale_offsets, out, in,
-                       priority, current_token_, logical_layer,
-                       quantized->pinned != nullptr) >= 0;
+                       priority, current_token_, logical_layer) >= 0;
         }
         const uint16_t* blob = get_staging_bf16(source_layer, expert);
         if (!blob) {
