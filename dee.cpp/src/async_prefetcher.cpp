@@ -435,6 +435,12 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
     if (fp4_scale_offsets) std::copy(fp4_scale_offsets, fp4_scale_offsets + 3, transfer.fp4_scale_offsets);
     if (fp4_out) std::copy(fp4_out, fp4_out + 3, transfer.fp4_out);
     if (fp4_in) std::copy(fp4_in, fp4_in + 3, transfer.fp4_in);
+    if (has_regions) {
+        for (int r = 0; r < 6; ++r) {
+            transfer.fp4_region_src[r] = fp4_region_src[r];
+            transfer.fp4_region_nbytes[r] = fp4_region_nbytes[r];
+        }
+    }
     transfer.projection_elements = projection_elements;
     if (quant_scales) std::copy(quant_scales, quant_scales + 3, transfer.quant_scales);
     transfer.source_pinned = source_pinned;
