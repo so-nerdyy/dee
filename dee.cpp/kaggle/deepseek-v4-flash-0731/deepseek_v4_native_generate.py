@@ -27,10 +27,13 @@ BRANCH = "freebuff/deepseek-v4-flash-0731-t4"
 COMMIT = os.environ.get("NATIVE_COMMIT", "")
 REV = "9e165c30e2704aec5d9d593cce3eebd58bbef1cb"
 N_SHARDS = 48
-ROOT = Path("/kaggle/temp/dsv4-native-src")
+# /kaggle/temp is NOT present on the dual-T4 "medium" container (verified via
+# a disk probe on 2026-08-15); /tmp and / both sit on the ~8 TB root overlay
+# with ~1 TiB free, so stage the 167 GB checkpoint there instead.
+ROOT = Path("/tmp/dsv4-native-src")
 DEE = ROOT / "dee.cpp"
 BUILD = DEE / "build-kaggle"
-CKPT = Path("/kaggle/temp/dsv4-checkpoint")
+CKPT = Path("/tmp/dsv4-checkpoint")
 WORK = Path("/kaggle/working")
 HEADERS_DIR = (DEE / "benchmark_reports/deepseek-v4-flash-0731-t4/shard-headers")
 CONFIG = (DEE / "benchmark_reports/deepseek-v4-flash-0731-t4/"
@@ -281,4 +284,8 @@ if __name__ == "__main__":
         tb = traceback.format_exc()
         log("FATAL " + tb)
         (WORK / "error.txt").write_text(tb)
-        sys.exit(1)
+        (WORK / "native-generate-result.json").write_text(
+            json.dumps({"status": "error", "traceback": tb}, indent=2))
+        # Exit 0 so Kaggle snapshots /kaggle/working (error-exit kernels drop
+        # their output/log, which is why the earlier failures were undiagnosable).
+        sys.exit(0)
