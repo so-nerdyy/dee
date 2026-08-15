@@ -117,6 +117,51 @@ __global__ void weighted_combine_fp16_kernel(
 
 int grid_for(int count) { return (count + kThreads - 1) / kThreads; }
 
+// y[m] = W[m,k] @ x[k] with FP16 operands, FP32 accumulation, FP32 output.
+// One thread block per output row: threads split the k-dimension so each warp
+// reads W in fully-coalesced runs, then tree-reduces the per-thread partials.
+// cuBLAS's cublasGemmEx falls back to a slow path for the n==1 (GEMV) case
+// these batch-1 expert projections hit; this kernel is memory-bound instead.
+__global__ void fp16_gemv_fp32_kernel(const __half* __restrict__ matrix,
+                                      const __half* __restrict__ input,
+                                      float* __restrict__ output,
+                                      int rows, int cols) {
+    const int row = blockIdx.x;
+    if (row >= rows) return;
+    __shared__ float partials[kThreads];
+    const __half* wrow = matrix + static_cast<size_t>(row) * cols;
+    float acc = 0.0f;
+    for (int j = threadIdx.x; j < cols; j += kThreads) {
+        acc = fmaf(__half2float(wrow[j]), __half2float(input[j]), acc);
+    }
+    partials[threadIdx.x] = acc;
+    __syncthreads();
+    for (int s = kThreads / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) partials[threadIdx.x] += partials[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) output[row] = partials[0];
+}
+
+bool fp16_gemv_to_f32(const __half* matrix, int rows, int cols,
+                      const __half* input, float* output, cudaStream_t stream,
+                      GpuStage stage, StageProfiler* profiler) {
+    if (!matrix || !input || !output || !stream || rows <= 0 || cols <= 0) {
+        std::fprintf(stderr, "[cuda] invalid FP16 GEMV arguments (rows=%d cols=%d)\n",
+                     rows, cols);
+        return false;
+    }
+    const size_t ticket = profiler && profiler->enabled()
+        ? profiler->cuda_begin(stage, static_cast<void*>(stream))
+        : static_cast<size_t>(-1);
+    fp16_gemv_fp32_kernel<<<rows, kThreads, 0, stream>>>(
+        matrix, input, output, rows, cols);
+    if (profiler && profiler->enabled()) profiler->note_kernel_launch();
+    if (!DEE_CUDA_CHECK_LAUNCH("fp16_gemv_fp32_kernel launch")) return false;
+    return !profiler || !profiler->enabled() ||
+           profiler->cuda_end(ticket, static_cast<void*>(stream));
+}
+
 bool gemm_fp16_row_major(cublasHandle_t handle, const __half* matrix,
                          int rows, int cols, const __half* input, float* output,
                          cudaStream_t stream, GpuStage stage,
@@ -328,9 +373,9 @@ bool swiglu_expert_fp16_cuda(cublasHandle_t handle, const void* d_weights,
     if (!DEE_CUDA_CHECK_LAUNCH("swiglu_activation_fp16_kernel launch")) return false;
     if (profiler && profiler->enabled() &&
         !profiler->cuda_end(activation_ticket, static_cast<void*>(stream))) return false;
-    if (!gemm_fp16_row_major(handle, weights + 2 * projection, hidden, inter,
-                             activation, d_y, stream,
-                             GpuStage::DownProjection, profiler)) return false;
+    if (!fp16_gemv_to_f32(weights + 2 * projection, hidden, inter,
+                          activation, d_y, stream,
+                          GpuStage::DownProjection, profiler)) return false;
 #ifdef DEE_CUDA_VALIDATE
     return DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(stream),
                                 "cudaStreamSynchronize(FP16 SwiGLU validation)");
