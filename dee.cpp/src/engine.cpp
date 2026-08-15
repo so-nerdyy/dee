@@ -2613,25 +2613,8 @@ const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int exp
         scale_accum += scales[p].nbytes;
     }
     quantized.fp4_total_nbytes = packed_total + scale_total;
-#ifdef DEE_CUDA
-    // Mirror the INT8/INT4 paths: stage into persistent pinned memory so the
-    // prefetcher can H2D straight from it (source_pinned=true) and skip the
-    // second mmap->pinned memcpy in cuda_submit.
-    if (cfg_.use_cuda &&
-        pinned_staging_bytes_ + quantized.fp4_total_nbytes <= kPinnedStagingLimit) {
-        if (DEE_CUDA_CHECK_NAMED(
-                DEE_TA_HOST_ALLOC(&quantized.pinned, quantized.fp4_total_nbytes,
-                                  cudaHostAllocDefault,
-                                  "persistent_fp4_expert_source"),
-                                 "cudaHostAlloc(persistent FP4 expert source)")) {
-            pinned_staging_bytes_ += quantized.fp4_total_nbytes;
-        }
-    }
-#endif
-    if (!quantized.pinned) quantized.host.resize(quantized.fp4_total_nbytes);
-    auto* dst = quantized.pinned
-        ? static_cast<uint8_t*>(quantized.pinned)
-        : reinterpret_cast<uint8_t*>(quantized.host.data());
+    quantized.host.resize(quantized.fp4_total_nbytes);
+    auto* dst = reinterpret_cast<uint8_t*>(quantized.host.data());
     for (int p = 0; p < 3; ++p) {
         std::memcpy(dst + quantized.fp4[p].packed_offset, weights[p].data, weights[p].nbytes);
     }
@@ -2643,9 +2626,6 @@ const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int exp
             std::chrono::duration<double, std::milli>(
                 StageProfiler::now() - profile_begin).count());
         profiler_.note_mmap_copy(quantized.fp4_total_nbytes);
-    }
-    if (quantized.pinned) {
-        DEE_TA_INSERT("staging_int8_", key, quantized.pinned, "cudaHostAlloc");
     }
     auto inserted = staging_int8_.emplace(key, std::move(quantized));
     return &inserted.first->second;
@@ -2741,9 +2721,7 @@ bool Engine::stage_expert(int logical_layer, int source_layer, int expert, int p
         if (cfg_.transfer_dtype == WeightTransferDType::Fp4E2m1) {
             const QuantizedExpert* quantized = get_staging_fp4(source_layer, expert);
             if (!quantized) return false;
-            const auto* source = quantized->pinned
-                ? static_cast<const uint8_t*>(quantized->pinned)
-                : reinterpret_cast<const uint8_t*>(quantized->host.data());
+            const auto* source = reinterpret_cast<const uint8_t*>(quantized->host.data());
             size_t packed_offsets[3];
             size_t scale_offsets[3];
             size_t out[3];
