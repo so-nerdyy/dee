@@ -223,30 +223,25 @@ __device__ __forceinline__ float fp4_scale_value(uint8_t bits) {
 }
 
 // Decode packed I8 [out, in//2] + e8m0 scale [out, in//32] -> FP16 [out, in].
-// One thread per 32-element scale block (2D grid: blockIdx.y = row, blockIdx.x
-// = scale-block tile).  Each thread loads its scale byte once, computes the
-// e8m0 value once, then decodes 16 packed bytes (32 nibbles) with contiguous
-// 16-byte reads / 64-byte writes.  The per-element version re-read and
-// re-computed the scale for every element (32x redundant work).
+// One thread per output element with a 2D grid (blockIdx.y = row, blockIdx.x
+// = column tile), so writes stay fully coalesced while the 64-bit div/mod of
+// the original per-element kernel is avoided.  The e2m1 lookup index differs
+// per thread, so the table lives in shared memory (a __constant__ read with a
+// non-uniform index serializes on the broadcast path).
 __global__ void fp4_e2m1_to_f16_kernel(const uint8_t* packed, const uint8_t* scale,
                                        __half* destination, size_t out, size_t in) {
     __shared__ float s_table[16];
     if (threadIdx.x < 16) s_table[threadIdx.x] = kFp4E2m1Table[threadIdx.x];
     __syncthreads();
-    const size_t scale_stride = in >> 5;   // 32-element scale blocks per row
-    const size_t half_in = in >> 1;        // packed bytes per row
-    const size_t o = blockIdx.y;           // output row
-    const size_t b = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (b >= scale_stride) return;
-    const float s = fp4_scale_value(scale[o * scale_stride + b]);
-    const uint8_t* p = packed + o * half_in + (b << 4);   // 16 packed bytes
-    __half* d = destination + o * in + (b << 5);          // 32 output halves
-    #pragma unroll
-    for (int j = 0; j < 16; ++j) {
-        const uint8_t byte = p[j];
-        d[j * 2]     = __float2half_rn(s_table[byte & 0x0F] * s);
-        d[j * 2 + 1] = __float2half_rn(s_table[byte >> 4] * s);
-    }
+    const size_t o = blockIdx.y;
+    const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= in) return;
+    const size_t half_in = in >> 1;
+    const size_t scale_stride = in >> 5;
+    const uint8_t byte = packed[o * half_in + (i >> 1)];
+    const uint8_t nibble = (i & 1) ? (byte >> 4) : (byte & 0x0F);
+    const float s = fp4_scale_value(scale[o * scale_stride + (i >> 5)]);
+    destination[o * in + i] = __float2half_rn(s_table[nibble] * s);
 }
 
 __global__ void oracle_relu_kernel(float* x, int n) {
@@ -269,12 +264,11 @@ bool fp4_e2m1_to_f16_cuda(const uint8_t* packed, const uint8_t* scale,
         std::fprintf(stderr, "[cuda] FP4-e2m1 requires in multiple of 64, got %zu\n", in);
         return false;
     }
-    // 2D grid: blockIdx.y walks rows (out), blockIdx.x walks scale-block tiles
-    // (in/32) of the row. No per-thread 64-bit division; reads/writes coalesced.
+    // 2D grid: blockIdx.y walks rows (out), blockIdx.x walks column tiles of
+    // the row. No per-thread 64-bit division; writes are fully coalesced.
     if (out > static_cast<size_t>(std::numeric_limits<unsigned int>::max())) return false;
-    const size_t scale_stride = in >> 5;
     const dim3 grid(static_cast<unsigned int>(
-                        (scale_stride + kConversionThreads - 1) / kConversionThreads),
+                        (in + kConversionThreads - 1) / kConversionThreads),
                     static_cast<unsigned int>(out));
     const size_t ticket = profiler && profiler->enabled()
         ? profiler->cuda_begin(GpuStage::WeightConversion, static_cast<void*>(stream))
