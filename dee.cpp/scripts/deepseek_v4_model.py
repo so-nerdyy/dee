@@ -552,6 +552,8 @@ class DeepseekV4Model:
                         provider: ExpertProvider,
                         dense_dtype: torch.dtype = torch.float16,
                         embed_head_dtype: torch.dtype = torch.bfloat16,
+                        ffn_backend: str = "cache_fp16",
+                        engine0: Any = None, engine1: Any = None,
                         split: Optional[int] = None) -> "DeepseekV4Model":
         """Build the dual-GPU candidate.
 
@@ -594,10 +596,17 @@ class DeepseekV4Model:
             # on top of the raw LRU pushed host RSS past the 12 GB ceiling.
             # The layer frees the host copy after the GPU entry is pinned,
             # so only the raw FP8 tensors (13.4 MB x 43) stay resident.
-            layer_obj = v4cand.make_candidate_layer(
-                lcfg, w_cuda, device=device, max_batch=1, cache=cache,
-                loader=loader, layer_id=layer, fp16_payloads={},
-                shared_payload=None, provider=provider)
+            if ffn_backend == "native":
+                engine = engine0 if layer < split else engine1
+                layer_obj = v4cand.make_native_candidate_layer(
+                    lcfg, w_cuda, engine=engine, layer_id=layer,
+                    device=device, max_batch=1, shared_payload=None,
+                    provider=provider)
+            else:
+                layer_obj = v4cand.make_candidate_layer(
+                    lcfg, w_cuda, device=device, max_batch=1, cache=cache,
+                    loader=loader, layer_id=layer, fp16_payloads={},
+                    shared_payload=None, provider=provider)
             (layers0 if layer < split else layers1).append(layer_obj)
 
         model = cls(cfg, embed=embed.to(device0), layers0=layers0,
@@ -1085,3 +1094,40 @@ def static_memory_plan(cfg: ModelConfig, source: TensorSource, *,
         "per_layer_state_bytes": groups["state"],
     }
     return plan
+
+
+# ---------------------------------------------------------------------------
+# Native routed-expert engine (pydee) construction for the full model.
+# ---------------------------------------------------------------------------
+
+
+def build_native_engine(shard_paths: list[str], *,
+                        device_id: int = 0,
+                        hidden: int = 4096,
+                        inter: int = 2048,
+                        num_experts: int = 256,
+                        num_layers: int = 43,
+                        topk: int = 6,
+                        budget_bytes: int = 512 << 20,
+                        swiglu_limit: float = 10.0) -> Any:
+    """Build one pydee.Engine (FP4 transfer, FP16 device cache) that streams
+    routed experts for the full DeepSeek-V4-Flash-0731 model.
+
+    The engine mmaps every shard in ``shard_paths`` (read-only, lazy); the
+    resolver routes ``layers.{L}.ffn.experts.{E}.w*`` lookups to the correct
+    shard by tensor name, so one engine per CUDA device serves all 43 layers.
+    Routing stays caller-owned (oracle_path empty); ``moe_forward_experts`` is
+    the only entry point the harness uses.
+    """
+    import pydee
+    if pydee.Engine is None:
+        raise RuntimeError("pydee compiled binding not importable")
+    cfg = pydee.configure(
+        shard_path=shard_paths[0], num_experts=num_experts,
+        num_layers=num_layers, hidden=hidden, inter=inter,
+        use_cuda=True, transfer_dtype="fp4", cache_dtype="fp16",
+        topk=topk, budget_bytes=budget_bytes, swiglu_limit=swiglu_limit)
+    cfg.shard_paths = [str(p) for p in shard_paths]
+    cfg.device_id = device_id
+    cfg.base_layer = 0
+    return pydee.new_engine(cfg)

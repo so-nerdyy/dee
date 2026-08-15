@@ -243,6 +243,9 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
         self.stats = {"requests": 0, "hits": 0, "misses": 0,
                       "native_fwd_ms": 0.0, "native_calls": 0}
         self.last_route: dict[str, Any] = {}
+        # Device-resident shared-expert payload (materialized lazily on the
+        # first forward; the provider hands back CPU FP16 tensors).
+        self._shared_dev: Optional[dict[str, torch.Tensor]] = None
 
     def _run_experts(self, xf: torch.Tensor, ids: torch.Tensor,
                      weights: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -285,14 +288,21 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
             self.shared_payload = self.provider.get_shared_fp16_payload(self.layer_id)
         if not self.shared_payload:
             return torch.zeros(n, d, dtype=torch.float32, device=self.device)
-        sp = self.shared_payload
+        if self._shared_dev is None:
+            # The provider hands back CPU FP16 tensors; move them to the
+            # execution device once and reuse across every token/layer call.
+            self._shared_dev = {k: v.to(self.device)
+                                for k, v in self.shared_payload.items()}
+        w1 = self._shared_dev["w1.weight"]
+        w2 = self._shared_dev["w2.weight"]
+        w3 = self._shared_dev["w3.weight"]
         xc = xf.half().to(self.device)
-        gate = torch.clamp((xc @ sp["w1.weight"].t()).float(),
+        gate = torch.clamp((xc @ w1.t()).float(),
                            max=self.cfg.swiglu_limit)
-        up = torch.clamp((xc @ sp["w3.weight"].t()).float(),
+        up = torch.clamp((xc @ w3.t()).float(),
                          min=-self.cfg.swiglu_limit, max=self.cfg.swiglu_limit)
         h = torch.nn.functional.silu(gate) * up
-        return (h.half() @ sp["w2.weight"].t()).float()
+        return (h.half() @ w2.t()).float()
 
 
 def build_fp16_payloads(
