@@ -34,6 +34,10 @@ ROOT = Path("/tmp/dsv4-native-src")
 DEE = ROOT / "dee.cpp"
 BUILD = DEE / "build-kaggle"
 CKPT = Path("/tmp/dsv4-checkpoint")
+# When the checkpoint is published as a Kaggle dataset it mounts read-only at
+# /kaggle/input/<slug>/; prefer that (no download, no disk quota). The local
+# /tmp fallback remains for the 155 GiB-free case.
+DATASET_DIR = Path("/kaggle/input/deepseek-v4-flash-0731-shards")
 WORK = Path("/kaggle/working")
 HEADERS_DIR = (DEE / "benchmark_reports/deepseek-v4-flash-0731-t4/shard-headers")
 CONFIG = (DEE / "benchmark_reports/deepseek-v4-flash-0731-t4/"
@@ -124,10 +128,17 @@ def _snapshot_download(shards: list[str]) -> bool:
 def download_all_shards() -> list[str]:
     shards = [f"model-{i:05d}-of-00048.safetensors"
               for i in range(1, N_SHARDS + 1)]
+    paths = [str(CKPT / s) for s in shards]
+    # Dataset-mounted checkpoint: no download, no writable-disk quota.
+    if DATASET_DIR.is_dir():
+        ds_paths = [str(DATASET_DIR / s) for s in shards]
+        if all(Path(p).is_file() for p in ds_paths):
+            log(f"[download] using dataset-mounted checkpoint at {DATASET_DIR}")
+            return ds_paths
+        log(f"[download] dataset dir present but incomplete; downloading")
     CKPT.mkdir(parents=True, exist_ok=True)
     if not _snapshot_download(shards):
         raise RuntimeError("snapshot_download failed")
-    paths = [str(CKPT / s) for s in shards]
     missing = [p for p in paths if not Path(p).is_file()]
     if missing:
         # Fall back to resume-capable range fetches for whatever is missing.
