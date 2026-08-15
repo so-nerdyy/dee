@@ -640,8 +640,12 @@ bool AsyncPrefetcher::cuda_submit(long index) {
     if (chosen == static_cast<size_t>(-1) && staging_slots_.size() < ring_size_) {
         PinnedStagingSlot slot;
         slot.bytes = transfer.source_nbytes;
-        if (!DEE_CUDA_CHECK_NAMED(DEE_TA_MALLOC_HOST(&slot.ptr, slot.bytes, "slot"),
-                                  "cudaMallocHost(pinned staging slot)")) return false;
+        // Write-combined: the CPU only ever streams INTO this slot (gather) and
+        // the DMA engine reads it for H2D; never CPU-read back, so WC avoids
+        // cache pollution on the mmap->pinned gather that dominates the wall.
+        if (!DEE_CUDA_CHECK_NAMED(
+                DEE_TA_HOST_ALLOC(&slot.ptr, slot.bytes, cudaHostAllocWriteCombined, "slot"),
+                "cudaHostAlloc(write-combined pinned staging slot)")) return false;
         staging_slots_.push_back(slot);
         chosen = staging_slots_.size() - 1;
     }
