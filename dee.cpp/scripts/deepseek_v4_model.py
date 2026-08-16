@@ -246,16 +246,21 @@ class LocalDirTensorSource(CommittedHeaderSource):
         return self._prefix[shard]
 
     def _fetch_bytes(self, name: str) -> bytes:
-        row = self.tensor_identity(name)
-        shard = row["shard"]
-        if shard not in self._handles:
-            from safetensors import safe_open
-            path = self.shards_dir / shard
-            if not path.is_file():
-                raise FileNotFoundError(f"shard not on disk: {path}")
-            self._handles[shard] = safe_open(str(path), framework="pt",
-                                             device="cpu")
-        return self._handles[shard].get_slice(name)[:].tobytes()
+        # Read the raw tensor bytes directly from the committed header's
+        # absolute offset/length.  (safe_open(...).get_slice(name)[:] returns
+        # a torch.Tensor whose .tobytes() was removed in modern PyTorch, and
+        # the byte-level read is both faster and dtype-preserving.)
+        shard, start, length = self.absolute_range(name)
+        path = self.shards_dir / shard
+        if not path.is_file():
+            raise FileNotFoundError(f"shard not on disk: {path}")
+        with open(path, "rb") as fh:
+            fh.seek(start)
+            data = fh.read(length)
+        if len(data) != length:
+            raise RuntimeError(
+                f"{name}: short read {len(data)}/{length} from {path}")
+        return data
 
 
 class DictTensorSource:
