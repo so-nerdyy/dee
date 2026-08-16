@@ -30,6 +30,7 @@
 #pragma once
 
 #include "dee/async_prefetcher.h"
+#include "dee/host_pack_cache.h"
 #include "dee/oracle.h"
 #include "dee/profiling.h"
 #include "dee/vram_cache.h"
@@ -84,6 +85,8 @@ struct EngineConfig {
     int         topk        = 8;    // experts activated per layer (top-K)
     int         num_layers  = 40;   // depth (clamped to oracle.num_layers)
     size_t      budget_bytes = 0;   // VRAM budget (0 => 4 experts auto)
+    size_t      host_pack_cache_bytes = 0; // packed-source RAM LRU (0 => 8 GiB)
+    bool        use_batched_experts = false; // stacked strided-batched SwiGLU
     size_t      prefetch_depth = 64;// bounded pinned/device staging ring
     DeviceCacheDType cache_dtype = DeviceCacheDType::Fp32;
     WeightTransferDType transfer_dtype = WeightTransferDType::Bf16;
@@ -130,6 +133,11 @@ struct EngineStats {
     uint64_t duplicate_requests = 0;
     uint64_t h2d_bytes = 0;
     uint64_t h2d_copies = 0;
+    uint64_t host_pack_hits = 0;
+    uint64_t host_pack_misses = 0;
+    uint64_t host_pack_evictions = 0;
+    size_t host_pack_bytes = 0;
+    size_t host_pack_entries = 0;
     size_t current_vram = 0;
     size_t resident_experts = 0;
     // Measurement-only ownership ledger.  These are live allocation sizes,
@@ -182,6 +190,11 @@ public:
     Engine() : prefetcher_(cache_) {}
     bool init(const EngineConfig& cfg);
     const EngineConfig& config() const { return cfg_; }
+
+    // Expose the packed-source host RAM LRU stats (Stage 1 residency).
+    const HostPackCache::Stats& host_pack_stats() const {
+        return pack_cache_.stats();
+    }
 
     // Run the autoregressive generation loop and fill `stats_`.
     bool generate();
@@ -448,6 +461,11 @@ private:
         void* external_stream, bool direct_single_row_io,
         bool pointer_batched_experts);
 
+    // Bounded LRU of packed expert source bytes (FP4 e2m1 + e8m0 scales),
+    // so repeated prefetch gathers hit host RAM instead of re-faulting cold
+    // mmap pages against the full checkpoint (the measured cold-store wall).
+    HostPackCache pack_cache_;
+
     // host staging: resolved shard (layer, expert) -> F32 blob
     // [gate|up|down].  Synthetic single-layer shards intentionally map every
     // model layer to source layer 0; real multi-layer shards stay distinct.
@@ -486,6 +504,9 @@ private:
             size_t nbytes = 0;
         };
         Fp4Region fp4_regions[6];
+        // Byte length of each of the six regions (mirrors fp4_regions), kept
+        // so hit-path refreshes can re-point without recomputing shapes.
+        size_t fp4_region_nbytes[6] = {0, 0, 0, 0, 0, 0};
     };
     std::unordered_map<uint64_t, QuantizedExpert> staging_int8_;
     size_t pinned_staging_bytes_ = 0;

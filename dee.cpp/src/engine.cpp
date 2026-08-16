@@ -290,27 +290,109 @@ bool Engine::moe_forward_experts(int layer, const float* h_in, float* experts_ou
             }
             std::vector<int> pinned;
             pinned.reserve(static_cast<size_t>(last - first));
-            for (int k = first; k < last; ++k) {
-                const int expert = experts[k];
-                // Milestone 2.5 fix (defect #2): device-side wait so the host
-                // can keep issuing subsequent experts' cache pin / GEMM.
-                if (!prefetcher_.wait_on_stream(source_layer, expert, compute_stream_) &&
-                    !prefetcher_.wait(source_layer, expert)) return false;
-                if (!cache_.pin(source_layer, expert)) return false;
-                pinned.push_back(expert);
-                const void* d_blob = cache_.data(source_layer, expert);
+            const int batch_experts = last - first;
+            const bool use_batched =
+                cfg_.use_batched_experts && batch_experts > 1 &&
+                cfg_.cache_dtype == DeviceCacheDType::Fp16;
+            if (!use_batched) {
+                // Per-expert path (single expert, Fp32 cache, or opt-out).
+                for (int k = first; k < last; ++k) {
+                    const int expert = experts[k];
+                    // Milestone 2.5 fix (defect #2): device-side wait so the host
+                    // can keep issuing expert cache pin / GEMM.
+                    if (!prefetcher_.wait_on_stream(source_layer, expert, compute_stream_) &&
+                        !prefetcher_.wait(source_layer, expert)) return false;
+                    if (!cache_.pin(source_layer, expert)) return false;
+                    pinned.push_back(expert);
+                    const void* d_blob = cache_.data(source_layer, expert);
+                    StageProfiler* prof = profiler_.enabled() ? &profiler_ : nullptr;
+                    const bool ok = d_blob && (cfg_.cache_dtype == DeviceCacheDType::Fp16
+                        ? swiglu_expert_fp16_cuda(
+                              cublas_handle_, d_blob, d_h_in_half_, d_hbuf_, d_ubuf_,
+                              d_activation_half_, d_ybuf_ + (size_t)k * hidden_,
+                              inter_, hidden_, compute_stream_, prof, cfg_.swiglu_limit)
+                        : swiglu_expert_cuda(
+                              cublas_handle_, static_cast<const float*>(d_blob), d_h_in_,
+                              d_hbuf_, d_ubuf_, d_ybuf_ + (size_t)k * hidden_,
+                               inter_, hidden_, compute_stream_, prof, cfg_.swiglu_limit));
+                    if (!ok) return false;
+                    prefetcher_.mark_consumed(source_layer, expert);
+                }
+            } else {
+                // Stage 2: one strided/pointer-batched SwiGLU launch per
+                // projection for all experts of this layer-token (shared
+                // activation input; per-expert outputs in d_ybuf_).  Uses the
+                // existing M5F pointer-batched kernel + pointer table.
+                const size_t selections = static_cast<size_t>(batch_experts);
+                if (!ensure_pointer_batch_capacity(selections)) return false;
+                void* gate_out = d_moe_pointer_batch_gate_half_;
+                void* up_out = d_moe_pointer_batch_up_half_;
+                void* act_out = d_moe_pointer_batch_activation_half_;
+                const size_t projection_elems =
+                    static_cast<size_t>(inter_) * hidden_;
+                for (int k = first; k < last; ++k) {
+                    const int expert = experts[k];
+                    if (!prefetcher_.wait_on_stream(source_layer, expert, compute_stream_) &&
+                        !prefetcher_.wait(source_layer, expert)) return false;
+                    if (!cache_.pin(source_layer, expert)) return false;
+                    pinned.push_back(expert);
+                    auto* blob = static_cast<uint16_t*>(
+                        cache_.data(source_layer, expert));
+                    if (!blob) {
+                        set_last_error(
+                            "batched expert cache pointer is null");
+                        return false;
+                    }
+                    const size_t position_index =
+                        static_cast<size_t>(k - first);
+                    h_moe_pointer_table_[0 * selections + position_index] = blob;
+                    h_moe_pointer_table_[1 * selections + position_index] =
+                        blob + projection_elems;
+                    h_moe_pointer_table_[2 * selections + position_index] =
+                        blob + 2 * projection_elems;
+                    h_moe_pointer_table_[3 * selections + position_index] =
+                        const_cast<void*>(d_h_in_half_);
+                    h_moe_pointer_table_[4 * selections + position_index] =
+                        static_cast<uint16_t*>(gate_out) +
+                        position_index * static_cast<size_t>(inter_);
+                    h_moe_pointer_table_[5 * selections + position_index] =
+                        static_cast<uint16_t*>(up_out) +
+                        position_index * static_cast<size_t>(inter_);
+                    h_moe_pointer_table_[6 * selections + position_index] =
+                        static_cast<uint16_t*>(act_out) +
+                        position_index * static_cast<size_t>(inter_);
+                    h_moe_pointer_table_[7 * selections + position_index] =
+                        d_ybuf_ + position_index * static_cast<size_t>(hidden_);
+                }
+                constexpr size_t kPointerArrays = 8;
+                if (!DEE_CUDA_CHECK_NAMED(
+                        cudaMemcpyAsync(
+                            d_moe_pointer_table_, h_moe_pointer_table_,
+                            kPointerArrays * selections * sizeof(void*),
+                            cudaMemcpyHostToDevice, compute_stream_),
+                        "cudaMemcpyAsync(batched expert pointer table)")) {
+                    set_last_error("batched expert pointer upload failed");
+                    return false;
+                }
+                void** table = d_moe_pointer_table_;
                 StageProfiler* prof = profiler_.enabled() ? &profiler_ : nullptr;
-                const bool ok = d_blob && (cfg_.cache_dtype == DeviceCacheDType::Fp16
-                    ? swiglu_expert_fp16_cuda(
-                          cublas_handle_, d_blob, d_h_in_half_, d_hbuf_, d_ubuf_,
-                          d_activation_half_, d_ybuf_ + (size_t)k * hidden_,
-                          inter_, hidden_, compute_stream_, prof, cfg_.swiglu_limit)
-                    : swiglu_expert_cuda(
-                          cublas_handle_, static_cast<const float*>(d_blob), d_h_in_,
-                          d_hbuf_, d_ubuf_, d_ybuf_ + (size_t)k * hidden_,
-                           inter_, hidden_, compute_stream_, prof, cfg_.swiglu_limit));
-                if (!ok) return false;
-                prefetcher_.mark_consumed(source_layer, expert);
+                const bool computed = swiglu_expert_pointer_batch_fp16_cuda(
+                    cublas_handle_,
+                    table + 0 * selections, table + 1 * selections,
+                    table + 2 * selections, table + 3 * selections,
+                    table + 4 * selections, table + 5 * selections,
+                    table + 6 * selections, table + 7 * selections,
+                    gate_out, up_out, act_out,
+                    batch_experts, inter_, hidden_, compute_stream_,
+                    prof, cfg_.swiglu_limit);
+                if (!computed) {
+                    set_last_error(
+                        "pointer-batched SwiGLU failed (use_batched_experts)");
+                    return false;
+                }
+                for (int k = first; k < last; ++k) {
+                    prefetcher_.mark_consumed(source_layer, experts[k]);
+                }
             }
             if (!DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(compute_stream_),
                                       "cudaStreamSynchronize(external expert batch)")) return false;
@@ -1873,6 +1955,12 @@ EngineStats Engine::runtime_stats() const {
     result.duplicate_requests = ps.duplicate_requests;
     result.h2d_bytes = ps.h2d_bytes;
     result.h2d_copies = ps.h2d_copies;
+    const auto& hp = pack_cache_.stats();
+    result.host_pack_hits = hp.hits;
+    result.host_pack_misses = hp.misses;
+    result.host_pack_evictions = hp.evictions;
+    result.host_pack_bytes = hp.bytes;
+    result.host_pack_entries = hp.entries;
     result.current_vram = cache_.used_bytes();
     result.resident_experts = cache_.resident_count();
     result.peak_vram = std::max(result.peak_vram, result.current_vram);
@@ -2560,22 +2648,15 @@ const Engine::QuantizedExpert* Engine::get_staging_int4(int source_layer, int ex
 const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int expert) {
     const auto profile_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
     const uint64_t key = staging_key(source_layer, expert);
-    auto existing = staging_int8_.find(key);
-    if (existing != staging_int8_.end()) {
-        if (profiler_.enabled()) {
-            const auto resolution_end = StageProfiler::now();
-            profiler_.add_cpu_ms(CpuStage::TensorResolution,
-                std::chrono::duration<double, std::milli>(resolution_end - profile_begin).count());
-            profiler_.note_cpu_timeline_interval(CpuTimelineKind::TensorResolution,
-                profile_begin, resolution_end, current_token_, source_layer, expert);
-        }
-        return &existing->second;
-    }
+    // NOTE: both the hit and miss paths below re-consult the host pack cache
+    // and refresh the six region pointers before returning, because the pack
+    // LRU may have evicted (and re-materialized elsewhere) this expert's
+    // buffer between calls.  Never return a cached struct without re-pointing.
 
     // DEEPSEEK_V4 FP4 (e2m1fn): the weights are already packed on disk
     // (dtype I8 [out, in//2]) with a matching per-block F8_E8M0 scale tensor
     // (dtype F8 [out, in//32]).  No host-side quantization: stage them verbatim
-    // into one contiguous buffer [gate_packed][up_packed][down_packed]
+    // into one contiguous [gate_packed][up_packed][down_packed]
     // [gate_scale][up_scale][down_scale] and let the CUDA transfer stream decode.
     TensorView weights[3] = {
         resolver_.resolve_expert(source_layer, expert, TensorResolver::GATE_PROJ),
@@ -2613,22 +2694,74 @@ const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int exp
         scale_accum += scales[p].nbytes;
     }
     quantized.fp4_total_nbytes = packed_total + scale_total;
-    // No host gather: record the six mmap regions verbatim and let the
-    // prefetcher gather them into its persistent pinned slot in one pass
-    // (avoids the fresh heap vector's zeroing + first-touch page faults and
-    // the second heap->pinned memcpy).
-    quantized.fp4_regions[0] = {weights[0].data, weights[0].nbytes};
-    quantized.fp4_regions[1] = {weights[1].data, weights[1].nbytes};
-    quantized.fp4_regions[2] = {weights[2].data, weights[2].nbytes};
-    quantized.fp4_regions[3] = {scales[0].data, scales[0].nbytes};
-    quantized.fp4_regions[4] = {scales[1].data, scales[1].nbytes};
-    quantized.fp4_regions[5] = {scales[2].data, scales[2].nbytes};
+
+    // Stage 1 residency: keep a private RAM copy of the packed bytes (LRU,
+    // bounded by cfg_.host_pack_cache_bytes) so repeated prefetch gathers hit
+    // host DRAM instead of re-faulting cold mmap pages against the full
+    // checkpoint.  The fill is the SAME on hit and miss: if the pack evicted
+    // this key in between, it re-copies from the (cheap) resolved views.
+    auto fill_pack = [&](uint8_t* dst, size_t n) {
+        const TensorView* sources[6] = {
+            &weights[0], &weights[1], &weights[2],
+            &scales[0], &scales[1], &scales[2]};
+        size_t off = 0;
+        for (int r = 0; r < 6; ++r) {
+            if (off + sources[r]->nbytes > n) {
+                std::memset(dst, 0, n);  // corrupt: fill zero (fail closed)
+                return;
+            }
+            std::memcpy(dst + off, sources[r]->data, sources[r]->nbytes);
+            off += sources[r]->nbytes;
+        }
+    };
+    const uint8_t* pack_buf = pack_cache_.get(
+        key, quantized.fp4_total_nbytes, fill_pack);
+    if (!pack_buf) {
+        std::fprintf(stderr,
+            "[engine] host pack cache miss-allocation for expert (%d,%d); falling back to mmap regions\n",
+            source_layer, expert);
+    }
+
+    // Metadata + region pointers for the target struct (existing entry on the
+    // hit path, the fresh local copy on the miss path).
+    auto existing = staging_int8_.find(key);
+    QuantizedExpert* target =
+        (existing != staging_int8_.end()) ? &existing->second : &quantized;
+    for (int p = 0; p < 3; ++p) target->fp4[p] = quantized.fp4[p];
+    target->fp4_total_nbytes = quantized.fp4_total_nbytes;
+    if (pack_buf) {
+        size_t off = 0;
+        for (int p = 0; p < 3; ++p) {
+            target->fp4_regions[p] = {pack_buf + off, weights[p].nbytes};
+            target->fp4_region_nbytes[p] = weights[p].nbytes;
+            off += weights[p].nbytes;
+        }
+        for (int p = 0; p < 3; ++p) {
+            target->fp4_regions[3 + p] = {pack_buf + off, scales[p].nbytes};
+            target->fp4_region_nbytes[3 + p] = scales[p].nbytes;
+            off += scales[p].nbytes;
+        }
+    } else {
+        // Fallback: verbatim mmap regions (previous behavior).
+        target->fp4_regions[0] = {weights[0].data, weights[0].nbytes};
+        target->fp4_regions[1] = {weights[1].data, weights[1].nbytes};
+        target->fp4_regions[2] = {weights[2].data, weights[2].nbytes};
+        target->fp4_regions[3] = {scales[0].data, scales[0].nbytes};
+        target->fp4_regions[4] = {scales[1].data, scales[1].nbytes};
+        target->fp4_regions[5] = {scales[2].data, scales[2].nbytes};
+        for (int p = 0; p < 6; ++p) {
+            target->fp4_region_nbytes[p] = target->fp4_regions[p].nbytes;
+        }
+    }
     if (profiler_.enabled()) {
         profiler_.add_cpu_ms(CpuStage::TensorResolution,
             std::chrono::duration<double, std::milli>(
                 StageProfiler::now() - profile_begin).count());
-        // The actual mmap->pinned gather is accounted for in the prefetcher's
+        // The actual mmap->host gather is accounted for in the prefetcher's
         // cuda_submit (single copy); nothing is copied on the host here.
+    }
+    if (existing != staging_int8_.end()) {
+        return &existing->second;
     }
     auto inserted = staging_int8_.emplace(key, std::move(quantized));
     return &inserted.first->second;
@@ -3049,6 +3182,10 @@ bool Engine::init(const EngineConfig& cfg) {
         budget = physical_experts * cache_blob_bytes_;
     }
     cfg_.budget_bytes = budget;
+    if (cfg_.host_pack_cache_bytes == 0) {
+        cfg_.host_pack_cache_bytes = 8ULL << 30;  // 8 GiB default host pack LRU
+    }
+    pack_cache_.set_budget(cfg_.host_pack_cache_bytes);
     Arena::Backend be;
     if (cfg.use_cuda) {
 #ifdef DEE_CUDA

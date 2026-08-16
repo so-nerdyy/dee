@@ -46,7 +46,18 @@ CANONICAL_PROMPT = (
     "<\uFF5Cbegin\u2581of\u2581sentence\uFF5C>Who is Alan Turing?"
     "<\uFF5CAssistant\uFF5C>")
 N_TOKENS = int(os.environ.get("NATIVE_N_TOKENS", "16"))
-BUDGET_BYTES = 512 << 20
+# Stage 1: raise the per-GPU VRAM expert cache from 512 MiB (~10 experts) to
+# 3.5 GiB (~73 FP16 experts) — measured free VRAM after dense + engine is
+# ~6.6/4.9 GiB on the two T4s, so 3.5 GiB/GPU keeps clear headroom.
+BUDGET_BYTES = int(os.environ.get("NATIVE_BUDGET_BYTES", str(3584 << 20)))
+# Stage 1: host RAM LRU of packed FP4 expert bytes (12.6 MB/entry). The
+# 16-token working set is ~2,365 pairs ≈ 30 GiB; 6 GiB/engine keeps the hot
+# tail RAM-resident so repeated gathers skip the cold mmap page faults.
+HOST_PACK_CACHE_BYTES = int(os.environ.get(
+    "NATIVE_HOST_PACK_BYTES", str(6 << 30)))
+# Stage 2: stacked pointer-batched SwiGLU for the 6 experts of each
+# layer-token (3 batched cuBLAS calls instead of 18 skinny GEMVs).
+USE_BATCHED_EXPERTS = os.environ.get("NATIVE_BATCHED", "0") == "1"
 PROGRESS = WORK / "progress.log"
 
 
@@ -229,10 +240,16 @@ def main() -> int:
         f"{cfg.dim} {cfg.topk}")
 
     log("=== build native engines (device 0 + 1) ===")
-    eng0 = vm.build_native_engine(shard_paths, device_id=0,
-                                  budget_bytes=BUDGET_BYTES)
-    eng1 = vm.build_native_engine(shard_paths, device_id=1,
-                                  budget_bytes=BUDGET_BYTES)
+    log(f"budget={BUDGET_BYTES/2**30:.2f}GiB/GPU host_pack="
+        f"{HOST_PACK_CACHE_BYTES/2**30:.2f}GiB/GPU batched={USE_BATCHED_EXPERTS}")
+    eng0 = vm.build_native_engine(
+        shard_paths, device_id=0, budget_bytes=BUDGET_BYTES,
+        host_pack_cache_bytes=HOST_PACK_CACHE_BYTES,
+        use_batched_experts=USE_BATCHED_EXPERTS)
+    eng1 = vm.build_native_engine(
+        shard_paths, device_id=1, budget_bytes=BUDGET_BYTES,
+        host_pack_cache_bytes=HOST_PACK_CACHE_BYTES,
+        use_batched_experts=USE_BATCHED_EXPERTS)
     log("engines built")
 
     log("=== build full model (native FFN) ===")
@@ -256,6 +273,8 @@ def main() -> int:
     ids = tokenizer.encode(CANONICAL_PROMPT)
     input_ids = torch.tensor([ids], device="cuda:0").long()
     decode_ms: list[float] = []
+    eng0.reset_external_profile()
+    eng1.reset_external_profile()
     t0 = time.monotonic()
     toks = model.generate(input_ids, max_new_tokens=N_TOKENS,
                           decode_timings_ms=decode_ms)
@@ -300,6 +319,24 @@ def main() -> int:
         "gpu_memory": gpu_memory_snapshot(),
         "layer_count_executed": len(model.execution_trace),
     }
+
+    # Stage 0 instrumentation: per-engine expert-cache + host-pack + stage
+    # profile dumps so every run reports WHERE the wall went.
+    try:
+        result["engine_stats"] = {
+            "cuda0": json.loads(eng0.last_stats_json()),
+            "cuda1": json.loads(eng1.last_stats_json()),
+        }
+        result["host_pack"] = {
+            "cuda0": eng0.host_pack_stats(),
+            "cuda1": eng1.host_pack_stats(),
+        }
+        result["stage_profile"] = {
+            "cuda0": json.loads(eng0.external_profile_json(wall_s * 1000.0)),
+            "cuda1": json.loads(eng1.external_profile_json(wall_s * 1000.0)),
+        }
+    except Exception as exc:  # never fail the run over instrumentation
+        log(f"instrumentation dump failed: {exc}")
     log("RESULT " + json.dumps(result))
     (WORK / "native-generate-result.json").write_text(
         json.dumps(result, indent=2))

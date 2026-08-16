@@ -81,6 +81,8 @@ PYBIND11_MODULE(pydee_core, m) {
         .def_readwrite("base_layer", &dee::EngineConfig::base_layer)
         .def_readwrite("device_id", &dee::EngineConfig::device_id)
         .def_readwrite("budget_bytes", &dee::EngineConfig::budget_bytes)
+        .def_readwrite("host_pack_cache_bytes", &dee::EngineConfig::host_pack_cache_bytes)
+        .def_readwrite("use_batched_experts", &dee::EngineConfig::use_batched_experts)
         .def_readwrite("cache_dtype", &dee::EngineConfig::cache_dtype)
         .def_readwrite("transfer_dtype", &dee::EngineConfig::transfer_dtype)
         .def_readwrite("use_cuda", &dee::EngineConfig::use_cuda)
@@ -100,6 +102,17 @@ PYBIND11_MODULE(pydee_core, m) {
         .def("init", &dee::Engine::init, py::arg("cfg"))
         .def("hidden_dim", &dee::Engine::hidden_dim)
         .def("inter_dim", &dee::Engine::inter_dim)
+        .def("host_pack_stats", [](const dee::Engine& self) -> py::dict {
+            py::dict result;
+            const auto& hp = self.host_pack_stats();
+            result["budget_bytes"] = self.config().host_pack_cache_bytes;
+            result["hits"] = hp.hits;
+            result["misses"] = hp.misses;
+            result["evictions"] = hp.evictions;
+            result["bytes"] = hp.bytes;
+            result["entries"] = hp.entries;
+            return result;
+        })
         .def("reset_runtime_cache", &dee::Engine::reset_runtime_cache,
              "Evict all streamed experts and reset live cache/transfer counters.")
         .def("validate_cache_invariants", [](const dee::Engine& self) {

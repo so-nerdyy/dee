@@ -31,6 +31,7 @@ set(DEE_CORE_SOURCES
     src/weight_mmap.cpp
     src/vram_cache.cpp
     src/async_prefetcher.cpp
+    src/host_pack_cache.cpp
     src/pt_loader.cpp
     src/oracle.cpp
     src/engine.cpp
@@ -99,6 +100,7 @@ if(DEE_BUILD_TESTS)
         tests/test_deepseek_v4_fp4_decode.cpp
         tests/test_vram_cache.cpp
         tests/test_async_prefetcher.cpp
+        tests/test_host_pack_cache.cpp
         tests/test_oracle.cpp
         tests/test_engine.cpp)
     list(APPEND DEE_TEST_SOURCES tests/test_real_router.cpp)
