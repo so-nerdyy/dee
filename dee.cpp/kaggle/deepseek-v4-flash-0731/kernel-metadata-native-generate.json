@@ -16,6 +16,6 @@
     "is_shared_vm": false,
     "container_size": "medium"
   },
-  "dataset_sources": [],
+  "dataset_sources": ["nivind/deepseek-v4-flash-0731-shards"],
   "keywords": ["dee.cpp", "deepseek-v4-flash-0731", "native", "fp4", "generation", "tokenizer-to-text", "t4"]
 }

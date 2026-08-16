@@ -237,7 +237,11 @@ def main() -> int:
 
     log("=== build full model (native FFN) ===")
     t0 = time.monotonic()
-    source = vm.LocalDirTensorSource(HEADERS_DIR, CKPT)
+    # The tensor source must read dense tensors (embed/head/norm/attention/
+    # router/shared) from whichever directory actually holds the shards:
+    # the dataset mount when attached, or the local /tmp download otherwise.
+    shards_dir = Path(shard_paths[0]).parent
+    source = vm.LocalDirTensorSource(HEADERS_DIR, shards_dir)
     provider = vm.ExpertProvider(source)
     model = vm.DeepseekV4Model.build_candidate(
         cfg, source, device0="cuda:0", device1="cuda:1",
@@ -300,8 +304,11 @@ def main() -> int:
     (WORK / "native-generate-result.json").write_text(
         json.dumps(result, indent=2))
 
-    for p in shard_paths:
-        Path(p).unlink(missing_ok=True)
+    # Clean up the local download only; the dataset mount is read-only and
+    # must not be touched (unlink would raise PermissionError there).
+    if not (DATASET_DIR.is_dir() and Path(shard_paths[0]).parent == DATASET_DIR):
+        for p in shard_paths:
+            Path(p).unlink(missing_ok=True)
     log("=== VERDICT: real tokenizer->text decode measured ===")
     return 0
 
