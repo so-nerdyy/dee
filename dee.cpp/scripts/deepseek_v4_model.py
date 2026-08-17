@@ -1116,6 +1116,7 @@ def build_native_engine(shard_paths: list[str], *,
                         budget_bytes: int = 512 << 20,
                         host_pack_cache_bytes: int = 8 << 30,
                         use_batched_experts: bool = False,
+                        profile_stages: bool = False,
                         swiglu_limit: float = 10.0) -> Any:
     """Build one pydee.Engine (FP4 transfer, FP16 device cache) that streams
     routed experts for the full DeepSeek-V4-Flash-0731 model.
@@ -1139,4 +1140,6 @@ def build_native_engine(shard_paths: list[str], *,
     cfg.base_layer = 0
     cfg.host_pack_cache_bytes = host_pack_cache_bytes
     cfg.use_batched_experts = use_batched_experts
+    cfg.profile_stages = profile_stages
+    cfg.profile_timeline = False
     return pydee.new_engine(cfg)

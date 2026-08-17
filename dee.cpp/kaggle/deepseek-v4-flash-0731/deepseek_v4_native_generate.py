@@ -50,14 +50,22 @@ N_TOKENS = int(os.environ.get("NATIVE_N_TOKENS", "16"))
 # 3.5 GiB (~73 FP16 experts) — measured free VRAM after dense + engine is
 # ~6.6/4.9 GiB on the two T4s, so 3.5 GiB/GPU keeps clear headroom.
 BUDGET_BYTES = int(os.environ.get("NATIVE_BUDGET_BYTES", str(3584 << 20)))
-# Stage 1: host RAM LRU of packed FP4 expert bytes (12.6 MB/entry). The
-# 16-token working set is ~2,365 pairs ≈ 30 GiB; 6 GiB/engine keeps the hot
-# tail RAM-resident so repeated gathers skip the cold mmap page faults.
+# Stage 1b (v8): host RAM LRU of packed FP4 expert bytes (12.6 MB/entry). The
+# 16-token working set is ~2,365 pairs ≈ 30 GiB; per-engine (layers split
+# 22/21) it is ~15 GiB. v7 ran 6 GiB/GPU (47% hit rate -> half the loads
+# still cold-faulted against storage at ~2.3 s each). v8 raises the budget to
+# ~14 GiB/GPU and clamps it at runtime to (MemAvailable - 4 GiB safety) / 2
+# so a smaller container cannot OOM: the LRU grows lazily, so the clamp only
+# matters if the box actually has less RAM than the working set needs.
 HOST_PACK_CACHE_BYTES = int(os.environ.get(
-    "NATIVE_HOST_PACK_BYTES", str(6 << 30)))
-# Stage 2: stacked pointer-batched SwiGLU for the 6 experts of each
-# layer-token (3 batched cuBLAS calls instead of 18 skinny GEMVs).
-USE_BATCHED_EXPERTS = os.environ.get("NATIVE_BATCHED", "0") == "1"
+    "NATIVE_HOST_PACK_BYTES", str(14 << 30)))
+# Stage 2 (v8): stacked pointer-batched SwiGLU for the 6 experts of each
+# layer-token (3 batched cuBLAS calls instead of 18 skinny GEMVs). Implemented
+# in 1604353 but never enabled in the v7 run (batched=False).
+USE_BATCHED_EXPERTS = os.environ.get("NATIVE_BATCHED", "1") == "1"
+# Stage 0 (v8): enable the per-stage profiler so the next run reports WHERE
+# the wall went (host wait vs H2D vs dequant vs GEMM vs dense).
+PROFILE_STAGES = os.environ.get("NATIVE_PROFILE", "1") == "1"
 PROGRESS = WORK / "progress.log"
 
 
@@ -173,6 +181,18 @@ def download_all_shards() -> list[str]:
     return paths
 
 
+def host_mem_available_gib() -> float:
+    """MemAvailable from /proc/meminfo, in GiB (0.0 on failure)."""
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                kb = int(line.split()[1])
+                return kb / (1024 * 1024)
+    except OSError:
+        pass
+    return 0.0
+
+
 def gpu_memory_snapshot() -> dict:
     import torch
     out = {}
@@ -240,16 +260,27 @@ def main() -> int:
         f"{cfg.dim} {cfg.topk}")
 
     log("=== build native engines (device 0 + 1) ===")
+    mem_avail = host_mem_available_gib()
+    # Safety clamp: keep 4 GiB of headroom for torch/CUDA/python + the dense
+    # host tensors that stay resident during decode.  The LRU fills lazily,
+    # so this only caps the box's true RAM limit.
+    pack_budget = HOST_PACK_CACHE_BYTES
+    if mem_avail > 0:
+        per_gpu_cap = max(0, int(((mem_avail - 4.0) / 2.0) * (1 << 30)))
+        pack_budget = min(pack_budget, per_gpu_cap)
     log(f"budget={BUDGET_BYTES/2**30:.2f}GiB/GPU host_pack="
-        f"{HOST_PACK_CACHE_BYTES/2**30:.2f}GiB/GPU batched={USE_BATCHED_EXPERTS}")
+        f"{pack_budget/2**30:.2f}GiB/GPU batched={USE_BATCHED_EXPERTS} "
+        f"profile={PROFILE_STAGES} mem_avail={mem_avail:.1f}GiB")
     eng0 = vm.build_native_engine(
         shard_paths, device_id=0, budget_bytes=BUDGET_BYTES,
-        host_pack_cache_bytes=HOST_PACK_CACHE_BYTES,
-        use_batched_experts=USE_BATCHED_EXPERTS)
+        host_pack_cache_bytes=pack_budget,
+        use_batched_experts=USE_BATCHED_EXPERTS,
+        profile_stages=PROFILE_STAGES)
     eng1 = vm.build_native_engine(
         shard_paths, device_id=1, budget_bytes=BUDGET_BYTES,
-        host_pack_cache_bytes=HOST_PACK_CACHE_BYTES,
-        use_batched_experts=USE_BATCHED_EXPERTS)
+        host_pack_cache_bytes=pack_budget,
+        use_batched_experts=USE_BATCHED_EXPERTS,
+        profile_stages=PROFILE_STAGES)
     log("engines built")
 
     log("=== build full model (native FFN) ===")
@@ -293,6 +324,8 @@ def main() -> int:
 
     result = {
         "commit": head,
+        "host_mem_available_gib": round(mem_avail, 2),
+        "host_pack_budget_gib": round(pack_budget / (1 << 30), 2),
         "model_revision": REV,
         "prompt": CANONICAL_PROMPT,
         "prompt_len": len(ids),
