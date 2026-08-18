@@ -22,6 +22,7 @@
 
 #ifndef _WIN32
 #include <sys/mman.h>
+#include <unistd.h>
 #endif
 
 #ifdef DEE_CUDA
