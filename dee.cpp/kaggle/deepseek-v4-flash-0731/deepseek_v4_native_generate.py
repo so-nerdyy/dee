@@ -50,19 +50,25 @@ N_TOKENS = int(os.environ.get("NATIVE_N_TOKENS", "16"))
 # 3.5 GiB (~73 FP16 experts) — measured free VRAM after dense + engine is
 # ~6.6/4.9 GiB on the two T4s, so 3.5 GiB/GPU keeps clear headroom.
 BUDGET_BYTES = int(os.environ.get("NATIVE_BUDGET_BYTES", str(3584 << 20)))
-# Stage 1b (v8): host RAM LRU of packed FP4 expert bytes (12.6 MB/entry). The
-# 16-token working set is ~2,365 pairs ≈ 30 GiB; per-engine (layers split
-# 22/21) it is ~15 GiB. v7 ran 6 GiB/GPU (47% hit rate -> half the loads
-# still cold-faulted against storage at ~2.3 s each). v8 raises the budget to
-# ~14 GiB/GPU and clamps it at runtime to (MemAvailable - 4 GiB safety) / 2
-# so a smaller container cannot OOM: the LRU grows lazily, so the clamp only
-# matters if the box actually has less RAM than the working set needs.
-HOST_PACK_CACHE_BYTES = int(os.environ.get(
-    "NATIVE_HOST_PACK_BYTES", str(14 << 30)))
-# Stage 2 (v8): stacked pointer-batched SwiGLU for the 6 experts of each
-# layer-token (3 batched cuBLAS calls instead of 18 skinny GEMVs). Implemented
-# in 1604353 but never enabled in the v7 run (batched=False).
-USE_BATCHED_EXPERTS = os.environ.get("NATIVE_BATCHED", "1") == "1"
+# Stage 1b (v8/v9): host RAM LRU of packed FP4 expert bytes (12.6 MB/entry).
+# The 16-token working set is ~2,365 pairs ≈ 30 GiB; per-engine it is NOT
+# symmetric: the v8 run measured 1,247 unique experts on cuda0 (layers 0-21,
+# ≈ 16.7 GiB of packs) vs 916 on cuda1 (layers 22-42, ≈ 12.2 GiB). v8 used a
+# symmetric 12.87 GiB/GPU budget, so cuda0's working set EXCEEDED its budget:
+# 224 evictions -> 1,257 of its 2,904 requests re-faulted cold mmap pages at
+# ~3.4 s each (tensor_resolution = 58% of wall). v9 gives each GPU a budget
+# sized to its OWN measured working set (16.2 / 12.2 GiB), clamped at runtime
+# to (MemAvailable - 4 GiB safety) so a smaller container cannot OOM.
+HOST_PACK_CACHE_BYTES_GPU0 = int(os.environ.get(
+    "NATIVE_HOST_PACK_GPU0_BYTES", str(int(16.2 * (1 << 30)))))
+HOST_PACK_CACHE_BYTES_GPU1 = int(os.environ.get(
+    "NATIVE_HOST_PACK_GPU1_BYTES", str(int(12.2 * (1 << 30)))))
+# Stage 2 (v9): the pointer-batched SwiGLU path (cublasGemmBatchedEx) is a
+# DIFFERENT numerical kernel than the per-expert path (cublasGemmEx per
+# expert): a 1-ULP FP16 difference flips greedy tokens. v8 enabled it and
+# DIVERGED from the v7 gate tokens. It stays OFF by default so the strict
+# token-identity gate holds; it remains an experimental speed mode.
+USE_BATCHED_EXPERTS = os.environ.get("NATIVE_BATCHED", "0") == "1"
 # Stage 0 (v8): enable the per-stage profiler so the next run reports WHERE
 # the wall went (host wait vs H2D vs dequant vs GEMM vs dense).
 PROFILE_STAGES = os.environ.get("NATIVE_PROFILE", "1") == "1"
@@ -261,24 +267,36 @@ def main() -> int:
 
     log("=== build native engines (device 0 + 1) ===")
     mem_avail = host_mem_available_gib()
-    # Safety clamp: keep 4 GiB of headroom for torch/CUDA/python + the dense
-    # host tensors that stay resident during decode.  The LRU fills lazily,
-    # so this only caps the box's true RAM limit.
-    pack_budget = HOST_PACK_CACHE_BYTES
+    # Safety clamp: keep 2 GiB of headroom for torch/CUDA/python + the dense
+    # host tensors that stay resident during decode.  The v8 run held 25.7 GiB
+    # of host_pack with MemAvailable 29.7 GiB with no OOM, so 4 GiB was too
+    # conservative and starved cuda0.  The LRU fills lazily, so this only caps
+    # the box's true RAM limit.  Each GPU gets a budget sized to its OWN
+    # measured working set (asymmetric: cuda0 16.7 GiB > cuda1 12.2 GiB).
+    pack_budget0 = HOST_PACK_CACHE_BYTES_GPU0
+    pack_budget1 = HOST_PACK_CACHE_BYTES_GPU1
     if mem_avail > 0:
-        per_gpu_cap = max(0, int(((mem_avail - 4.0) / 2.0) * (1 << 30)))
-        pack_budget = min(pack_budget, per_gpu_cap)
+        total_cap = max(0, int((mem_avail - 2.0) * (1 << 30)))
+        # Keep the measured 16.2:12.2 ratio when clamping under total RAM.
+        ratio = HOST_PACK_CACHE_BYTES_GPU0 + HOST_PACK_CACHE_BYTES_GPU1
+        if total_cap < ratio:
+            share0 = HOST_PACK_CACHE_BYTES_GPU0 / max(1, ratio)
+            pack_budget0 = max(0, int(total_cap * share0))
+            pack_budget1 = max(0, int(total_cap * (1.0 - share0)))
+        pack_budget0 = min(pack_budget0, HOST_PACK_CACHE_BYTES_GPU0)
+        pack_budget1 = min(pack_budget1, HOST_PACK_CACHE_BYTES_GPU1)
     log(f"budget={BUDGET_BYTES/2**30:.2f}GiB/GPU host_pack="
-        f"{pack_budget/2**30:.2f}GiB/GPU batched={USE_BATCHED_EXPERTS} "
+        f"{pack_budget0/2**30:.2f}/{pack_budget1/2**30:.2f}GiB "
+        f"batched={USE_BATCHED_EXPERTS} "
         f"profile={PROFILE_STAGES} mem_avail={mem_avail:.1f}GiB")
     eng0 = vm.build_native_engine(
         shard_paths, device_id=0, budget_bytes=BUDGET_BYTES,
-        host_pack_cache_bytes=pack_budget,
+        host_pack_cache_bytes=pack_budget0,
         use_batched_experts=USE_BATCHED_EXPERTS,
         profile_stages=PROFILE_STAGES)
     eng1 = vm.build_native_engine(
         shard_paths, device_id=1, budget_bytes=BUDGET_BYTES,
-        host_pack_cache_bytes=pack_budget,
+        host_pack_cache_bytes=pack_budget1,
         use_batched_experts=USE_BATCHED_EXPERTS,
         profile_stages=PROFILE_STAGES)
     log("engines built")
@@ -325,7 +343,8 @@ def main() -> int:
     result = {
         "commit": head,
         "host_mem_available_gib": round(mem_avail, 2),
-        "host_pack_budget_gib": round(pack_budget / (1 << 30), 2),
+        "host_pack_budget_gib": [round(pack_budget0 / (1 << 30), 2),
+                                  round(pack_budget1 / (1 << 30), 2)],
         "model_revision": REV,
         "prompt": CANONICAL_PROMPT,
         "prompt_len": len(ids),
