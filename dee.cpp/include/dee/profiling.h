@@ -427,7 +427,11 @@ private:
     // A 32-expert CUDA batch can have more than 64 concurrent profiled
     // operations. Keep this bounded, but large enough to retain one full
     // batch without silently losing timing records.
-    static constexpr size_t kMaxTimingEvents = 1024;
+    // v10: 1024 was too small for the real-model decode (258 transfers/layer
+    // x 43 layers x 16 tokens, each with H2D+dequant+GEMM begin/end pairs);
+    // the pool exhausted mid-run and dropped ALL subsequent stage timing,
+    // corrupting attribution.  Bump to 65536 and rate-limit the warning.
+    static constexpr size_t kMaxTimingEvents = 65536;
     std::vector<void*> all_cuda_events_;
     std::vector<void*> free_cuda_events_;
     std::vector<PendingCudaSample> pending_cuda_;

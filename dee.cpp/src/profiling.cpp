@@ -435,8 +435,15 @@ void* StageProfiler::acquire_cuda_event() {
     }
     if (all_cuda_events_.size() >= kMaxTimingEvents) {
         ++timing_events_dropped_;
-        std::fprintf(stderr, "[profile] CUDA timing event pool exhausted (%zu events)\n",
-                     kMaxTimingEvents);
+        // Rate-limit the warning: this path can be hit thousands of times per
+        // run and the stderr spam itself costs host time.
+        if (timing_events_dropped_ <= 8 ||
+            (timing_events_dropped_ % 4096) == 0) {
+            std::fprintf(stderr,
+                "[profile] CUDA timing event pool exhausted (%zu events, %llu dropped)\n",
+                kMaxTimingEvents,
+                static_cast<unsigned long long>(timing_events_dropped_));
+        }
         return nullptr;
     }
     cudaEvent_t event = nullptr;

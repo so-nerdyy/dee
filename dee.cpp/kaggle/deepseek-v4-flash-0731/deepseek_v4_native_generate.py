@@ -50,19 +50,22 @@ N_TOKENS = int(os.environ.get("NATIVE_N_TOKENS", "16"))
 # 3.5 GiB (~73 FP16 experts) — measured free VRAM after dense + engine is
 # ~6.6/4.9 GiB on the two T4s, so 3.5 GiB/GPU keeps clear headroom.
 BUDGET_BYTES = int(os.environ.get("NATIVE_BUDGET_BYTES", str(3584 << 20)))
-# Stage 1b (v8/v9): host RAM LRU of packed FP4 expert bytes (12.6 MB/entry).
-# The 16-token working set is ~2,365 pairs ≈ 30 GiB; per-engine it is NOT
-# symmetric: the v8 run measured 1,247 unique experts on cuda0 (layers 0-21,
-# ≈ 16.7 GiB of packs) vs 916 on cuda1 (layers 22-42, ≈ 12.2 GiB). v8 used a
-# symmetric 12.87 GiB/GPU budget, so cuda0's working set EXCEEDED its budget:
-# 224 evictions -> 1,257 of its 2,904 requests re-faulted cold mmap pages at
-# ~3.4 s each (tensor_resolution = 58% of wall). v9 gives each GPU a budget
-# sized to its OWN measured working set (16.2 / 12.2 GiB), clamped at runtime
-# to (MemAvailable - 4 GiB safety) so a smaller container cannot OOM.
+# Stage 1b (v8/v9/v10): host RAM LRU of packed FP4 expert bytes (12.6 MB/
+# entry).  The 16-token working set is ~2,365 pairs ≈ 30 GiB; per-engine it is
+# NOT symmetric: the v8 run measured 1,247 unique experts on cuda0 (layers
+# 0-21, ≈ 16.7 GiB of packs) vs 916 on cuda1 (layers 22-42, ≈ 12.2 GiB).
+# v9 set budgets sized to each GPU's working set (16.2/12.2 = 28.4 GiB) but
+# was OOM-KILLED during decode: host_pack filled to its 27.68 GiB cap and,
+# combined with dense host tensors + the mmap page cache of the 152.8 GiB
+# checkpoint, exceeded the box's ~32 GiB RAM.  v8 survived at 25.74 GiB total
+# (12.87/GPU).  v10 therefore (a) caps the total at 26 GiB (14.5/11.5, the
+# v8-proven-safe ceiling) and (b) the engine now madvise(MADV_DONTNEED)s the
+# source mmap pages after copying a pack into the LRU, so the page cache no
+# longer double-books the ~28 GiB of checkpoint pages that decode reads.
 HOST_PACK_CACHE_BYTES_GPU0 = int(os.environ.get(
-    "NATIVE_HOST_PACK_GPU0_BYTES", str(int(16.2 * (1 << 30)))))
+    "NATIVE_HOST_PACK_GPU0_BYTES", str(int(14.5 * (1 << 30)))))
 HOST_PACK_CACHE_BYTES_GPU1 = int(os.environ.get(
-    "NATIVE_HOST_PACK_GPU1_BYTES", str(int(12.2 * (1 << 30)))))
+    "NATIVE_HOST_PACK_GPU1_BYTES", str(int(11.5 * (1 << 30)))))
 # Stage 2 (v9): the pointer-batched SwiGLU path (cublasGemmBatchedEx) is a
 # DIFFERENT numerical kernel than the per-expert path (cublasGemmEx per
 # expert): a 1-ULP FP16 difference flips greedy tokens. v8 enabled it and

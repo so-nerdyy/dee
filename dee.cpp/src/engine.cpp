@@ -20,6 +20,10 @@
 #include <immintrin.h>
 #endif
 
+#ifndef _WIN32
+#include <sys/mman.h>
+#endif
+
 #ifdef DEE_CUDA
 #include <cuda_runtime.h>
 #include "dee/cuda_check.h"
@@ -2713,6 +2717,29 @@ const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int exp
             std::memcpy(dst + off, sources[r]->data, sources[r]->nbytes);
             off += sources[r]->nbytes;
         }
+#ifndef _WIN32
+        // v10: the pack bytes now live in the host RAM LRU; drop the source
+        // mmap pages from the page cache so they do not double-book RAM
+        // (v9 OOM: 27.7 GiB host_pack + ~28 GiB of checkpoint pages read
+        // through mmap exceeded the ~32 GiB box).  A later eviction + re-fill
+        // re-faults these pages, which is exactly the pre-host_pack cost.
+        const long page_size = ::sysconf(_SC_PAGESIZE);
+        if (page_size > 0) {
+            for (int r = 0; r < 6; ++r) {
+                const uintptr_t start =
+                    reinterpret_cast<uintptr_t>(sources[r]->data);
+                const size_t len = sources[r]->nbytes;
+                if (len == 0) continue;
+                const uintptr_t page_mask =
+                    static_cast<uintptr_t>(page_size) - 1;
+                const uintptr_t aligned_start = start & ~page_mask;
+                const size_t span = ((start + len + page_mask) & ~page_mask) -
+                                    aligned_start;
+                ::madvise(reinterpret_cast<void*>(aligned_start), span,
+                          MADV_DONTNEED);
+            }
+        }
+#endif
     };
     const uint8_t* pack_buf = pack_cache_.get(
         key, quantized.fp4_total_nbytes, fill_pack);
