@@ -76,9 +76,11 @@ HOST_PACK_CACHE_BYTES_GPU1 = int(os.environ.get(
 # DIVERGED from the v7 gate tokens. It stays OFF by default so the strict
 # token-identity gate holds; it remains an experimental speed mode.
 USE_BATCHED_EXPERTS = os.environ.get("NATIVE_BATCHED", "0") == "1"
-# Stage 0 (v8): enable the per-stage profiler so the next run reports WHERE
-# the wall went (host wait vs H2D vs dequant vs GEMM vs dense).
-PROFILE_STAGES = os.environ.get("NATIVE_PROFILE", "1") == "1"
+# Stage 0 (v8): diagnostics/profiling are opt-in. Headline timing must not
+# include per-layer finite checks, route serialization, checksums, or CUDA
+# timing-event allocation. Run a separate diagnostic pass with both enabled.
+PROFILE_STAGES = os.environ.get("NATIVE_PROFILE", "0") == "1"
+DIAGNOSTICS = os.environ.get("NATIVE_DIAGNOSTICS", "0") == "1"
 PROGRESS = WORK / "progress.log"
 
 
@@ -295,8 +297,8 @@ def main() -> int:
         pack_budget1 = min(pack_budget1, HOST_PACK_CACHE_BYTES_GPU1)
     log(f"budget={BUDGET_BYTES/2**30:.2f}GiB/GPU host_pack="
         f"{pack_budget0/2**30:.2f}/{pack_budget1/2**30:.2f}GiB "
-        f"batched={USE_BATCHED_EXPERTS} "
-        f"profile={PROFILE_STAGES} mem_avail={mem_avail:.1f}GiB")
+        f"batched={USE_BATCHED_EXPERTS} profile={PROFILE_STAGES} "
+        f"diagnostics={DIAGNOSTICS} mem_avail={mem_avail:.1f}GiB")
     eng0 = vm.build_native_engine(
         shard_paths, device_id=0, budget_bytes=BUDGET_BYTES,
         host_pack_cache_bytes=pack_budget0,
@@ -321,7 +323,7 @@ def main() -> int:
         cfg, source, device0="cuda:0", device1="cuda:1",
         cache0=None, loader0=None, cache1=None, loader1=None,
         provider=provider, ffn_backend="native",
-        engine0=eng0, engine1=eng1)
+        engine0=eng0, engine1=eng1, diagnostics=DIAGNOSTICS)
     model.reset_state()
     build_s = time.monotonic() - t0
     log(f"model build {build_s:.1f}s")
@@ -397,7 +399,10 @@ def main() -> int:
         },
         "decode_timings_ms": [round(t, 2) for t in decode_only],
         "gpu_memory": gpu_memory_snapshot(),
-        "layer_count_executed": len(model.execution_trace),
+        "diagnostics": DIAGNOSTICS,
+        "bridge_counters": model.bridge_counters(),
+        "layer_count_executed": (
+            len(model.execution_trace) if DIAGNOSTICS else model.cfg.n_layers),
     }
 
     # Stage 0 instrumentation: per-engine expert-cache + host-pack + stage
@@ -417,6 +422,7 @@ def main() -> int:
         }
     except Exception as exc:  # never fail the run over instrumentation
         log(f"instrumentation dump failed: {exc}")
+    result["model_runtime_snapshot"] = model.runtime_snapshot()
     log("RESULT " + json.dumps(result))
     (WORK / "native-generate-result.json").write_text(
         json.dumps(result, indent=2))

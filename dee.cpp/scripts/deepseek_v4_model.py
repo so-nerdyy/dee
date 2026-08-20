@@ -531,10 +531,13 @@ class DeepseekV4Model:
                  layers0: list[Any], layers1: list[Any],
                  hc_head_fn: torch.Tensor, hc_head_base: torch.Tensor,
                  hc_head_scale: torch.Tensor, norm_w: torch.Tensor,
-                 head: torch.Tensor, device0: str, device1: str):
+                 head: torch.Tensor, device0: str, device1: str,
+                 diagnostics: bool = True):
         self.cfg = cfg
         self.device0 = device0
         self.device1 = device1
+        self.diagnostics = bool(diagnostics)
+        self._handoff_buffers: list[tuple[torch.Tensor, torch.cuda.Event, torch.cuda.Event]] = []
         self.embed = embed
         self.layers0 = layers0
         self.layers1 = layers1
@@ -559,7 +562,8 @@ class DeepseekV4Model:
                         embed_head_dtype: torch.dtype = torch.bfloat16,
                         ffn_backend: str = "cache_fp16",
                         engine0: Any = None, engine1: Any = None,
-                        split: Optional[int] = None) -> "DeepseekV4Model":
+                        split: Optional[int] = None,
+                        diagnostics: bool = True) -> "DeepseekV4Model":
         """Build the dual-GPU candidate.
 
         Dense weights are dequantized from official storage and cast to
@@ -606,19 +610,21 @@ class DeepseekV4Model:
                 layer_obj = v4cand.make_native_candidate_layer(
                     lcfg, w_cuda, engine=engine, layer_id=layer,
                     device=device, max_batch=1, shared_payload=None,
-                    provider=provider)
+                    provider=provider, diagnostics=diagnostics)
             else:
                 layer_obj = v4cand.make_candidate_layer(
                     lcfg, w_cuda, device=device, max_batch=1, cache=cache,
                     loader=loader, layer_id=layer, fp16_payloads={},
-                    shared_payload=None, provider=provider)
+                    shared_payload=None, provider=provider,
+                    diagnostics=diagnostics)
             (layers0 if layer < split else layers1).append(layer_obj)
 
         model = cls(cfg, embed=embed.to(device0), layers0=layers0,
                     layers1=layers1, hc_head_fn=hc_head_fn,
                     hc_head_base=hc_head_base, hc_head_scale=hc_head_scale,
                     norm_w=norm_w.to(device1), head=head.to(device1),
-                    device0=device0, device1=device1)
+                    device0=device0, device1=device1,
+                    diagnostics=diagnostics)
         model.provider = provider
         model.cache0 = cache0
         model.cache1 = cache1
@@ -630,6 +636,11 @@ class DeepseekV4Model:
             layer.reset_state()
         self.handoff_stats = {}
         self.execution_trace = []
+        self._handoff_buffers = [
+            (host, d2h_event, h2d_event)
+            for host, d2h_event, h2d_event in self._handoff_buffers
+            if not h2d_event.query()
+        ]
         self.last_execution = {"phase": "reset"}
 
     def layer(self, layer_id: int) -> Any:
@@ -652,11 +663,12 @@ class DeepseekV4Model:
         return y.to(dtype)
 
     def _handoff(self, h: torch.Tensor, dst: str) -> torch.Tensor:
-        """Host-staged inter-GPU hidden-state handoff with checksum.
+        """Move the inter-GPU hidden state through pinned host memory.
 
-        CPU/same-device (local tests) is a no-op copy with trivially equal
-        checksums; CUDA crosses devices through a host-staged copy guarded by
-        stream events.
+        Validation mode uses blocking checksums. Fast mode keeps the same
+        pinned-host transfer but chains the D2H and H2D copies with CUDA
+        events, so the Python thread does not synchronize twice per forward.
+        The host buffer is retained until the H2D completion event fires.
         """
         h_src = h.detach()
         cuda_cross = (h.is_cuda and dst != str(h.device)
@@ -672,27 +684,50 @@ class DeepseekV4Model:
             with torch.cuda.stream(src_stream):
                 host.copy_(h_src, non_blocking=True)
                 d2h_done.record(src_stream)
-            d2h_done.synchronize()
-            pre_sha = _tensor_storage_sha256(host)
-
-            dst_stream = torch.cuda.Stream(device=dst_device)
             h_dst = torch.empty(h.shape, dtype=h.dtype, device=dst_device)
+            dst_stream = torch.cuda.current_stream(dst_device)
             h2d_done = torch.cuda.Event()
-            with torch.cuda.stream(dst_stream):
-                h_dst.copy_(host, non_blocking=True)
-                h2d_done.record(dst_stream)
-            torch.cuda.current_stream(dst_device).wait_event(h2d_done)
-            h2d_done.synchronize()
+            if self.diagnostics:
+                # Keep the diagnostic path exactly synchronous and checksum it.
+                d2h_done.synchronize()
+                pre_sha = _tensor_storage_sha256(host)
+                with torch.cuda.stream(dst_stream):
+                    h_dst.copy_(host, non_blocking=True)
+                    h2d_done.record(dst_stream)
+                h2d_done.synchronize()
+                post_sha = _tensor_storage_sha256(h_dst)
+            else:
+                # CUDA permits a stream on the destination device to wait on
+                # an event recorded by the source device. This preserves copy
+                # ordering without a host-side synchronization.
+                dst_stream.wait_event(d2h_done)
+                with torch.cuda.stream(dst_stream):
+                    h_dst.copy_(host, non_blocking=True)
+                    h2d_done.record(dst_stream)
+                self._handoff_buffers = [
+                    (old_host, old_d2h, old_h2d)
+                    for old_host, old_d2h, old_h2d in self._handoff_buffers
+                    if not old_h2d.query()
+                ]
+                self._handoff_buffers.append((host, d2h_done, h2d_done))
+                pre_sha = None
+                post_sha = None
             p2p_available = bool(torch.cuda.can_device_access_peer(
                 src_device.index, dst_device.index))
-            method = "explicit_pinned_host_staging"
+            method = ("explicit_pinned_host_staging_event_driven"
+                      if not self.diagnostics else
+                      "explicit_pinned_host_staging")
         else:
             h_dst = h_src.to(dst)
             nbytes = h.numel() * h.element_size()
-            pre_sha = _tensor_storage_sha256(h_src)
+            if self.diagnostics:
+                pre_sha = _tensor_storage_sha256(h_src)
+                post_sha = _tensor_storage_sha256(h_dst)
+            else:
+                pre_sha = None
+                post_sha = None
             p2p_available = False
             method = "same_device_copy"
-        post_sha = _tensor_storage_sha256(h_dst)
         self.handoff_stats = {
             "source_device": str(h.device),
             "destination_device": dst,
@@ -709,7 +744,8 @@ class DeepseekV4Model:
             "destination_event_waited": bool(cuda_cross),
             "pre_checksum": pre_sha,
             "post_checksum": post_sha,
-            "checksum_bitwise_equal": pre_sha == post_sha,
+            "checksum_bitwise_equal": (
+                pre_sha == post_sha if self.diagnostics else None),
         }
         return h_dst
 
@@ -729,57 +765,63 @@ class DeepseekV4Model:
         self.execution_trace = []
         self.last_execution = {"phase": "embedding", "start_pos": start_pos,
                                "sequence_length": s}
-        h = torch.nn.functional.embedding(
-            input_ids.to(self.device0), self.embed)
+        input_ids0 = input_ids.to(self.device0)
+        h = torch.nn.functional.embedding(input_ids0, self.embed)
         h = h.unsqueeze(2).expand(b, s, cfg.hc_mult, h.size(-1)).contiguous()
         for idx, layer in enumerate(self.layers0):
             self.last_execution = {"phase": "layer", "layer": idx,
                                    "device": self.device0}
             cap = captures.setdefault(idx, {}) if captures is not None else None
-            h = layer.forward(h, start_pos, input_ids.to(self.device0),
-                              capture=cap)
-            finite = bool(torch.isfinite(h).all())
-            row = {"layer": idx, "order": len(self.execution_trace),
-                   "device": str(h.device), "dtype": str(h.dtype),
-                   "shape": list(h.shape), "finite": finite,
-                   "selected_experts": layer.ffn_fn.last_route.get("expert_ids"),
-                   "routing_weights": layer.ffn_fn.last_route.get("routing_weights"),
-                   "ffn_cache_counters": dict(layer.ffn_fn.stats)}
-            self.execution_trace.append(row)
+            h = layer.forward(h, start_pos, input_ids0, capture=cap)
+            if self.diagnostics:
+                finite = bool(torch.isfinite(h).all())
+                row = {"layer": idx, "order": len(self.execution_trace),
+                       "device": str(h.device), "dtype": str(h.dtype),
+                       "shape": list(h.shape), "finite": finite,
+                       "selected_experts": layer.ffn_fn.last_route.get("expert_ids"),
+                       "routing_weights": layer.ffn_fn.last_route.get("routing_weights"),
+                       "ffn_cache_counters": dict(layer.ffn_fn.stats)}
+                self.execution_trace.append(row)
+                if not finite:
+                    raise FloatingPointError(
+                        f"non-finite hidden state after layer {idx}")
             if post_layer_hook is not None:
                 post_layer_hook(idx)
-            if not finite:
-                raise FloatingPointError(f"non-finite hidden state after layer {idx}")
         self.last_execution = {"phase": "handoff", "after_layer": self.split - 1,
                                "before_layer": self.split}
         h = self._handoff(h, self.device1)
+        input_ids1 = input_ids.to(self.device1)
         for idx, layer in enumerate(self.layers1):
             layer_id = self.split + idx
             self.last_execution = {"phase": "layer", "layer": layer_id,
                                    "device": self.device1}
             cap = (captures.setdefault(self.split + idx, {})
                    if captures is not None else None)
-            h = layer.forward(h, start_pos, input_ids.to(self.device1),
-                              capture=cap)
-            finite = bool(torch.isfinite(h).all())
-            row = {"layer": layer_id, "order": len(self.execution_trace),
-                   "device": str(h.device), "dtype": str(h.dtype),
-                   "shape": list(h.shape), "finite": finite,
-                   "selected_experts": layer.ffn_fn.last_route.get("expert_ids"),
-                   "routing_weights": layer.ffn_fn.last_route.get("routing_weights"),
-                   "ffn_cache_counters": dict(layer.ffn_fn.stats)}
-            self.execution_trace.append(row)
+            h = layer.forward(h, start_pos, input_ids1, capture=cap)
+            if self.diagnostics:
+                finite = bool(torch.isfinite(h).all())
+                row = {"layer": layer_id, "order": len(self.execution_trace),
+                       "device": str(h.device), "dtype": str(h.dtype),
+                       "shape": list(h.shape), "finite": finite,
+                       "selected_experts": layer.ffn_fn.last_route.get("expert_ids"),
+                       "routing_weights": layer.ffn_fn.last_route.get("routing_weights"),
+                       "ffn_cache_counters": dict(layer.ffn_fn.stats)}
+                self.execution_trace.append(row)
+                if not finite:
+                    raise FloatingPointError(
+                        f"non-finite hidden state after layer {layer_id}")
             if post_layer_hook is not None:
                 post_layer_hook(layer_id)
-            if not finite:
-                raise FloatingPointError(
-                    f"non-finite hidden state after layer {layer_id}")
         self.last_execution = {"phase": "hc_head", "after_layer": cfg.n_layers - 1}
         h = self._hc_head(h)
         self.last_execution = {"phase": "final_norm"}
         h = common.rms_norm(h, self.norm_w, cfg.norm_eps)
         self.last_execution = {"phase": "lm_head"}
         logits = h[:, -1].float() @ self.head.float().transpose(0, 1)
+        # Keep the fail-closed guarantee in fast mode with one final check per
+        # forward, rather than synchronizing after every layer.
+        if not bool(torch.isfinite(logits).all()):
+            raise FloatingPointError("non-finite logits")
         self.last_execution = {"phase": "complete", "layers_executed":
                                len(self.execution_trace)}
         return logits
@@ -869,6 +911,25 @@ class DeepseekV4Model:
     def state_signatures(self, layer_ids: list[int]) -> dict[int, dict[str, str]]:
         return {lid: self.layer(lid).state_signature() for lid in layer_ids}
 
+    def bridge_counters(self) -> dict[str, int]:
+        """Aggregate Python/native boundary counters for Phase 1 evidence."""
+        keys = (
+            "full_hidden_d2h_copies", "raw_expert_output_d2h_copies",
+            "hidden_h2d_copies", "route_id_d2h_copies", "route_id_d2h_bytes",
+            "numpy_bridge_calls", "host_synchronizations", "native_calls",
+            "native_batch_calls",
+        )
+        totals = {key: 0 for key in keys}
+        for layer in self.layers0 + self.layers1:
+            stats = getattr(layer.ffn_fn, "stats", {})
+            for key in keys:
+                totals[key] += int(stats.get(key, 0))
+        totals["inter_gpu_handoff_d2h_copies"] = int(
+            self.handoff_stats.get("d2h_bytes", 0) > 0)
+        totals["inter_gpu_handoff_h2d_copies"] = int(
+            self.handoff_stats.get("h2d_bytes", 0) > 0)
+        return totals
+
     def runtime_snapshot(self) -> dict[str, Any]:
         """Bounded backend/cache/provider evidence for remote DS10 stages."""
         shared_host_tensors = []
@@ -888,21 +949,26 @@ class DeepseekV4Model:
                 "shared_expert": "freebuff_ds8_cache_fp16_cuda",
                 "cpu_expert_execution": False,
             },
+            "diagnostics": self.diagnostics,
+            "bridge_counters": self.bridge_counters(),
             "provider": self.provider.stats(),
             "shared_expert_host": {
                 "layers": len(self.layers0) + len(self.layers1),
                 "fp16_bytes": sum(t.numel() * t.element_size()
                                   for t in shared_host_tensors),
             },
-            "cache0": {**dict(self.cache0.stats),
-                       "resident_bytes": self.cache0.used_bytes(),
-                       "peak_resident_bytes": self.cache0.peak_resident_bytes,
-                       "entries": len(self.cache0.entries)},
-            "cache1": {**dict(self.cache1.stats),
-                       "resident_bytes": self.cache1.used_bytes(),
-                       "peak_resident_bytes": self.cache1.peak_resident_bytes,
-                       "entries": len(self.cache1.entries)},
+            "cache0": self._cache_snapshot(self.cache0),
+            "cache1": self._cache_snapshot(self.cache1),
         }
+
+    @staticmethod
+    def _cache_snapshot(cache: Any) -> Optional[dict[str, Any]]:
+        if cache is None:
+            return None
+        return {**dict(cache.stats),
+                "resident_bytes": cache.used_bytes(),
+                "peak_resident_bytes": cache.peak_resident_bytes,
+                "entries": len(cache.entries)}
 
     def per_gpu_memory_plan(self, cache_budgets: dict[str, int]) -> dict[str, Any]:
         """Resident-bytes estimate per GPU (dense + embed/head + cache budget

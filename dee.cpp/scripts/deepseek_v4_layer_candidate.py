@@ -42,7 +42,7 @@ class DeepseekV4CacheFfn:
                  fp16_payloads: dict[int, dict[str, torch.Tensor]],
                  shared_payload: dict[str, torch.Tensor],
                  cfg: layer_ref.LayerConfig, device: str = "cuda",
-                 provider: Any = None):
+                 provider: Any = None, diagnostics: bool = True):
         self.cache = cache
         self.loader = loader
         self.layer_id = layer_id
@@ -51,6 +51,7 @@ class DeepseekV4CacheFfn:
         self.cfg = cfg
         self.device = device
         self.provider = provider
+        self.diagnostics = bool(diagnostics)
         self.tid2eid: Optional[torch.Tensor] = None
         self.stats = {"requests": 0, "hits": 0, "misses": 0, "staging_waits": 0}
         self.last_route: dict[str, Any] = {}
@@ -85,10 +86,13 @@ class DeepseekV4CacheFfn:
                     scores + self.gate_b if self.gate_b is not None else scores)
                 capture["expert_ids"] = ids
                 capture["routing_weights"] = weights
-        self.last_route = {
-            "expert_ids": ids.detach().cpu().tolist(),
-            "routing_weights": weights.detach().float().cpu().tolist(),
-        }
+        if self.diagnostics or capture is not None:
+            self.last_route = {
+                "expert_ids": ids.detach().cpu().tolist(),
+                "routing_weights": weights.detach().float().cpu().tolist(),
+            }
+        else:
+            self.last_route = {}
         moe_out, shared_out = self._run_experts(xf, ids, weights)
         if capture is not None:
             # Same labels/units as the reference _ffn_fp32_direct: moe_out is
@@ -230,7 +234,7 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
 
     def __init__(self, *, engine: Any, layer_id: int, cfg: layer_ref.LayerConfig,
                  device: str = "cuda", shared_payload: Optional[dict[str, torch.Tensor]] = None,
-                 provider: Any = None):
+                 provider: Any = None, diagnostics: bool = True):
         # Deliberately bypass the parent __init__: the native backend needs no
         # cache/loader/fp16_payloads for routed experts (the engine owns those).
         self.engine = engine
@@ -239,49 +243,114 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
         self.device = device
         self.shared_payload = shared_payload
         self.provider = provider
+        self.diagnostics = bool(diagnostics)
         self.tid2eid: Optional[torch.Tensor] = None
         self.stats = {"requests": 0, "hits": 0, "misses": 0,
-                      "native_fwd_ms": 0.0, "native_calls": 0}
+                      "native_fwd_ms": 0.0, "native_calls": 0,
+                      "native_batch_calls": 0, "route_id_d2h_copies": 0,
+                      "route_id_d2h_bytes": 0, "full_hidden_d2h_copies": 0,
+                      "raw_expert_output_d2h_copies": 0,
+                      "hidden_h2d_copies": 0, "numpy_bridge_calls": 0,
+                      "host_synchronizations": 0}
         self.last_route: dict[str, Any] = {}
+        self._native_hidden_fp16: Optional[torch.Tensor] = None
+        self._native_raw_output: Optional[torch.Tensor] = None
+        self._native_moe_output: Optional[torch.Tensor] = None
+        self._native_route_ids_host: Optional[torch.Tensor] = None
         # Device-resident shared-expert payload (materialized lazily on the
         # first forward; the provider hands back CPU FP16 tensors).
         self._shared_dev: Optional[dict[str, torch.Tensor]] = None
 
     def _run_experts(self, xf: torch.Tensor, ids: torch.Tensor,
                      weights: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run a whole layer's routed experts without the NumPy bridge.
+
+        The only host boundary is the compact int32 route-ID matrix required by
+        the existing native scheduler. Hidden states, raw expert outputs, and
+        the weighted FP32 reduction remain device-resident. The native API is
+        deliberately required here: a missing device method is a hard error,
+        never a silent fallback to the old per-token path.
+        """
         cfg = self.cfg
         n, d = xf.shape
-        moe = torch.zeros(n, d, dtype=torch.float32, device=self.device)
-        h_in_np = np.empty((d,), dtype=np.float32)
-        for tok in range(n):
-            eids = [int(e) for e in ids[tok].tolist()]
-            ws = [float(w) for w in weights[tok].float().tolist()]
-            keep = [(e, w) for e, w in zip(eids, ws) if w != 0.0]
-            if not keep:
-                continue
-            keids = [e for e, _ in keep]
-            k = len(keids)
-            h_in_fp32 = xf[tok].float().cpu().numpy()
-            np.copyto(h_in_np, np.ascontiguousarray(h_in_fp32, dtype=np.float32))
-            # pydee validates experts_out.size == len(experts) * hidden_dim, so
-            # size the output buffer to the (filtered) expert count.
-            out_np = np.empty((k * d,), dtype=np.float32)
-            t0 = time.perf_counter()
-            ok = self.engine.moe_forward_experts(self.layer_id, h_in_np, out_np, keids)
-            self.stats["native_fwd_ms"] += (time.perf_counter() - t0) * 1000.0
-            self.stats["native_calls"] += 1
-            self.stats["requests"] += 1
-            if not ok:
-                raise RuntimeError(
-                    f"native moe_forward_experts failed layer={self.layer_id} tok={tok}")
-            out = torch.from_numpy(out_np.reshape(k, d).copy()).to(self.device, torch.float32)
-            wv = torch.tensor([w for _, w in keep], dtype=torch.float32,
-                              device=self.device)
-            moe[tok] = torch.einsum("k,kh->h", wv, out)
-        shared_out = self._shared_forward(xf)
+        batch_device = getattr(self.engine, "moe_forward_batch_device", None)
+        if batch_device is None:
+            raise RuntimeError(
+                "native device MoE API unavailable; refusing host bridge fallback")
+
+        if (self._native_hidden_fp16 is None or
+                tuple(self._native_hidden_fp16.shape) != (n, d)):
+            self._native_hidden_fp16 = torch.empty(
+                (n, d), dtype=torch.float16, device=self.device)
+        # copy_ performs the required FP32->FP16 conversion on the GPU while
+        # reusing the same allocation on every layer/token call.
+        self._native_hidden_fp16.copy_(xf)
+        hidden_fp16 = self._native_hidden_fp16
+
+        if (self._native_raw_output is None or
+                tuple(self._native_raw_output.shape) != (n, cfg.topk, d)):
+            self._native_raw_output = torch.empty(
+                (n, cfg.topk, d), dtype=torch.float32, device=self.device)
+        raw = self._native_raw_output
+
+        # Exactly one compact route-ID transfer per layer. Reuse the host
+        # buffer; the native scheduler only needs this small dispatch matrix.
+        # Keep it alive through the pybind call because NumPy is a zero-copy
+        # view of it.
+        ids_shape = (n, cfg.topk)
+        if (self._native_route_ids_host is None or
+                tuple(self._native_route_ids_host.shape) != ids_shape):
+            self._native_route_ids_host = torch.empty(
+                ids_shape, dtype=torch.int32, device="cpu",
+                pin_memory=bool(ids.is_cuda))
+        ids_host_tensor = self._native_route_ids_host
+        ids_host_tensor.copy_(ids.detach(), non_blocking=bool(ids.is_cuda))
+        if ids.is_cuda:
+            # The scheduler consumes the host array synchronously. This is the
+            # one intentional host synchronization left in the exact path.
+            torch.cuda.current_stream(ids.device).synchronize()
+        ids_host = ids_host_tensor.numpy()
+        self.stats["route_id_d2h_copies"] += 1
+        self.stats["route_id_d2h_bytes"] += int(ids_host_tensor.numel() * 4)
+        # The NumPy object is only a zero-copy view of the compact route IDs;
+        # hidden states and expert outputs never cross through NumPy.
+        self.stats["numpy_bridge_calls"] += 0
+
+        t0 = time.perf_counter()
+        ok = bool(batch_device(
+            self.layer_id, hidden_fp16.data_ptr(), n, ids_host, cfg.topk,
+            raw.data_ptr()))
+        self.stats["native_fwd_ms"] += (time.perf_counter() - t0) * 1000.0
+        self.stats["native_calls"] += 1
+        self.stats["native_batch_calls"] += 1
+        self.stats["requests"] += int(ids.numel())
+        self.stats["host_synchronizations"] += 1
+        if not ok:
+            detail = ""
+            if hasattr(self.engine, "last_error_message"):
+                detail = self.engine.last_error_message()
+            raise RuntimeError(
+                f"native moe_forward_batch_device failed layer={self.layer_id}"
+                + (f": {detail}" if detail else ""))
+
+        if (self._native_moe_output is None or
+                tuple(self._native_moe_output.shape) != (n, d)):
+            self._native_moe_output = torch.empty(
+                (n, d), dtype=torch.float32, device=self.device)
+        moe = self._native_moe_output
+        moe.zero_()
+        weights_f32 = weights if weights.dtype == torch.float32 else weights.float()
+        # Preserve the established rank-order FP32 reduction instead of using
+        # an opaque reduction kernel that might reorder the top-K summation.
+        for rank in range(cfg.topk):
+            moe.addcmul_(
+                raw[:, rank, :], weights_f32[:, rank].unsqueeze(1))
+
+        shared_out = self._shared_forward(xf, hidden_fp16)
         return moe + shared_out, shared_out
 
-    def _shared_forward(self, xf: torch.Tensor) -> torch.Tensor:
+    def _shared_forward(self, xf: torch.Tensor,
+                        hidden_fp16: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Shared expert (F8_E4M3) stays on the torch path (already FP16-expanded)."""
         n, d = xf.shape
         if not self.shared_payload and self.provider is not None:
@@ -296,7 +365,7 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
         w1 = self._shared_dev["w1.weight"]
         w2 = self._shared_dev["w2.weight"]
         w3 = self._shared_dev["w3.weight"]
-        xc = xf.half().to(self.device)
+        xc = hidden_fp16 if hidden_fp16 is not None else xf.half().to(self.device)
         gate = torch.clamp((xc @ w1.t()).float(),
                            max=self.cfg.swiglu_limit)
         up = torch.clamp((xc @ w3.t()).float(),
@@ -348,6 +417,7 @@ def make_candidate_layer(
     fp16_payloads: dict[int, dict[str, torch.Tensor]],
     shared_payload: dict[str, torch.Tensor],
     provider: Any = None,
+    diagnostics: bool = True,
 ) -> layer_ref.DeepseekV4Layer:
     """Build the Freebuff candidate layer (cache-fp16 FFN backend).
 
@@ -358,7 +428,8 @@ def make_candidate_layer(
     ffn = DeepseekV4CacheFfn(cache=cache, loader=loader, layer_id=layer_id,
                              fp16_payloads=fp16_payloads,
                              shared_payload=shared_payload, cfg=cfg,
-                             device=device, provider=provider)
+                             device=device, provider=provider,
+                             diagnostics=diagnostics)
     ffn.attach_gate(w["ffn"]["gate_w"], w["ffn"]["gate_b"])
     ffn.attach_hash(w["ffn"].get("tid2eid"))
     return layer_ref.DeepseekV4Layer(cfg, w, device=device, max_batch=max_batch,
@@ -375,12 +446,13 @@ def make_native_candidate_layer(
     max_batch: int = 1,
     shared_payload: Optional[dict[str, torch.Tensor]] = None,
     provider: Any = None,
+    diagnostics: bool = True,
 ) -> layer_ref.DeepseekV4Layer:
     """Build the native-engine candidate layer (routed experts via
     pydee.Engine.moe_forward_experts; router + shared expert on torch)."""
     ffn = DeepseekV4NativeFfn(engine=engine, layer_id=layer_id, cfg=cfg,
                               device=device, shared_payload=shared_payload,
-                              provider=provider)
+                              provider=provider, diagnostics=diagnostics)
     ffn.attach_gate(w["ffn"]["gate_w"], w["ffn"]["gate_b"])
     ffn.attach_hash(w["ffn"].get("tid2eid"))
     return layer_ref.DeepseekV4Layer(cfg, w, device=device, max_batch=max_batch,
