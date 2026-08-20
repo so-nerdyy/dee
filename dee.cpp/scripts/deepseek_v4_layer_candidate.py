@@ -251,7 +251,9 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
                       "route_id_d2h_bytes": 0, "full_hidden_d2h_copies": 0,
                       "raw_expert_output_d2h_copies": 0,
                       "hidden_h2d_copies": 0, "numpy_bridge_calls": 0,
-                      "host_synchronizations": 0}
+                      "host_synchronizations": 0,
+                      "route_id_host_synchronizations": 0,
+                      "native_output_synchronizations": 0}
         self.last_route: dict[str, Any] = {}
         self._native_hidden_fp16: Optional[torch.Tensor] = None
         self._native_raw_output: Optional[torch.Tensor] = None
@@ -306,9 +308,12 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
         ids_host_tensor = self._native_route_ids_host
         ids_host_tensor.copy_(ids.detach(), non_blocking=bool(ids.is_cuda))
         if ids.is_cuda:
-            # The scheduler consumes the host array synchronously. This is the
-            # one intentional host synchronization left in the exact path.
+            # The scheduler consumes the host array synchronously. This also
+            # orders the preceding FP32->FP16 hidden copy before the native
+            # engine's independent compute stream.
             torch.cuda.current_stream(ids.device).synchronize()
+            self.stats["host_synchronizations"] += 1
+            self.stats["route_id_host_synchronizations"] += 1
         ids_host = ids_host_tensor.numpy()
         self.stats["route_id_d2h_copies"] += 1
         self.stats["route_id_d2h_bytes"] += int(ids_host_tensor.numel() * 4)
@@ -324,7 +329,10 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
         self.stats["native_calls"] += 1
         self.stats["native_batch_calls"] += 1
         self.stats["requests"] += int(ids.numel())
+        # moe_forward_batch_device is the non-pointer-batched exact API and
+        # currently synchronizes its native compute stream before returning.
         self.stats["host_synchronizations"] += 1
+        self.stats["native_output_synchronizations"] += 1
         if not ok:
             detail = ""
             if hasattr(self.engine, "last_error_message"):

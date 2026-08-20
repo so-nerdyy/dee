@@ -916,8 +916,9 @@ class DeepseekV4Model:
         keys = (
             "full_hidden_d2h_copies", "raw_expert_output_d2h_copies",
             "hidden_h2d_copies", "route_id_d2h_copies", "route_id_d2h_bytes",
-            "numpy_bridge_calls", "host_synchronizations", "native_calls",
-            "native_batch_calls",
+            "numpy_bridge_calls", "host_synchronizations",
+            "route_id_host_synchronizations", "native_output_synchronizations",
+            "native_calls", "native_batch_calls",
         )
         totals = {key: 0 for key in keys}
         for layer in self.layers0 + self.layers1:
