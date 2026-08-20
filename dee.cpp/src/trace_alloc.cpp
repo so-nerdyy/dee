@@ -49,6 +49,18 @@ long current_tid() {
         std::hash<std::thread::id>{}(std::this_thread::get_id()));
 }
 
+// v12: the per-allocation stderr lines are forensics, not contract.  With the
+// trace always-on, every CUDA alloc/free in the whole process (torch + both
+// engine threads) took a global mutex + fprintf into Kaggle's log pipe while
+// a 2.5 h decode ran, which is a large share of the measured
+// "everything_else" host wall.  Gate ALL informational lines behind
+// DEE_TRACE_ALLOC=1 (checked once); the abort/enforcement paths stay
+// unconditional.
+bool verbose_logging() {
+    static const bool enabled = (std::getenv("DEE_TRACE_ALLOC") != nullptr);
+    return enabled;
+}
+
 const char* kind_name(Kind k) {
     switch (k) {
         case Kind::Device:       return "device";
@@ -103,10 +115,12 @@ uint64_t record_alloc(Kind k, void* ptr, size_t sz, const char* owner,
                        const char* file, int line, const char* allocator) {
     if (!g_enabled) return 0;
     if (ptr == nullptr) {
-        std::fprintf(stderr,
-            "[ta_alloc_skip] kind=%s owner=%s file=%s line=%d "
-            "(nullptr returned)\n",
-            kind_name(k), owner ? owner : "?", file ? file : "?", line);
+        if (verbose_logging()) {
+            std::fprintf(stderr,
+                "[ta_alloc_skip] kind=%s owner=%s file=%s line=%d "
+                "(nullptr returned)\n",
+                kind_name(k), owner ? owner : "?", file ? file : "?", line);
+        }
         return 0;
     }
     const uint64_t id = g_next_id.fetch_add(1, std::memory_order_relaxed);
@@ -140,24 +154,28 @@ uint64_t record_alloc(Kind k, void* ptr, size_t sz, const char* owner,
             dump_internal_no_lock_();
             std::abort();
         }
-        std::fprintf(stderr,
-            "[ta_alloc_reuse] new_id=%llu prev_id=%llu ptr=%p kind=%s "
-            "prev_site=%s:%d new_site=%s:%d\n",
-            (unsigned long long)id,
-            (unsigned long long)it->second.id,
-            ptr, kind_name(it->second.kind),
-            it->second.file.c_str(), it->second.line,
-            rec.file.c_str(), rec.line);
+        if (verbose_logging()) {
+            std::fprintf(stderr,
+                "[ta_alloc_reuse] new_id=%llu prev_id=%llu ptr=%p kind=%s "
+                "prev_site=%s:%d new_site=%s:%d\n",
+                (unsigned long long)id,
+                (unsigned long long)it->second.id,
+                ptr, kind_name(it->second.kind),
+                it->second.file.c_str(), it->second.line,
+                rec.file.c_str(), rec.line);
+        }
         it->second = rec;
         return id;
     }
     g_live.emplace(ptr, rec);
-    std::fprintf(stderr,
-        "[ta_alloc] id=%llu ptr=%p kind=%s size=%zu owner=%s alloc=%s "
-        "file=%s:%d tid=%ld\n",
-        (unsigned long long)id, ptr, kind_name(k), sz,
-        rec.owner.c_str(), rec.allocator.c_str(),
-        rec.file.c_str(), rec.line, rec.tid);
+    if (verbose_logging()) {
+        std::fprintf(stderr,
+            "[ta_alloc] id=%llu ptr=%p kind=%s size=%zu owner=%s alloc=%s "
+            "file=%s:%d tid=%ld\n",
+            (unsigned long long)id, ptr, kind_name(k), sz,
+            rec.owner.c_str(), rec.allocator.c_str(),
+            rec.file.c_str(), rec.line, rec.tid);
+    }
     return id;
 }
 
@@ -165,9 +183,11 @@ bool record_free(void* p, Kind expected_kind, const char* owner,
                  const char* file, int line) {
     if (!g_enabled) return true;
     if (p == nullptr) {
-        std::fprintf(stderr,
-            "[ta_free_skip] owner=%s file=%s:%d (nullptr)\n",
-            owner ? owner : "?", file ? file : "?", line);
+        if (verbose_logging()) {
+            std::fprintf(stderr,
+                "[ta_free_skip] owner=%s file=%s:%d (nullptr)\n",
+                owner ? owner : "?", file ? file : "?", line);
+        }
         return true;
     }
     std::lock_guard<std::mutex> g(g_mutex);
@@ -224,11 +244,13 @@ void commit_free(void* p, const char* owner, const char* file, int line) {
         std::abort();
     }
     it->second.alive = false;
-    std::fprintf(stderr,
-        "[ta_free] id=%llu ptr=%p kind=%s alloc=%s owner=%s file=%s:%d\n",
-        (unsigned long long)it->second.id, p,
-        kind_name(it->second.kind), it->second.allocator.c_str(),
-        owner ? owner : "?", file ? file : "?", line);
+    if (verbose_logging()) {
+        std::fprintf(stderr,
+            "[ta_free] id=%llu ptr=%p kind=%s alloc=%s owner=%s file=%s:%d\n",
+            (unsigned long long)it->second.id, p,
+            kind_name(it->second.kind), it->second.allocator.c_str(),
+            owner ? owner : "?", file ? file : "?", line);
+    }
 }
 
 // Cross-check helper: does `claimed` (the caller's reported origin for an

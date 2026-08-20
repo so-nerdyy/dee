@@ -2719,25 +2719,30 @@ const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int exp
             off += sources[r]->nbytes;
         }
 #ifndef _WIN32
-        // v10: the pack bytes now live in the host RAM LRU; drop the source
-        // mmap pages from the page cache so they do not double-book RAM
-        // (v9 OOM: 27.7 GiB host_pack + ~28 GiB of checkpoint pages read
-        // through mmap exceeded the ~32 GiB box).  A later eviction + re-fill
-        // re-faults these pages, which is exactly the pre-host_pack cost.
-        const long page_size = ::sysconf(_SC_PAGESIZE);
-        if (page_size > 0) {
-            for (int r = 0; r < 6; ++r) {
-                const uintptr_t start =
-                    reinterpret_cast<uintptr_t>(sources[r]->data);
-                const size_t len = sources[r]->nbytes;
-                if (len == 0) continue;
-                const uintptr_t page_mask =
-                    static_cast<uintptr_t>(page_size) - 1;
-                const uintptr_t aligned_start = start & ~page_mask;
-                const size_t span = ((start + len + page_mask) & ~page_mask) -
-                                    aligned_start;
-                ::madvise(reinterpret_cast<void*>(aligned_start), span,
-                          MADV_DONTNEED);
+        // v10 idea (now env-gated OFF, v12): madvise(DONTNEED) the source
+        // mmap pages after copying a pack into the host LRU.  The intent was
+        // to stop the page cache double-booking the ~28 GiB of checkpoint
+        // pages during decode (v9 OOM).  MEASURED: v8 survived 25.74 GiB
+        // total with NO madvise; v11 (madvise ON, 26.0 GiB) was OOM-killed
+        // and re-faulted evicted experts against the slow loop device at
+        // ~4 MB/s (~3.4 s/miss).  Default off = v8's proven behavior.
+        static const bool kMadvise = (std::getenv("DEE_MADVISE_DONTNEED") != nullptr);
+        if (kMadvise) {
+            const long page_size = ::sysconf(_SC_PAGESIZE);
+            if (page_size > 0) {
+                for (int r = 0; r < 6; ++r) {
+                    const uintptr_t start =
+                        reinterpret_cast<uintptr_t>(sources[r]->data);
+                    const size_t len = sources[r]->nbytes;
+                    if (len == 0) continue;
+                    const uintptr_t page_mask =
+                        static_cast<uintptr_t>(page_size) - 1;
+                    const uintptr_t aligned_start = start & ~page_mask;
+                    const size_t span = ((start + len + page_mask) & ~page_mask) -
+                                        aligned_start;
+                    ::madvise(reinterpret_cast<void*>(aligned_start), span,
+                              MADV_DONTNEED);
+                }
             }
         }
 #endif

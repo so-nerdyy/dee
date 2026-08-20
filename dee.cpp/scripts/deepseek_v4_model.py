@@ -798,12 +798,25 @@ class DeepseekV4Model:
         enabling an honest decode-only TPS without attributing evidence
         overhead to the cache policy.
 
-        ``post_step_hook`` (CACHE1b): optional ``callable(step_index)`` run
-        after each forward (prefill + every decode step).  The cache1 stage
-        uses it to bound process RSS DURING decode (gc + cuda empty_cache +
-        malloc_trim), because ``ru_maxrss`` is a high-water mark: trimming
-        only before the snapshot cannot undo a peak already reached.
+        ``post_step_hook`` (CACHE1b): optional ``callable(step_index)`` or
+        ``callable(step_index, token_id)`` run after each forward (prefill +
+        every decode step).  The cache1 stage uses it to bound process RSS
+        DURING decode (gc + cuda empty_cache + malloc_trim), because
+        ``ru_maxrss`` is a high-water mark: trimming only before the snapshot
+        cannot undo a peak already reached.  The v12 native-generate path
+        passes the 2-arg form to checkpoint the token stream so an OOM kill
+        (v9/v11 lost ALL tokens) still leaves the exact generated sequence.
         """
+        import inspect
+        _hook_arity = (len(inspect.signature(post_step_hook).parameters)
+                       if post_step_hook is not None else 0)
+        def _run_hook(step: int, token_id: int) -> None:
+            if post_step_hook is None:
+                return
+            if _hook_arity >= 2:
+                post_step_hook(step, token_id)
+            else:
+                post_step_hook(step)
         seq_len = input_ids.shape[1]
         t0 = time.monotonic()
         logits = self.forward(input_ids, 0, captures=captures,
@@ -811,10 +824,10 @@ class DeepseekV4Model:
         t1 = time.monotonic()
         if decode_timings_ms is not None:
             decode_timings_ms.append((t1 - t0) * 1000.0)
-        if post_step_hook is not None:
-            post_step_hook(0)
         tok = int(logits.argmax(-1).item())
         generated = [tok]
+        if post_step_hook is not None:
+            _run_hook(0, tok)
         if trace is not None:
             trace["token_0"] = {"start_pos": 0, "token_id": tok,
                                  "logits_finite": bool(torch.isfinite(logits).all()),
@@ -836,7 +849,7 @@ class DeepseekV4Model:
             if decode_timings_ms is not None:
                 decode_timings_ms.append((t1 - t0) * 1000.0)
             if post_step_hook is not None:
-                post_step_hook(t)
+                _run_hook(t, tok)  # CACHE1b RSS-trim hook (single-arg form)
             tok = int(logits.argmax(-1).item())
             generated.append(tok)
             if trace is not None:

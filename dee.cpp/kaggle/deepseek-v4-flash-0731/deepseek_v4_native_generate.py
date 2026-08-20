@@ -50,22 +50,26 @@ N_TOKENS = int(os.environ.get("NATIVE_N_TOKENS", "16"))
 # 3.5 GiB (~73 FP16 experts) — measured free VRAM after dense + engine is
 # ~6.6/4.9 GiB on the two T4s, so 3.5 GiB/GPU keeps clear headroom.
 BUDGET_BYTES = int(os.environ.get("NATIVE_BUDGET_BYTES", str(3584 << 20)))
-# Stage 1b (v8/v9/v10): host RAM LRU of packed FP4 expert bytes (12.6 MB/
-# entry).  The 16-token working set is ~2,365 pairs ≈ 30 GiB; per-engine it is
-# NOT symmetric: the v8 run measured 1,247 unique experts on cuda0 (layers
-# 0-21, ≈ 16.7 GiB of packs) vs 916 on cuda1 (layers 22-42, ≈ 12.2 GiB).
-# v9 set budgets sized to each GPU's working set (16.2/12.2 = 28.4 GiB) but
-# was OOM-KILLED during decode: host_pack filled to its 27.68 GiB cap and,
-# combined with dense host tensors + the mmap page cache of the 152.8 GiB
-# checkpoint, exceeded the box's ~32 GiB RAM.  v8 survived at 25.74 GiB total
-# (12.87/GPU).  v10 therefore (a) caps the total at 26 GiB (14.5/11.5, the
-# v8-proven-safe ceiling) and (b) the engine now madvise(MADV_DONTNEED)s the
-# source mmap pages after copying a pack into the LRU, so the page cache no
-# longer double-books the ~28 GiB of checkpoint pages that decode reads.
+# Stage 1b (v8/v9/v10/v11/v12): host RAM LRU of packed FP4 expert bytes
+# (12.6 MB/entry).  The 16-token working set is ~2,365 pairs ≈ 30 GiB;
+# per-engine it is NOT symmetric: the v8 run measured 1,247 unique experts on
+# cuda0 (layers 0-21, ≈ 16.7 GiB of packs) vs 916 on cuda1 (layers 22-42,
+# ≈ 12.2 GiB).  Memory-safety history:
+#   - v8: 12.87 GiB/GPU = 25.74 GiB total, NO madvise -> SURVIVED (correct
+#     per-step memory, wrong tokens only because batched=True diverged).
+#   - v9: 15.79/11.89 = 27.68 GiB -> OOM-killed.
+#   - v11: 14.5/11.5 = 26.0 GiB + madvise ON -> OOM-killed; the DONTNEED
+#     re-faulted evicted experts against the slow loop device (~4 MB/s,
+#     ~3.4 s/miss) instead of hitting the page cache.
+# v12 therefore returns to the v8-PROVEN ceiling (12.87 GiB/GPU symmetric)
+# and leaves madvise OFF by default (env DEE_MADVISE_DONTNEED=1 opts in).
+# The cuda0 shortfall (16.7 GiB set vs 12.87 budget) means cuda0 still
+# evicts ~3.8 GiB of experts per pass; those re-faults now hit the page
+# cache (v8 behavior) rather than the loop device.
 HOST_PACK_CACHE_BYTES_GPU0 = int(os.environ.get(
-    "NATIVE_HOST_PACK_GPU0_BYTES", str(int(14.5 * (1 << 30)))))
+    "NATIVE_HOST_PACK_GPU0_BYTES", str(int(12.87 * (1 << 30)))))
 HOST_PACK_CACHE_BYTES_GPU1 = int(os.environ.get(
-    "NATIVE_HOST_PACK_GPU1_BYTES", str(int(11.5 * (1 << 30)))))
+    "NATIVE_HOST_PACK_GPU1_BYTES", str(int(12.87 * (1 << 30)))))
 # Stage 2 (v9): the pointer-batched SwiGLU path (cublasGemmBatchedEx) is a
 # DIFFERENT numerical kernel than the per-expert path (cublasGemmEx per
 # expert): a 1-ULP FP16 difference flips greedy tokens. v8 enabled it and
@@ -272,14 +276,15 @@ def main() -> int:
     mem_avail = host_mem_available_gib()
     # Safety clamp: keep 2 GiB of headroom for torch/CUDA/python + the dense
     # host tensors that stay resident during decode.  The v8 run held 25.7 GiB
-    # of host_pack with MemAvailable 29.7 GiB with no OOM, so 4 GiB was too
-    # conservative and starved cuda0.  The LRU fills lazily, so this only caps
-    # the box's true RAM limit.  Each GPU gets a budget sized to its OWN
-    # measured working set (asymmetric: cuda0 16.7 GiB > cuda1 12.2 GiB).
+    # v12: clamp hard under the box's true RAM ceiling.  v8 survived 25.74 GiB
+    # of host_pack with MemAvailable 29.7 GiB; v11's looser -2 GiB margin
+    # (26.0 GiB) OOM'd.  Use a 3.5 GiB margin and NEVER exceed the configured
+    # 12.87/GPU constants.  The LRU fills lazily, so this only caps the box's
+    # true RAM limit while keeping each GPU's budget within the proven level.
     pack_budget0 = HOST_PACK_CACHE_BYTES_GPU0
     pack_budget1 = HOST_PACK_CACHE_BYTES_GPU1
     if mem_avail > 0:
-        total_cap = max(0, int((mem_avail - 2.0) * (1 << 30)))
+        total_cap = max(0, int((mem_avail - 3.5) * (1 << 30)))
         # Keep the measured 16.2:12.2 ratio when clamping under total RAM.
         ratio = HOST_PACK_CACHE_BYTES_GPU0 + HOST_PACK_CACHE_BYTES_GPU1
         if total_cap < ratio:
@@ -327,10 +332,30 @@ def main() -> int:
     decode_ms: list[float] = []
     eng0.reset_external_profile()
     eng1.reset_external_profile()
+    # v12: checkpoint every generated token to /kaggle/working so an OOM kill
+    # (v9/v11 lost ALL tokens) still leaves the exact token stream + timing.
+    # The checkpoint file format is a JSONL of per-token records; the final
+    # RESULT block below mirrors the old single-JSON shape.
+    CHECKPOINT = WORK / "generated_checkpoint.jsonl"
+    cp_handle = open(CHECKPOINT, "w", encoding="utf-8")
+
+    def _token_checkpoint(step: int, tok: int) -> None:
+        mem = host_mem_available_gib()
+        rec = {"step": step, "token_id": int(tok),
+               "elapsed_s": round(time.monotonic() - t0, 2),
+               "host_mem_available_gib": round(mem, 2)}
+        cp_handle.write(json.dumps(rec) + "\n")
+        cp_handle.flush()
+        if step % 4 == 0 or mem < 4.0:
+            log(f"[tok {step}] id={int(tok)} elapsed={rec['elapsed_s']}s "
+                f"mem_avail={rec['host_mem_available_gib']}GiB")
+
     t0 = time.monotonic()
     toks = model.generate(input_ids, max_new_tokens=N_TOKENS,
-                          decode_timings_ms=decode_ms)
+                          decode_timings_ms=decode_ms,
+                          post_step_hook=_token_checkpoint)
     wall_s = time.monotonic() - t0
+    cp_handle.close()
     log(f"decode done in {wall_s:.1f}s, {len(toks)} tokens")
 
     prefill_ms = decode_ms[0] if decode_ms else 0.0
