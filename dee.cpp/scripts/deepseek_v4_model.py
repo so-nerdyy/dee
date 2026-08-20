@@ -848,10 +848,10 @@ class DeepseekV4Model:
             t1 = time.monotonic()
             if decode_timings_ms is not None:
                 decode_timings_ms.append((t1 - t0) * 1000.0)
-            if post_step_hook is not None:
-                _run_hook(t, tok)  # CACHE1b RSS-trim hook (single-arg form)
             tok = int(logits.argmax(-1).item())
             generated.append(tok)
+            if post_step_hook is not None:
+                _run_hook(t, tok)  # CACHE1b RSS-trim/checkpoint hook
             if trace is not None:
                 trace[f"token_{t}"] = {
                     "start_pos": seq_len + t - 1, "token_id": tok,
