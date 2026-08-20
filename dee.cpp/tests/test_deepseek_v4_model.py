@@ -178,14 +178,16 @@ def _make_synthetic_model(cfg: ModelConfig, *, seed: int = 0,
 
 def _build_cpu_candidate(cfg: ModelConfig, source: DictTensorSource,
                          *, dense_dtype: torch.dtype = torch.float16,
-                         budget_bytes: int = 1 << 30):
+                         budget_bytes: int = 1 << 30,
+                         diagnostics: bool = True):
     cache = DeepSeekExpertCache(budget_bytes, device="cpu")
     loader = DeepSeekExpertLoader(cache)
     provider = ExpertProvider(source)
     model = DeepseekV4Model.build_candidate(
         cfg, source, device0="cpu", device1="cpu", cache0=cache, loader0=loader,
         cache1=cache, loader1=loader, provider=provider,
-        dense_dtype=dense_dtype, embed_head_dtype=torch.bfloat16, split=2)
+        dense_dtype=dense_dtype, embed_head_dtype=torch.bfloat16, split=2,
+        diagnostics=diagnostics)
     return model, cache, provider
 
 
@@ -248,6 +250,22 @@ def test_model_full_prefill_decode() -> None:
     l1 = model.forward(input_ids, 0)
     l2 = model2.forward(input_ids, 0)
     assert torch.equal(l1, l2)
+
+
+def test_fast_mode_skips_layer_trace_but_remains_finite() -> None:
+    """Benchmark-fast mode removes per-layer serialization/checksums while
+    retaining the final fail-closed finite-logits check."""
+    cfg = CFG
+    source = DictTensorSource(_make_synthetic_model(cfg, seed=31))
+    model, _, _ = _build_cpu_candidate(cfg, source, diagnostics=False)
+    input_ids = torch.tensor([[0, 5, 9, 2]]).long()
+    logits = model.forward(input_ids, 0)
+    assert torch.isfinite(logits).all()
+    assert model.execution_trace == []
+    assert model.diagnostics is False
+    snapshot = model.runtime_snapshot()
+    assert snapshot["diagnostics"] is False
+    assert snapshot["bridge_counters"]["full_hidden_d2h_copies"] == 0
 
 
 def test_model_hash_layer_routing() -> None:
