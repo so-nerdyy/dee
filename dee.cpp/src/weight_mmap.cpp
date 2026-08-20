@@ -2,6 +2,7 @@
 #include "dee/weight_mmap.h"
 #include "dee/json_min.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #ifdef _WIN32
@@ -257,6 +258,46 @@ TensorView WeightMmap::lookup(const std::string& tensor_name) const {
     view.dtype  = m.dtype;
     view.shape  = m.shape;
     return view;
+}
+
+bool WeightMmap::discard_source_pages(const void* data, size_t nbytes) const {
+#ifdef _WIN32
+    (void)data;
+    (void)nbytes;
+    return false;
+#else
+    if (!base_ || fd_ < 0 || !data || nbytes == 0) return false;
+    const auto begin = reinterpret_cast<uintptr_t>(base_);
+    const auto address = reinterpret_cast<uintptr_t>(data);
+    if (address < begin || address - begin >= size_) return false;
+    const size_t offset = static_cast<size_t>(address - begin);
+    const size_t length = std::min(nbytes, size_ - offset);
+
+    // POSIX_FADV_DONTNEED operates on the file-backed pages and is stronger
+    // than relying on mmap advice alone for a shared, read-only mapping.
+    const int advice = ::posix_fadvise(fd_,
+                                       static_cast<off_t>(offset), length,
+                                       POSIX_FADV_DONTNEED);
+    const long page_size = ::sysconf(_SC_PAGESIZE);
+    if (page_size <= 0) return advice == 0;
+    const uintptr_t page_mask = static_cast<uintptr_t>(page_size) - 1;
+    const uintptr_t map_begin = begin;
+    const uintptr_t map_end = begin + size_;
+    const uintptr_t aligned_begin = std::max(
+        address & ~page_mask, map_begin);
+    const uintptr_t end = address + length;
+    const uintptr_t aligned_end = std::min(
+        (end + page_mask) & ~page_mask, map_end);
+    const size_t span = aligned_end > aligned_begin
+        ? static_cast<size_t>(aligned_end - aligned_begin) : 0;
+    if (span != 0) {
+        // Best effort: POSIX_FADV_DONTNEED is the authoritative file-cache
+        // operation; MADV_DONTNEED additionally drops resident mapping PTEs.
+        (void)::madvise(reinterpret_cast<void*>(aligned_begin), span,
+                        MADV_DONTNEED);
+    }
+    return advice == 0;
+#endif
 }
 
 // ---- TensorResolver --------------------------------------------------------

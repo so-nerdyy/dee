@@ -2745,6 +2745,27 @@ const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int exp
                 }
             }
         }
+
+        // The private host pack is now authoritative for this expert. Release
+        // the clean file-backed source pages so the 153 GiB checkpoint mmap
+        // cannot accumulate a second, unbounded residency set. Keep this
+        // enabled by default; DEE_RELEASE_MMAP_PAGES=0 is an explicit opt-out
+        // for comparison runs. Re-faults are paid only when the bounded pack
+        // LRU later evicts an expert.
+        static const bool kReleaseMmapPages = [] {
+            const char* value = std::getenv("DEE_RELEASE_MMAP_PAGES");
+            return value == nullptr || std::strcmp(value, "0") != 0;
+        }();
+        if (kReleaseMmapPages) {
+            for (int r = 0; r < 6; ++r) {
+                (void)mmap_.discard_source_pages(
+                    sources[r]->data, sources[r]->nbytes);
+                for (const auto& extra : extra_mmaps_) {
+                    (void)extra->discard_source_pages(
+                        sources[r]->data, sources[r]->nbytes);
+                }
+            }
+        }
 #endif
     };
     const uint8_t* pack_buf = pack_cache_.get(

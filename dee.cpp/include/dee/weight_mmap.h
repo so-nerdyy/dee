@@ -72,6 +72,11 @@ public:
     // Direct lookup by exact tensor name. Returns a view, or !ok() if missing.
     TensorView lookup(const std::string& tensor_name) const;
 
+    // Drop clean source pages for a resolved view after its bytes have been
+    // copied into a private cache. This bounds the file-cache residency of a
+    // very large checkpoint without invalidating the mmap or its metadata.
+    bool discard_source_pages(const void* data, size_t nbytes) const;
+
     // Raw header map (tensor name -> meta). Exposed for debugging/tests.
     const std::unordered_map<std::string, TensorMeta>& tensors() const { return tensors_; }
 
