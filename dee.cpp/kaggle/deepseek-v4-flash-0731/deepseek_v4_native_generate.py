@@ -81,6 +81,15 @@ USE_BATCHED_EXPERTS = os.environ.get("NATIVE_BATCHED", "0") == "1"
 # timing-event allocation. Run a separate diagnostic pass with both enabled.
 PROFILE_STAGES = os.environ.get("NATIVE_PROFILE", "0") == "1"
 DIAGNOSTICS = os.environ.get("NATIVE_DIAGNOSTICS", "0") == "1"
+# v15: return to v8-PROVEN storage behavior.  v13's discard_source_pages
+# (posix_fadvise + MADV_DONTNEED on the shared mmap after every pack fill)
+# re-introduced the v10 behavior that v12 measured as OOM + re-fault
+# thrash against the loop device (~4 MB/s): v8 (no discard, page-cache
+# hits on evicted re-reads) survived 16/16 tokens at 225 s/token, while
+# v14 (discard ON) OOM'd at token 9 at 369 s/token.  The engine default is
+# ON, so this runtime opts OUT explicitly.  The v15 LRU cap (17 GiB)
+# bounds the anonymous side regardless.
+os.environ.setdefault("DEE_RELEASE_MMAP_PAGES", "0")
 PROGRESS = WORK / "progress.log"
 
 
@@ -208,6 +217,50 @@ def host_mem_available_gib() -> float:
     return 0.0
 
 
+def host_mem_total_gib() -> float:
+    """MemTotal from /proc/meminfo, in GiB (0.0 on failure)."""
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemTotal:"):
+                kb = int(line.split()[1])
+                return kb / (1024 * 1024)
+    except OSError:
+        pass
+    return 0.0
+
+
+def process_mem_gib() -> dict:
+    """This process's VmRSS/VmData/VmLck/VmSwap from /proc/self/status.
+
+    VmData = anonymous heap growth; VmLck = pinned (cudaMallocHost) growth;
+    the gap between VmRSS and (VmData + VmLck) is file-backed page cache
+    attributed to this process.  This is the definitive leak localizer for
+    the v12/v14 decode-time host-RAM growth.
+    """
+    out = {}
+    try:
+        for line in Path("/proc/self/status").read_text().splitlines():
+            for key in ("VmRSS", "VmData", "VmLck", "VmSwap"):
+                if line.startswith(key + ":"):
+                    out[key] = round(int(line.split()[1]) / (1024 * 1024), 2)
+    except OSError:
+        pass
+    return out
+
+
+def system_mem_gib() -> dict:
+    """MemTotal/MemAvailable/Cached/SReclaimable, in GiB."""
+    out = {}
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            for key in ("MemTotal", "MemAvailable", "Cached", "SReclaimable"):
+                if line.startswith(key + ":"):
+                    out[key] = round(int(line.split()[1]) / (1024 * 1024), 2)
+    except OSError:
+        pass
+    return out
+
+
 def gpu_memory_snapshot() -> dict:
     import torch
     out = {}
@@ -276,17 +329,22 @@ def main() -> int:
 
     log("=== build native engines (device 0 + 1) ===")
     mem_avail = host_mem_available_gib()
-    # Safety clamp: keep 2 GiB of headroom for torch/CUDA/python + the dense
-    # host tensors that stay resident during decode.  The v8 run held 25.7 GiB
-    # v12: clamp hard under the box's true RAM ceiling.  v8 survived 25.74 GiB
-    # of host_pack with MemAvailable 29.7 GiB; v11's looser -2 GiB margin
-    # (26.0 GiB) OOM'd.  Use a 3.5 GiB margin and NEVER exceed the configured
-    # 12.87/GPU constants.  The LRU fills lazily, so this only caps the box's
-    # true RAM limit while keeping each GPU's budget within the proven level.
+    mem_total = host_mem_total_gib()
+    # v15: the v12/v14 "leak" is the host-pack LRU materializing its full
+    # 25.74 GiB budget on a box that physically cannot hold it.  Both runs
+    # were OOM-killed with the LRU at ~21 GiB plus the ~5-8 GiB resident
+    # baseline (torch + 2 CUDA contexts + python + dense host refs), and
+    # the old clamp (mem_avail - 3.5 = 26.2 GiB > 25.74) never engaged.
+    # Cap the TOTAL LRU budget hard at 17 GiB (8.5 GiB/GPU, below the
+    # measured ~21 GiB death point with margin).  v15 also logs MemTotal +
+    # per-token VmRSS/VmData/VmLck so v16 can tune the exact ceiling.
+    LRU_TOTAL_CAP_GIB = 17.0
     pack_budget0 = HOST_PACK_CACHE_BYTES_GPU0
     pack_budget1 = HOST_PACK_CACHE_BYTES_GPU1
-    if mem_avail > 0:
-        total_cap = max(0, int((mem_avail - 3.5) * (1 << 30)))
+    if mem_avail > 0 or mem_total > 0:
+        total_cap = int(LRU_TOTAL_CAP_GIB * (1 << 30))
+        if mem_avail > 0:
+            total_cap = min(total_cap, int((mem_avail - 3.5) * (1 << 30)))
         # Keep the measured 16.2:12.2 ratio when clamping under total RAM.
         ratio = HOST_PACK_CACHE_BYTES_GPU0 + HOST_PACK_CACHE_BYTES_GPU1
         if total_cap < ratio:
@@ -298,7 +356,8 @@ def main() -> int:
     log(f"budget={BUDGET_BYTES/2**30:.2f}GiB/GPU host_pack="
         f"{pack_budget0/2**30:.2f}/{pack_budget1/2**30:.2f}GiB "
         f"batched={USE_BATCHED_EXPERTS} profile={PROFILE_STAGES} "
-        f"diagnostics={DIAGNOSTICS} mem_avail={mem_avail:.1f}GiB")
+        f"diagnostics={DIAGNOSTICS} mem_avail={mem_avail:.1f}GiB "
+        f"mem_total={mem_total:.1f}GiB lru_cap={LRU_TOTAL_CAP_GIB}GiB")
     eng0 = vm.build_native_engine(
         shard_paths, device_id=0, budget_bytes=BUDGET_BYTES,
         host_pack_cache_bytes=pack_budget0,
@@ -346,11 +405,31 @@ def main() -> int:
         rec = {"step": step, "token_id": int(tok),
                "elapsed_s": round(time.monotonic() - t0, 2),
                "host_mem_available_gib": round(mem, 2)}
+        # v15 diagnostics: process + system memory breakdown and engine
+        # cache counters, so a v12-style OOM is attributable to a component
+        # (heap vs pinned vs page cache) instead of a mystery "leak".
+        rec["proc"] = process_mem_gib()
+        rec["sys"] = system_mem_gib()
+        try:
+            rec["host_pack0"] = eng0.host_pack_stats()
+            rec["host_pack1"] = eng1.host_pack_stats()
+        except Exception:
+            pass
+        try:
+            rec["bridge"] = model.bridge_counters()
+        except Exception:
+            pass
         cp_handle.write(json.dumps(rec) + "\n")
         cp_handle.flush()
         if step % 4 == 0 or mem < 4.0:
             log(f"[tok {step}] id={int(tok)} elapsed={rec['elapsed_s']}s "
                 f"mem_avail={rec['host_mem_available_gib']}GiB")
+            pm = rec.get("proc", {})
+            hp0 = rec.get("host_pack0", {})
+            log(f"[tok {step}] proc={pm} hp0_bytes_gib="
+                f"{hp0.get('bytes', 0) / (1 << 30):.1f} "
+                f"hp0_entries={hp0.get('entries', 0)} "
+                f"hp0_evict={hp0.get('evictions', 0)}")
 
     t0 = time.monotonic()
     toks = model.generate(input_ids, max_new_tokens=N_TOKENS,
