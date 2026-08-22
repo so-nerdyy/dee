@@ -311,6 +311,64 @@ def main() -> int:
     log("=== download all shards ===")
     shard_paths = download_all_shards()
 
+    # ── P2.2: DEE4 expert-major repack benchmark ──────────────────────
+    log("=== P2.2 DEE4 repack benchmark ===")
+    try:
+        sys.path.insert(0, str(DEE / "kaggle" / "deepseek-v4-flash-0731"))
+        from repack_to_dee4 import repack, benchmark_dee4_read as _b4r
+        import struct as _struct
+        _dee4_out = Path("/kaggle/working/dee4-test")
+        _idx = Path(str(shard_paths[0]).rsplit("/", 1)[0]) / "model.safetensors.index.json"
+        _t0 = time.monotonic()
+        _dee4_rpt = repack(
+            Path(str(shard_paths[0]).rsplit("/", 1)[0]), _dee4_out,
+            index_path=_idx, start_layer=0, end_layer=3, dry_run=False)
+        _dt = time.monotonic() - _t0
+        _dee4_bench = _b4r(_dee4_out, n_experts=64)
+        # Compare: safetensors random gather
+        _idx_data = json.loads(_idx.read_text("utf-8"))
+        _wm = _idx_data["weight_map"]; _hdr = {}; _sp = {}
+        for _sn in sorted(set(_wm.values())):
+            _p = Path(str(shard_paths[0]).rsplit("/", 1)[0]) / _sn
+            _sp[_sn] = _p
+            with open(_p, "rb") as _f:
+                _hl = _struct.unpack("<Q", _f.read(8))[0]
+                _hdr[_sn] = json.loads(_f.read(_hl))
+        _st0 = time.monotonic(); _tb = 0; _rc = 0
+        for _L in range(3):
+            for _eid in range(min(21, 256)):  # 21 * 3 layers = 63 experts
+                for _proj in ["w1","w2","w3"]:
+                    for _kind in ["weight","scale"]:
+                        _nm = f"layers.{_L}.ffn.experts.{_eid}.{_proj}.{_kind}"
+                        if _nm not in _wm: continue
+                        _sn = _wm[_nm]; _hh = _hdr[_sn]
+                        _off = _hh[_nm]["data_offsets"]
+                        _ln = _off[1] - _off[0]
+                        with open(_sp[_sn], "rb") as _f:
+                            _f.seek(8 + _off[0]); _f.read(_ln)
+                        _tb += _ln; _rc += 1
+                if _rc >= 64 * 6: break
+            if _rc >= 64 * 6: break
+        _ste = time.monotonic() - _st0
+        _st_mbps = _tb / max(_ste, 0.001) / (1 << 20)
+        _d4_mbps = _dee4_bench["aggregate_mbps"]
+        log(f"P2.2: DEE4 contiguous {_d4_mbps:.0f} MB/s vs "
+            f"safetensors scatter {_st_mbps:.0f} MB/s "
+            f"({_d4_mbps/max(_st_mbps,0.01):.1f}x) "
+            f"repack {_dt:.0f}s {_dee4_rpt['total_bytes_repacked']/(1<<30):.1f}GiB")
+        _p22_evidence = {
+            "dee4_mbps": _d4_mbps, "safetensors_mbps": _st_mbps,
+            "speedup": _d4_mbps / max(_st_mbps, 0.01),
+            "repack_s": _dt, "repack_gib": _dee4_rpt["total_bytes_repacked"]/(1<<30),
+            "io_count_reduction": f"{_rc} random -> {len(_dee4_bench['tests'])} sequential"
+        }
+        (Path("/kaggle/working") / "p2.2-dee4-evidence.json").write_text(
+            json.dumps(_p22_evidence, indent=2), "utf-8")
+    except Exception as _e:
+        log(f"P2.2 repack failed (non-fatal): {_e}")
+        import traceback as _tb
+        _tb.print_exc()
+
     sys.path.insert(0, str(DEE))
     sys.path.insert(0, str(DEE / "benchmark_reports/deepseek-v4-flash-0731-t4/"
                           "official-source/inference"))
