@@ -113,6 +113,7 @@ def repack(
     safetensors_dir: Path,
     output_dir: Path,
     *,
+    index_path: Path | None = None,
     start_layer: int = 0,
     end_layer: int = NUM_LAYERS,
     dry_run: bool = False,
@@ -141,7 +142,8 @@ def repack(
     }
 
     # ── 1. Load safetensors index ──────────────────────────────────────
-    index_path = safetensors_dir / "model.safetensors.index.json"
+    if index_path is None:
+        index_path = safetensors_dir / "model.safetensors.index.json"
     if not index_path.is_file():
         raise FileNotFoundError(f"index missing: {index_path}")
     index = json.loads(index_path.read_text("utf-8"))
