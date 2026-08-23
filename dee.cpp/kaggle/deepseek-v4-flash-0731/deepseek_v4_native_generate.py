@@ -545,9 +545,12 @@ def main() -> int:
         f"cache_dtype={CACHE_DTYPE}")
     # P2.4 single-GPU mode: one engine on cuda:0 carrying the FULL budget
     # (both halves merged), all 43 layers on device0 (split=n_layers), and
-    # the same-device handoff path.  eng1 is not built.
+    # the same-device handoff path.  eng1 is not built.  Cache budget is
+    # capped below the dense+torch baseline (~7 GiB dense + ~1.5 GiB
+    # torch/CUDA on a 14.5 GiB-usable 16 GB card) so the run cannot OOM.
     if SINGLE_GPU:
-        single_budget = BUDGET_BYTES * 2  # both GPU halves on one device
+        single_budget = min(int(BUDGET_BYTES * 2),
+                            int(4.0 * (1 << 30)))
         single_pack = pack_budget0 + pack_budget1
         eng0 = vm.build_native_engine(
             shard_paths, device_id=0, budget_bytes=single_budget,
