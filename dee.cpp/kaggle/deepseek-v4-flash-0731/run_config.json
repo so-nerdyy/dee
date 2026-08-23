@@ -1,0 +1,5 @@
+{
+  "_comment": "Read by deepseek_v4_native_generate.py (NATIVE_RUN_CONFIG). Kaggle kernel metadata env_vars are NOT reliably passed, so A/B knobs live here. cache_dtype: 'fp16' (sealed exact path) or 'fp4' (P2.3 packed residency, experimental).",
+  "cache_dtype": "fp16",
+  "n_tokens": 16
+}

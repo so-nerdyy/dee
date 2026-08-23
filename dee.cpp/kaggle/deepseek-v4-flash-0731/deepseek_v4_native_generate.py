@@ -103,6 +103,21 @@ os.environ.setdefault("DEE_RELEASE_MMAP_PAGES", "0")
 # hit the fast overlay instead of the loop device.  Default OFF until a
 # clean 2-GPU run proves the 16/16 token gate holds with the staged path.
 FORCE_TMP = os.environ.get("NATIVE_FORCE_TMP", "1") == "1"
+
+# P2.3 A/B: Kaggle kernel metadata env_vars are not reliably passed to the
+# script, so commit-time knobs live in run_config.json next to this file.
+# The kernel clones the branch and reads it from the working tree.  Env
+# overrides still win when actually set.
+RUN_CONFIG = json.loads(
+    (DEE / "kaggle/deepseek-v4-flash-0731/run_config.json").read_text("utf-8"))
+if os.environ.get("NATIVE_CACHE_DTYPE"):
+    CACHE_DTYPE = os.environ["NATIVE_CACHE_DTYPE"]
+else:
+    CACHE_DTYPE = RUN_CONFIG.get("cache_dtype", "fp16")
+if os.environ.get("NATIVE_N_TOKENS"):
+    N_TOKENS = int(os.environ["NATIVE_N_TOKENS"])
+else:
+    N_TOKENS = int(RUN_CONFIG.get("n_tokens", N_TOKENS))
 # P2.4 (2026-08-23): the dual-T4 pool has been exhausted for ~12 consecutive
 # launches (Kaggle hands out 1x P100 instead).  SINGLE_GPU runs the full
 # 43-layer model on one CUDA device (split=n_layers, same-device handoff,
