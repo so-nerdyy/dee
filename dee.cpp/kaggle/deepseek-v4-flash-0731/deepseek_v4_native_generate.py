@@ -103,6 +103,15 @@ os.environ.setdefault("DEE_RELEASE_MMAP_PAGES", "0")
 # hit the fast overlay instead of the loop device.  Default OFF until a
 # clean 2-GPU run proves the 16/16 token gate holds with the staged path.
 FORCE_TMP = os.environ.get("NATIVE_FORCE_TMP", "0") == "1"
+# P2.4 (2026-08-23): the dual-T4 pool has been exhausted for ~12 consecutive
+# launches (Kaggle hands out 1x P100 instead).  NATIVE_SINGLE_GPU=1 runs the
+# full 43-layer model on one CUDA device (split=n_layers, same-device
+# handoff, one engine with the full budget).  The 16/16-token gate is
+# arch-independent (sm_60/sm_75 cubins, same math), so a P100 run validates
+# the identical correctness contract while the T4 pool recovers; the log
+# labels hardware so performance numbers stay honest.  Requires the engine
+# build to include sm_60 (already default in this kernel).
+SINGLE_GPU = os.environ.get("NATIVE_SINGLE_GPU", "0") == "1"
 PROGRESS = WORK / "progress.log"
 
 
@@ -377,8 +386,10 @@ def check_gpu_allocation() -> None:
     lines = [ln.strip() for ln in out.strip().splitlines() if ln.strip()]
     n_gpus = len(lines)
     log(f"GPU_ALLOC n={n_gpus}: " + " | ".join(lines))
-    if n_gpus < 2:
-        raise RuntimeError(f"expected 2 GPUs, got {n_gpus}: {out.strip()}")
+    need = 1 if SINGLE_GPU else 2
+    if n_gpus < need:
+        raise RuntimeError(
+            f"expected {need} GPUs, got {n_gpus}: {out.strip()}")
 
 
 def main() -> int:
@@ -487,8 +498,10 @@ def main() -> int:
                           "official-source/inference"))
     import torch
     log(f"cuda devices: {torch.cuda.device_count()}")
-    if torch.cuda.device_count() < 2:
-        raise RuntimeError(f"expected 2 GPUs, got {torch.cuda.device_count()}")
+    need = 1 if SINGLE_GPU else 2
+    if torch.cuda.device_count() < need:
+        raise RuntimeError(
+            f"expected {need} GPUs, got {torch.cuda.device_count()}")
 
     from scripts import deepseek_v4_model as vm
     from scripts import deepseek_v4_encoding as enc
@@ -530,19 +543,35 @@ def main() -> int:
         f"diagnostics={DIAGNOSTICS} mem_avail={mem_avail:.1f}GiB "
         f"mem_total={mem_total:.1f}GiB lru_cap={LRU_TOTAL_CAP_GIB}GiB "
         f"cache_dtype={CACHE_DTYPE}")
-    eng0 = vm.build_native_engine(
-        shard_paths, device_id=0, budget_bytes=BUDGET_BYTES,
-        host_pack_cache_bytes=pack_budget0,
-        use_batched_experts=USE_BATCHED_EXPERTS,
-        profile_stages=PROFILE_STAGES,
-        cache_dtype=CACHE_DTYPE)
-    eng1 = vm.build_native_engine(
-        shard_paths, device_id=1, budget_bytes=BUDGET_BYTES,
-        host_pack_cache_bytes=pack_budget1,
-        use_batched_experts=USE_BATCHED_EXPERTS,
-        profile_stages=PROFILE_STAGES,
-        cache_dtype=CACHE_DTYPE)
-    log(f"engines built (cache_dtype={CACHE_DTYPE})")
+    # P2.4 single-GPU mode: one engine on cuda:0 carrying the FULL budget
+    # (both halves merged), all 43 layers on device0 (split=n_layers), and
+    # the same-device handoff path.  eng1 is not built.
+    if SINGLE_GPU:
+        single_budget = BUDGET_BYTES * 2  # both GPU halves on one device
+        single_pack = pack_budget0 + pack_budget1
+        eng0 = vm.build_native_engine(
+            shard_paths, device_id=0, budget_bytes=single_budget,
+            host_pack_cache_bytes=single_pack,
+            use_batched_experts=USE_BATCHED_EXPERTS,
+            profile_stages=PROFILE_STAGES,
+            cache_dtype=CACHE_DTYPE)
+        eng1 = eng0
+        log(f"engines built SINGLE_GPU budget={single_budget/2**30:.2f}GiB "
+            f"host_pack={single_pack/2**30:.2f}GiB cache_dtype={CACHE_DTYPE}")
+    else:
+        eng0 = vm.build_native_engine(
+            shard_paths, device_id=0, budget_bytes=BUDGET_BYTES,
+            host_pack_cache_bytes=pack_budget0,
+            use_batched_experts=USE_BATCHED_EXPERTS,
+            profile_stages=PROFILE_STAGES,
+            cache_dtype=CACHE_DTYPE)
+        eng1 = vm.build_native_engine(
+            shard_paths, device_id=1, budget_bytes=BUDGET_BYTES,
+            host_pack_cache_bytes=pack_budget1,
+            use_batched_experts=USE_BATCHED_EXPERTS,
+            profile_stages=PROFILE_STAGES,
+            cache_dtype=CACHE_DTYPE)
+        log(f"engines built (cache_dtype={CACHE_DTYPE})")
 
     log("=== build full model (native FFN) ===")
     t0 = time.monotonic()
@@ -552,11 +581,19 @@ def main() -> int:
     shards_dir = Path(shard_paths[0]).parent
     source = vm.LocalDirTensorSource(HEADERS_DIR, shards_dir)
     provider = vm.ExpertProvider(source)
-    model = vm.DeepseekV4Model.build_candidate(
-        cfg, source, device0="cuda:0", device1="cuda:1",
-        cache0=None, loader0=None, cache1=None, loader1=None,
-        provider=provider, ffn_backend="native",
-        engine0=eng0, engine1=eng1, diagnostics=DIAGNOSTICS)
+    if SINGLE_GPU:
+        model = vm.DeepseekV4Model.build_candidate(
+            cfg, source, device0="cuda:0", device1="cuda:0",
+            cache0=None, loader0=None, cache1=None, loader1=None,
+            provider=provider, ffn_backend="native",
+            engine0=eng0, engine1=eng1, split=cfg.n_layers,
+            diagnostics=DIAGNOSTICS)
+    else:
+        model = vm.DeepseekV4Model.build_candidate(
+            cfg, source, device0="cuda:0", device1="cuda:1",
+            cache0=None, loader0=None, cache1=None, loader1=None,
+            provider=provider, ffn_backend="native",
+            engine0=eng0, engine1=eng1, diagnostics=DIAGNOSTICS)
     model.reset_state()
     build_s = time.monotonic() - t0
     log(f"model build {build_s:.1f}s")
@@ -566,7 +603,8 @@ def main() -> int:
     input_ids = torch.tensor([ids], device="cuda:0").long()
     decode_ms: list[float] = []
     eng0.reset_external_profile()
-    eng1.reset_external_profile()
+    if not SINGLE_GPU:
+        eng1.reset_external_profile()
     # v12: checkpoint every generated token to /kaggle/working so an OOM kill
     # (v9/v11 lost ALL tokens) still leaves the exact token stream + timing.
     # The checkpoint file format is a JSONL of per-token records; the final
