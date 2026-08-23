@@ -146,6 +146,19 @@ def log(msg: str) -> None:
         pass
 
 
+def mem_report(tag: str) -> None:
+    """Heartbeat: current host RAM so a silent OOM kill is attributable."""
+    try:
+        mem = {}
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            for key in ("MemTotal", "MemAvailable"):
+                if line.startswith(key + ":"):
+                    mem[key] = round(int(line.split()[1]) / (1024 * 1024), 1)
+        log(f"[mem:{tag}] {mem}")
+    except OSError:
+        pass
+
+
 def run(cmd, **kw):
     log("+ " + (" ".join(cmd) if isinstance(cmd, list) else cmd))
     r = subprocess.run(cmd, **kw)
@@ -432,18 +445,27 @@ def main() -> int:
     log(f"pinned commit {head}")
     apply_run_config()
 
-    log("=== build dee_cli + FP4 regression tests (sm_60;sm_75) ===")
+    # Build with bounded parallelism: single-GPU "medium" workers have ~13 GB
+    # RAM (dual-GPU has 32 GB), and nvcc+gcc at -j4 can OOM the worker mid-
+    # build (v33 died silently 21 min in with no log = hard kill).  dee_cli
+    # is NOT used by this harness (only pydee + the FP4 regression tests),
+    # so it is skipped entirely to cut build memory and wall time.
+    mem_report("prebuild")
+    log("=== build dee_core + FP4 regression tests (sm_60;sm_75, -j2) ===")
+    build_jobs = max(1, min(2, os.cpu_count() or 2))
     run(["cmake", "-S", str(DEE), "-B", str(BUILD),
          "-DCMAKE_CUDA_ARCHITECTURES=60;75", "-DDEE_CUDA=ON",
          "-DDEE_BUILD_TESTS=ON", "-DCMAKE_BUILD_TYPE=Release"])
-    run(["cmake", "--build", str(BUILD), "--target", "dee_cli",
-         "-j", str(os.cpu_count() or 4)])
+    run(["cmake", "--build", str(BUILD), "--target", "dee_core",
+         "-j", str(build_jobs)])
+    mem_report("post-dee_core")
     for target in ("test_deepseek_v4_fp4_cuda", "test_deepseek_v4_fp4_expert"):
         run(["cmake", "--build", str(BUILD), "--target", target,
-             "-j", str(os.cpu_count() or 4)])
+             "-j", str(build_jobs)])
         r = subprocess.run([str(BUILD / target)], cwd=str(DEE))
         if r.returncode != 0:
             log(f"WARNING: regression test {target} returned {r.returncode} (non-fatal)")
+    mem_report("post-tests")
 
     log("=== build pydee ===")
     run([sys.executable, "-m", "pip", "install", "--quiet", "--user", "pybind11"])
@@ -451,7 +473,9 @@ def main() -> int:
         env={**os.environ, "DEE_BUILD_DIR": str(BUILD)}, cwd=str(DEE))
 
     log("=== download all shards ===")
+    mem_report("pre-download")
     shard_paths = download_all_shards()
+    mem_report("post-download")
 
     # ── P2.2: DEE4 expert-major repack benchmark ──────────────────────
     log("=== P2.2 DEE4 repack benchmark ===")
