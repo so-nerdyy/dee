@@ -63,7 +63,10 @@ const char* benchmark_scenario_name(BenchmarkScenario scenario);
 
 enum class DeviceCacheDType {
     Fp32,
-    Fp16
+    Fp16,
+    Fp4E2m1  // DeepSeek-V4-Flash-0731: cache keeps the checkpoint's packed
+              // e2m1fn bytes + e8m0 scales resident; FP16 expansion happens at
+              // compute time into a bounded scratch (P2.3 packed residency).
 };
 
 const char* device_cache_dtype_name(DeviceCacheDType dtype);
@@ -431,6 +434,31 @@ private:
         int layer, const void* d_h_in, int tokens,
         const int* h_expert_ids, int topk, float* d_raw_output);
 #endif
+
+    // P2.3 packed FP4 residency: the VRAM cache block holds the checkpoint's
+    // packed e2m1fn bytes + e8m0 scales.  d_fp4_decode_scratch_ is one
+    // FP16-expanded expert blob (blob_elems_ * sizeof(uint16_t)), filled on
+    // the compute stream right before SwiGLU and reused across experts.
+    // These members live outside #ifdef DEE_CUDA because stage_expert (the
+    // layout capture site) compiles in both modes.
+    void* d_fp4_decode_scratch_ = nullptr;
+    size_t d_fp4_decode_scratch_bytes_ = 0;
+    // fp4 layout of the resident cache block (offsets into [gate|up|down
+    // packed][gate|up|down scale]) for compute-time decode.  Refreshed by
+    // stage_expert so hit-path compute never re-resolves weights.
+    size_t fp4_cache_packed_offsets_[3] = {0, 0, 0};
+    size_t fp4_cache_scale_offsets_[3]  = {0, 0, 0};
+    size_t fp4_cache_out_[3]            = {0, 0, 0};
+    size_t fp4_cache_in_[3]             = {0, 0, 0};
+    bool   fp4_cache_layout_valid_       = false;
+    // Decode the resident packed FP4 cache block (d_blob, from cache_.data)
+    // into d_fp4_decode_scratch_ on `stream` using the fp4_cache_* layout
+    // captured by stage_expert.  Returns the scratch pointer (as uint16_t*)
+    // on success, nullptr on failure.  Stream is a cudaStream_t on the CUDA
+    // build; the non-CUDA stub ignores it.
+    uint16_t* decode_fp4_cache_block_to_scratch(const void* d_blob,
+                                                void* stream);
+
     bool moe_forward_batch_device_impl(
         int layer, const void* d_h_in, int tokens,
         const int* h_expert_ids, int topk, void* d_experts_out,

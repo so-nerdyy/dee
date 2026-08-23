@@ -50,6 +50,9 @@ N_TOKENS = int(os.environ.get("NATIVE_N_TOKENS", "16"))
 # 3.5 GiB (~73 FP16 experts) — measured free VRAM after dense + engine is
 # ~6.6/4.9 GiB on the two T4s, so 3.5 GiB/GPU keeps clear headroom.
 BUDGET_BYTES = int(os.environ.get("NATIVE_BUDGET_BYTES", str(3584 << 20)))
+# P2.3 packed FP4 residency: "fp16" (sealed exact path) or "fp4" (packed
+# VRAM cache, decode-at-compute, experimental).  Env override for A/B runs.
+CACHE_DTYPE = os.environ.get("NATIVE_CACHE_DTYPE", "fp16")
 # Stage 1b (v8/v9/v10/v11/v12): host RAM LRU of packed FP4 expert bytes
 # (12.6 MB/entry).  The 16-token working set is ~2,365 pairs ≈ 30 GiB;
 # per-engine it is NOT symmetric: the v8 run measured 1,247 unique experts on
@@ -278,7 +281,33 @@ def gpu_memory_snapshot() -> dict:
     return out
 
 
+def check_gpu_allocation() -> None:
+    """Fail fast (before the ~40-min build) if the worker lacks 2x Tesla T4.
+
+    Kaggle's Dual-GPU pool intermittently allocates 1 GPU or a non-T4 card
+    (v17/v18/v19 all hit this AFTER a full build + P2.2 repack, and the
+    sm_75 cubins then fail with cudaErrorSymbolNotFound at launch).  Exiting
+    early turns a wasted 45 minutes into a 5-second failure we can re-push
+    immediately.
+    """
+    try:
+        out = subprocess.check_output(["nvidia-smi", "-L"], text=True,
+                                      stderr=subprocess.STDOUT)
+    except Exception as e:
+        log(f"GPU_ALLOC_FAIL nvidia-smi unavailable: {e}")
+        raise RuntimeError(f"expected 2 GPUs, nvidia-smi failed: {e}")
+    lines = [ln.strip() for ln in out.strip().splitlines() if ln.strip()]
+    n_gpus = len(lines)
+    t4 = sum(1 for ln in lines if "T4" in ln)
+    log(f"GPU_ALLOC n={n_gpus} t4={t4}: " + " | ".join(lines))
+    if n_gpus < 2 or t4 < 2:
+        raise RuntimeError(f"expected 2x Tesla T4, got {n_gpus} GPU(s) "
+                           f"({t4} T4): {out.strip()}")
+
+
 def main() -> int:
+    check_gpu_allocation()
+
     log("=== clone + checkout ===")
     if ROOT.exists():
         run(["rm", "-rf", str(ROOT)])
@@ -423,18 +452,21 @@ def main() -> int:
         f"{pack_budget0/2**30:.2f}/{pack_budget1/2**30:.2f}GiB "
         f"batched={USE_BATCHED_EXPERTS} profile={PROFILE_STAGES} "
         f"diagnostics={DIAGNOSTICS} mem_avail={mem_avail:.1f}GiB "
-        f"mem_total={mem_total:.1f}GiB lru_cap={LRU_TOTAL_CAP_GIB}GiB")
+        f"mem_total={mem_total:.1f}GiB lru_cap={LRU_TOTAL_CAP_GIB}GiB "
+        f"cache_dtype={CACHE_DTYPE}")
     eng0 = vm.build_native_engine(
         shard_paths, device_id=0, budget_bytes=BUDGET_BYTES,
         host_pack_cache_bytes=pack_budget0,
         use_batched_experts=USE_BATCHED_EXPERTS,
-        profile_stages=PROFILE_STAGES)
+        profile_stages=PROFILE_STAGES,
+        cache_dtype=CACHE_DTYPE)
     eng1 = vm.build_native_engine(
         shard_paths, device_id=1, budget_bytes=BUDGET_BYTES,
         host_pack_cache_bytes=pack_budget1,
         use_batched_experts=USE_BATCHED_EXPERTS,
-        profile_stages=PROFILE_STAGES)
-    log("engines built")
+        profile_stages=PROFILE_STAGES,
+        cache_dtype=CACHE_DTYPE)
+    log(f"engines built (cache_dtype={CACHE_DTYPE})")
 
     log("=== build full model (native FFN) ===")
     t0 = time.monotonic()

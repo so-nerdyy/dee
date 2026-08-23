@@ -303,6 +303,30 @@ long AsyncPrefetcher::prefetch_fp4_regions_to_f16(
                          region_src, region_nbytes);
 }
 
+long AsyncPrefetcher::prefetch_fp4_regions_packed(
+        int layer, int expert, const void* const region_src[6],
+        const size_t region_nbytes[6], size_t source_nbytes,
+        const size_t packed_offsets[3], const size_t scale_offsets[3],
+        int priority, int token, int logical_layer) {
+    if (!use_cuda_) {
+        std::fprintf(stderr, "AsyncPrefetcher: packed FP4 residency requires CUDA\n");
+        return -1;
+    }
+    if (!region_src || !region_nbytes || source_nbytes == 0 ||
+        !packed_offsets || !scale_offsets) return -1;
+    // Destination block = packed bytes verbatim (no FP16 expansion).  The
+    // engine decodes at compute time; the six-region gather + single H2D is
+    // identical to the decode-on-transfer path.  The packed/scale offsets are
+    // still carried so cuda_submit's pinned-slot gather places each region at
+    // its staging-buffer offset ([gate][up][down][g_s][u_s][d_s]).
+    return prefetch_impl(layer, expert, nullptr, source_nbytes,
+                         source_nbytes,
+                         false, false, false, false, false,
+                         packed_offsets, scale_offsets, nullptr, nullptr,
+                         0, nullptr, false, priority, token, logical_layer,
+                         region_src, region_nbytes);
+}
+
 long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
                                     size_t source_nbytes, size_t destination_nbytes,
                                     bool expand_bf16, bool cache_fp16, bool dequantize_int8,

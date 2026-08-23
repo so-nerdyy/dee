@@ -71,6 +71,8 @@ def configure(shard_path: str,
     cfg.cache_dtype = {
         "fp32": pydee.DeviceCacheDType.Fp32,
         "fp16": pydee.DeviceCacheDType.Fp16,
+        # P2.3 packed FP4 residency (experimental; requires fp4 transfer).
+        "fp4": pydee.DeviceCacheDType.Fp4E2m1,
     }[cache_dtype]
     cfg.topk = topk
     cfg.budget_bytes = budget_bytes

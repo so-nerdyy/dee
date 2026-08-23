@@ -62,7 +62,8 @@ PYBIND11_MODULE(pydee_core, m) {
 
     py::enum_<dee::DeviceCacheDType>(m, "DeviceCacheDType")
         .value("Fp32", dee::DeviceCacheDType::Fp32)
-        .value("Fp16", dee::DeviceCacheDType::Fp16);
+        .value("Fp16", dee::DeviceCacheDType::Fp16)
+        .value("Fp4E2m1", dee::DeviceCacheDType::Fp4E2m1);
     py::enum_<dee::WeightTransferDType>(m, "WeightTransferDType")
         .value("Bf16", dee::WeightTransferDType::Bf16)
         .value("Int8", dee::WeightTransferDType::Int8)

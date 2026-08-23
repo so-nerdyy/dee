@@ -194,6 +194,7 @@ int main() {
     CHECK(write_v4_shard(shard_path), "mini DEEPSEEK_V4 FP4 shard written");
 
     auto run_and_check = [&](float swiglu_limit, const std::vector<float>& ref,
+                             dee::DeviceCacheDType cache_dtype,
                              const char* label) {
         dee::EngineConfig cfg;
         cfg.shard_path = shard_path;
@@ -206,10 +207,15 @@ int main() {
         cfg.num_experts = 1;
         cfg.topk = 1;
         cfg.use_cuda = true;
-        cfg.cache_dtype = dee::DeviceCacheDType::Fp16;
+        cfg.cache_dtype = cache_dtype;
         cfg.transfer_dtype = dee::WeightTransferDType::Fp4E2m1;
         cfg.swiglu_limit = swiglu_limit;
-        cfg.budget_bytes = 2 * 3ULL * kInter * kHidden * sizeof(uint16_t);
+        // Fp16 cache needs 2 bytes/elem; packed FP4 cache needs 17/32 bytes
+        // per logical element.  Size the budget for two experts either way.
+        const size_t per_expert = cache_dtype == dee::DeviceCacheDType::Fp4E2m1
+            ? (3ULL * kInter * kHidden * 17 + 31) / 32
+            : 3ULL * kInter * kHidden * sizeof(uint16_t);
+        cfg.budget_bytes = 2 * per_expert;
 
         dee::Engine engine;
         CHECK(engine.init(cfg), label);
@@ -239,10 +245,16 @@ int main() {
         CHECK(cosine > 0.999, "native FP4 expert cosine similarity > 0.999");
     };
 
-    run_and_check(0.0f, reference,
+    run_and_check(0.0f, reference, dee::DeviceCacheDType::Fp16,
                   "engine init + unclamped SwiGLU (DEEPSEEK_V4 FP4, CUDA, FP16)");
-    run_and_check(1.0f, clamped_reference,
+    run_and_check(1.0f, clamped_reference, dee::DeviceCacheDType::Fp16,
                   "engine init + clamped SwiGLU (swiglu_limit=1.0)");
+    // P2.3 packed residency: the cache keeps packed bytes + scales verbatim
+    // and decodes into a bounded scratch at compute time.  Same decode kernel
+    // as the transfer-stream path, so the FP16 values (and thus the SwiGLU
+    // result) must match the FP16-cache run within FP16 round-off.
+    run_and_check(0.0f, reference, dee::DeviceCacheDType::Fp4E2m1,
+                  "engine init + unclamped SwiGLU (DEEPSEEK_V4 FP4, CUDA, packed-FP4 cache)");
 
     if (failures) {
         std::printf("### %d FAILED ###\n", failures);

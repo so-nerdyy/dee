@@ -1197,23 +1197,31 @@ def build_native_engine(shard_paths: list[str], *,
                         host_pack_cache_bytes: int = 8 << 30,
                         use_batched_experts: bool = False,
                         profile_stages: bool = False,
-                        swiglu_limit: float = 10.0) -> Any:
-    """Build one pydee.Engine (FP4 transfer, FP16 device cache) that streams
-    routed experts for the full DeepSeek-V4-Flash-0731 model.
+                        swiglu_limit: float = 10.0,
+                        cache_dtype: str = "fp16") -> Any:
+    """Build one pydee.Engine (FP4 transfer, FP16 or packed-FP4 device cache)
+    that streams routed experts for the full DeepSeek-V4-Flash-0731 model.
 
     The engine mmaps every shard in ``shard_paths`` (read-only, lazy); the
     resolver routes ``layers.{L}.ffn.experts.{E}.w*`` lookups to the correct
     shard by tensor name, so one engine per CUDA device serves all 43 layers.
     Routing stays caller-owned (oracle_path empty); ``moe_forward_experts`` is
     the only entry point the harness uses.
+
+    cache_dtype="fp4" selects P2.3 packed residency: the VRAM cache keeps the
+    checkpoint's packed e2m1fn bytes + e8m0 scales (12.75 MiB/expert instead of
+    48 MiB FP16), expanding into a bounded scratch at compute time.  This is a
+    performance experiment; the default "fp16" is the sealed exact path.
     """
     import pydee
     if pydee.Engine is None:
         raise RuntimeError("pydee compiled binding not importable")
+    if cache_dtype not in ("fp16", "fp4"):
+        raise ValueError(f"cache_dtype must be 'fp16' or 'fp4', got {cache_dtype!r}")
     cfg = pydee.configure(
         shard_path=shard_paths[0], num_experts=num_experts,
         num_layers=num_layers, hidden=hidden, inter=inter,
-        use_cuda=True, transfer_dtype="fp4", cache_dtype="fp16",
+        use_cuda=True, transfer_dtype="fp4", cache_dtype=cache_dtype,
         topk=topk, budget_bytes=budget_bytes, swiglu_limit=swiglu_limit)
     cfg.shard_paths = [str(p) for p in shard_paths]
     cfg.device_id = device_id

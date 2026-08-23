@@ -140,6 +140,22 @@ public:
                                      int priority = 0, int token = -1,
                                      int logical_layer = -1);
 
+    // P2.3 packed FP4 residency: same six-region gather + single-pass H2D as
+    // prefetch_fp4_regions_to_f16, but the destination cache block keeps the
+    // packed e2m1fn bytes + e8m0 scales verbatim (no FP16 expansion on the
+    // transfer stream).  The block layout is identical to the staging buffer:
+    // [gate_packed][up_packed][down_packed][gate_scale][up_scale][down_scale].
+    // The engine decodes the resident block into a bounded FP16 scratch at
+    // compute time via decode_fp4_cache_block_to_scratch.
+    long prefetch_fp4_regions_packed(int layer, int expert,
+                                     const void* const region_src[6],
+                                     const size_t region_nbytes[6],
+                                     size_t source_nbytes,
+                                     const size_t packed_offsets[3],
+                                     const size_t scale_offsets[3],
+                                     int priority = 0, int token = -1,
+                                     int logical_layer = -1);
+
     // Delimit one logical expert batch for duplicate-request accounting.
     void begin_batch() { batch_keys_.clear(); }
 

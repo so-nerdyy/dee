@@ -216,6 +216,7 @@ const char* device_cache_dtype_name(DeviceCacheDType dtype) {
     switch (dtype) {
         case DeviceCacheDType::Fp32: return "fp32";
         case DeviceCacheDType::Fp16: return "fp16";
+        case DeviceCacheDType::Fp4E2m1: return "fp4-packed";
     }
     return "unknown";
 }
@@ -281,7 +282,8 @@ bool Engine::moe_forward_experts(int layer, const float* h_in, float* experts_ou
                 cudaMemcpyAsync(d_h_in_, h_in, (size_t)hidden_ * sizeof(float),
                                 cudaMemcpyHostToDevice, compute_stream_),
                 "cudaMemcpyAsync(external hidden host to device)")) return false;
-        if (cfg_.cache_dtype == DeviceCacheDType::Fp16 &&
+        if ((cfg_.cache_dtype == DeviceCacheDType::Fp16 ||
+             cfg_.cache_dtype == DeviceCacheDType::Fp4E2m1) &&
             !f32_to_f16_cuda(d_h_in_, d_h_in_half_, static_cast<size_t>(hidden_),
                              compute_stream_, nullptr)) return false;
 
@@ -310,8 +312,18 @@ bool Engine::moe_forward_experts(int layer, const float* h_in, float* experts_ou
                     if (!cache_.pin(source_layer, expert)) return false;
                     pinned.push_back(expert);
                     const void* d_blob = cache_.data(source_layer, expert);
+                    // P2.3 packed residency: decode the resident packed block
+                    // into the bounded FP16 scratch on the compute stream, then
+                    // run the exact FP16 SwiGLU path on the scratch.
+                    if (d_blob && cfg_.cache_dtype == DeviceCacheDType::Fp4E2m1) {
+                        d_blob = decode_fp4_cache_block_to_scratch(
+                            d_blob, compute_stream_);
+                    }
                     StageProfiler* prof = profiler_.enabled() ? &profiler_ : nullptr;
-                    const bool ok = d_blob && (cfg_.cache_dtype == DeviceCacheDType::Fp16
+                    const bool fp16_compute =
+                        cfg_.cache_dtype == DeviceCacheDType::Fp16 ||
+                        cfg_.cache_dtype == DeviceCacheDType::Fp4E2m1;
+                    const bool ok = d_blob && (fp16_compute
                         ? swiglu_expert_fp16_cuda(
                               cublas_handle_, d_blob, d_h_in_half_, d_hbuf_, d_ubuf_,
                               d_activation_half_, d_ybuf_ + (size_t)k * hidden_,
@@ -613,6 +625,13 @@ bool Engine::moe_forward_batch(int layer, const float* h_in, int tokens,
                     !prefetcher_.wait(source_layer, expert)) return false;
                 if (!cache_.pin(source_layer, expert)) return false;
                 const void* d_blob = cache_.data(source_layer, expert);
+                // P2.3 packed residency: decode the resident packed block into
+                // the bounded FP16 scratch on the compute stream, then run the
+                // exact FP16 batch SwiGLU on the scratch.
+                if (d_blob && cfg_.cache_dtype == DeviceCacheDType::Fp4E2m1) {
+                    d_blob = decode_fp4_cache_block_to_scratch(
+                        d_blob, compute_stream_);
+                }
                 if (profiler_.enabled()) {
                     profiler_.set_cuda_context(current_token_, layer, expert);
                 }
@@ -736,7 +755,9 @@ bool Engine::moe_forward_batch_device_impl(
         topk > cfg_.topk) return false;
 
 #ifdef DEE_CUDA
-    if (!cfg_.use_cuda || cfg_.cache_dtype != DeviceCacheDType::Fp16) return false;
+    if (!cfg_.use_cuda ||
+        (cfg_.cache_dtype != DeviceCacheDType::Fp16 &&
+         cfg_.cache_dtype != DeviceCacheDType::Fp4E2m1)) return false;
     if (!DEE_CUDA_CHECK_NAMED(cudaSetDevice(cfg_.device_id),
                               "cudaSetDevice(external device MoE)")) return false;
 
@@ -2927,6 +2948,24 @@ bool Engine::stage_expert(int logical_layer, int source_layer, int expert, int p
                 out[p] = quantized->fp4[p].out;
                 in[p]  = quantized->fp4[p].in;
             }
+            if (cfg_.cache_dtype == DeviceCacheDType::Fp4E2m1) {
+                // P2.3 packed residency: the cache block keeps the packed
+                // bytes verbatim (no transfer-stream FP16 expansion).  Capture
+                // the resident layout so compute-time decode needs no resolver
+                // re-lookup, then stream packed bytes straight into the block.
+                for (int p = 0; p < 3; ++p) {
+                    fp4_cache_packed_offsets_[p] = packed_offsets[p];
+                    fp4_cache_scale_offsets_[p]  = scale_offsets[p];
+                    fp4_cache_out_[p] = out[p];
+                    fp4_cache_in_[p]  = in[p];
+                }
+                fp4_cache_layout_valid_ = true;
+                return prefetcher_.prefetch_fp4_regions_packed(
+                           source_layer, expert, region_src, region_nbytes,
+                           quantized->fp4_total_nbytes,
+                           packed_offsets, scale_offsets,
+                           priority, current_token_, logical_layer) >= 0;
+            }
             return prefetcher_.prefetch_fp4_regions_to_f16(
                        source_layer, expert, region_src, region_nbytes,
                        quantized->fp4_total_nbytes,
@@ -2957,6 +2996,31 @@ bool Engine::stage_expert(int logical_layer, int source_layer, int expert, int p
     }
     return prefetcher_.prefetch(source_layer, expert, blob, blob_bytes_, priority,
                                 current_token_, logical_layer) >= 0;
+}
+
+uint16_t* Engine::decode_fp4_cache_block_to_scratch(const void* d_blob,
+                                                    void* stream) {
+#ifdef DEE_CUDA
+    if (!d_blob || !d_fp4_decode_scratch_ || !fp4_cache_layout_valid_) return nullptr;
+    cudaStream_t cu_stream = static_cast<cudaStream_t>(stream);
+    uint16_t* dst16 = static_cast<uint16_t*>(d_fp4_decode_scratch_);
+    size_t decoded_elems_before = 0;
+    for (int p = 0; p < 3; ++p) {
+        if (fp4_cache_out_[p] == 0 || fp4_cache_in_[p] == 0) return nullptr;
+        const uint8_t* packed = static_cast<const uint8_t*>(d_blob) +
+                                fp4_cache_packed_offsets_[p];
+        const uint8_t* scale  = static_cast<const uint8_t*>(d_blob) +
+                                fp4_cache_scale_offsets_[p];
+        if (!fp4_e2m1_to_f16_cuda(packed, scale, dst16 + decoded_elems_before,
+                                  fp4_cache_out_[p], fp4_cache_in_[p],
+                                  cu_stream, nullptr)) return nullptr;
+        decoded_elems_before += fp4_cache_out_[p] * fp4_cache_in_[p];
+    }
+    return dst16;
+#else
+    (void)d_blob; (void)stream;
+    return nullptr;
+#endif
 }
 
 void Engine::release_transient_bf16_sources() {
@@ -3076,6 +3140,18 @@ void Engine::forward_layer(int layer, const float* h_in, float* h_out) {
     }
 }
 
+namespace {
+// P2.3 packed FP4 residency: the resident cache block holds the checkpoint's
+// packed e2m1fn bytes + e8m0 scales verbatim, NOT the FP16 expansion.  For
+// DeepSeek-V4 shapes (gate/up [inter, hidden], down [hidden, inter], block
+// 32) the block is blob_elems_ * (1/2 packed + 1/32 scale) = elems*17/32.
+// Every projection contributes out*in logical elements, so blob_elems_ =
+// 3*inter*hidden regardless of orientation.
+size_t packed_fp4_cache_blob_bytes(size_t blob_elems) {
+    return (blob_elems * 17 + 31) / 32;
+}
+}  // namespace
+
 bool Engine::init(const EngineConfig& cfg) {
     cfg_ = cfg;
     if (cfg.num_tokens <= 0 || cfg.topk <= 0 || cfg.num_layers <= 0 ||
@@ -3090,9 +3166,21 @@ bool Engine::init(const EngineConfig& cfg) {
         std::fprintf(stderr, "[engine] FP16 device cache requires --cuda\n");
         return false;
     }
+    const bool fp4_cache =
+        cfg.cache_dtype == DeviceCacheDType::Fp4E2m1;
     if (cfg.transfer_dtype != WeightTransferDType::Bf16 &&
-        (!cfg.use_cuda || cfg.cache_dtype != DeviceCacheDType::Fp16)) {
-        std::fprintf(stderr, "[engine] INT8 transfer requires CUDA with an FP16 device cache\n");
+        (!cfg.use_cuda ||
+         (cfg.cache_dtype != DeviceCacheDType::Fp16 && !fp4_cache))) {
+        std::fprintf(stderr, "[engine] quantized transfer requires CUDA with an FP16 "
+                             "or packed-FP4 device cache\n");
+        return false;
+    }
+    if (fp4_cache && cfg.transfer_dtype != WeightTransferDType::Fp4E2m1) {
+        std::fprintf(stderr, "[engine] packed-FP4 cache requires the Fp4E2m1 transfer dtype\n");
+        return false;
+    }
+    if (fp4_cache && !cfg.use_cuda) {
+        std::fprintf(stderr, "[engine] packed-FP4 device cache requires --cuda\n");
         return false;
     }
     if (!prefetcher_.set_ring_size(cfg.prefetch_depth)) {
@@ -3106,7 +3194,8 @@ bool Engine::init(const EngineConfig& cfg) {
     blob_elems_ = 3ULL * (size_t)inter_ * hidden_;
     blob_bytes_ = blob_elems_ * sizeof(float);
     cache_blob_bytes_ = cfg.cache_dtype == DeviceCacheDType::Fp16
-        ? blob_elems_ * sizeof(uint16_t) : blob_bytes_;
+        ? blob_elems_ * sizeof(uint16_t)
+        : (fp4_cache ? packed_fp4_cache_blob_bytes(blob_elems_) : blob_bytes_);
 
     std::vector<std::string> shard_paths;
     if (!cfg.shard_path.empty()) shard_paths.push_back(cfg.shard_path);
@@ -3166,7 +3255,8 @@ bool Engine::init(const EngineConfig& cfg) {
     blob_elems_ = 3ULL * (size_t)inter_ * hidden_;
     blob_bytes_ = blob_elems_ * sizeof(float);
     cache_blob_bytes_ = cfg.cache_dtype == DeviceCacheDType::Fp16
-        ? blob_elems_ * sizeof(uint16_t) : blob_bytes_;
+        ? blob_elems_ * sizeof(uint16_t)
+        : (fp4_cache ? packed_fp4_cache_blob_bytes(blob_elems_) : blob_bytes_);
     if (hidden_ != cfg.hidden) {
         fprintf(stderr, "[engine] shard hidden %d != configured %d\n", hidden_, cfg.hidden);
         return false;
@@ -3282,17 +3372,34 @@ bool Engine::init(const EngineConfig& cfg) {
         d_hbuf_  = dev_alloc((size_t)inter_  * sizeof(float));
         d_ubuf_  = dev_alloc((size_t)inter_  * sizeof(float));
         d_ybuf_  = dev_alloc((size_t)cfg.topk * hidden_ * sizeof(float));
-        if (cfg_.cache_dtype == DeviceCacheDType::Fp16) {
+        if (cfg_.cache_dtype == DeviceCacheDType::Fp16 ||
+            cfg_.cache_dtype == DeviceCacheDType::Fp4E2m1) {
             d_h_in_half_ = dev_alloc((size_t)hidden_ * sizeof(uint16_t));
             d_activation_half_ = dev_alloc((size_t)inter_ * sizeof(uint16_t));
+        }
+        if (cfg_.cache_dtype == DeviceCacheDType::Fp4E2m1) {
+            // One FP16-expanded expert blob (gate|up|down), reused across
+            // experts at compute time.  This is the ONLY transient FP16
+            // materialization in packed-residency mode.
+            d_fp4_decode_scratch_bytes_ = blob_elems_ * sizeof(uint16_t);
+            if (!DEE_CUDA_CHECK_NAMED(
+                    DEE_TA_MALLOC(&d_fp4_decode_scratch_, d_fp4_decode_scratch_bytes_,
+                                  "d_fp4_decode_scratch_"),
+                    "cudaMalloc(FP4 decode scratch)")) return false;
         }
         if (!d_h_in_ || !d_h_out_ || !d_hbuf_ || !d_ubuf_ || !d_ybuf_) {
             fprintf(stderr, "[engine] device work-buffer allocation failed\n");
             return false;
         }
-        if (cfg_.cache_dtype == DeviceCacheDType::Fp16 &&
+        if ((cfg_.cache_dtype == DeviceCacheDType::Fp16 ||
+             cfg_.cache_dtype == DeviceCacheDType::Fp4E2m1) &&
             (!d_h_in_half_ || !d_activation_half_)) {
             fprintf(stderr, "[engine] FP16 device work-buffer allocation failed\n");
+            return false;
+        }
+        if (cfg_.cache_dtype == DeviceCacheDType::Fp4E2m1 &&
+            !d_fp4_decode_scratch_) {
+            fprintf(stderr, "[engine] FP4 decode scratch allocation failed\n");
             return false;
         }
         size_t freeB = 0, totalB = 0;
@@ -3461,6 +3568,8 @@ void Engine::cuda_cleanup() {
     if (d_ybuf_)  { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_ybuf_, "d_ybuf_"), "cudaFree(d_ybuf)");  d_ybuf_  = nullptr; }
     if (d_h_in_half_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_h_in_half_, "d_h_in_half_"), "cudaFree(d_h_in_half)"); d_h_in_half_ = nullptr; }
     if (d_activation_half_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_activation_half_, "d_activation_half_"), "cudaFree(d_activation_half)"); d_activation_half_ = nullptr; }
+    if (d_fp4_decode_scratch_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_fp4_decode_scratch_, "d_fp4_decode_scratch_"), "cudaFree(FP4 decode scratch)"); d_fp4_decode_scratch_ = nullptr; }
+    d_fp4_decode_scratch_bytes_ = 0;
     if (d_router_weight_half_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_router_weight_half_, "d_router_weight_half_"), "cudaFree(router weight)"); d_router_weight_half_ = nullptr; }
     if (d_router_input_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_router_input_, "d_router_input_"), "cudaFree(router input)"); d_router_input_ = nullptr; }
     if (d_router_input_half_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_router_input_half_, "d_router_input_half_"), "cudaFree(router FP16 input)"); d_router_input_half_ = nullptr; }
@@ -3622,7 +3731,8 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
             if (!profiler_.cuda_end(input_h2d_ticket, static_cast<void*>(compute_stream_))) return false;
             profiler_.note_h2d_copy(static_cast<size_t>(hidden_) * sizeof(float));
         }
-        if (cfg_.cache_dtype == DeviceCacheDType::Fp16 &&
+        if ((cfg_.cache_dtype == DeviceCacheDType::Fp16 ||
+             cfg_.cache_dtype == DeviceCacheDType::Fp4E2m1) &&
             !f32_to_f16_cuda(d_h_in_, d_h_in_half_, static_cast<size_t>(hidden_),
                              compute_stream_, nullptr)) return false;
     }
@@ -3650,10 +3760,19 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
             if (cfg_.scenario == BenchmarkScenario::TransferOnly) continue;
             if (!bypass_cache && !cache_.pin(source_layer, e)) return false;
             const void* d_blob = cache_.data(source_layer, e);
+            // P2.3 packed residency: decode the resident packed block into the
+            // bounded FP16 scratch on the compute stream, then run the exact
+            // FP16 SwiGLU path on the scratch.
+            if (d_blob && cfg_.cache_dtype == DeviceCacheDType::Fp4E2m1) {
+                d_blob = decode_fp4_cache_block_to_scratch(d_blob, compute_stream_);
+            }
             if (profiler_.enabled()) {
                 profiler_.set_cuda_context(current_token_, layer, e);
             }
-            const bool swiglu_ok = d_blob && (cfg_.cache_dtype == DeviceCacheDType::Fp16
+            const bool fp16_compute =
+                cfg_.cache_dtype == DeviceCacheDType::Fp16 ||
+                cfg_.cache_dtype == DeviceCacheDType::Fp4E2m1;
+            const bool swiglu_ok = d_blob && (fp16_compute
                 ? swiglu_expert_fp16_cuda(cublas_handle_, d_blob, d_h_in_half_, d_hbuf_, d_ubuf_,
                                            d_activation_half_, d_ybuf_ + (size_t)k * hidden_,
                                            inter_, hidden_, compute_stream_,
