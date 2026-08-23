@@ -319,6 +319,14 @@ def main() -> int:
         import struct as _struct
         _dee4_out = Path("/kaggle/working/dee4-test")
         _idx = Path(str(shard_paths[0]).rsplit("/", 1)[0]) / "model.safetensors.index.json"
+        if not _idx.is_file():
+            _idx_url = (f"https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731/"
+                        f"resolve/{REV}/model.safetensors.index.json")
+            _idx = WORK / "model.safetensors.index.json"
+            log(f"P2.2: downloading index from HF: {_idx_url}")
+            _idx_data = urllib.request.urlopen(_idx_url, timeout=300).read()
+            _idx.write_bytes(_idx_data)
+            log(f"P2.2: index downloaded ({len(_idx_data)} bytes)")
         _t0 = time.monotonic()
         _dee4_rpt = repack(
             Path(str(shard_paths[0]).rsplit("/", 1)[0]), _dee4_out,
