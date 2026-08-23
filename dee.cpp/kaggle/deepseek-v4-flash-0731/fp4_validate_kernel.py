@@ -42,12 +42,9 @@ def main() -> int:
     except Exception as e:
         log(f"nvidia-smi failed: {e}")
         return 2
-    if "T4" not in out:
-        # Not a T4: the sm_75 cubins cannot load.  Report and exit - this is
-        # the same infra rejection the generate kernel now catches early.
-        log("NOT_A_T4 - sm_75 cubins cannot load on this GPU; exiting early")
-        return 3
-
+    # Build for BOTH sm_60 (P100) and sm_75 (T4): the dual-T4 pool has been
+    # handing out P100s (v18-v23), and the FP4 math is GPU-agnostic.  Any GPU
+    # that loads the cubins can validate the packed-cache code.
     log("=== clone + checkout ===")
     if ROOT.exists():
         run(["rm", "-rf", str(ROOT)])
@@ -59,9 +56,9 @@ def main() -> int:
         ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
     log(f"pinned commit {head}")
 
-    log("=== build dee_core + FP4 regression tests ===")
+    log("=== build dee_core + FP4 regression tests (sm_60;sm_75) ===")
     run(["cmake", "-S", str(DEE), "-B", str(BUILD),
-         "-DCMAKE_CUDA_ARCHITECTURES=75", "-DDEE_CUDA=ON",
+         "-DCMAKE_CUDA_ARCHITECTURES=60;75", "-DDEE_CUDA=ON",
          "-DDEE_BUILD_TESTS=ON", "-DCMAKE_BUILD_TYPE=Release"])
     r = run(["cmake", "--build", str(BUILD), "--target", "dee_core",
              "test_deepseek_v4_fp4_cuda", "test_deepseek_v4_fp4_expert",

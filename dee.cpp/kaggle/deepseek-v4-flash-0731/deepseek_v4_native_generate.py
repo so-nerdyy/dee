@@ -282,13 +282,15 @@ def gpu_memory_snapshot() -> dict:
 
 
 def check_gpu_allocation() -> None:
-    """Fail fast (before the ~40-min build) if the worker lacks 2x Tesla T4.
+    """Fail fast (before the ~40-min build) if the worker lacks 2 GPUs.
 
-    Kaggle's Dual-GPU pool intermittently allocates 1 GPU or a non-T4 card
-    (v17/v18/v19 all hit this AFTER a full build + P2.2 repack, and the
-    sm_75 cubins then fail with cudaErrorSymbolNotFound at launch).  Exiting
-    early turns a wasted 45 minutes into a 5-second failure we can re-push
-    immediately.
+    Kaggle's Dual-GPU pool intermittently allocates 1 GPU (v17/v18/v19 all
+    hit this AFTER a full build + P2.2 repack).  Exiting early turns a wasted
+    45 minutes into a 5-second failure we can re-push immediately.
+
+    The 16/16-token gate is arch-independent (same cubin math on sm_60/sm_75),
+    so any 2-GPU worker validates correctness; the log records the actual
+    hardware so performance numbers are labeled correctly (T4 vs P100).
     """
     try:
         out = subprocess.check_output(["nvidia-smi", "-L"], text=True,
@@ -298,11 +300,9 @@ def check_gpu_allocation() -> None:
         raise RuntimeError(f"expected 2 GPUs, nvidia-smi failed: {e}")
     lines = [ln.strip() for ln in out.strip().splitlines() if ln.strip()]
     n_gpus = len(lines)
-    t4 = sum(1 for ln in lines if "T4" in ln)
-    log(f"GPU_ALLOC n={n_gpus} t4={t4}: " + " | ".join(lines))
-    if n_gpus < 2 or t4 < 2:
-        raise RuntimeError(f"expected 2x Tesla T4, got {n_gpus} GPU(s) "
-                           f"({t4} T4): {out.strip()}")
+    log(f"GPU_ALLOC n={n_gpus}: " + " | ".join(lines))
+    if n_gpus < 2:
+        raise RuntimeError(f"expected 2 GPUs, got {n_gpus}: {out.strip()}")
 
 
 def main() -> int:
@@ -319,9 +319,9 @@ def main() -> int:
         ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
     log(f"pinned commit {head}")
 
-    log("=== build dee_cli + FP4 regression tests ===")
+    log("=== build dee_cli + FP4 regression tests (sm_60;sm_75) ===")
     run(["cmake", "-S", str(DEE), "-B", str(BUILD),
-         "-DCMAKE_CUDA_ARCHITECTURES=75", "-DDEE_CUDA=ON",
+         "-DCMAKE_CUDA_ARCHITECTURES=60;75", "-DDEE_CUDA=ON",
          "-DDEE_BUILD_TESTS=ON", "-DCMAKE_BUILD_TYPE=Release"])
     run(["cmake", "--build", str(BUILD), "--target", "dee_cli",
          "-j", str(os.cpu_count() or 4)])
