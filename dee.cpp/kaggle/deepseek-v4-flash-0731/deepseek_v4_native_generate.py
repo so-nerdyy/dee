@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -93,6 +94,15 @@ DIAGNOSTICS = os.environ.get("NATIVE_DIAGNOSTICS", "0") == "1"
 # ON, so this runtime opts OUT explicitly.  The v15 LRU cap (17 GiB)
 # bounds the anonymous side regardless.
 os.environ.setdefault("DEE_RELEASE_MMAP_PAGES", "0")
+# P2.4 storage decision (2026-08-23 probe): the dataset mount is a ~13 MB/s
+# loop device (95.7% of v15/v16 decode wall), while the /tmp root overlay
+# measured 1,550-1,830 MB/s pread / ~9-11 GB/s mmap on the same GPU worker
+# class.  v15/v16 preferred the mount when present, which is exactly the
+# bottleneck.  NATIVE_FORCE_TMP=1 stages all shards into /tmp (copy from the
+# mount when present, else HF download) so the engine's expert mmap reads
+# hit the fast overlay instead of the loop device.  Default OFF until a
+# clean 2-GPU run proves the 16/16 token gate holds with the staged path.
+FORCE_TMP = os.environ.get("NATIVE_FORCE_TMP", "0") == "1"
 PROGRESS = WORK / "progress.log"
 
 
@@ -171,11 +181,77 @@ def _snapshot_download(shards: list[str]) -> bool:
     return True
 
 
+def _copy_mount_to_tmp(shards: list[str], dst_dir: Path) -> list[str]:
+    """Sequential per-shard copy from the dataset mount to /tmp.
+
+    The mount loop device does ~194 MB/s on large sequential reads (P2.2
+    evidence) but ~13 MB/s on mmap scatter (v15/v16).  One sequential copy
+    per shard amortizes to a few minutes total and makes all later expert
+    reads hit the fast root overlay instead.
+    """
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    t0 = time.monotonic()
+    total_bytes = 0
+    for s in shards:
+        src = DATASET_DIR / s
+        dst = dst_dir / s
+        if not src.is_file():
+            raise FileNotFoundError(f"mount shard missing: {src}")
+        if dst.is_file() and dst.stat().st_size == src.stat().st_size:
+            total_bytes += dst.stat().st_size
+            continue
+        with open(src, "rb") as fin, open(dst, "wb") as fout:
+            shutil.copyfileobj(fin, fout, length=32 << 20)
+        if dst.stat().st_size != src.stat().st_size:
+            raise IOError(f"copy size mismatch for {s}")
+        total_bytes += dst.stat().st_size
+        mbps = total_bytes / (1 << 20) / max(time.monotonic() - t0, 1e-9)
+        log(f"[download] copied {s} ({dst.stat().st_size/(1<<30):.2f} GiB) "
+            f"agg {mbps:.0f} MB/s")
+    dt = time.monotonic() - t0
+    log(f"[download] mount->/tmp staged {total_bytes/(1<<30):.1f} GiB in "
+        f"{dt:.0f}s ({total_bytes/(1<<20)/max(dt,1e-9):.0f} MB/s)")
+    return [str(dst_dir / s) for s in shards]
+
+
 def download_all_shards() -> list[str]:
     shards = [f"model-{i:05d}-of-00048.safetensors"
               for i in range(1, N_SHARDS + 1)]
     paths = [str(CKPT / s) for s in shards]
-    # Dataset-mounted checkpoint: no download, no writable-disk quota.
+    # P2.4: NATIVE_FORCE_TMP=1 stages everything into /tmp (fast root
+    # overlay, ~1.5 GB/s) instead of reading experts from the ~13 MB/s
+    # dataset mount.  Copy from the mount when present (no re-download),
+    # else snapshot_download from HF.
+    if FORCE_TMP:
+        CKPT.mkdir(parents=True, exist_ok=True)
+        if DATASET_DIR.is_dir() and all((DATASET_DIR / s).is_file()
+                                        for s in shards):
+            log(f"[download] FORCE_TMP: staging mount -> {CKPT}")
+            return _copy_mount_to_tmp(shards, CKPT)
+        log(f"[download] FORCE_TMP: mount absent/incomplete; downloading")
+        if not _snapshot_download(shards):
+            raise RuntimeError("snapshot_download failed")
+        missing = [p for p in paths if not Path(p).is_file()]
+        if missing:
+            log(f"[download] {len(missing)} shards missing; range-fetch fallback")
+            failures = []
+
+            def work(p):
+                try:
+                    return _download_one(Path(p).name)
+                except Exception as e:  # noqa: BLE001
+                    failures.append((p, repr(e)))
+                    return None
+
+            with ThreadPoolExecutor(max_workers=3) as ex:
+                list(ex.map(work, missing))
+            if failures:
+                raise RuntimeError(f"{len(failures)} downloads failed: {failures}")
+        missing = [p for p in paths if not Path(p).is_file()]
+        if missing:
+            raise RuntimeError(f"{len(missing)} shards still missing")
+        return paths
+    # Legacy path: dataset-mounted checkpoint, no download, no disk quota.
     if DATASET_DIR.is_dir():
         ds_paths = [str(DATASET_DIR / s) for s in shards]
         if all(Path(p).is_file() for p in ds_paths):
