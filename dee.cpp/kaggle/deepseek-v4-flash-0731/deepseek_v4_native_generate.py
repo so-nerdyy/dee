@@ -102,15 +102,17 @@ os.environ.setdefault("DEE_RELEASE_MMAP_PAGES", "0")
 # mount when present, else HF download) so the engine's expert mmap reads
 # hit the fast overlay instead of the loop device.  Default OFF until a
 # clean 2-GPU run proves the 16/16 token gate holds with the staged path.
-FORCE_TMP = os.environ.get("NATIVE_FORCE_TMP", "0") == "1"
+FORCE_TMP = os.environ.get("NATIVE_FORCE_TMP", "1") == "1"
 # P2.4 (2026-08-23): the dual-T4 pool has been exhausted for ~12 consecutive
-# launches (Kaggle hands out 1x P100 instead).  NATIVE_SINGLE_GPU=1 runs the
-# full 43-layer model on one CUDA device (split=n_layers, same-device
-# handoff, one engine with the full budget).  The 16/16-token gate is
-# arch-independent (sm_60/sm_75 cubins, same math), so a P100 run validates
-# the identical correctness contract while the T4 pool recovers; the log
-# labels hardware so performance numbers stay honest.  Requires the engine
-# build to include sm_60 (already default in this kernel).
+# launches (Kaggle hands out 1x P100 instead).  SINGLE_GPU runs the full
+# 43-layer model on one CUDA device (split=n_layers, same-device handoff,
+# one engine with a capped budget).  NATIVE_SINGLE_GPU=1 forces it;
+# otherwise check_gpu_allocation() flips it on when the worker only has one
+# GPU (Kaggle metadata env_vars are NOT reliably passed, so this must be
+# auto-detected).  The 16/16-token gate is arch-independent (sm_60/sm_75
+# cubins, same math), so a P100 run validates the identical correctness
+# contract while the T4 pool recovers; the log labels hardware so
+# performance numbers stay honest.
 SINGLE_GPU = os.environ.get("NATIVE_SINGLE_GPU", "0") == "1"
 PROGRESS = WORK / "progress.log"
 
@@ -386,6 +388,10 @@ def check_gpu_allocation() -> None:
     lines = [ln.strip() for ln in out.strip().splitlines() if ln.strip()]
     n_gpus = len(lines)
     log(f"GPU_ALLOC n={n_gpus}: " + " | ".join(lines))
+    global SINGLE_GPU
+    if not os.environ.get("NATIVE_SINGLE_GPU"):
+        # Auto-detect: a 1-GPU worker runs the full model on cuda:0.
+        SINGLE_GPU = n_gpus == 1
     need = 1 if SINGLE_GPU else 2
     if n_gpus < need:
         raise RuntimeError(
