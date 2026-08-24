@@ -203,6 +203,9 @@ def _download_one(shard: str) -> Path:
                 raise ConnectionError(f"{shard} download failed: {last!r}")
             fh.write(data)
             have += len(data)
+    free = shutil.disk_usage(str(CKPT)).free / (1 << 30)
+    log(f"[download] {shard} complete ({want / (1 << 30):.2f} GiB, "
+        f"{free:.0f} GiB scratch free)")
     return dest
 
 
@@ -293,6 +296,7 @@ def download_all_shards() -> list[str]:
         missing = [p for p in paths if not Path(p).is_file()]
         if missing:
             raise RuntimeError(f"{len(missing)} shards still missing")
+        log_host_resources("post-stage")
         return paths
     # Legacy path: dataset-mounted checkpoint, no download, no disk quota.
     if DATASET_DIR.is_dir():
@@ -430,8 +434,43 @@ def check_gpu_allocation() -> None:
             f"expected {need} GPUs, got {n_gpus}: {out.strip()}")
 
 
+def log_host_resources(stage: str) -> dict:
+    """Log + return disk/RAM state so hard kills are diagnosable."""
+    info = {}
+    try:
+        for mnt in ("/", "/tmp", "/kaggle/working"):
+            try:
+                t, u, f = shutil.disk_usage(mnt)
+                info[mnt] = {"total_gb": round(t / 2**30, 1),
+                             "free_gb": round(f / 2**30, 1)}
+            except OSError:
+                pass
+        try:
+            meminfo = {}
+            for ln in Path("/proc/meminfo").read_text().splitlines():
+                k, _, v = ln.partition(":")
+                if k in ("MemTotal", "MemAvailable"):
+                    meminfo[k] = round(int(v.split()[0]) / 2**20, 1)
+            info["ram_gb"] = meminfo
+        except OSError:
+            pass
+    finally:
+        log(f"RESOURCES[{stage}] {json.dumps(info)}")
+    return info
+
+
 def main() -> int:
     check_gpu_allocation()
+    res = log_host_resources("startup")
+    tmp_free = res.get("/tmp", {}).get("free_gb", 0)
+    # The full 48-shard checkpoint is ~153 GiB.  Single-GPU "medium"
+    # containers may have far less scratch disk than dual-GPU workers;
+    # v33/v34 died silently mid-download.  Fail LOUDLY instead.
+    if FORCE_TMP and tmp_free and tmp_free < 165:
+        raise RuntimeError(
+            f"FORCE_TMP needs >=165 GiB free in /tmp for the 153 GiB "
+            f"checkpoint; this worker has {tmp_free} GiB. "
+            f"Set NATIVE_FORCE_TMP=0 to use the dataset mount instead.")
 
     log("=== clone + checkout ===")
     if ROOT.exists():
