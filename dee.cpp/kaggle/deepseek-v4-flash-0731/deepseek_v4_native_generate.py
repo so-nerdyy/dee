@@ -139,6 +139,7 @@ PROGRESS = WORK / "progress.log"
 def log(msg: str) -> None:
     line = f"[{time.strftime('%H:%M:%S')}] {msg}"
     print(line, flush=True)
+    _ntfy(msg)
     try:
         with open(PROGRESS, "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
@@ -457,6 +458,23 @@ def log_host_resources(stage: str) -> dict:
     finally:
         log(f"RESOURCES[{stage}] {json.dumps(info)}")
     return info
+
+
+# Out-of-band observability: fire-and-forget log lines to ntfy.sh so hard
+# worker kills (which produce ZERO Kaggle output snapshot) are still
+# diagnosable.  Best-effort; never blocks or raises.
+NTFY_TOPIC = os.environ.get("NATIVE_NTFY", "dsv4-dee-debug-9k2f1")
+
+
+def _ntfy(msg: str) -> None:
+    try:
+        req = urllib.request.Request(
+            f"https://ntfy.sh/{NTFY_TOPIC}",
+            data=msg.encode("utf-8")[:3500],
+            headers={"Title": "dee-gen"})
+        urllib.request.urlopen(req, timeout=3).read(16)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def main() -> int:
@@ -822,7 +840,7 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except Exception:
+    except BaseException:
         tb = traceback.format_exc()
         log("FATAL " + tb)
         (WORK / "error.txt").write_text(tb)
