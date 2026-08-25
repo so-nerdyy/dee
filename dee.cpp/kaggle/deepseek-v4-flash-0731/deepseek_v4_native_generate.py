@@ -273,8 +273,14 @@ def download_all_shards() -> list[str]:
         CKPT.mkdir(parents=True, exist_ok=True)
         if DATASET_DIR.is_dir() and all((DATASET_DIR / s).is_file()
                                         for s in shards):
-            log(f"[download] FORCE_TMP: staging mount -> {CKPT}")
-            return _copy_mount_to_tmp(shards, CKPT)
+            # Complete mount: use it DIRECTLY.  Staging/copying 153 GiB
+            # into /tmp exceeds single-GPU container disk quotas (v33-v37
+            # were hard-killed silently mid-download); dual-GPU mounts are
+            # the intended source.
+            ds_paths = [str(DATASET_DIR / s) for s in shards]
+            log(f"[download] complete dataset mount at {DATASET_DIR}; "
+                f"using directly (no /tmp staging)")
+            return ds_paths
         log(f"[download] FORCE_TMP: mount absent/incomplete; downloading")
         if not _snapshot_download(shards):
             raise RuntimeError("snapshot_download failed")
@@ -478,17 +484,20 @@ def _ntfy(msg: str) -> None:
 
 
 def main() -> int:
+    global FORCE_TMP
     check_gpu_allocation()
     res = log_host_resources("startup")
     tmp_free = res.get("/tmp", {}).get("free_gb", 0)
-    # The full 48-shard checkpoint is ~153 GiB.  Single-GPU "medium"
-    # containers may have far less scratch disk than dual-GPU workers;
-    # v33/v34 died silently mid-download.  Fail LOUDLY instead.
-    if FORCE_TMP and tmp_free and tmp_free < 165:
-        raise RuntimeError(
-            f"FORCE_TMP needs >=165 GiB free in /tmp for the 153 GiB "
-            f"checkpoint; this worker has {tmp_free} GiB. "
-            f"Set NATIVE_FORCE_TMP=0 to use the dataset mount instead.")
+    # The full 48-shard checkpoint is ~153 GiB.  Kaggle enforces container
+    # disk quotas BELOW what df reports: single-GPU workers were hard-killed
+    # silently mid-staging (v33-v37, zero output, ntfy shows death right
+    # after "downloading" starts).  Only attempt /tmp staging when there is
+    # huge headroom; otherwise rely on the dataset mount.
+    if FORCE_TMP and tmp_free and tmp_free < 400:
+        log(f"RESOURCES-GATE: /tmp has {tmp_free} GiB (<400); "
+            f"disabling FORCE_TMP staging, will use dataset mount/download "
+            f"fallbacks as available")
+        FORCE_TMP = False
 
     log("=== clone + checkout ===")
     if ROOT.exists():
