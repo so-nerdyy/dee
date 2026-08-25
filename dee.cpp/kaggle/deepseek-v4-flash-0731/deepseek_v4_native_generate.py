@@ -431,6 +431,21 @@ def check_gpu_allocation() -> None:
     lines = [ln.strip() for ln in out.strip().splitlines() if ln.strip()]
     n_gpus = len(lines)
     log(f"GPU_ALLOC n={n_gpus}: " + " | ".join(lines))
+    # The Kaggle preinstalled torch wheel has no sm_60 kernels: any P100
+    # allocation dies later in torch.zeros with cudaErrorNoKernelImageForDevice
+    # (v33-v38 all lost minutes-to-hours to this).  Reject sub-sm_70 GPUs
+    # here, seconds into the run.
+    try:
+        cc_out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=compute_cap",
+             "--format=csv,noheader"], text=True)
+        caps = [float(x.strip()) for x in cc_out.splitlines() if x.strip()]
+    except Exception:
+        caps = []
+    if caps and min(caps) < 7.0:
+        raise RuntimeError(
+            f"GPU compute capability too low for the torch wheel "
+            f"(need >= 7.0/T4, got {caps}); re-pushing for a T4 worker")
     global SINGLE_GPU
     if not os.environ.get("NATIVE_SINGLE_GPU"):
         # Auto-detect: a 1-GPU worker runs the full model on cuda:0.
