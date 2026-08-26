@@ -60,7 +60,11 @@ DTYPE_MAP = {
     "U64": torch.int64,     # torch has no uint64; safetensors I64/U64 both 8B
     "F8_E4M3": torch.float8_e4m3fn,
     "F8_E5M2": getattr(torch, "float8_e5m2fn", torch.float8_e4m3fn),
-    "F8_E8M0": torch.float8_e8m0fnu,
+    # torch < 2.5 has no float8_e8m0fnu dtype.  The E8M0 decode path
+    # (decode_e8m0) always reinterprets the raw bits as uint8 anyway, so
+    # loading the scale bytes as uint8 is byte-identical on old torch and
+    # required for the P100 repair (torch 2.3.1+cu118).
+    "F8_E8M0": getattr(torch, "float8_e8m0fnu", torch.uint8),
 }
 
 
