@@ -7,8 +7,17 @@
   "is_private": true,
   "enable_gpu": true,
   "enable_internet": true,
-  "accelerator": "GPU",
-  "machine_shape": "Dual GPU",
-  "machine_spec": "2x Tesla T4",
-  "dataset_sources": ["nivind/deepseek-v4-flash-0731-shards"]
+  "enable_network": true,
+  "accelerator": "NvidiaTeslaT4",
+  "machine_shape": "NvidiaTeslaT4",
+  "machine_spec": {
+    "accelerator": "NvidiaTeslaT4",
+    "gpu_count": 2,
+    "is_shared_vm": false,
+    "container_size": "medium"
+  },
+  "dataset_sources": [
+    "nivind/deepseek-v4-flash-0731-shards"
+  ],
+  "keywords": ["dee.cpp", "deepseek-v4-flash-0731", "native-generate", "t4"]
 }
