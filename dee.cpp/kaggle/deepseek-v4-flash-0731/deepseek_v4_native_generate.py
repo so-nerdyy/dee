@@ -431,10 +431,12 @@ def check_gpu_allocation() -> None:
     lines = [ln.strip() for ln in out.strip().splitlines() if ln.strip()]
     n_gpus = len(lines)
     log(f"GPU_ALLOC n={n_gpus}: " + " | ".join(lines))
-    # The Kaggle preinstalled torch wheel has no sm_60 kernels: any P100
-    # allocation dies later in torch.zeros with cudaErrorNoKernelImageForDevice
-    # (v33-v38 all lost minutes-to-hours to this).  Reject sub-sm_70 GPUs
-    # here, seconds into the run.
+    # The Kaggle preinstalled torch wheel (2.10+cu128) has no sm_60 kernels:
+    # any P100 allocation dies later in torch.zeros with
+    # cudaErrorNoKernelImageForDevice.  Instead of rejecting the worker,
+    # REPAIR it: install torch 2.3.1+cu118 (the last line with sm_60 support,
+    # verified by the p100_torch_probe kernel: matmul PASS on P100).  This
+    # makes every allocation usable and ends the T4-pool deadlock.
     try:
         cc_out = subprocess.check_output(
             ["nvidia-smi", "--query-gpu=compute_cap",
@@ -443,9 +445,31 @@ def check_gpu_allocation() -> None:
     except Exception:
         caps = []
     if caps and min(caps) < 7.0:
-        raise RuntimeError(
-            f"GPU compute capability too low for the torch wheel "
-            f"(need >= 7.0/T4, got {caps}); re-pushing for a T4 worker")
+        log(f"TORCH_REPAIR sub-sm_70 GPU ({caps}): installing torch "
+            f"2.3.1+cu118 (last sm_60 line) before any torch import")
+        t0 = time.time()
+        try:
+            r = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-q",
+                 "torch==2.3.1+cu118", "--index-url",
+                 "https://download.pytorch.org/whl/cu118"],
+                capture_output=True, text=True, timeout=900)
+        except Exception as e:
+            log(f"TORCH_REPAIR pip install raised: {e}")
+            r = None
+        if r is None or r.returncode != 0:
+            log("TORCH_REPAIR FAILED: " +
+                (r.stderr[-1500:] if r is not None else ""))
+            raise RuntimeError(
+                f"GPU {caps} needs torch repair but pip install failed")
+        log(f"TORCH_REPAIR installed in {time.time()-t0:.0f}s")
+        ver = subprocess.check_output(
+            [sys.executable, "-c",
+             "import torch; print(torch.__version__, torch.version.cuda)"],
+            text=True, stderr=subprocess.STDOUT).strip()
+        log(f"TORCH_REPAIR now: {ver}")
+    else:
+        log(f"GPU compute caps {caps} OK for preinstalled torch")
     global SINGLE_GPU
     if not os.environ.get("NATIVE_SINGLE_GPU"):
         # Auto-detect: a 1-GPU worker runs the full model on cuda:0.
