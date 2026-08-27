@@ -1,0 +1,32 @@
+{
+  "classification": "PRELAUNCH",
+  "run_id": "p2.3-real-fp4-v45",
+  "recorded_at_utc": "2026-08-27T02:33:52.552Z",
+  "repository": "https://github.com/so-nerdyy/dee.git",
+  "branch": "freebuff/deepseek-v4-flash-0731-t4",
+  "git_commit": "f017d12b110ae0acc40ac164e123f9330866c6e0",
+  "kernel": "nivind/dee-cpp-dsv4-native-generate",
+  "harness": {
+    "path": "dee.cpp/kaggle/deepseek-v4-flash-0731/deepseek_v4_native_generate.py",
+    "sha256": "bbc9c11db59f45ad99acf01155e43390566ed31f856e6ffaae525d41193f88ad"
+  },
+  "run_config": {
+    "path": "dee.cpp/kaggle/deepseek-v4-flash-0731/run_config.json",
+    "sha256": "83c6263ed8bae0d0209213c15e9db50f468338cdfa59520f75284dd1c815e355",
+    "cache_dtype": "fp4",
+    "n_tokens": 16
+  },
+  "kernel_metadata": {
+    "path": "dee.cpp/kaggle/deepseek-v4-flash-0731/kernel-metadata.json",
+    "sha256": "55c0c63ad29a2e2adc8168b1282ec986f71273dd746a3a4bb9535787d70cd58b",
+    "code_file": "deepseek_v4_native_generate.py",
+    "requested_accelerator": "NvidiaTeslaT4",
+    "requested_gpu_count": 2
+  },
+  "model_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+  "cache_budget_gib_per_gpu": 3.5,
+  "host_pack_requested_gib_per_gpu": [12.87, 12.87],
+  "host_pack_runtime_cap_gib_total": 17.0,
+  "baseline": "v44-p22-real-baseline",
+  "acceptance_gate": "16/16 exact greedy token IDs, exact decoded text, finite output, all 43 layers, zero NumPy bridge calls, zero full-hidden D2H, zero raw expert-output D2H, no silent fallback, and performance comparison only on exactly 2x Tesla T4"
+}

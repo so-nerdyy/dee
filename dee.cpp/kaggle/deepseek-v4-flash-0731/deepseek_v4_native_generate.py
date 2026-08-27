@@ -11,8 +11,10 @@ console log.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -46,7 +48,14 @@ CONFIG = (DEE / "benchmark_reports/deepseek-v4-flash-0731-t4/"
 CANONICAL_PROMPT = (
     "<\uFF5Cbegin\u2581of\u2581sentence\uFF5C>Who is Alan Turing?"
     "<\uFF5CAssistant\uFF5C>")
+SEALED_TOKEN_IDS = [
+    666, 95140, 96807, 343, 4470, 20, 1127, 3298,
+    22, 22604, 515, 411, 3947, 85349, 14, 6341,
+]
+SEALED_DECODED_TEXT = (
+    "**Alan Turing (1912–1954)** was an English mathematician, computer")
 N_TOKENS = int(os.environ.get("NATIVE_N_TOKENS", "16"))
+RUN_ID = os.environ.get("NATIVE_RUN_ID", "unconfigured")
 # Stage 1: raise the per-GPU VRAM expert cache from 512 MiB (~10 experts) to
 # 3.5 GiB (~73 FP16 experts) — measured free VRAM after dense + engine is
 # ~6.6/4.9 GiB on the two T4s, so 3.5 GiB/GPU keeps clear headroom.
@@ -54,6 +63,10 @@ BUDGET_BYTES = int(os.environ.get("NATIVE_BUDGET_BYTES", str(3584 << 20)))
 # P2.3 packed FP4 residency: "fp16" (sealed exact path) or "fp4" (packed
 # VRAM cache, decode-at-compute, experimental).  Env override for A/B runs.
 CACHE_DTYPE = os.environ.get("NATIVE_CACHE_DTYPE", "fp16")
+EXPERT_STORE_BACKEND = os.environ.get(
+    "NATIVE_EXPERT_STORE", "safetensors").strip().lower()
+DEE4_VALIDATE_SAMPLES = int(os.environ.get("NATIVE_DEE4_VALIDATE_SAMPLES", "12"))
+DEE4_DIR = Path("/tmp/dsv4-dee4-v2")
 # Stage 1b (v8/v9/v10/v11/v12): host RAM LRU of packed FP4 expert bytes
 # (12.6 MB/entry).  The 16-token working set is ~2,365 pairs ≈ 30 GiB;
 # per-engine it is NOT symmetric: the v8 run measured 1,247 unique experts on
@@ -110,18 +123,41 @@ FORCE_TMP = os.environ.get("NATIVE_FORCE_TMP", "1") == "1"
 # only exists AFTER the clone, so this is applied lazily in main().  Env
 # overrides still win when actually set.
 def apply_run_config() -> None:
-    global CACHE_DTYPE, N_TOKENS
-    if os.environ.get("NATIVE_CACHE_DTYPE"):
-        CACHE_DTYPE = os.environ["NATIVE_CACHE_DTYPE"]
-        return
+    global CACHE_DTYPE, N_TOKENS, EXPERT_STORE_BACKEND, DEE4_VALIDATE_SAMPLES
+    global PROFILE_STAGES, RUN_ID
     cfg_path = DEE / "kaggle/deepseek-v4-flash-0731/run_config.json"
     if not cfg_path.is_file():
         log(f"[config] run_config.json not found at {cfg_path}; using defaults")
         return
     cfg = json.loads(cfg_path.read_text("utf-8"))
-    CACHE_DTYPE = str(cfg.get("cache_dtype", CACHE_DTYPE))
-    N_TOKENS = int(cfg.get("n_tokens", N_TOKENS))
-    log(f"[config] run_config.json: cache_dtype={CACHE_DTYPE} n_tokens={N_TOKENS}")
+    if not os.environ.get("NATIVE_CACHE_DTYPE"):
+        CACHE_DTYPE = str(cfg.get("cache_dtype", CACHE_DTYPE)).strip().lower()
+    if not os.environ.get("NATIVE_N_TOKENS"):
+        N_TOKENS = int(cfg.get("n_tokens", N_TOKENS))
+    if not os.environ.get("NATIVE_EXPERT_STORE"):
+        EXPERT_STORE_BACKEND = str(
+            cfg.get("expert_store", EXPERT_STORE_BACKEND)).strip().lower()
+    if not os.environ.get("NATIVE_DEE4_VALIDATE_SAMPLES"):
+        DEE4_VALIDATE_SAMPLES = int(
+            cfg.get("dee4_validate_samples", DEE4_VALIDATE_SAMPLES))
+    if not os.environ.get("NATIVE_PROFILE"):
+        PROFILE_STAGES = bool(cfg.get("profile_stages", PROFILE_STAGES))
+    if not os.environ.get("NATIVE_RUN_ID"):
+        RUN_ID = str(cfg.get("run_id", RUN_ID))
+    if CACHE_DTYPE not in {"fp16", "fp4"}:
+        raise ValueError(f"unsupported cache_dtype: {CACHE_DTYPE!r}")
+    if EXPERT_STORE_BACKEND not in {"safetensors", "dee4"}:
+        raise ValueError(
+            f"unsupported expert_store: {EXPERT_STORE_BACKEND!r}")
+    if DEE4_VALIDATE_SAMPLES <= 0:
+        raise ValueError("dee4_validate_samples must be positive")
+    log(
+        "[config] run_config.json: "
+        f"run_id={RUN_ID} cache_dtype={CACHE_DTYPE} n_tokens={N_TOKENS} "
+        f"expert_store={EXPERT_STORE_BACKEND} "
+        f"dee4_validate_samples={DEE4_VALIDATE_SAMPLES} "
+        f"profile_stages={PROFILE_STAGES}"
+    )
 # P2.4 (2026-08-23): the dual-T4 pool has been exhausted for ~12 consecutive
 # launches (Kaggle hands out 1x P100 instead).  SINGLE_GPU runs the full
 # 43-layer model on one CUDA device (split=n_layers, same-device handoff,
@@ -145,6 +181,114 @@ def log(msg: str) -> None:
             fh.write(line + "\n")
     except OSError:
         pass
+
+
+def sha256_file(path: Path, chunk_bytes: int = 8 << 20) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(chunk_bytes)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_evidence(name: str, payload: dict) -> None:
+    """Atomically publish one required remote evidence artifact."""
+    WORK.mkdir(parents=True, exist_ok=True)
+    path = WORK / name
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, indent=2), "utf-8")
+    temporary.replace(path)
+
+
+def classify_full_generation(result: dict) -> tuple[str, dict, bool]:
+    """Apply the sealed exactness contract and hardware gate fail-closed."""
+    tokens = [int(token) for token in result.get("generated_token_ids", [])]
+    bridge = result.get("bridge_counters", {})
+    engine_stats = result.get("engine_stats", {})
+    engine_config = result.get("engine_config", {})
+    expert_store = result.get("expert_store", {})
+    runtime = result.get("model_runtime_snapshot", {})
+    gpu = result.get("gpu_environment", {})
+    gpu_lines = gpu.get("nvidia_smi_lines", [])
+
+    expected_cache = "fp4-packed" if CACHE_DTYPE == "fp4" else "fp16"
+    required_bridge_zero = {
+        "numpy_bridge_calls": int(bridge.get("numpy_bridge_calls", -1)) == 0,
+        "full_hidden_d2h_copies":
+            int(bridge.get("full_hidden_d2h_copies", -1)) == 0,
+        "raw_expert_output_d2h_copies":
+            int(bridge.get("raw_expert_output_d2h_copies", -1)) == 0,
+    }
+    engine_keys = ("cuda0",) if gpu.get("single_gpu_mode") else ("cuda0", "cuda1")
+    finite_values = [
+        engine_stats.get(key, {}).get("hidden_finite")
+        for key in engine_keys]
+    finite_outputs_observed = all(
+        isinstance(value, bool) for value in finite_values)
+    finite_outputs = finite_outputs_observed and all(finite_values)
+    effective_cache_dtype = all(
+        engine_config.get(key, {}).get("cache_dtype") == expected_cache
+        for key in engine_keys)
+    effective_cuda = all(
+        engine_config.get(key, {}).get("use_cuda") is True
+        for key in engine_keys)
+    expected_store = all(
+        expert_store.get(key, {}).get("backend") == EXPERT_STORE_BACKEND
+        and int(expert_store.get(key, {}).get("lookup_failures", -1)) == 0
+        for key in engine_keys)
+    dee4_contiguous = True
+    dee4_integrity = True
+    if EXPERT_STORE_BACKEND == "dee4":
+        dee4_contiguous = all(
+            int(expert_store.get(key, {}).get("source_reads", 0)) > 0
+            and int(expert_store.get(key, {}).get("contiguous_source_reads", -1))
+            == int(expert_store.get(key, {}).get("source_reads", 0))
+            for key in engine_keys)
+        dee4_integrity = all(
+            len(str(expert_store.get(key, {}).get("integrity_identity", ""))) == 64
+            for key in engine_keys)
+    no_cpu_expert_fallback = (
+        runtime.get("backends", {}).get("cpu_expert_execution") is False)
+    t4_hardware = (
+        int(gpu.get("gpu_count", 0)) == 2
+        and len(gpu_lines) == 2
+        and all("Tesla T4" in str(line) for line in gpu_lines))
+
+    gates = {
+        "exact_16_token_ids": N_TOKENS == 16 and tokens == SEALED_TOKEN_IDS,
+        "exact_decoded_text": result.get("decoded_text") == SEALED_DECODED_TEXT,
+        "all_43_layers": int(result.get("layer_count_executed", -1)) == 43,
+        "finite_outputs_observed": finite_outputs_observed,
+        "finite_outputs": finite_outputs,
+        **required_bridge_zero,
+        "official_router_authoritative": (
+            runtime.get("backends", {}).get("router")
+            == "torch_cuda_validated_ds9_path"),
+        "no_cpu_expert_fallback": no_cpu_expert_fallback,
+        "effective_cuda_execution": effective_cuda,
+        "effective_cache_dtype": effective_cache_dtype,
+        "effective_expert_store": expected_store,
+        "dee4_contiguous_reads": dee4_contiguous,
+        "dee4_integrity_identity": dee4_integrity,
+        "required_performance_hardware": t4_hardware,
+    }
+    token_or_text_failed = not (
+        gates["exact_16_token_ids"] and gates["exact_decoded_text"])
+    observed_nonfinite = (
+        gates["finite_outputs_observed"] and not gates["finite_outputs"])
+    contract_gates = [value for key, value in gates.items()
+                      if key != "required_performance_hardware"]
+    if token_or_text_failed or observed_nonfinite:
+        classification = "REJECT_NUMERICAL"
+    elif not all(contract_gates):
+        classification = "REJECT_INTEGRITY"
+    else:
+        classification = "ACCEPT_CORRECTNESS"
+    performance_eligible = classification == "ACCEPT_CORRECTNESS" and t4_hardware
+    return classification, gates, performance_eligible
 
 
 def mem_report(tag: str) -> None:
@@ -373,7 +517,7 @@ def process_mem_gib() -> dict:
     out = {}
     try:
         for line in Path("/proc/self/status").read_text().splitlines():
-            for key in ("VmRSS", "VmData", "VmLck", "VmSwap"):
+            for key in ("VmRSS", "VmHWM", "VmData", "VmPeak", "VmLck", "VmSwap"):
                 if line.startswith(key + ":"):
                     out[key] = round(int(line.split()[1]) / (1024 * 1024), 2)
     except OSError:
@@ -411,7 +555,7 @@ def gpu_memory_snapshot() -> dict:
     return out
 
 
-def check_gpu_allocation() -> None:
+def check_gpu_allocation() -> dict:
     """Fail fast (before the ~40-min build) if the worker lacks 2 GPUs.
 
     Kaggle's Dual-GPU pool intermittently allocates 1 GPU (v17/v18/v19 all
@@ -478,6 +622,14 @@ def check_gpu_allocation() -> None:
     if n_gpus < need:
         raise RuntimeError(
             f"expected {need} GPUs, got {n_gpus}: {out.strip()}")
+    return {
+        "gpu_count": n_gpus,
+        "nvidia_smi_lines": lines,
+        "compute_capabilities": caps,
+        "single_gpu_mode": SINGLE_GPU,
+        "requested_gpu": "NvidiaTeslaT4",
+        "requested_gpu_count": 2,
+    }
 
 
 def log_host_resources(stage: str) -> dict:
@@ -524,19 +676,9 @@ def _ntfy(msg: str) -> None:
 
 def main() -> int:
     global FORCE_TMP
-    check_gpu_allocation()
+    gpu_environment = check_gpu_allocation()
     res = log_host_resources("startup")
     tmp_free = res.get("/tmp", {}).get("free_gb", 0)
-    # The full 48-shard checkpoint is ~153 GiB.  Kaggle enforces container
-    # disk quotas BELOW what df reports: single-GPU workers were hard-killed
-    # silently mid-staging (v33-v37, zero output, ntfy shows death right
-    # after "downloading" starts).  Only attempt /tmp staging when there is
-    # huge headroom; otherwise rely on the dataset mount.
-    if FORCE_TMP and tmp_free and tmp_free < 400:
-        log(f"RESOURCES-GATE: /tmp has {tmp_free} GiB (<400); "
-            f"disabling FORCE_TMP staging, will use dataset mount/download "
-            f"fallbacks as available")
-        FORCE_TMP = False
 
     log("=== clone + checkout ===")
     if ROOT.exists():
@@ -549,6 +691,95 @@ def main() -> int:
         ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
     log(f"pinned commit {head}")
     apply_run_config()
+
+    # Storage geometry is backend-specific. Safetensors execution may stage
+    # the full 153-GiB checkpoint into /tmp only with very large headroom.
+    # DEE4 execution instead reads canonical bytes once from the dataset mount
+    # and writes a ~137-GiB expert bank to /tmp; duplicating both forms there
+    # would waste quota without helping dense/state loads.
+    if EXPERT_STORE_BACKEND == "dee4":
+        if tmp_free and tmp_free < 160:
+            raise RuntimeError(
+                f"DEE4 requires at least 160 GiB free in /tmp, found {tmp_free}")
+        if DATASET_DIR.is_dir():
+            FORCE_TMP = False
+            log("DEE4 storage mode: canonical shards stay on dataset mount; "
+                "expert-major bank will be written to /tmp")
+    elif FORCE_TMP and tmp_free and tmp_free < 400:
+        log(f"RESOURCES-GATE: /tmp has {tmp_free} GiB (<400); "
+            f"disabling FORCE_TMP staging, will use dataset mount/download "
+            f"fallbacks as available")
+        FORCE_TMP = False
+
+    source_run_config = (
+        DEE / "kaggle/deepseek-v4-flash-0731/run_config.json")
+    cloned_harness = (
+        DEE / "kaggle/deepseek-v4-flash-0731/"
+        "deepseek_v4_native_generate.py")
+    kernel_metadata = (
+        DEE / "kaggle/deepseek-v4-flash-0731/kernel-metadata.json")
+    launch_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    try:
+        driver_rows = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=name,driver_version,memory.total",
+             "--format=csv,noheader"], text=True).strip().splitlines()
+    except Exception:
+        driver_rows = []
+    environment_payload = {
+        "recorded_at_utc": launch_utc,
+        "platform": platform.platform(),
+        "python": sys.version,
+        "gpu": gpu_environment,
+        "gpu_driver_rows": driver_rows,
+        "storage_mount": str(DATASET_DIR),
+        "storage_filesystem": "Kaggle dataset mount plus /tmp root overlay",
+        "startup_resources": res,
+    }
+    run_config_payload = {
+        "recorded_at_utc": launch_utc,
+        "run_id": RUN_ID,
+        "cache_dtype": CACHE_DTYPE,
+        "expert_store": EXPERT_STORE_BACKEND,
+        "dee4_validate_samples": DEE4_VALIDATE_SAMPLES,
+        "profile_stages": PROFILE_STAGES,
+        "n_tokens": N_TOKENS,
+        "cache_budget_bytes_per_gpu": BUDGET_BYTES,
+        "cache_budget_gib_per_gpu": BUDGET_BYTES / (1 << 30),
+        "host_pack_requested_bytes": [
+            HOST_PACK_CACHE_BYTES_GPU0, HOST_PACK_CACHE_BYTES_GPU1],
+        "host_pack_runtime_cap_gib_total": 17.0,
+        "force_tmp": FORCE_TMP,
+        "source_path": str(source_run_config),
+        "source_sha256": sha256_file(source_run_config),
+    }
+    integrity_payload = {
+        "recorded_at_utc": launch_utc,
+        "run_id": RUN_ID,
+        "repository": REPO,
+        "branch": BRANCH,
+        "git_commit": head,
+        "model_revision": REV,
+        "executing_harness_sha256": sha256_file(Path(__file__).resolve()),
+        "cloned_harness_sha256": sha256_file(cloned_harness),
+        "run_config_sha256": sha256_file(source_run_config),
+        "kernel_metadata_sha256": sha256_file(kernel_metadata),
+        "expected_token_ids": SEALED_TOKEN_IDS,
+        "expected_decoded_text": SEALED_DECODED_TEXT,
+        "required_gpu": "2x Tesla T4 for performance acceptance",
+    }
+    write_evidence("environment.json", environment_payload)
+    write_evidence("run_config.json", run_config_payload)
+    write_evidence("integrity.json", integrity_payload)
+    write_evidence("memory.json", {
+        "status": "RUNNING",
+        "startup_process": process_mem_gib(),
+        "startup_system": system_mem_gib(),
+        "startup_gpu": {},
+    })
+    write_evidence("profile.json", {"status": "RUNNING"})
+    write_evidence("result.json", {
+        "status": "RUNNING", "run_id": RUN_ID, "git_commit": head,
+        "model_revision": REV, "started_at_utc": launch_utc})
 
     # Build with bounded parallelism: single-GPU "medium" workers have ~13 GB
     # RAM (dual-GPU has 32 GB), and nvcc+gcc at -j4 can OOM the worker mid-
@@ -567,9 +798,11 @@ def main() -> int:
     for target in ("test_deepseek_v4_fp4_cuda", "test_deepseek_v4_fp4_expert"):
         run(["cmake", "--build", str(BUILD), "--target", target,
              "-j", str(build_jobs)])
-        r = subprocess.run([str(BUILD / target)], cwd=str(DEE))
-        if r.returncode != 0:
-            log(f"WARNING: regression test {target} returned {r.returncode} (non-fatal)")
+        # These tests are the numerical admission gate for the candidate.
+        # In particular, test_deepseek_v4_fp4_expert now exercises the exact
+        # packed-cache device API used by the full model. A failure must stop
+        # before the multi-hour generation, never degrade into a warning.
+        run([str(BUILD / target)], cwd=str(DEE))
     mem_report("post-tests")
 
     log("=== build pydee ===")
@@ -582,14 +815,19 @@ def main() -> int:
     shard_paths = download_all_shards()
     mem_report("post-download")
 
-    # ── P2.2: DEE4 expert-major repack benchmark ──────────────────────
-    log("=== P2.2 DEE4 repack benchmark ===")
+    # ── DEE4 v2: component evidence or live serving bank ──────────────
+    log(f"=== DEE4 v2 prepare (backend={EXPERT_STORE_BACKEND}) ===")
+    dee4_store_path = ""
     try:
         sys.path.insert(0, str(DEE / "kaggle" / "deepseek-v4-flash-0731"))
-        from repack_to_dee4 import repack, benchmark_dee4_read as _b4r
+        from repack_to_dee4 import (
+            benchmark_dee4_read as _b4r,
+            repack,
+            validate_dee4_against_safetensors as _validate_dee4,
+        )
         import struct as _struct
-        _dee4_out = Path("/kaggle/working/dee4-test")
-        _idx = Path(str(shard_paths[0]).rsplit("/", 1)[0]) / "model.safetensors.index.json"
+        _source_dir = Path(shard_paths[0]).parent
+        _idx = _source_dir / "model.safetensors.index.json"
         if not _idx.is_file():
             _idx_url = (f"https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731/"
                         f"resolve/{REV}/model.safetensors.index.json")
@@ -598,20 +836,38 @@ def main() -> int:
             _idx_data = urllib.request.urlopen(_idx_url, timeout=300).read()
             _idx.write_bytes(_idx_data)
             log(f"P2.2: index downloaded ({len(_idx_data)} bytes)")
+        _dee4_out = (
+            DEE4_DIR if EXPERT_STORE_BACKEND == "dee4"
+            else Path("/tmp/dsv4-dee4-v2-component")
+        )
+        _end_layer = 43 if EXPERT_STORE_BACKEND == "dee4" else 3
         _t0 = time.monotonic()
         _dee4_rpt = repack(
-            Path(str(shard_paths[0]).rsplit("/", 1)[0]), _dee4_out,
-            index_path=_idx, start_layer=0, end_layer=3, dry_run=False)
+            _source_dir, _dee4_out, index_path=_idx,
+            start_layer=0, end_layer=_end_layer, dry_run=False)
         _dt = time.monotonic() - _t0
         _dee4_bench = _b4r(_dee4_out, n_experts=64)
+        _dee4_validation = _validate_dee4(
+            _source_dir, _dee4_out, index_path=_idx,
+            sample_count=DEE4_VALIDATE_SAMPLES)
+        (WORK / "dee4-import-validation.json").write_text(
+            json.dumps(_dee4_validation, indent=2), "utf-8")
+        if not _dee4_validation["success"]:
+            raise RuntimeError("DEE4 canonical-byte import validation failed")
+        for _evidence_name in ("metadata.json", "repack_report.json",
+                               "integrity.jsonl"):
+            shutil.copy2(_dee4_out / _evidence_name,
+                         WORK / f"dee4-{_evidence_name}")
+
         # Compare: safetensors random gather
         _idx_data = json.loads(_idx.read_text("utf-8"))
-        _wm = _idx_data["weight_map"]; _hdr = {}; _sp = {}
+        _wm = _idx_data["weight_map"]; _hdr = {}; _hdr_len = {}; _sp = {}
         for _sn in sorted(set(_wm.values())):
-            _p = Path(str(shard_paths[0]).rsplit("/", 1)[0]) / _sn
+            _p = _source_dir / _sn
             _sp[_sn] = _p
             with open(_p, "rb") as _f:
                 _hl = _struct.unpack("<Q", _f.read(8))[0]
+                _hdr_len[_sn] = _hl
                 _hdr[_sn] = json.loads(_f.read(_hl))
         _st0 = time.monotonic(); _tb = 0; _rc = 0
         for _L in range(3):
@@ -624,7 +880,9 @@ def main() -> int:
                         _off = _hh[_nm]["data_offsets"]
                         _ln = _off[1] - _off[0]
                         with open(_sp[_sn], "rb") as _f:
-                            _f.seek(8 + _off[0]); _f.read(_ln)
+                            _f.seek(8 + _hdr_len[_sn] + _off[0])
+                            if len(_f.read(_ln)) != _ln:
+                                raise IOError(f"short scatter read: {_nm}")
                         _tb += _ln; _rc += 1
                 if _rc >= 64 * 6: break
             if _rc >= 64 * 6: break
@@ -636,23 +894,46 @@ def main() -> int:
             f"({_d4_mbps/max(_st_mbps,0.01):.1f}x) "
             f"repack {_dt:.0f}s {_dee4_rpt['total_bytes_repacked']/(1<<30):.1f}GiB")
         _p22_evidence = {
+            "format": "dee4-v2",
+            "serving_backend": EXPERT_STORE_BACKEND,
             "dee4_mbps": _d4_mbps, "safetensors_mbps": _st_mbps,
             "speedup": _d4_mbps / max(_st_mbps, 0.01),
             "repack_s": _dt, "repack_gib": _dee4_rpt["total_bytes_repacked"]/(1<<30),
-            "io_count_reduction": f"{_rc} random -> {len(_dee4_bench['tests'])} sequential"
+            "io_count_reduction": f"{_rc} random -> 1 contiguous record stream",
+            "data_sha256": _dee4_rpt["data_sha256"],
+            "validation_samples": _dee4_validation["sample_count"],
+            "validation_source_shards": _dee4_validation["source_shards_covered"],
         }
-        (Path("/kaggle/working") / "p2.2-dee4-evidence.json").write_text(
+        (WORK / "p2.2-dee4-evidence.json").write_text(
             json.dumps(_p22_evidence, indent=2), "utf-8")
+        if EXPERT_STORE_BACKEND == "dee4":
+            dee4_store_path = str(_dee4_out)
+            log(f"DEE4_LIVE backend=dee4 path={dee4_store_path} "
+                f"identity={_dee4_rpt['data_sha256']}")
+        else:
+            # Component-only evidence must not occupy runtime disk or be
+            # mistaken for the serving backend selected by this run.
+            shutil.rmtree(_dee4_out)
     except Exception as _e:
-        log(f"P2.2 repack failed (non-fatal): {_e}")
+        log(f"DEE4 prepare failed: {_e}")
         import traceback as _tb
         _tb.print_exc()
+        if EXPERT_STORE_BACKEND == "dee4":
+            raise
 
     sys.path.insert(0, str(DEE))
     sys.path.insert(0, str(DEE / "benchmark_reports/deepseek-v4-flash-0731-t4/"
                           "official-source/inference"))
     import torch
     log(f"cuda devices: {torch.cuda.device_count()}")
+    environment_payload.update({
+        "torch_version": torch.__version__,
+        "torch_cuda_version": torch.version.cuda,
+        "cuda_device_names": [
+            torch.cuda.get_device_name(index)
+            for index in range(torch.cuda.device_count())],
+    })
+    write_evidence("environment.json", environment_payload)
     need = 1 if SINGLE_GPU else 2
     if torch.cuda.device_count() < need:
         raise RuntimeError(
@@ -712,7 +993,8 @@ def main() -> int:
             host_pack_cache_bytes=single_pack,
             use_batched_experts=USE_BATCHED_EXPERTS,
             profile_stages=PROFILE_STAGES,
-            cache_dtype=CACHE_DTYPE)
+            cache_dtype=CACHE_DTYPE,
+            expert_store_path=dee4_store_path)
         eng1 = eng0
         log(f"engines built SINGLE_GPU budget={single_budget/2**30:.2f}GiB "
             f"host_pack={single_pack/2**30:.2f}GiB cache_dtype={CACHE_DTYPE}")
@@ -722,13 +1004,15 @@ def main() -> int:
             host_pack_cache_bytes=pack_budget0,
             use_batched_experts=USE_BATCHED_EXPERTS,
             profile_stages=PROFILE_STAGES,
-            cache_dtype=CACHE_DTYPE)
+            cache_dtype=CACHE_DTYPE,
+            expert_store_path=dee4_store_path)
         eng1 = vm.build_native_engine(
             shard_paths, device_id=1, budget_bytes=BUDGET_BYTES,
             host_pack_cache_bytes=pack_budget1,
             use_batched_experts=USE_BATCHED_EXPERTS,
             profile_stages=PROFILE_STAGES,
-            cache_dtype=CACHE_DTYPE)
+            cache_dtype=CACHE_DTYPE,
+            expert_store_path=dee4_store_path)
         log(f"engines built (cache_dtype={CACHE_DTYPE})")
 
     log("=== build full model (native FFN) ===")
@@ -820,11 +1104,16 @@ def main() -> int:
     text = tokenizer.decode(toks)
 
     result = {
+        "run_id": RUN_ID,
         "commit": head,
         "host_mem_available_gib": round(mem_avail, 2),
         "host_pack_budget_gib": [round(pack_budget0 / (1 << 30), 2),
                                   round(pack_budget1 / (1 << 30), 2)],
         "model_revision": REV,
+        "gpu_environment": gpu_environment,
+        "cache_dtype": CACHE_DTYPE,
+        "expert_store_backend": EXPERT_STORE_BACKEND,
+        "expert_store_path": dee4_store_path,
         "prompt": CANONICAL_PROMPT,
         "prompt_len": len(ids),
         "n_tokens": N_TOKENS,
@@ -850,8 +1139,9 @@ def main() -> int:
         "gpu_memory": gpu_memory_snapshot(),
         "diagnostics": DIAGNOSTICS,
         "bridge_counters": model.bridge_counters(),
-        "layer_count_executed": (
-            len(model.execution_trace) if DIAGNOSTICS else model.cfg.n_layers),
+        "layer_count_executed": int(
+            model.last_execution.get("layers_executed", -1)),
+        "execution_terminal": dict(model.last_execution),
     }
 
     # Stage 0 instrumentation: per-engine expert-cache + host-pack + stage
@@ -861,9 +1151,17 @@ def main() -> int:
             "cuda0": json.loads(eng0.last_stats_json()),
             "cuda1": json.loads(eng1.last_stats_json()),
         }
+        result["engine_config"] = {
+            "cuda0": eng0.runtime_config(),
+            "cuda1": eng1.runtime_config(),
+        }
         result["host_pack"] = {
             "cuda0": eng0.host_pack_stats(),
             "cuda1": eng1.host_pack_stats(),
+        }
+        result["expert_store"] = {
+            "cuda0": eng0.expert_store_stats(),
+            "cuda1": eng1.expert_store_stats(),
         }
         result["stage_profile"] = {
             "cuda0": json.loads(eng0.external_profile_json(wall_s * 1000.0)),
@@ -871,7 +1169,123 @@ def main() -> int:
         }
     except Exception as exc:  # never fail the run over instrumentation
         log(f"instrumentation dump failed: {exc}")
-    result["model_runtime_snapshot"] = model.runtime_snapshot()
+        result["instrumentation_error"] = repr(exc)
+    try:
+        result["model_runtime_snapshot"] = model.runtime_snapshot()
+    except Exception as exc:
+        log(f"runtime snapshot failed: {exc}")
+        result["runtime_snapshot_error"] = repr(exc)
+
+    classification, gates, performance_eligible = classify_full_generation(result)
+    completed_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    result.update({
+        "status": "COMPLETE",
+        "completed_at_utc": completed_utc,
+        "classification": classification,
+        "performance_eligible": performance_eligible,
+        "hardware_classification": (
+            "ELIGIBLE_2X_TESLA_T4" if performance_eligible
+            else "REJECT_HARDWARE_FOR_PERFORMANCE"),
+        "correctness": {
+            "sealed_contract_gates": gates,
+            "all_non_hardware_gates_pass": all(
+                value for key, value in gates.items()
+                if key != "required_performance_hardware"),
+        },
+    })
+
+    # Derive physical byte/token accounting directly from the live serving
+    # backends. In single-GPU mode cuda1 aliases cuda0 and must not be counted
+    # twice.
+    store_keys = ("cuda0",) if SINGLE_GPU else ("cuda0", "cuda1")
+    stores = result.get("expert_store", {})
+    storage_bytes = sum(
+        int(stores.get(key, {}).get("bytes_requested", 0))
+        for key in store_keys)
+    source_reads = sum(
+        int(stores.get(key, {}).get("source_reads", 0))
+        for key in store_keys)
+    result["byte_accounting"] = {
+        "storage_bytes_total": storage_bytes,
+        "storage_bytes_per_generated_token": (
+            storage_bytes / len(toks) if toks else None),
+        "storage_requests_total": source_reads,
+        "storage_requests_per_generated_token": (
+            source_reads / len(toks) if toks else None),
+        "expert_h2d_bytes_total": sum(
+            int(result.get("engine_stats", {}).get(key, {}).get("h2d_bytes", 0))
+            for key in store_keys),
+    }
+
+    min_host_available = None
+    checkpoint_records = 0
+    try:
+        for line in CHECKPOINT.read_text("utf-8").splitlines():
+            record = json.loads(line)
+            available = float(record["host_mem_available_gib"])
+            min_host_available = (
+                available if min_host_available is None
+                else min(min_host_available, available))
+            checkpoint_records += 1
+    except Exception as exc:
+        log(f"checkpoint memory summary failed: {exc}")
+
+    profile_payload = {
+        "status": "COMPLETE",
+        "classification": classification,
+        "profile_stages_enabled": PROFILE_STAGES,
+        "build_seconds": result["build_seconds"],
+        "total_wall_seconds": result["total_wall_seconds"],
+        "prefill_ms": result["prefill_ms"],
+        "decode_wall_s": result["decode_wall_s"],
+        "decode_timings_ms": result["decode_timings_ms"],
+        "inter_token_latency_ms": result["inter_token_latency_ms"],
+        "stage_profile": result.get("stage_profile", {}),
+        "engine_stats": result.get("engine_stats", {}),
+        "expert_store": result.get("expert_store", {}),
+        "host_pack": result.get("host_pack", {}),
+        "byte_accounting": result["byte_accounting"],
+    }
+    memory_payload = {
+        "status": "COMPLETE",
+        "classification": classification,
+        "process_final_and_peak_gib": process_mem_gib(),
+        "system_final_gib": system_mem_gib(),
+        "gpu_final_and_peak_gib": result["gpu_memory"],
+        "minimum_checkpoint_host_mem_available_gib": min_host_available,
+        "checkpoint_records": checkpoint_records,
+        "cache_budget_bytes_per_gpu": BUDGET_BYTES,
+        "host_pack_budget_bytes": [pack_budget0, pack_budget1],
+    }
+
+    # Publish the five non-integrity artifacts first, then bind their exact
+    # serialized bytes from integrity.json. This avoids a circular hash while
+    # making the evidence package independently verifiable.
+    write_evidence("environment.json", environment_payload)
+    write_evidence("run_config.json", run_config_payload)
+    write_evidence("profile.json", profile_payload)
+    write_evidence("memory.json", memory_payload)
+    write_evidence("result.json", result)
+    integrity_payload.update({
+        "completed_at_utc": completed_utc,
+        "classification": classification,
+        "performance_eligible": performance_eligible,
+        "actual_token_ids": [int(token) for token in toks],
+        "actual_token_ids_sha256": hashlib.sha256(
+            json.dumps([int(token) for token in toks], separators=(",", ":"))
+            .encode("utf-8")).hexdigest(),
+        "actual_decoded_text_sha256": hashlib.sha256(
+            text.encode("utf-8")).hexdigest(),
+        "sealed_contract_gates": gates,
+        "expert_store": result.get("expert_store", {}),
+        "artifact_sha256": {
+            name: sha256_file(WORK / name)
+            for name in (
+                "environment.json", "run_config.json", "result.json",
+                "profile.json", "memory.json")
+        },
+    })
+    write_evidence("integrity.json", integrity_payload)
     log("RESULT " + json.dumps(result))
     (WORK / "native-generate-result.json").write_text(
         json.dumps(result, indent=2))
@@ -881,19 +1295,90 @@ def main() -> int:
     if not (DATASET_DIR.is_dir() and Path(shard_paths[0]).parent == DATASET_DIR):
         for p in shard_paths:
             Path(p).unlink(missing_ok=True)
-    log("=== VERDICT: real tokenizer->text decode measured ===")
+    log(f"=== VERDICT: {classification}; performance_eligible="
+        f"{performance_eligible} ===")
     return 0
 
 
 if __name__ == "__main__":
     try:
-        sys.exit(main())
-    except BaseException:
+        # main() returns an exit code, but do not raise SystemExit inside this
+        # catch boundary. The historical wrapper caught its own sys.exit(0)
+        # and overwrote successful evidence with a false error artifact.
+        main()
+    except BaseException as exc:
         tb = traceback.format_exc()
         log("FATAL " + tb)
+        message = str(exc).lower()
+        if "non-finite" in message or "numerical" in message:
+            classification = "REJECT_NUMERICAL"
+        elif "out of memory" in message or "oom" in message or isinstance(exc, MemoryError):
+            classification = "REJECT_MEMORY"
+        elif "checksum" in message or "integrity" in message or "sha256" in message:
+            classification = "REJECT_INTEGRITY"
+        elif "storage" in message or "disk" in message or "no space" in message:
+            classification = "REJECT_STORAGE"
+        elif "gpu" in message or "nvidia-smi" in message:
+            classification = "REJECT_HARDWARE"
+        else:
+            classification = "INVALID_EXPERIMENT"
+        failed_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        terminal = {
+            "status": "ERROR",
+            "classification": classification,
+            "performance_eligible": False,
+            "failed_at_utc": failed_at,
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "traceback": tb,
+        }
+        WORK.mkdir(parents=True, exist_ok=True)
         (WORK / "error.txt").write_text(tb)
+        write_evidence("result.json", terminal)
+        write_evidence("profile.json", {
+            **terminal, "profile_stages_enabled": PROFILE_STAGES})
+        try:
+            failed_gpu = gpu_memory_snapshot()
+        except Exception:
+            failed_gpu = {}
+        write_evidence("memory.json", {
+            **terminal,
+            "process_final_and_peak_gib": process_mem_gib(),
+            "system_final_gib": system_mem_gib(),
+            "gpu_final_and_peak_gib": failed_gpu,
+        })
+        if not (WORK / "environment.json").is_file():
+            write_evidence("environment.json", {
+                **terminal, "platform": platform.platform(),
+                "python": sys.version})
+        if not (WORK / "run_config.json").is_file():
+            write_evidence("run_config.json", {
+                **terminal, "run_id": RUN_ID, "cache_dtype": CACHE_DTYPE,
+                "expert_store": EXPERT_STORE_BACKEND,
+                "n_tokens": N_TOKENS,
+                "profile_stages": PROFILE_STAGES})
+        integrity_path = WORK / "integrity.json"
+        try:
+            failed_integrity = (json.loads(integrity_path.read_text("utf-8"))
+                                if integrity_path.is_file() else {})
+        except Exception:
+            failed_integrity = {}
+        failed_integrity.update({
+            **terminal,
+            "repository": failed_integrity.get("repository", REPO),
+            "branch": failed_integrity.get("branch", BRANCH),
+            "model_revision": failed_integrity.get("model_revision", REV),
+            "executing_harness_sha256": sha256_file(Path(__file__).resolve()),
+            "artifact_sha256": {
+                name: sha256_file(WORK / name)
+                for name in (
+                    "environment.json", "run_config.json", "result.json",
+                    "profile.json", "memory.json")
+            },
+        })
+        write_evidence("integrity.json", failed_integrity)
         (WORK / "native-generate-result.json").write_text(
-            json.dumps({"status": "error", "traceback": tb}, indent=2))
+            json.dumps(terminal, indent=2))
         # Exit 0 so Kaggle snapshots /kaggle/working (error-exit kernels drop
         # their output/log, which is why the earlier failures were undiagnosable).
         sys.exit(0)

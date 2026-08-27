@@ -942,6 +942,17 @@ bool Engine::moe_forward_batch_device_impl(
             if (!cache_.pin(source_layer, expert)) return false;
 
             const void* d_blob = cache_.data(source_layer, expert);
+            // The live DeepSeek model uses this device-resident batch API.
+            // Packed-FP4 cache blocks are not FP16 matrices: decode the one
+            // selected expert into the bounded scratch on the same compute
+            // stream before handing it to the exact batched FP16 SwiGLU.
+            // v45 reached this seam with packed bytes and consequently
+            // produced non-finite prefill logits despite the host-API packed
+            // cache regression passing.
+            if (d_blob && cfg_.cache_dtype == DeviceCacheDType::Fp4E2m1) {
+                d_blob = decode_fp4_cache_block_to_scratch(
+                    d_blob, compute_stream_);
+            }
             if (profiler_.enabled()) {
                 profiler_.set_cuda_context(current_token_, layer, expert);
             }
@@ -2684,14 +2695,19 @@ const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int exp
     // (dtype F8 [out, in//32]).  No host-side quantization: stage them verbatim
     // into one contiguous [gate_packed][up_packed][down_packed]
     // [gate_scale][up_scale][down_scale] and let the CUDA transfer stream decode.
-    TensorView weights[3] = {
-        resolver_.resolve_expert(source_layer, expert, TensorResolver::GATE_PROJ),
-        resolver_.resolve_expert(source_layer, expert, TensorResolver::UP_PROJ),
-        resolver_.resolve_expert(source_layer, expert, TensorResolver::DOWN_PROJ)};
-    TensorView scales[3] = {
-        resolver_.resolve_expert_scale(source_layer, expert, TensorResolver::GATE_PROJ),
-        resolver_.resolve_expert_scale(source_layer, expert, TensorResolver::UP_PROJ),
-        resolver_.resolve_expert_scale(source_layer, expert, TensorResolver::DOWN_PROJ)};
+    ExpertView expert_view;
+    if (!expert_store_ ||
+        !expert_store_->get(source_layer, expert, &expert_view)) {
+        std::fprintf(stderr,
+            "[engine] expert store failed for expert (%d,%d)\n",
+            source_layer, expert);
+        if (profiler_.enabled()) {
+            profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
+        }
+        return nullptr;
+    }
+    const TensorView* weights = expert_view.weights.data();
+    const TensorView* scales = expert_view.scales.data();
 
     QuantizedExpert quantized;
     size_t packed_total = 0;
@@ -2726,18 +2742,41 @@ const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int exp
     // host DRAM instead of re-faulting cold mmap pages against the full
     // checkpoint.  The fill is the SAME on hit and miss: if the pack evicted
     // this key in between, it re-copies from the (cheap) resolved views.
+    bool fill_ok = true;
     auto fill_pack = [&](uint8_t* dst, size_t n) {
+        const auto read_begin = std::chrono::steady_clock::now();
         const TensorView* sources[6] = {
             &weights[0], &weights[1], &weights[2],
             &scales[0], &scales[1], &scales[2]};
         size_t off = 0;
-        for (int r = 0; r < 6; ++r) {
-            if (off + sources[r]->nbytes > n) {
-                std::memset(dst, 0, n);  // corrupt: fill zero (fail closed)
-                return;
+        const bool contiguous =
+            expert_view.contiguous_data != nullptr &&
+            expert_view.contiguous_nbytes == n;
+        if (contiguous) {
+            std::memcpy(dst, expert_view.contiguous_data, n);
+            off = n;
+        } else {
+            for (int r = 0; r < 6; ++r) {
+                if (off + sources[r]->nbytes > n) {
+                    std::memset(dst, 0, n);
+                    fill_ok = false;
+                    return;
+                }
+                std::memcpy(dst + off, sources[r]->data, sources[r]->nbytes);
+                off += sources[r]->nbytes;
             }
-            std::memcpy(dst + off, sources[r]->data, sources[r]->nbytes);
-            off += sources[r]->nbytes;
+        }
+        if (off != n) {
+            std::memset(dst, 0, n);
+            fill_ok = false;
+            return;
+        }
+        if (expert_store_) {
+            const double read_ms =
+                std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - read_begin).count();
+            expert_store_->record_source_read(
+                n, read_ms, contiguous ? 1 : 6, contiguous);
         }
 #ifndef _WIN32
         // v10 idea (now env-gated OFF, v12): madvise(DONTNEED) the source
@@ -2791,6 +2830,7 @@ const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int exp
     };
     const uint8_t* pack_buf = pack_cache_.get(
         key, quantized.fp4_total_nbytes, fill_pack);
+    if (!fill_ok) pack_buf = nullptr;
     if (!pack_buf) {
         std::fprintf(stderr,
             "[engine] host pack cache miss-allocation for expert (%d,%d); falling back to mmap regions\n",
@@ -3238,8 +3278,43 @@ bool Engine::init(const EngineConfig& cfg) {
     const bool deepseek_v4 = cfg.transfer_dtype == WeightTransferDType::Fp4E2m1;
     if (deepseek_v4) resolver_.set_model(TensorResolver::Model::DEEPSEEK_V4);
 
+    if (deepseek_v4) {
+        if (!cfg_.expert_store_path.empty()) {
+            auto store = std::make_unique<Dee4ExpertStore>();
+            if (!store->open(cfg_.expert_store_path)) {
+                std::fprintf(stderr,
+                             "[engine] cannot open DEE4 expert store %s: %s\n",
+                             cfg_.expert_store_path.c_str(),
+                             store->last_error().c_str());
+                return false;
+            }
+            expert_store_ = std::move(store);
+        } else {
+            expert_store_ = std::make_unique<SafetensorsExpertStore>(&resolver_);
+        }
+        if (cfg_.verbose) {
+            std::fprintf(stderr,
+                         "[engine] routed expert store: %s identity=%s\n",
+                         expert_store_->backend_name(),
+                         expert_store_->integrity_identity().c_str());
+        }
+    }
+
     // verify expert dims against the shard; derive inter_/hidden_ from it
-    TensorView gv = resolver_.resolve_expert(cfg_.base_layer, 0, TensorResolver::GATE_PROJ);
+    TensorView gv;
+    ExpertView first_expert;
+    if (deepseek_v4) {
+        if (!expert_store_ ||
+            !expert_store_->get(cfg_.base_layer, 0, &first_expert)) {
+            fprintf(stderr,
+                    "[engine] cannot resolve expert 0 from configured expert store\n");
+            return false;
+        }
+        gv = first_expert.weights[0];
+    } else {
+        gv = resolver_.resolve_expert(
+            cfg_.base_layer, 0, TensorResolver::GATE_PROJ);
+    }
     if (!gv.ok()) {
         fprintf(stderr, "[engine] cannot resolve expert 0 gate_proj in shard\n");
         return false;

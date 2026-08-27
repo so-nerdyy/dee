@@ -24,6 +24,9 @@
 
 #include "dee/engine.h"
 #include "dee/weight_mmap.h"
+#include "dee/cuda_convert.h"
+
+#include <cuda_runtime.h>
 
 #include <cmath>
 #include <cstdint>
@@ -243,6 +246,66 @@ int main() {
         CHECK(finite, "native output is finite");
         CHECK(rel_rmse < 0.02, "native FP4 expert matches FP32 reference (rel RMSE < 2%)");
         CHECK(cosine > 0.999, "native FP4 expert cosine similarity > 0.999");
+
+        if (cache_dtype == dee::DeviceCacheDType::Fp4E2m1) {
+            // Regression for the actual full-model seam. The Kaggle model
+            // calls moe_forward_batch_device with an FP16 device hidden and
+            // FP32 device output; v45 only tested the host entrypoint above,
+            // then passed packed cache bytes to the FP16 batched kernel here.
+            float* d_x_f32 = nullptr;
+            void* d_x_f16 = nullptr;
+            float* d_out = nullptr;
+            CHECK(cudaMalloc(reinterpret_cast<void**>(&d_x_f32),
+                             x.size() * sizeof(float)) == cudaSuccess,
+                  "device-API FP32 input allocated");
+            CHECK(cudaMalloc(&d_x_f16,
+                             x.size() * sizeof(uint16_t)) == cudaSuccess,
+                  "device-API FP16 input allocated");
+            CHECK(cudaMalloc(reinterpret_cast<void**>(&d_out),
+                             out.size() * sizeof(float)) == cudaSuccess,
+                  "device-API FP32 output allocated");
+            if (d_x_f32 && d_x_f16 && d_out) {
+                CHECK(cudaMemcpy(d_x_f32, x.data(), x.size() * sizeof(float),
+                                 cudaMemcpyHostToDevice) == cudaSuccess,
+                      "device-API input copied");
+                CHECK(dee::f32_to_f16_cuda(
+                          d_x_f32, d_x_f16, x.size(), nullptr, nullptr),
+                      "device-API input converted to FP16");
+                CHECK(cudaDeviceSynchronize() == cudaSuccess,
+                      "device-API input conversion completed");
+                const int expert_id = 0;
+                CHECK(engine.moe_forward_batch_device(
+                          0, d_x_f16, 1, &expert_id, 1, d_out),
+                      "packed-FP4 live device batch API executes");
+                std::vector<float> device_out(kHidden, 0.0f);
+                CHECK(cudaMemcpy(device_out.data(), d_out,
+                                 device_out.size() * sizeof(float),
+                                 cudaMemcpyDeviceToHost) == cudaSuccess,
+                      "device-API output copied");
+                bool device_finite = true;
+                double device_ss_err = 0.0;
+                double device_ss_ref = 0.0;
+                for (int o = 0; o < kHidden; ++o) {
+                    device_finite = device_finite &&
+                                    std::isfinite(device_out[o]);
+                    const double err =
+                        static_cast<double>(device_out[o]) - ref[o];
+                    device_ss_err += err * err;
+                    device_ss_ref += static_cast<double>(ref[o]) * ref[o];
+                }
+                const double device_rel_rmse = std::sqrt(
+                    device_ss_err / std::max(device_ss_ref, 1e-12));
+                std::printf("  [packed device batch API] rel_rmse=%.6g\n",
+                            device_rel_rmse);
+                CHECK(device_finite,
+                      "packed-FP4 device batch output is finite");
+                CHECK(device_rel_rmse < 0.02,
+                      "packed-FP4 device batch API matches FP32 reference");
+            }
+            if (d_out) cudaFree(d_out);
+            if (d_x_f16) cudaFree(d_x_f16);
+            if (d_x_f32) cudaFree(d_x_f32);
+        }
     };
 
     run_and_check(0.0f, reference, dee::DeviceCacheDType::Fp16,

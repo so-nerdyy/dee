@@ -29,6 +29,7 @@ set(DEE_CORE_SOURCES
     src/json_min.cpp
     src/profiling.cpp
     src/weight_mmap.cpp
+    src/expert_store.cpp
     src/vram_cache.cpp
     src/async_prefetcher.cpp
     src/host_pack_cache.cpp
@@ -96,6 +97,7 @@ if(DEE_BUILD_TESTS)
     set(DEE_TEST_SOURCES
         tests/test_smoke.cpp
         tests/test_weight_mmap.cpp
+        tests/test_expert_store.cpp
         tests/test_deepseek_v4_resolver.cpp
         tests/test_deepseek_v4_fp4_decode.cpp
         tests/test_vram_cache.cpp

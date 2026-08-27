@@ -827,7 +827,7 @@ class DeepseekV4Model:
         if not bool(torch.isfinite(logits).all()):
             raise FloatingPointError("non-finite logits")
         self.last_execution = {"phase": "complete", "layers_executed":
-                               len(self.execution_trace)}
+                               cfg.n_layers}
         return logits
 
     def generate(self, input_ids: torch.Tensor, max_new_tokens: int, *,
@@ -1202,7 +1202,8 @@ def build_native_engine(shard_paths: list[str], *,
                         use_batched_experts: bool = False,
                         profile_stages: bool = False,
                         swiglu_limit: float = 10.0,
-                        cache_dtype: str = "fp16") -> Any:
+                        cache_dtype: str = "fp16",
+                        expert_store_path: str = "") -> Any:
     """Build one pydee.Engine (FP4 transfer, FP16 or packed-FP4 device cache)
     that streams routed experts for the full DeepSeek-V4-Flash-0731 model.
 
@@ -1228,6 +1229,7 @@ def build_native_engine(shard_paths: list[str], *,
         use_cuda=True, transfer_dtype="fp4", cache_dtype=cache_dtype,
         topk=topk, budget_bytes=budget_bytes, swiglu_limit=swiglu_limit)
     cfg.shard_paths = [str(p) for p in shard_paths]
+    cfg.expert_store_path = str(expert_store_path)
     cfg.device_id = device_id
     cfg.base_layer = 0
     cfg.host_pack_cache_bytes = host_pack_cache_bytes

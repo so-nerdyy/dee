@@ -30,6 +30,7 @@
 #pragma once
 
 #include "dee/async_prefetcher.h"
+#include "dee/expert_store.h"
 #include "dee/host_pack_cache.h"
 #include "dee/oracle.h"
 #include "dee/profiling.h"
@@ -83,6 +84,9 @@ const char* weight_transfer_dtype_name(WeightTransferDType dtype);
 struct EngineConfig {
     std::string shard_path;    // safetensors MoE shard (mapped by WeightMmap)
     std::vector<std::string> shard_paths; // all shards needed by this layer
+    // Optional DEE4 v2 directory (or metadata.json). Dense/state tensors still
+    // come from shard_paths; only routed packed-expert reads switch backend.
+    std::string expert_store_path;
     std::string oracle_path;   // PyTorch .pt Oracle (read by PtLoader)
     int         num_tokens  = 32;   // autoregressive steps to run
     int         topk        = 8;    // experts activated per layer (top-K)
@@ -197,6 +201,9 @@ public:
     // Expose the packed-source host RAM LRU stats (Stage 1 residency).
     const HostPackCache::Stats& host_pack_stats() const {
         return pack_cache_.stats();
+    }
+    ExpertStoreStats expert_store_stats() const {
+        return expert_store_ ? expert_store_->stats() : ExpertStoreStats{};
     }
 
     // Run the autoregressive generation loop and fill `stats_`.
@@ -370,6 +377,7 @@ private:
     WeightMmap     mmap_;
     std::vector<std::unique_ptr<WeightMmap>> extra_mmaps_;
     TensorResolver resolver_;
+    std::unique_ptr<ExpertStore> expert_store_;
     OracleScheduler oracle_;
     VramCacheManager cache_;
     AsyncPrefetcher prefetcher_;

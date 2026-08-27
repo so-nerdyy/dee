@@ -1,5 +1,9 @@
 {
-  "_comment": "Read by deepseek_v4_native_generate.py (NATIVE_RUN_CONFIG). Kaggle kernel metadata env_vars are NOT reliably passed, so A/B knobs live here. cache_dtype: 'fp16' (sealed exact path) or 'fp4' (P2.3 packed residency, experimental).",
+  "_comment": "v46 isolates the v45 packed-device-path repair against the same canonical safetensors backend as v44. DEE4 is compiled and tested but remains dormant until this exact A/B passes.",
+  "run_id": "p2.3-fp4-repair-v46",
   "cache_dtype": "fp4",
+  "expert_store": "safetensors",
+  "dee4_validate_samples": 12,
+  "profile_stages": false,
   "n_tokens": 16
 }

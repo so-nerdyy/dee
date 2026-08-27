@@ -74,6 +74,7 @@ PYBIND11_MODULE(pydee_core, m) {
         .def(py::init<>())
         .def_readwrite("shard_path", &dee::EngineConfig::shard_path)
         .def_readwrite("shard_paths", &dee::EngineConfig::shard_paths)
+        .def_readwrite("expert_store_path", &dee::EngineConfig::expert_store_path)
         .def_readwrite("oracle_path", &dee::EngineConfig::oracle_path)
         .def_readwrite("num_tokens", &dee::EngineConfig::num_tokens)
         .def_readwrite("topk", &dee::EngineConfig::topk)
@@ -103,6 +104,25 @@ PYBIND11_MODULE(pydee_core, m) {
         .def("init", &dee::Engine::init, py::arg("cfg"))
         .def("hidden_dim", &dee::Engine::hidden_dim)
         .def("inter_dim", &dee::Engine::inter_dim)
+        .def("runtime_config", [](const dee::Engine& self) -> py::dict {
+            const dee::EngineConfig& cfg = self.config();
+            py::dict result;
+            result["device_id"] = cfg.device_id;
+            result["use_cuda"] = cfg.use_cuda;
+            result["cache_dtype"] = dee::device_cache_dtype_name(cfg.cache_dtype);
+            result["transfer_dtype"] =
+                dee::weight_transfer_dtype_name(cfg.transfer_dtype);
+            result["budget_bytes"] = cfg.budget_bytes;
+            result["host_pack_cache_bytes"] = cfg.host_pack_cache_bytes;
+            result["expert_store_path"] = cfg.expert_store_path;
+            result["use_batched_experts"] = cfg.use_batched_experts;
+            result["num_layers"] = cfg.num_layers;
+            result["num_experts"] = cfg.num_experts;
+            result["topk"] = cfg.topk;
+            result["hidden"] = cfg.hidden;
+            result["inter"] = cfg.inter;
+            return result;
+        }, "Return the immutable effective engine configuration used by the live path.")
         .def("host_pack_stats", [](const dee::Engine& self) -> py::dict {
             py::dict result;
             const auto& hp = self.host_pack_stats();
@@ -112,6 +132,26 @@ PYBIND11_MODULE(pydee_core, m) {
             result["evictions"] = hp.evictions;
             result["bytes"] = hp.bytes;
             result["entries"] = hp.entries;
+            return result;
+        })
+        .def("expert_store_stats", [](const dee::Engine& self) -> py::dict {
+            const dee::ExpertStoreStats stats = self.expert_store_stats();
+            py::dict result;
+            result["backend"] = stats.backend;
+            result["integrity_identity"] = stats.integrity_identity;
+            result["lookups"] = stats.lookups;
+            result["lookup_failures"] = stats.lookup_failures;
+            result["source_reads"] = stats.source_reads;
+            result["contiguous_source_reads"] = stats.contiguous_source_reads;
+            result["source_regions"] = stats.source_regions;
+            result["bytes_requested"] = stats.bytes_requested;
+            result["read_milliseconds"] = stats.read_milliseconds;
+            result["average_request_bytes"] = stats.average_request_bytes;
+            result["average_read_ms"] = stats.average_read_ms;
+            result["p50_read_ms"] = stats.p50_read_ms;
+            result["p95_read_ms"] = stats.p95_read_ms;
+            result["max_read_ms"] = stats.max_read_ms;
+            result["read_bandwidth_mib_s"] = stats.read_bandwidth_mib_s;
             return result;
         })
         .def("reset_runtime_cache", &dee::Engine::reset_runtime_cache,
