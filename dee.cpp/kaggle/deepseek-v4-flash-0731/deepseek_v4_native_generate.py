@@ -1050,13 +1050,14 @@ def main() -> int:
             cache0=None, loader0=None, cache1=None, loader1=None,
             provider=provider, ffn_backend="native",
             engine0=eng0, engine1=eng1, split=cfg.n_layers,
-            diagnostics=DIAGNOSTICS)
+            diagnostics=DIAGNOSTICS, profile_stages=PROFILE_STAGES)
     else:
         model = vm.DeepseekV4Model.build_candidate(
             cfg, source, device0="cuda:0", device1="cuda:1",
             cache0=None, loader0=None, cache1=None, loader1=None,
             provider=provider, ffn_backend="native",
-            engine0=eng0, engine1=eng1, diagnostics=DIAGNOSTICS)
+            engine0=eng0, engine1=eng1, diagnostics=DIAGNOSTICS,
+            profile_stages=PROFILE_STAGES)
     model.reset_state()
     build_s = time.monotonic() - t0
     log(f"model build {build_s:.1f}s")
@@ -1188,6 +1189,7 @@ def main() -> int:
             "cuda0": json.loads(eng0.external_profile_json(wall_s * 1000.0)),
             "cuda1": json.loads(eng1.external_profile_json(wall_s * 1000.0)),
         }
+        result["model_cuda_stage_profile"] = model.cuda_stage_profile()
     except Exception as exc:  # never fail the run over instrumentation
         log(f"instrumentation dump failed: {exc}")
         result["instrumentation_error"] = repr(exc)
@@ -1262,6 +1264,7 @@ def main() -> int:
         "decode_timings_ms": result["decode_timings_ms"],
         "inter_token_latency_ms": result["inter_token_latency_ms"],
         "stage_profile": result.get("stage_profile", {}),
+        "model_cuda_stage_profile": result.get("model_cuda_stage_profile", {}),
         "engine_stats": result.get("engine_stats", {}),
         "expert_store": result.get("expert_store", {}),
         "host_pack": result.get("host_pack", {}),

@@ -451,15 +451,67 @@ class DeepseekV4Layer:
 
     def __init__(self, cfg: LayerConfig, w: dict[str, torch.Tensor], *,
                  device: str = "cpu", max_batch: int = 1,
-                 ffn_fn: Optional[Any] = None):
+                 ffn_fn: Optional[Any] = None, layer_id: int = -1,
+                 profile_stages: bool = False):
         self.cfg = cfg
         self.device = device
+        self.layer_id = int(layer_id)
+        self.profile_stages = bool(profile_stages)
+        self._profile_rows: list[dict[str, Any]] = []
         self.w = w
         self.attn = DeepseekV4Attention(cfg, device=device, max_batch=max_batch)
         self.ffn_fn = ffn_fn if ffn_fn is not None else self._ffn_fp32_direct
 
     def reset_state(self) -> None:
         self.attn.reset_state()
+        self._profile_rows = []
+
+    def stage_profile_snapshot(self) -> dict[str, Any]:
+        """Resolve profiling-only CUDA events after the measured generation."""
+        phase_names = (
+            "attention_prep", "attention_state", "ffn_prep",
+            "routed_and_shared_ffn", "ffn_hc_post")
+        rows: list[dict[str, Any]] = []
+        totals = {name: 0.0 for name in phase_names}
+        per_start_pos: dict[str, dict[str, float]] = {}
+        for stored in self._profile_rows:
+            events = stored["events"]
+            durations = {
+                name: float(events[index].elapsed_time(events[index + 1]))
+                for index, name in enumerate(phase_names)
+            }
+            for name, milliseconds in durations.items():
+                totals[name] += milliseconds
+            start_key = str(stored["start_pos"])
+            position_totals = per_start_pos.setdefault(
+                start_key, {name: 0.0 for name in phase_names})
+            for name, milliseconds in durations.items():
+                position_totals[name] += milliseconds
+            rows.append({
+                "start_pos": stored["start_pos"],
+                "sequence_length": stored["sequence_length"],
+                "durations_ms": {
+                    name: round(milliseconds, 6)
+                    for name, milliseconds in durations.items()
+                },
+            })
+        return {
+            "layer": self.layer_id,
+            "device": str(self.device),
+            "calls": len(rows),
+            "totals_ms": {
+                name: round(milliseconds, 6)
+                for name, milliseconds in totals.items()
+            },
+            "per_start_pos_ms": {
+                key: {
+                    name: round(milliseconds, 6)
+                    for name, milliseconds in values.items()
+                }
+                for key, values in per_start_pos.items()
+            },
+            "calls_detail": rows,
+        }
 
     def _ffn_fp32_direct(self, x: torch.Tensor, input_ids: torch.Tensor,
                          capture: Optional[dict[str, Any]]) -> torch.Tensor:
@@ -510,6 +562,13 @@ class DeepseekV4Layer:
         """x_hc: [b, s, hc_mult, hidden]; returns [b, s, hc_mult, hidden]."""
         w = self.w
         c = capture if capture is not None else {}
+        profile_events = None
+        if self.profile_stages and x_hc.is_cuda:
+            stream = torch.cuda.current_stream(x_hc.device)
+            profile_events = [
+                torch.cuda.Event(enable_timing=True) for _ in range(6)
+            ]
+            profile_events[0].record(stream)
         c["layer_input"] = x_hc
         residual = x_hc
         x, post, comb = self._hc_pre(x_hc, w["hc_attn_fn"], w["hc_attn_scale"],
@@ -517,9 +576,13 @@ class DeepseekV4Layer:
         c["attn_norm_in"] = x
         x = common.rms_norm(x, w["attn_norm.weight"], self.cfg.norm_eps)
         c["attn_norm_out"] = x
+        if profile_events is not None:
+            profile_events[1].record(stream)
         x = self.attn.forward(x, start_pos, w["attn"], capture=c)
         x = self._hc_post(x, residual, post, comb)
         c["attn_hc_out"] = x
+        if profile_events is not None:
+            profile_events[2].record(stream)
 
         residual = x
         x, post, comb = self._hc_pre(x, w["hc_ffn_fn"], w["hc_ffn_scale"],
@@ -527,12 +590,23 @@ class DeepseekV4Layer:
         c["ffn_norm_in"] = x
         x = common.rms_norm(x, w["ffn_norm.weight"], self.cfg.norm_eps)
         c["ffn_norm_out"] = x
+        if profile_events is not None:
+            profile_events[3].record(stream)
         if input_ids is None:
             input_ids = torch.zeros(x.size(0) * x.size(1), dtype=torch.long,
                                     device=x.device)
         x = self.ffn_fn(x, input_ids, c)
+        if profile_events is not None:
+            profile_events[4].record(stream)
         x = self._hc_post(x, residual, post, comb)
         c["output"] = x
+        if profile_events is not None:
+            profile_events[5].record(stream)
+            self._profile_rows.append({
+                "start_pos": int(start_pos),
+                "sequence_length": int(x_hc.size(1)),
+                "events": profile_events,
+            })
         return x
 
     def state_signature(self) -> dict[str, str]:

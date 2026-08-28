@@ -567,7 +567,8 @@ class DeepseekV4Model:
                         ffn_backend: str = "cache_fp16",
                         engine0: Any = None, engine1: Any = None,
                         split: Optional[int] = None,
-                        diagnostics: bool = True) -> "DeepseekV4Model":
+                        diagnostics: bool = True,
+                        profile_stages: bool = False) -> "DeepseekV4Model":
         """Build the dual-GPU candidate.
 
         Dense weights are dequantized from official storage and cast to
@@ -614,13 +615,15 @@ class DeepseekV4Model:
                 layer_obj = v4cand.make_native_candidate_layer(
                     lcfg, w_cuda, engine=engine, layer_id=layer,
                     device=device, max_batch=1, shared_payload=None,
-                    provider=provider, diagnostics=diagnostics)
+                    provider=provider, diagnostics=diagnostics,
+                    profile_stages=profile_stages)
             else:
                 layer_obj = v4cand.make_candidate_layer(
                     lcfg, w_cuda, device=device, max_batch=1, cache=cache,
                     loader=loader, layer_id=layer, fp16_payloads={},
                     shared_payload=None, provider=provider,
-                    diagnostics=diagnostics)
+                    diagnostics=diagnostics,
+                    profile_stages=profile_stages)
             (layers0 if layer < split else layers1).append(layer_obj)
 
         model = cls(cfg, embed=embed.to(device0), layers0=layers0,
@@ -633,6 +636,48 @@ class DeepseekV4Model:
         model.cache0 = cache0
         model.cache1 = cache1
         return model
+
+    def cuda_stage_profile(self) -> dict[str, Any]:
+        """Resolve profiling-only layer events after generation wall timing."""
+        profiled_layers = [
+            layer for layer in self.layers0 + self.layers1
+            if (getattr(layer, "profile_stages", False)
+                and str(layer.device).startswith("cuda"))
+        ]
+        if not profiled_layers:
+            return {"enabled": False, "layers": [], "totals_ms": {}}
+        for device in sorted({str(layer.device) for layer in profiled_layers}):
+            torch.cuda.synchronize(device)
+        layers = [layer.stage_profile_snapshot() for layer in profiled_layers]
+        totals: dict[str, float] = {}
+        per_start_pos: dict[str, dict[str, float]] = {}
+        for layer in layers:
+            for name, milliseconds in layer["totals_ms"].items():
+                totals[name] = totals.get(name, 0.0) + float(milliseconds)
+            for start_pos, values in layer["per_start_pos_ms"].items():
+                position_totals = per_start_pos.setdefault(start_pos, {})
+                for name, milliseconds in values.items():
+                    position_totals[name] = (
+                        position_totals.get(name, 0.0) + float(milliseconds))
+        return {
+            "enabled": True,
+            "timing_method": "CUDA events resolved after measured generation",
+            "layer_count": len(layers),
+            "event_interval_count": sum(
+                int(layer["calls"]) * 5 for layer in layers),
+            "totals_ms": {
+                name: round(milliseconds, 6)
+                for name, milliseconds in totals.items()
+            },
+            "per_start_pos_ms": {
+                key: {
+                    name: round(milliseconds, 6)
+                    for name, milliseconds in values.items()
+                }
+                for key, values in per_start_pos.items()
+            },
+            "layers": layers,
+        }
 
     # -- runtime -----------------------------------------------------------
     def reset_state(self) -> None:

@@ -426,6 +426,7 @@ def make_candidate_layer(
     shared_payload: dict[str, torch.Tensor],
     provider: Any = None,
     diagnostics: bool = True,
+    profile_stages: bool = False,
 ) -> layer_ref.DeepseekV4Layer:
     """Build the Freebuff candidate layer (cache-fp16 FFN backend).
 
@@ -440,8 +441,9 @@ def make_candidate_layer(
                              diagnostics=diagnostics)
     ffn.attach_gate(w["ffn"]["gate_w"], w["ffn"]["gate_b"])
     ffn.attach_hash(w["ffn"].get("tid2eid"))
-    return layer_ref.DeepseekV4Layer(cfg, w, device=device, max_batch=max_batch,
-                                     ffn_fn=ffn)
+    return layer_ref.DeepseekV4Layer(
+        cfg, w, device=device, max_batch=max_batch, ffn_fn=ffn,
+        layer_id=layer_id, profile_stages=profile_stages)
 
 
 def make_native_candidate_layer(
@@ -455,6 +457,7 @@ def make_native_candidate_layer(
     shared_payload: Optional[dict[str, torch.Tensor]] = None,
     provider: Any = None,
     diagnostics: bool = True,
+    profile_stages: bool = False,
 ) -> layer_ref.DeepseekV4Layer:
     """Build the native-engine candidate layer (routed experts via
     pydee.Engine.moe_forward_experts; router + shared expert on torch)."""
@@ -463,5 +466,6 @@ def make_native_candidate_layer(
                               provider=provider, diagnostics=diagnostics)
     ffn.attach_gate(w["ffn"]["gate_w"], w["ffn"]["gate_b"])
     ffn.attach_hash(w["ffn"].get("tid2eid"))
-    return layer_ref.DeepseekV4Layer(cfg, w, device=device, max_batch=max_batch,
-                                     ffn_fn=ffn)
+    return layer_ref.DeepseekV4Layer(
+        cfg, w, device=device, max_batch=max_batch, ffn_fn=ffn,
+        layer_id=layer_id, profile_stages=profile_stages)
