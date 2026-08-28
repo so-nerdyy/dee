@@ -16,13 +16,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mmap
 import os
 import random
+import shutil
 import struct
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, BinaryIO
+
+try:
+    import resource
+except ImportError:  # Windows validation; remote serving benchmark is Linux.
+    resource = None  # type: ignore[assignment]
 
 OFFICIAL_REPOSITORY = "deepseek-ai/DeepSeek-V4-Flash-0731"
 OFFICIAL_REVISION = "9e165c30e2704aec5d9d593cce3eebd58bbef1cb"
@@ -567,6 +575,411 @@ def benchmark_dee4_read(dee4_dir: Path, n_experts: int = 64) -> dict[str, Any]:
     }
 
 
+def _percentile_ms(values: list[float], quantile: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, max(0, int(len(ordered) * quantile)))
+    return ordered[index]
+
+
+def _proc_io_snapshot() -> dict[str, int]:
+    result: dict[str, int] = {}
+    try:
+        for line in Path("/proc/self/io").read_text("utf-8").splitlines():
+            key, _, raw = line.partition(":")
+            if key in {"syscr", "rchar", "read_bytes"}:
+                result[key] = int(raw.strip())
+    except (OSError, ValueError):
+        pass
+    return result
+
+
+def _page_fault_snapshot() -> dict[str, int]:
+    if resource is None:
+        return {"major": 0, "minor": 0}
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    return {"major": int(usage.ru_majflt), "minor": int(usage.ru_minflt)}
+
+
+def _block_io_delay_ms() -> float | None:
+    """Return process block-I/O delay accounting from /proc/self/stat."""
+    try:
+        raw = Path("/proc/self/stat").read_text("utf-8")
+        # Field 2 (comm) is parenthesized and may contain spaces. The tail
+        # begins at field 3, so field 42 is tail index 39.
+        tail = raw[raw.rindex(")") + 2:].split()
+        ticks = int(tail[39])
+        clock_ticks = int(os.sysconf("SC_CLK_TCK"))
+        return ticks * 1000.0 / clock_ticks
+    except (OSError, ValueError, IndexError, AttributeError):
+        return None
+
+
+def _diskstats_snapshot(path: Path) -> dict[str, Any] | None:
+    """Read device-wide I/O counters when st_dev maps to /proc/diskstats."""
+    try:
+        device = path.stat().st_dev
+        wanted = (os.major(device), os.minor(device))
+        for line in Path("/proc/diskstats").read_text("utf-8").splitlines():
+            fields = line.split()
+            if len(fields) < 14 or (int(fields[0]), int(fields[1])) != wanted:
+                continue
+            return {
+                "major": wanted[0],
+                "minor": wanted[1],
+                "device": fields[2],
+                "reads_completed": int(fields[3]),
+                "sectors_read": int(fields[5]),
+                "read_time_ms": int(fields[6]),
+                "io_time_ms": int(fields[12]),
+                "weighted_io_time_ms": int(fields[13]),
+            }
+    except (OSError, ValueError, AttributeError):
+        pass
+    return None
+
+
+def _filesystem_identity(path: Path) -> dict[str, Any]:
+    resolved = path.resolve()
+    usage = shutil.disk_usage(resolved)
+    result: dict[str, Any] = {
+        "resolved_path": str(resolved),
+        "device_id": int(resolved.stat().st_dev),
+        "total_bytes": int(usage.total),
+        "free_bytes": int(usage.free),
+        "mountpoint": None,
+        "filesystem": None,
+        "mount_source": None,
+        "mount_options": None,
+    }
+    try:
+        best: tuple[int, list[str], list[str]] | None = None
+        for line in Path("/proc/self/mountinfo").read_text("utf-8").splitlines():
+            left_raw, separator, right_raw = line.partition(" - ")
+            if not separator:
+                continue
+            left = left_raw.split()
+            right = right_raw.split()
+            if len(left) < 6 or len(right) < 2:
+                continue
+            mountpoint = left[4].replace("\\040", " ")
+            try:
+                resolved.relative_to(mountpoint)
+            except ValueError:
+                continue
+            candidate = (len(mountpoint), left, right)
+            if best is None or candidate[0] > best[0]:
+                best = candidate
+        if best is not None:
+            _, left, right = best
+            result.update({
+                "mountpoint": left[4].replace("\\040", " "),
+                "mount_options": left[5],
+                "filesystem": right[0],
+                "mount_source": right[1].replace("\\040", " "),
+            })
+    except OSError:
+        pass
+    return result
+
+
+def _drop_file_cache(fd: int) -> dict[str, Any]:
+    result = {"requested": True, "supported": False, "success": False}
+    if not hasattr(os, "posix_fadvise") or not hasattr(os, "POSIX_FADV_DONTNEED"):
+        return result
+    result["supported"] = True
+    try:
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        result["success"] = True
+    except OSError as exc:
+        result["error"] = repr(exc)
+    return result
+
+
+def _serving_record_order(
+    *,
+    start_layer: int,
+    num_layers: int,
+    experts_per_layer: int,
+    groups: int,
+    topk: int,
+    seed: int,
+) -> list[int]:
+    """Deterministic serving trace: each group routes top-k at every layer."""
+    if groups <= 0 or topk <= 0:
+        raise ValueError("groups and topk must be positive")
+    effective_topk = min(topk, experts_per_layer)
+    rng = random.Random(seed)
+    selected: list[int] = []
+    for _group in range(groups):
+        for layer in range(start_layer, start_layer + num_layers):
+            for expert in sorted(
+                rng.sample(range(experts_per_layer), effective_topk)
+            ):
+                selected.append(
+                    ((layer - start_layer) * experts_per_layer) + expert
+                )
+    return selected
+
+
+def benchmark_dee4_serving_access(
+    dee4_dir: Path,
+    *,
+    groups: int = 8,
+    topk: int = 6,
+    seed: int = 731,
+    queue_depths: tuple[int, ...] = (2, 4, 8),
+) -> dict[str, Any]:
+    """Measure the real random top-k record unit using available Linux I/O.
+
+    Every requested record is consumed byte-for-byte. Between modes the file
+    receives POSIX_FADV_DONTNEED so a warm page cache cannot silently turn a
+    storage benchmark into a RAM benchmark. `/proc/self/io` and page-fault
+    deltas provide independent evidence of whether that cold-cache request was
+    honored. Async modes use bounded pread workers, matching the planned fixed
+    queue rather than issuing unbounded speculative I/O.
+    """
+    dee4_dir = Path(dee4_dir)
+    metadata = json.loads((dee4_dir / "metadata.json").read_text("utf-8"))
+    data_path = dee4_dir / metadata["data_file"]
+    record_bytes = int(metadata["record_bytes"])
+    total_experts = int(metadata["total_experts"])
+    order = _serving_record_order(
+        start_layer=int(metadata["start_layer"]),
+        num_layers=int(metadata["num_layers"]),
+        experts_per_layer=int(metadata["experts_per_layer"]),
+        groups=groups,
+        topk=topk,
+        seed=seed,
+    )
+    sequential_order = [record % total_experts for record in range(len(order))]
+    requested_bytes = len(order) * record_bytes
+    distinct_requested_bytes = len(set(order)) * record_bytes
+    modes: list[dict[str, Any]] = []
+
+    def measure(
+        name: str,
+        records: list[int],
+        reader: Any,
+        *,
+        queue_depth: int = 1,
+    ) -> dict[str, Any]:
+        with data_path.open("rb", buffering=0) as handle:
+            cache_control = _drop_file_cache(handle.fileno())
+        before_io = _proc_io_snapshot()
+        before_faults = _page_fault_snapshot()
+        before_block_delay = _block_io_delay_ms()
+        before_disk = _diskstats_snapshot(data_path)
+        started = time.monotonic()
+        latencies, lengths, checksum = reader(records, queue_depth)
+        elapsed = time.monotonic() - started
+        after_disk = _diskstats_snapshot(data_path)
+        after_block_delay = _block_io_delay_ms()
+        after_faults = _page_fault_snapshot()
+        after_io = _proc_io_snapshot()
+        if lengths != [record_bytes] * len(records):
+            raise IOError(f"{name}: short DEE4 record read: {lengths}")
+        bytes_returned = sum(lengths)
+        physical_bytes = max(
+            0, after_io.get("read_bytes", 0) - before_io.get("read_bytes", 0))
+        sum_latency_ms = sum(latencies)
+        overlap_percent = (
+            max(0.0, 1.0 - elapsed * 1000.0 / sum_latency_ms) * 100.0
+            if sum_latency_ms > 0.0 else 0.0
+        )
+        distinct_bytes = len(set(records)) * record_bytes
+        disk_delta = None
+        if (before_disk is not None and after_disk is not None
+                and before_disk["device"] == after_disk["device"]):
+            disk_delta = {
+                "device": after_disk["device"],
+                "reads_completed": (
+                    after_disk["reads_completed"]
+                    - before_disk["reads_completed"]),
+                "sectors_read": (
+                    after_disk["sectors_read"] - before_disk["sectors_read"]),
+                "read_time_ms": (
+                    after_disk["read_time_ms"] - before_disk["read_time_ms"]),
+                "io_time_ms": (
+                    after_disk["io_time_ms"] - before_disk["io_time_ms"]),
+                "weighted_io_time_ms": (
+                    after_disk["weighted_io_time_ms"]
+                    - before_disk["weighted_io_time_ms"]),
+            }
+        block_delay_delta = (
+            max(0.0, after_block_delay - before_block_delay)
+            if before_block_delay is not None and after_block_delay is not None
+            else None
+        )
+        return {
+            "mode": name,
+            "queue_depth": queue_depth,
+            "requests": len(records),
+            "record_bytes": record_bytes,
+            "bytes_requested": len(records) * record_bytes,
+            "distinct_bytes_requested": distinct_bytes,
+            "bytes_returned": bytes_returned,
+            "physical_read_bytes": physical_bytes,
+            "read_amplification": (
+                physical_bytes / bytes_returned if bytes_returned else None),
+            "cold_cache_control": cache_control,
+            "cold_cache_observed": (
+                physical_bytes >= distinct_bytes // 2 if distinct_bytes else False),
+            "wall_ms": round(elapsed * 1000.0, 3),
+            "aggregate_request_latency_ms": round(sum_latency_ms, 3),
+            "storage_busy_ms": (
+                disk_delta["io_time_ms"] if disk_delta is not None else None),
+            "storage_stall_ms": (
+                round(block_delay_delta, 3)
+                if block_delay_delta is not None else None),
+            "storage_counter_source": (
+                f"/proc/diskstats:{disk_delta['device']}"
+                if disk_delta is not None else None),
+            "storage_stall_source": (
+                "/proc/self/stat:delayacct_blkio_ticks"
+                if block_delay_delta is not None else None),
+            "diskstats_delta": disk_delta,
+            "overlap_percent": round(overlap_percent, 3),
+            "bandwidth_mib_s": round(
+                bytes_returned / max(elapsed, 0.001) / (1 << 20), 3),
+            "latency_ms": {
+                "p50": round(_percentile_ms(latencies, 0.50), 3),
+                "p95": round(_percentile_ms(latencies, 0.95), 3),
+                "max": round(max(latencies), 3) if latencies else 0.0,
+            },
+            "major_page_faults": after_faults["major"] - before_faults["major"],
+            "minor_page_faults": after_faults["minor"] - before_faults["minor"],
+            "read_syscalls_observed": max(
+                0, after_io.get("syscr", 0) - before_io.get("syscr", 0)),
+            "checksum_accumulator": checksum,
+        }
+
+    def pread_reader(records: list[int], _queue_depth: int) -> tuple[list[float], list[int], int]:
+        fd = os.open(data_path, os.O_RDONLY)
+        latencies: list[float] = []
+        lengths: list[int] = []
+        checksum = 0
+        try:
+            for record in records:
+                begin = time.monotonic()
+                data = os.pread(fd, record_bytes, record * record_bytes)
+                latencies.append((time.monotonic() - begin) * 1000.0)
+                lengths.append(len(data))
+                if data:
+                    checksum ^= data[0] ^ data[-1] ^ len(data)
+        finally:
+            os.close(fd)
+        return latencies, lengths, checksum
+
+    def mmap_reader(
+        records: list[int], _queue_depth: int, *, random_hint: bool
+    ) -> tuple[list[float], list[int], int]:
+        latencies: list[float] = []
+        lengths: list[int] = []
+        checksum = 0
+        with data_path.open("rb", buffering=0) as handle:
+            with mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
+                if random_hint and hasattr(mapped, "madvise") and hasattr(mmap, "MADV_RANDOM"):
+                    mapped.madvise(mmap.MADV_RANDOM)
+                for record in records:
+                    begin = time.monotonic()
+                    start = record * record_bytes
+                    data = mapped[start:start + record_bytes]
+                    latencies.append((time.monotonic() - begin) * 1000.0)
+                    lengths.append(len(data))
+                    if data:
+                        checksum ^= data[0] ^ data[-1] ^ len(data)
+        return latencies, lengths, checksum
+
+    def async_pread_reader(
+        records: list[int], queue_depth: int
+    ) -> tuple[list[float], list[int], int]:
+        fd = os.open(data_path, os.O_RDONLY)
+
+        def one(record: int) -> tuple[float, int, int]:
+            begin = time.monotonic()
+            data = os.pread(fd, record_bytes, record * record_bytes)
+            elapsed_ms = (time.monotonic() - begin) * 1000.0
+            digest = data[0] ^ data[-1] ^ len(data) if data else 0
+            return elapsed_ms, len(data), digest
+
+        try:
+            with ThreadPoolExecutor(max_workers=queue_depth) as executor:
+                rows = []
+                for start in range(0, len(records), queue_depth):
+                    pending = [
+                        executor.submit(one, record)
+                        for record in records[start:start + queue_depth]
+                    ]
+                    rows.extend(future.result() for future in pending)
+        finally:
+            os.close(fd)
+        return (
+            [row[0] for row in rows],
+            [row[1] for row in rows],
+            sum((row[2] for row in rows), 0),
+        )
+
+    unavailable: list[dict[str, str]] = []
+    if hasattr(os, "pread"):
+        modes.append(measure("sequential_pread", sequential_order, pread_reader))
+        modes.append(measure("serving_pread", order, pread_reader))
+        for depth in queue_depths:
+            if depth > 1:
+                modes.append(measure(
+                    f"serving_async_pread_q{depth}", order,
+                    async_pread_reader, queue_depth=depth))
+    else:
+        unavailable.append({"mode": "pread", "reason": "os.pread unavailable"})
+    modes.append(measure(
+        "serving_mmap_normal", order,
+        lambda records, depth: mmap_reader(
+            records, depth, random_hint=False)))
+    if hasattr(mmap.mmap, "madvise") and hasattr(mmap, "MADV_RANDOM"):
+        modes.append(measure(
+            "serving_mmap_random_hint", order,
+            lambda records, depth: mmap_reader(
+                records, depth, random_hint=True)))
+    else:
+        unavailable.append({
+            "mode": "mmap_random_hint", "reason": "mmap.madvise unavailable"})
+
+    serving_modes = [
+        row for row in modes if row["mode"].startswith("serving_")]
+    cold_modes = [row for row in serving_modes if row["cold_cache_observed"]]
+    eligible = cold_modes or serving_modes
+    winner = max(eligible, key=lambda row: row["bandwidth_mib_s"]) if eligible else None
+    return {
+        "schema": "dee4-v2-serving-access-benchmark",
+        "data_file": metadata["data_file"],
+        "data_sha256": metadata["data_sha256"],
+        "storage": _filesystem_identity(data_path),
+        "record_bytes": record_bytes,
+        "groups": groups,
+        "topk": min(topk, int(metadata["experts_per_layer"])),
+        "request_count": len(order),
+        "bytes_requested_per_sweep": requested_bytes,
+        "distinct_bytes_requested_per_sweep": distinct_requested_bytes,
+        "seed": seed,
+        "record_order_sha256": hashlib.sha256(
+            json.dumps(order, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+        "modes": modes,
+        "unavailable_modes": unavailable,
+        "winner": (
+            {
+                "mode": winner["mode"],
+                "queue_depth": winner["queue_depth"],
+                "bandwidth_mib_s": winner["bandwidth_mib_s"],
+                "p95_latency_ms": winner["latency_ms"]["p95"],
+                "cold_cache_observed": winner["cold_cache_observed"],
+            }
+            if winner else None
+        ),
+    }
+
+
 def main() -> int:
     import argparse
 
@@ -579,6 +992,7 @@ def main() -> int:
     parser.add_argument("--experts-per-layer", type=int, default=EXPERTS_PER_LAYER)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--benchmark", action="store_true")
+    parser.add_argument("--serving-groups", type=int, default=8)
     parser.add_argument("--validate-samples", type=int, default=12)
     args = parser.parse_args()
 
@@ -613,6 +1027,10 @@ def main() -> int:
         benchmark = benchmark_dee4_read(output)
         _write_json_atomic(output / "read_benchmark.json", benchmark)
         print(json.dumps(benchmark, indent=2), flush=True)
+        serving = benchmark_dee4_serving_access(
+            output, groups=args.serving_groups)
+        _write_json_atomic(output / "serving_access_benchmark.json", serving)
+        print(json.dumps(serving, indent=2), flush=True)
     return 0
 
 

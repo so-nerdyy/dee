@@ -125,6 +125,20 @@ class Dee4RepackTests(unittest.TestCase):
         self.assertEqual(benchmark["n_experts"], 3)
         self.assertEqual(benchmark["record_bytes"], 20)
 
+        serving = dee4.benchmark_dee4_serving_access(
+            self.output, groups=2, topk=2, queue_depths=(2,)
+        )
+        self.assertEqual(serving["schema"], "dee4-v2-serving-access-benchmark")
+        self.assertEqual(serving["request_count"], 12)
+        self.assertEqual(serving["bytes_requested_per_sweep"], 240)
+        self.assertEqual(serving["record_bytes"], 20)
+        self.assertTrue(serving["modes"])
+        self.assertIsNotNone(serving["winner"])
+        for mode in serving["modes"]:
+            self.assertEqual(mode["bytes_requested"], mode["bytes_returned"])
+            self.assertEqual(mode["requests"], 12)
+            self.assertEqual(len(mode["checksum_accumulator"].to_bytes(8, "little")), 8)
+
     def test_validation_detects_first_corrupt_component(self) -> None:
         dee4.repack(
             self.source,

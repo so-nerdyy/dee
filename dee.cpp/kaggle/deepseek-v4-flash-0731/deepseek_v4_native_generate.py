@@ -822,6 +822,7 @@ def main() -> int:
         sys.path.insert(0, str(DEE / "kaggle" / "deepseek-v4-flash-0731"))
         from repack_to_dee4 import (
             benchmark_dee4_read as _b4r,
+            benchmark_dee4_serving_access as _b4s,
             repack,
             validate_dee4_against_safetensors as _validate_dee4,
         )
@@ -847,6 +848,9 @@ def main() -> int:
             start_layer=0, end_layer=_end_layer, dry_run=False)
         _dt = time.monotonic() - _t0
         _dee4_bench = _b4r(_dee4_out, n_experts=64)
+        _dee4_serving_bench = _b4s(_dee4_out, groups=8, topk=6)
+        (WORK / "dee4-serving-access-benchmark.json").write_text(
+            json.dumps(_dee4_serving_bench, indent=2), "utf-8")
         _dee4_validation = _validate_dee4(
             _source_dir, _dee4_out, index_path=_idx,
             sample_count=DEE4_VALIDATE_SAMPLES)
@@ -889,10 +893,16 @@ def main() -> int:
         _ste = time.monotonic() - _st0
         _st_mbps = _tb / max(_ste, 0.001) / (1 << 20)
         _d4_mbps = _dee4_bench["aggregate_mbps"]
+        _serving_winner = _dee4_serving_bench.get("winner") or {}
         log(f"P2.2: DEE4 contiguous {_d4_mbps:.0f} MB/s vs "
             f"safetensors scatter {_st_mbps:.0f} MB/s "
             f"({_d4_mbps/max(_st_mbps,0.01):.1f}x) "
             f"repack {_dt:.0f}s {_dee4_rpt['total_bytes_repacked']/(1<<30):.1f}GiB")
+        log("P2.2: serving-access winner "
+            f"mode={_serving_winner.get('mode', 'none')} "
+            f"bandwidth={_serving_winner.get('bandwidth_mib_s', 0):.1f}MiB/s "
+            f"p95={_serving_winner.get('p95_latency_ms', 0):.1f}ms "
+            f"cold={_serving_winner.get('cold_cache_observed', False)}")
         _p22_evidence = {
             "format": "dee4-v2",
             "serving_backend": EXPERT_STORE_BACKEND,
@@ -903,6 +913,17 @@ def main() -> int:
             "data_sha256": _dee4_rpt["data_sha256"],
             "validation_samples": _dee4_validation["sample_count"],
             "validation_source_shards": _dee4_validation["source_shards_covered"],
+            "serving_access_benchmark": {
+                "groups": _dee4_serving_bench["groups"],
+                "topk": _dee4_serving_bench["topk"],
+                "request_count": _dee4_serving_bench["request_count"],
+                "bytes_requested_per_sweep": (
+                    _dee4_serving_bench["bytes_requested_per_sweep"]),
+                "record_order_sha256": (
+                    _dee4_serving_bench["record_order_sha256"]),
+                "winner": _dee4_serving_bench["winner"],
+                "unavailable_modes": _dee4_serving_bench["unavailable_modes"],
+            },
         }
         (WORK / "p2.2-dee4-evidence.json").write_text(
             json.dumps(_p22_evidence, indent=2), "utf-8")
