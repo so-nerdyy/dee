@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "run_id": "20260804T000000Z-ds10-storage-probe",
+  "python": "3.12.13 (main, Mar  4 2026, 09:23:07) [GCC 11.4.0]",
+  "platform": "Linux 9f1ea5ff2c3c 6.12.90+ #1 SMP Sat May 30 15:40:53 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux",
+  "disk": {
+    "/": "overlay        8656922775552 7554364821504 1102541176832  88% /",
+    "/kaggle": "overlay        8656922775552 7554364821504 1102541176832  88% /",
+    "/kaggle/working": "/dev/loop1     20957446144 118784 20940550144   1% /kaggle/working",
+    "/kaggle/temp": "ERR",
+    "/kaggle/input": "/dev/loop1     20957446144 118784 20940550144   1% /kaggle/input"
+  },
+  "meminfo": {
+    "MemTotal": "       32870488 kB",
+    "MemAvailable": "   31819016 kB"
+  },
+  "nvidia_smi": "GPU 0: Tesla T4 (UUID: GPU-5c982d11-0562-81cd-f04a-0fed774cccad)\nGPU 1: Tesla T4 (UUID: GPU-59d1f882-2334-61f6-8bc2-21d2b213eaa0)",
+  "torch": "2.10.0+cu128",
+  "cuda_available": true,
+  "gpu_count": 2,
+  "gpus": [
+    {
+      "index": 0,
+      "name": "Tesla T4",
+      "memory_bytes": 15636037632
+    },
+    {
+      "index": 1,
+      "name": "Tesla T4",
+      "memory_bytes": 15636037632
+    }
+  ],
+  "hf_download": {
+    "bytes": 268435456,
+    "seconds": 2.19,
+    "mbps": 117.1,
+    "status": 206
+  },
+  "safetensors_header": {
+    "header_bytes": 172232,
+    "tensor_count": 1565
+  },
+  "kaggle_env": {
+    "username_present": false,
+    "key_present": false
+  },
+  "kaggle_auth": "ok",
+  "dataset_create": {
+    "ok": true,
+    "ref": "{\"ref\": null, \"url\": null, \"status\": \"error\", \"error\": \"The requested title \\\"dee-cpp-ds10-probe\\\" is already in use by a dataset. Please choose another title.\", \"invalidTags\": []}",
+    "seconds": 0.05
+  },
+  "partial_safetensors_read": {
+    "ok": true,
+    "header_bytes": 172232,
+    "tensors": 1565
+  },
+  "conclusion": {
+    "disk_bytes": "/dev/loop1     20957446144 118784 20940550144   1% /kaggle/working",
+    "hf_mbps": 117.1,
+    "gpu_count": 2,
+    "dataset_create_ok": true,
+    "notes": "172 GB checkpoint must fit the mounted+working disk budget."
+  }
+}
