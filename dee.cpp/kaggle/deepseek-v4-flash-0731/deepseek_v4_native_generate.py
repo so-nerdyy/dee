@@ -53,7 +53,16 @@ SEALED_TOKEN_IDS = [
     22, 22604, 515, 411, 3947, 85349, 14, 6341,
 ]
 SEALED_DECODED_TEXT = (
-    "**Alan Turing (1912–1954)** was an English mathematician, computer")
+    "**Alan Turing (1912\u20131954)** was an English mathematician, computer")
+# Fail closed in seconds (not after a 3-hour run) if the push pipeline
+# re-transcodes this file: v47 executed a cp1252-mojibake copy of the en dash
+# (E2 80 93 -> U+00E2 U+20AC U+201C), flipping the sealed-text gate to a false
+# REJECT_NUMERICAL while all 16 token IDs were exact. ASCII-only source is
+# immune; this guard fires at import if anything still mangles the value.
+assert SEALED_DECODED_TEXT.encode("utf-8") == (
+    b"**Alan Turing (1912\xe2\x80\x931954)**"
+    b" was an English mathematician, computer"), (
+    "SEALED_DECODED_TEXT corrupted in transit; refusing to judge exactness")
 N_TOKENS = int(os.environ.get("NATIVE_N_TOKENS", "16"))
 RUN_ID = os.environ.get("NATIVE_RUN_ID", "unconfigured")
 # Stage 1: raise the per-GPU VRAM expert cache from 512 MiB (~10 experts) to
