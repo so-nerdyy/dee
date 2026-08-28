@@ -1109,9 +1109,16 @@ def main() -> int:
     ids = tokenizer.encode(CANONICAL_PROMPT)
     input_ids = torch.tensor([ids], device="cuda:0").long()
     decode_ms: list[float] = []
-    eng0.reset_external_profile()
-    if not SINGLE_GPU:
-        eng1.reset_external_profile()
+    if not eng0.reset_external_profile():
+        raise RuntimeError(
+            "cuda0 external-profile reset failed before measured generation: "
+            f"{eng0.last_error_message() or 'no native diagnostic'}"
+        )
+    if not SINGLE_GPU and not eng1.reset_external_profile():
+        raise RuntimeError(
+            "cuda1 external-profile reset failed before measured generation: "
+            f"{eng1.last_error_message() or 'no native diagnostic'}"
+        )
     # v12: checkpoint every generated token to /kaggle/working so an OOM kill
     # (v9/v11 lost ALL tokens) still leaves the exact token stream + timing.
     # The checkpoint file format is a JSONL of per-token records; the final
