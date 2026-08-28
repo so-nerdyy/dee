@@ -265,13 +265,18 @@ int main() {
                              out.size() * sizeof(float)) == cudaSuccess,
                   "device-API FP32 output allocated");
             if (d_x_f32 && d_x_f16 && d_out) {
+                const cudaStream_t engine_stream =
+                    reinterpret_cast<cudaStream_t>(
+                        engine.compute_stream_handle());
+                CHECK(engine_stream != nullptr,
+                      "device-API engine compute stream is available");
                 CHECK(cudaMemcpy(d_x_f32, x.data(), x.size() * sizeof(float),
                                  cudaMemcpyHostToDevice) == cudaSuccess,
                       "device-API input copied");
                 CHECK(dee::f32_to_f16_cuda(
-                          d_x_f32, d_x_f16, x.size(), nullptr, nullptr),
+                          d_x_f32, d_x_f16, x.size(), engine_stream, nullptr),
                       "device-API input converted to FP16");
-                CHECK(cudaDeviceSynchronize() == cudaSuccess,
+                CHECK(cudaStreamSynchronize(engine_stream) == cudaSuccess,
                       "device-API input conversion completed");
                 const int expert_id = 0;
                 CHECK(engine.moe_forward_batch_device(

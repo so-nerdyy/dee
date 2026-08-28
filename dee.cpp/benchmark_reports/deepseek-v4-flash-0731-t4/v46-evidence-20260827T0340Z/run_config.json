@@ -1,0 +1,19 @@
+{
+  "recorded_at_utc": "2026-08-27T03:25:41Z",
+  "run_id": "p2.3-fp4-repair-v46",
+  "cache_dtype": "fp4",
+  "expert_store": "safetensors",
+  "dee4_validate_samples": 12,
+  "profile_stages": false,
+  "n_tokens": 16,
+  "cache_budget_bytes_per_gpu": 3758096384,
+  "cache_budget_gib_per_gpu": 3.5,
+  "host_pack_requested_bytes": [
+    13819057274,
+    13819057274
+  ],
+  "host_pack_runtime_cap_gib_total": 17.0,
+  "force_tmp": true,
+  "source_path": "/tmp/dsv4-native-src/dee.cpp/kaggle/deepseek-v4-flash-0731/run_config.json",
+  "source_sha256": "0658d2d9ae5ff00189c052522f7db342e4d3a3fe6d503d0774b1c8937ad4b828"
+}

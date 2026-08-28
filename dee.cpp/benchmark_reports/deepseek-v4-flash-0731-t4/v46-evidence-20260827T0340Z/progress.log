@@ -1,0 +1,26 @@
+[03:25:23] GPU_ALLOC n=2: GPU 0: Tesla T4 (UUID: GPU-e81f2938-0d97-94d9-3b38-302f10ce33e1) | GPU 1: Tesla T4 (UUID: GPU-186fb357-469b-0da9-54e6-af1cc28f31b6)
+[03:25:24] GPU compute caps [7.5, 7.5] OK for preinstalled torch
+[03:25:24] RESOURCES[startup] {"/": {"total_gb": 8062.4, "free_gb": 1026.8}, "/tmp": {"total_gb": 8062.4, "free_gb": 1026.8}, "/kaggle/working": {"total_gb": 19.5, "free_gb": 19.5}, "ram_gb": {"MemTotal": 31.3, "MemAvailable": 30.3}}
+[03:25:24] === clone + checkout ===
+[03:25:24] + git clone --branch freebuff/deepseek-v4-flash-0731-t4 --single-branch https://github.com/so-nerdyy/dee.git /tmp/dsv4-native-src
+[03:25:40] pinned commit e19c7e2d523c7bd8a65b31c51741f5395c3c3b49
+[03:25:40] [config] run_config.json: run_id=p2.3-fp4-repair-v46 cache_dtype=fp4 n_tokens=16 expert_store=safetensors dee4_validate_samples=12 profile_stages=False
+[03:25:41] [mem:prebuild] {'MemTotal': 31.3, 'MemAvailable': 30.2}
+[03:25:41] === build dee_core + FP4 regression tests (sm_60;sm_75, -j2) ===
+[03:25:41] + cmake -S /tmp/dsv4-native-src/dee.cpp -B /tmp/dsv4-native-src/dee.cpp/build-kaggle -DCMAKE_CUDA_ARCHITECTURES=60;75 -DDEE_CUDA=ON -DDEE_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
+[03:25:49] + cmake --build /tmp/dsv4-native-src/dee.cpp/build-kaggle --target dee_core -j 2
+[03:26:11] [mem:post-dee_core] {'MemTotal': 31.3, 'MemAvailable': 30.0}
+[03:26:11] + cmake --build /tmp/dsv4-native-src/dee.cpp/build-kaggle --target test_deepseek_v4_fp4_cuda -j 2
+[03:26:13] + /tmp/dsv4-native-src/dee.cpp/build-kaggle/test_deepseek_v4_fp4_cuda
+[03:26:16] + cmake --build /tmp/dsv4-native-src/dee.cpp/build-kaggle --target test_deepseek_v4_fp4_expert -j 2
+[03:26:20] + /tmp/dsv4-native-src/dee.cpp/build-kaggle/test_deepseek_v4_fp4_expert
+[03:26:21] FAILED (exit 1)
+[03:26:21] FATAL Traceback (most recent call last):
+  File "/kaggle/src/script.py", line 1308, in <module>
+    main()
+  File "/kaggle/src/script.py", line 805, in main
+    run([str(BUILD / target)], cwd=str(DEE))
+  File "/kaggle/src/script.py", line 312, in run
+    raise RuntimeError("command failed: "
+RuntimeError: command failed: /tmp/dsv4-native-src/dee.cpp/build-kaggle/test_deepseek_v4_fp4_expert
+

@@ -1,0 +1,45 @@
+{
+  "classification": "PRELAUNCH",
+  "run_id": "p2.3-fp4-repair-v46",
+  "recorded_at_utc": "2026-08-27T03:24:42.123Z",
+  "repository": "https://github.com/so-nerdyy/dee.git",
+  "branch": "freebuff/deepseek-v4-flash-0731-t4",
+  "git_commit": "e19c7e2d523c7bd8a65b31c51741f5395c3c3b49",
+  "remote_head_verified_equal": true,
+  "kernel": "nivind/dee-cpp-dsv4-native-generate",
+  "harness": {
+    "path": "dee.cpp/kaggle/deepseek-v4-flash-0731/deepseek_v4_native_generate.py",
+    "sha256": "ca13ccf6fa34aba1c9e1fd19d69b9cdff27257c68614d91d0ff30aa8c89958f6"
+  },
+  "run_config": {
+    "path": "dee.cpp/kaggle/deepseek-v4-flash-0731/run_config.json",
+    "sha256": "0658d2d9ae5ff00189c052522f7db342e4d3a3fe6d503d0774b1c8937ad4b828",
+    "cache_dtype": "fp4",
+    "expert_store": "safetensors",
+    "profile_stages": false,
+    "n_tokens": 16
+  },
+  "kernel_metadata": {
+    "path": "dee.cpp/kaggle/deepseek-v4-flash-0731/kernel-metadata.json",
+    "sha256": "55c0c63ad29a2e2adc8168b1282ec986f71273dd746a3a4bb9535787d70cd58b",
+    "code_file": "deepseek_v4_native_generate.py",
+    "requested_accelerator": "NvidiaTeslaT4",
+    "requested_gpu_count": 2
+  },
+  "model_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+  "cache_budget_gib_per_gpu": 3.5,
+  "host_pack_requested_gib_per_gpu": [12.87, 12.87],
+  "host_pack_runtime_cap_gib_total": 17.0,
+  "baseline": "v44-p22-real-baseline",
+  "rejected_predecessor": "p2.3-real-fp4-v45-terminal",
+  "isolated_repair": "Decode packed FP4 cache blocks into bounded FP16 scratch inside Engine::moe_forward_batch_device_impl before batched SwiGLU.",
+  "local_verification": {
+    "deepseek_python_suite": "111 passed, 1 skipped",
+    "dee4_and_evidence_unit_tests": "8 passed",
+    "expert_store_msvc": "PASS",
+    "engine_msvc_compile": "PASS",
+    "pydee_msvc_compile": "PASS",
+    "cuda_regression": "queued as mandatory fail-closed pre-generation test on the T4 worker"
+  },
+  "acceptance_gate": "16/16 exact greedy token IDs, exact decoded text, finite output, all 43 layers, effective packed-FP4 CUDA cache, canonical safetensors serving backend, zero NumPy bridge calls, zero full-hidden D2H, zero raw expert-output D2H, no silent fallback, and performance comparison only on exactly 2x Tesla T4"
+}
