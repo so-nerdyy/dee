@@ -1,6 +1,6 @@
 {
-  "_comment": "v47 reruns the isolated v45 packed-device-path repair after fixing the v46 CUDA admission test. Canonical safetensors remains the v44 control backend; DEE4 stays dormant until this exact A/B passes.",
-  "run_id": "p2.3-fp4-repair-v47",
+  "_comment": "v48 reruns the identical canonical packed-FP4 A/B on the repaired judge: v47 executed 16/16 exact token IDs, but the pushed seal constant arrived cp1252-mojibake'd and flipped exact_decoded_text to a false reject. Physics config is unchanged from v47; only the judge and dormant instrumentation differ. DEE4 stays dormant until this A/B is accepted.",
+  "run_id": "p2.3-fp4-repair-v48",
   "cache_dtype": "fp4",
   "expert_store": "safetensors",
   "dee4_validate_samples": 12,
