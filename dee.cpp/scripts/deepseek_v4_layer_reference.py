@@ -465,6 +465,9 @@ class DeepseekV4Layer:
     def reset_state(self) -> None:
         self.attn.reset_state()
         self._profile_rows = []
+        reset_ffn_profile = getattr(self.ffn_fn, "reset_stage_profile", None)
+        if reset_ffn_profile is not None:
+            reset_ffn_profile()
 
     def stage_profile_snapshot(self) -> dict[str, Any]:
         """Resolve profiling-only CUDA events after the measured generation."""
@@ -495,6 +498,22 @@ class DeepseekV4Layer:
                     for name, milliseconds in durations.items()
                 },
             })
+        # Merge the native FFN's finer-grained stage events (router, routed
+        # dispatch/native, combine, shared expert, output cast) into the same
+        # totals so the full-model decomposition separates routed MoE from the
+        # shared expert as the storage-matrix contract requires.
+        ffn_snapshot_fn = getattr(self.ffn_fn, "stage_profile_snapshot", None)
+        if ffn_snapshot_fn is not None:
+            ffn_snapshot = ffn_snapshot_fn()
+            if ffn_snapshot.get("enabled"):
+                for name, milliseconds in ffn_snapshot["totals_ms"].items():
+                    totals[name] = totals.get(name, 0.0) + float(milliseconds)
+                for start_key, values in ffn_snapshot["per_start_pos_ms"].items():
+                    position_totals = per_start_pos.setdefault(
+                        start_key, {name: 0.0 for name in phase_names})
+                    for name, milliseconds in values.items():
+                        position_totals[name] = (
+                            position_totals.get(name, 0.0) + float(milliseconds))
         return {
             "layer": self.layer_id,
             "device": str(self.device),
@@ -595,6 +614,9 @@ class DeepseekV4Layer:
         if input_ids is None:
             input_ids = torch.zeros(x.size(0) * x.size(1), dtype=torch.long,
                                     device=x.device)
+        set_ffn_pos = getattr(self.ffn_fn, "set_profile_start_pos", None)
+        if set_ffn_pos is not None:
+            set_ffn_pos(int(start_pos))
         x = self.ffn_fn(x, input_ids, c)
         if profile_events is not None:
             profile_events[4].record(stream)

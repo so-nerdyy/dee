@@ -56,10 +56,23 @@ class DeepseekV4CacheFfn:
         self.stats = {"requests": 0, "hits": 0, "misses": 0, "staging_waits": 0}
         self.last_route: dict[str, Any] = {}
 
+    # Profiling hooks are deliberately no-ops for the legacy cache backend.
+    # The native subclass records CUDA events without synchronizing the hot
+    # path, then resolves them after measured generation.
+    def _profile_ffn_begin(self, x: torch.Tensor) -> None:
+        del x
+
+    def _profile_ffn_mark(self) -> None:
+        pass
+
+    def _profile_ffn_finish(self, *, rows: int) -> None:
+        del rows
+
     def __call__(self, x: torch.Tensor, input_ids: torch.Tensor,
                  capture: Optional[dict[str, Any]]) -> torch.Tensor:
         cfg = self.cfg
         b, s, d = x.shape
+        self._profile_ffn_begin(x)
         xf = x.reshape(-1, d).float()
         if self.tid2eid is not None:
             # Hash-routed layer: selection from the learned table, weights
@@ -93,6 +106,7 @@ class DeepseekV4CacheFfn:
             }
         else:
             self.last_route = {}
+        self._profile_ffn_mark()
         moe_out, shared_out = self._run_experts(xf, ids, weights)
         if capture is not None:
             # Same labels/units as the reference _ffn_fp32_direct: moe_out is
@@ -102,7 +116,9 @@ class DeepseekV4CacheFfn:
             capture["shared_out"] = shared_out.reshape(b, s, d)
         # Official MoE.forward returns y.type_as(x): cast the fp32
         # accumulation back to the input dtype (bf16) before hc_post.
-        return moe_out.reshape(b, s, d).to(x.dtype)
+        result = moe_out.reshape(b, s, d).to(x.dtype)
+        self._profile_ffn_finish(rows=b * s)
+        return result
 
     # -- wiring ------------------------------------------------------------
     def attach_gate(self, gate_w: torch.Tensor, gate_b: Optional[torch.Tensor]) -> None:
@@ -234,7 +250,8 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
 
     def __init__(self, *, engine: Any, layer_id: int, cfg: layer_ref.LayerConfig,
                  device: str = "cuda", shared_payload: Optional[dict[str, torch.Tensor]] = None,
-                 provider: Any = None, diagnostics: bool = True):
+                 provider: Any = None, diagnostics: bool = True,
+                 profile_stages: bool = False):
         # Deliberately bypass the parent __init__: the native backend needs no
         # cache/loader/fp16_payloads for routed experts (the engine owns those).
         self.engine = engine
@@ -244,6 +261,7 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
         self.shared_payload = shared_payload
         self.provider = provider
         self.diagnostics = bool(diagnostics)
+        self.profile_stages = bool(profile_stages)
         self.tid2eid: Optional[torch.Tensor] = None
         self.stats = {"requests": 0, "hits": 0, "misses": 0,
                       "native_fwd_ms": 0.0, "native_calls": 0,
@@ -262,6 +280,114 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
         # Device-resident shared-expert payload (materialized lazily on the
         # first forward; the provider hands back CPU FP16 tensors).
         self._shared_dev: Optional[dict[str, torch.Tensor]] = None
+        self._active_profile_events: Optional[list[torch.cuda.Event]] = None
+        self._active_profile_boundary = 1
+        self._profile_start_pos = -1
+        self._profile_rows: list[dict[str, Any]] = []
+
+    _PROFILE_PHASES = (
+        "router",
+        "routed_dispatch_and_native",
+        "routed_combine",
+        "shared_expert",
+        "output_cast",
+    )
+
+    def _profile_ffn_begin(self, x: torch.Tensor) -> None:
+        self._active_profile_events = None
+        if not self.profile_stages or not x.is_cuda:
+            return
+        stream = torch.cuda.current_stream(x.device)
+        events = [torch.cuda.Event(enable_timing=True) for _ in range(6)]
+        events[0].record(stream)
+        self._active_profile_events = events
+
+    def set_profile_start_pos(self, start_pos: int) -> None:
+        """Tag the next recorded FFN row with the caller's decode position."""
+        self._profile_start_pos = int(start_pos)
+
+    def _profile_ffn_mark(self) -> None:
+        events = self._active_profile_events
+        if events is None:
+            return
+        boundary = self._active_profile_boundary
+        if boundary >= len(events):
+            raise RuntimeError("native FFN profiler recorded too many boundaries")
+        events[boundary].record(torch.cuda.current_stream(self.device))
+        self._active_profile_boundary = boundary + 1
+
+    def _profile_ffn_finish(self, *, rows: int) -> None:
+        events = self._active_profile_events
+        if events is None:
+            return
+        self._profile_ffn_mark()
+        if getattr(self, "_active_profile_boundary", 0) != len(events):
+            raise RuntimeError("native FFN profiler recorded incomplete boundaries")
+        self._profile_rows.append({
+            "rows": int(rows),
+            "events": events,
+            "start_pos": int(self._profile_start_pos),
+        })
+        self._active_profile_events = None
+        self._active_profile_boundary = 1
+
+    def reset_stage_profile(self) -> None:
+        self._active_profile_events = None
+        self._active_profile_boundary = 1
+        self._profile_start_pos = -1
+        self._profile_rows = []
+
+    def stage_profile_snapshot(self) -> dict[str, Any]:
+        if not self.profile_stages:
+            return {
+                "enabled": False,
+                "layer": self.layer_id,
+                "calls": 0,
+                "totals_ms": {},
+            }
+        totals = {name: 0.0 for name in self._PROFILE_PHASES}
+        calls = []
+        per_start_pos: dict[str, dict[str, float]] = {}
+        for index, stored in enumerate(self._profile_rows):
+            events = stored["events"]
+            durations = {
+                name: float(events[phase].elapsed_time(events[phase + 1]))
+                for phase, name in enumerate(self._PROFILE_PHASES)
+            }
+            for name, milliseconds in durations.items():
+                totals[name] += milliseconds
+            start_key = str(stored["start_pos"])
+            position_totals = per_start_pos.setdefault(
+                start_key, {name: 0.0 for name in self._PROFILE_PHASES})
+            for name, milliseconds in durations.items():
+                position_totals[name] += milliseconds
+            calls.append({
+                "call": index,
+                "start_pos": stored["start_pos"],
+                "rows": stored["rows"],
+                "durations_ms": {
+                    name: round(milliseconds, 6)
+                    for name, milliseconds in durations.items()
+                },
+            })
+        return {
+            "enabled": True,
+            "layer": self.layer_id,
+            "device": str(self.device),
+            "calls": len(calls),
+            "totals_ms": {
+                name: round(milliseconds, 6)
+                for name, milliseconds in totals.items()
+            },
+            "per_start_pos_ms": {
+                key: {
+                    name: round(milliseconds, 6)
+                    for name, milliseconds in values.items()
+                }
+                for key, values in per_start_pos.items()
+            },
+            "calls_detail": calls,
+        }
 
     def _run_experts(self, xf: torch.Tensor, ids: torch.Tensor,
                      weights: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -340,6 +466,7 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
             raise RuntimeError(
                 f"native moe_forward_batch_device failed layer={self.layer_id}"
                 + (f": {detail}" if detail else ""))
+        self._profile_ffn_mark()
 
         if (self._native_moe_output is None or
                 tuple(self._native_moe_output.shape) != (n, d)):
@@ -353,8 +480,10 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
         for rank in range(cfg.topk):
             moe.addcmul_(
                 raw[:, rank, :], weights_f32[:, rank].unsqueeze(1))
+        self._profile_ffn_mark()
 
         shared_out = self._shared_forward(xf, hidden_fp16)
+        self._profile_ffn_mark()
         return moe + shared_out, shared_out
 
     def _shared_forward(self, xf: torch.Tensor,
@@ -463,7 +592,8 @@ def make_native_candidate_layer(
     pydee.Engine.moe_forward_experts; router + shared expert on torch)."""
     ffn = DeepseekV4NativeFfn(engine=engine, layer_id=layer_id, cfg=cfg,
                               device=device, shared_payload=shared_payload,
-                              provider=provider, diagnostics=diagnostics)
+                              provider=provider, diagnostics=diagnostics,
+                              profile_stages=profile_stages)
     ffn.attach_gate(w["ffn"]["gate_w"], w["ffn"]["gate_b"])
     ffn.attach_hash(w["ffn"].get("tid2eid"))
     return layer_ref.DeepseekV4Layer(
