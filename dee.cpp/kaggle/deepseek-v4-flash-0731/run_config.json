@@ -1,6 +1,6 @@
 {
-  "_comment": "v46 isolates the v45 packed-device-path repair against the same canonical safetensors backend as v44. DEE4 is compiled and tested but remains dormant until this exact A/B passes.",
-  "run_id": "p2.3-fp4-repair-v46",
+  "_comment": "v47 reruns the isolated v45 packed-device-path repair after fixing the v46 CUDA admission test. Canonical safetensors remains the v44 control backend; DEE4 stays dormant until this exact A/B passes.",
+  "run_id": "p2.3-fp4-repair-v47",
   "cache_dtype": "fp4",
   "expert_store": "safetensors",
   "dee4_validate_samples": 12,
