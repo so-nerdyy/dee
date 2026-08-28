@@ -1132,6 +1132,22 @@ def main() -> int:
         try:
             rec["host_pack0"] = eng0.host_pack_stats()
             rec["host_pack1"] = eng1.host_pack_stats()
+            _checkpoint_engines = (
+                (("cuda0", eng0),) if SINGLE_GPU
+                else (("cuda0", eng0), ("cuda1", eng1))
+            )
+            rec["engine_stats"] = {
+                key: json.loads(engine.last_stats_json())
+                for key, engine in _checkpoint_engines
+            }
+            rec["expert_store"] = {
+                key: engine.expert_store_stats()
+                for key, engine in _checkpoint_engines
+            }
+            rec["host_pack"] = {
+                key: engine.host_pack_stats()
+                for key, engine in _checkpoint_engines
+            }
         except Exception:
             pass
         try:
@@ -1285,9 +1301,11 @@ def main() -> int:
 
     min_host_available = None
     checkpoint_records = 0
+    checkpoint_rows = []
     try:
         for line in CHECKPOINT.read_text("utf-8").splitlines():
             record = json.loads(line)
+            checkpoint_rows.append(record)
             available = float(record["host_mem_available_gib"])
             min_host_available = (
                 available if min_host_available is None
@@ -1295,6 +1313,115 @@ def main() -> int:
             checkpoint_records += 1
     except Exception as exc:
         log(f"checkpoint memory summary failed: {exc}")
+
+    def _checkpoint_total(row: dict, section: str, field: str) -> float:
+        return sum(
+            float(values.get(field, 0))
+            for values in row.get(section, {}).values()
+        )
+
+    per_token_accounting = []
+    previous_totals = {
+        "storage_bytes": 0.0,
+        "storage_requests": 0.0,
+        "source_read_wall_ms": 0.0,
+        "h2d_bytes": 0.0,
+        "h2d_copies": 0.0,
+        "resident_hits": 0.0,
+        "cold_loads": 0.0,
+        "evictions": 0.0,
+        "host_pack_hits": 0.0,
+        "host_pack_misses": 0.0,
+    }
+    for index, row in enumerate(checkpoint_rows):
+        totals = {
+            "storage_bytes": _checkpoint_total(
+                row, "expert_store", "bytes_requested"),
+            "storage_requests": _checkpoint_total(
+                row, "expert_store", "source_reads"),
+            "source_read_wall_ms": _checkpoint_total(
+                row, "expert_store", "read_milliseconds"),
+            "h2d_bytes": _checkpoint_total(row, "engine_stats", "h2d_bytes"),
+            "h2d_copies": _checkpoint_total(row, "engine_stats", "h2d_copies"),
+            "resident_hits": _checkpoint_total(
+                row, "engine_stats", "resident_hits"),
+            "cold_loads": _checkpoint_total(row, "engine_stats", "cold_loads"),
+            "evictions": _checkpoint_total(row, "engine_stats", "evictions"),
+            "host_pack_hits": _checkpoint_total(row, "host_pack", "hits"),
+            "host_pack_misses": _checkpoint_total(row, "host_pack", "misses"),
+        }
+        deltas = {
+            key: max(0.0, value - previous_totals[key])
+            for key, value in totals.items()
+        }
+        previous_totals = totals
+        timing_ms = (
+            float(prefill_ms) if index == 0
+            else float(decode_only[index - 1])
+            if index - 1 < len(decode_only) else None
+        )
+        per_token_accounting.append({
+            "step": int(row.get("step", index)),
+            "phase": "prefill" if index == 0 else "decode",
+            "token_id": int(row.get("token_id", -1)),
+            "wall_ms": round(timing_ms, 3) if timing_ms is not None else None,
+            **{
+                key: int(value) if key != "source_read_wall_ms"
+                else round(value, 3)
+                for key, value in deltas.items()
+            },
+            "resident_experts": int(_checkpoint_total(
+                row, "engine_stats", "resident_experts")),
+        })
+    result["per_token_accounting"] = per_token_accounting
+
+    storage_read_ms = sum(
+        float(stores.get(key, {}).get("read_milliseconds", 0))
+        for key in store_keys)
+    h2d_gpu_ms = sum(
+        float(result.get("stage_profile", {}).get(key, {})
+              .get("gpu_ms", {}).get("h2d", 0))
+        for key in store_keys)
+    compute_gpu_ms = sum(
+        float(result.get("stage_profile", {}).get(key, {})
+              .get("derived", {}).get("total_gpu_compute_ms", 0))
+        for key in store_keys)
+    generated_count = len(toks)
+    result["measured_roofline"] = {
+        "scope": "whole generation amortized over emitted tokens",
+        "storage": {
+            "bytes_per_emitted_token": (
+                storage_bytes / generated_count if generated_count else None),
+            "observed_source_read_bytes_per_second": (
+                storage_bytes / (storage_read_ms / 1000.0)
+                if storage_read_ms > 0 else None),
+            "roof_tokens_per_second": (
+                generated_count / (storage_read_ms / 1000.0)
+                if storage_read_ms > 0 else None),
+        },
+        "pcie_h2d": {
+            "bytes_per_emitted_token": (
+                result["byte_accounting"]["expert_h2d_bytes_total"]
+                / generated_count if generated_count else None),
+            "observed_bytes_per_second": (
+                result["byte_accounting"]["expert_h2d_bytes_total"]
+                / (h2d_gpu_ms / 1000.0) if h2d_gpu_ms > 0 else None),
+            "roof_tokens_per_second": (
+                generated_count / (h2d_gpu_ms / 1000.0)
+                if h2d_gpu_ms > 0 else None),
+        },
+        "routed_compute": {
+            "measured_gpu_ms_per_emitted_token": (
+                compute_gpu_ms / generated_count if generated_count else None),
+            "roof_tokens_per_second": (
+                generated_count / (compute_gpu_ms / 1000.0)
+                if compute_gpu_ms > 0 else None),
+        },
+        "vram_weight_reads": {
+            "bytes_per_emitted_token": None,
+            "reason": "kernel-level global traffic is not measured by this run",
+        },
+    }
 
     profile_payload = {
         "status": "COMPLETE",
@@ -1312,6 +1439,8 @@ def main() -> int:
         "expert_store": result.get("expert_store", {}),
         "host_pack": result.get("host_pack", {}),
         "byte_accounting": result["byte_accounting"],
+        "per_token_accounting": result["per_token_accounting"],
+        "measured_roofline": result["measured_roofline"],
     }
     memory_payload = {
         "status": "COMPLETE",
