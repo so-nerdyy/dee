@@ -821,6 +821,7 @@ def main() -> int:
     try:
         sys.path.insert(0, str(DEE / "kaggle" / "deepseek-v4-flash-0731"))
         from repack_to_dee4 import (
+            _filesystem_identity as _storage_identity,
             benchmark_dee4_read as _b4r,
             benchmark_dee4_serving_access as _b4s,
             repack,
@@ -862,6 +863,46 @@ def main() -> int:
                                "integrity.jsonl"):
             shutil.copy2(_dee4_out / _evidence_name,
                          WORK / f"dee4-{_evidence_name}")
+
+        # The live 137-GiB bank only fits on /tmp. Probe /kaggle/working with
+        # the same byte-exact three-layer component bank when its quota permits,
+        # then remove it before generation so Kaggle does not snapshot a giant
+        # transient output. Failures are evidence, not a reason to discard an
+        # otherwise valid live DEE4 run.
+        _working_location_benchmark = {
+            "status": "NOT_REQUESTED",
+            "reason": "live backend is not DEE4",
+        }
+        if EXPERT_STORE_BACKEND == "dee4":
+            _working_probe = WORK / "dsv4-dee4-working-location-probe"
+            _working_required = int(_dee4_rpt["record_bytes"]) * 3 * 256
+            _working_free = shutil.disk_usage(WORK).free
+            _working_location_benchmark = {
+                "status": "SKIPPED_CAPACITY",
+                "required_data_bytes": _working_required,
+                "free_bytes_before": _working_free,
+            }
+            if _working_free >= _working_required + (1 << 30):
+                try:
+                    _working_rpt = repack(
+                        _source_dir, _working_probe, index_path=_idx,
+                        start_layer=0, end_layer=3, dry_run=False)
+                    _working_location_benchmark = _b4s(
+                        _working_probe, groups=8, topk=6)
+                    _working_location_benchmark["status"] = "COMPLETE"
+                    _working_location_benchmark["repack_seconds"] = (
+                        _working_rpt["total_elapsed_s"])
+                except Exception as _working_error:
+                    _working_location_benchmark = {
+                        "status": "FAILED",
+                        "error": repr(_working_error),
+                        "required_data_bytes": _working_required,
+                        "free_bytes_before": _working_free,
+                    }
+                finally:
+                    shutil.rmtree(_working_probe, ignore_errors=True)
+            (WORK / "dee4-working-serving-access-benchmark.json").write_text(
+                json.dumps(_working_location_benchmark, indent=2), "utf-8")
 
         # Compare: safetensors random gather
         _idx_data = json.loads(_idx.read_text("utf-8"))
@@ -913,6 +954,7 @@ def main() -> int:
             "data_sha256": _dee4_rpt["data_sha256"],
             "validation_samples": _dee4_validation["sample_count"],
             "validation_source_shards": _dee4_validation["source_shards_covered"],
+            "safetensors_storage": _storage_identity(_source_dir),
             "serving_access_benchmark": {
                 "groups": _dee4_serving_bench["groups"],
                 "topk": _dee4_serving_bench["topk"],
@@ -924,6 +966,7 @@ def main() -> int:
                 "winner": _dee4_serving_bench["winner"],
                 "unavailable_modes": _dee4_serving_bench["unavailable_modes"],
             },
+            "working_location_benchmark": _working_location_benchmark,
         }
         (WORK / "p2.2-dee4-evidence.json").write_text(
             json.dumps(_p22_evidence, indent=2), "utf-8")
