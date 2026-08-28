@@ -7,9 +7,9 @@ expanded FP16 and packed FP4 representations:
 
   - resident experts at a given budget
   - routed hit rate (GPU cache hits)
-  - total hit rate (incl. shared expert pinning)
+  - per-GPU and aggregate routed hit rate
   - reuse-distance coverage (accesses whose distance fits in the cache)
-  - H2D bytes/token and storage bytes/token
+  - packed H2D bytes/token
   - evictions/token
   - Belady (oracle) hit ceiling
 
@@ -32,11 +32,11 @@ from collections import OrderedDict
 # [2048,4096], e2m1fn packed I8 + e8m0 per-block scales).
 # ---------------------------------------------------------------------------
 FP16_EXPERT_MIB = 48.00
-FP4_EXPERT_MIB = 12.75          # 12.582912 MiB packed + 0.75 MiB scales
+FP4_EXPERT_MIB = 12.75          # 12.00 MiB packed + 0.75 MiB scales
+FP4_TRANSFER_MIB = 12.75        # both cache modes transfer packed FP4
 MIB = 1 << 20
-
-# Shared expert: one per layer, same 3-projection size.
-N_SHARED_PER_LAYER = 1
+LAYER_SPLIT = 22                # cuda0 owns 0..21; cuda1 owns 22..42
+V44_H2D_BYTES = 65_509_785_600
 
 EV_PATH = os.path.join(
     os.path.dirname(__file__),
@@ -59,9 +59,12 @@ def load_trace():
         for ly in layers:
             sel = ly["selected_experts"]
             if sel and isinstance(sel[0], list):
-                experts = [int(e) for pos in sel for e in pos]
+                flattened = [int(e) for pos in sel for e in pos]
             else:
-                experts = [int(e) for e in sel]
+                flattened = [int(e) for e in sel]
+            # The engine groups all positions by expert and stages each unique
+            # expert once per layer call. Preserve first-seen rank order.
+            experts = list(dict.fromkeys(flattened))
             tokens.append((int(t.split("_")[1]), int(ly["layer"]), experts))
     return tokens
 
@@ -126,73 +129,73 @@ class BeladyCache:
 def reuse_distance_coverage(accesses, capacity):
     """Fraction of accesses whose previous occurrence is within `capacity`
     distinct-key steps — the reuse LRU *can* capture."""
-    last_pos = {}
+    stack = OrderedDict()
     covered = 0
-    span_keys = 0
-    for i, key in enumerate(accesses):
-        if key in last_pos:
-            # count distinct keys since last use
-            span_keys += 1
-            if span_keys <= capacity:
+    for key in accesses:
+        if key in stack:
+            ordered = list(stack.keys())
+            distance = len(ordered) - 1 - ordered.index(key)
+            if distance < capacity:
                 covered += 1
+            stack.move_to_end(key)
         else:
-            span_keys = 0
-        last_pos[key] = i
+            stack[key] = None
     return covered / max(1, len(accesses))
 
 
-def simulate(budget_gib, expert_mib, accesses, future_uses, pin_shared,
-             n_shared_per_layer, layer_of):
+def simulate(budget_gib, expert_mib, trace):
     cap = int(budget_gib * 1024 / expert_mib)
     if cap <= 0:
         cap = 1
-    cache = LRUCache(cap)
-    # Pin shared experts: they consume capacity but are never evicted.
-    pinned = set()
-    if pin_shared:
-        for key in accesses:
-            if key[0] == -1:            # shared expert key: (-1, layer)
-                pinned.add(key)
-    # Capacity left for routed experts
-    routed_cap = max(1, cap - len(pinned))
-    routed_cache = LRUCache(routed_cap)
-
-    hits = 0
-    total = 0
-    for key in accesses:
-        total += 1
-        if key in pinned:
-            hits += 1
-            continue
-        if routed_cache.access(key):
-            hits += 1
-    routed_hits = sum(1 for key in accesses
-                      if key[0] != -1 and key in routed_cache.map or
-                      (key[0] != -1 and False))
+    caches = [LRUCache(cap), LRUCache(cap)]
+    for _token, layer, experts in trace:
+        gpu = 0 if layer < LAYER_SPLIT else 1
+        for expert in experts:
+            caches[gpu].access((layer, expert))
+    hits = sum(cache.hits for cache in caches)
+    total = sum(cache.total for cache in caches)
     return {
         "budget_gib": budget_gib,
         "expert_mib": expert_mib,
-        "residents": cap,
-        "routed_hits": routed_hits,
+        "residents_per_gpu": cap,
+        "hits": hits,
         "total_hits": hits,
         "total": total,
         "hit_rate": hits / max(1, total),
-        "evictions": routed_cache.evictions,
-        "routed_hit_rate": routed_hits / max(1, sum(
-            1 for key in accesses if key[0] != -1)),
+        "cold_loads": total - hits,
+        "evictions": sum(cache.evictions for cache in caches),
+        "per_gpu": [
+            {
+                "requests": cache.total,
+                "hits": cache.hits,
+                "cold_loads": cache.total - cache.hits,
+                "evictions": cache.evictions,
+                "resident_experts": len(cache.map),
+            }
+            for cache in caches
+        ],
     }
 
 
-def belady(budget_gib, expert_mib, accesses, future_uses, layer_of):
+def belady(budget_gib, expert_mib, trace):
     cap = int(budget_gib * 1024 / expert_mib)
     if cap <= 0:
         cap = 1
-    cache = BeladyCache(cap, future_uses)
+    streams = [[], []]
+    for _token, layer, experts in trace:
+        gpu = 0 if layer < LAYER_SPLIT else 1
+        streams[gpu].extend((layer, expert) for expert in experts)
     hits = 0
-    for pos, key in enumerate(accesses):
-        if cache.access(key, pos):
-            hits += 1
-    return hits / max(1, len(accesses))
+    total = 0
+    for stream in streams:
+        future_uses = {}
+        for pos, key in enumerate(stream):
+            future_uses.setdefault(key, []).append(pos)
+        cache = BeladyCache(cap, future_uses)
+        for pos, key in enumerate(stream):
+            hits += int(cache.access(key, pos))
+        total += len(stream)
+    return hits / max(1, total)
 
 
 def main():
@@ -204,58 +207,63 @@ def main():
     print(f"=== P2.3 packed-FP4 trace replay ({len(trace)} layer-calls, "
           f"{len(set((t, l) for t, l, _ in trace))} token-layer pairs) ===")
 
-    # Build access sequence: routed experts (layer, expert) + shared (-1, layer).
-    # The v12 trace does NOT include shared experts in selected_experts (top-6
-    # routed only); shared expert = one per layer, present every layer-call.
-    accesses = []
-    for tok, layer, experts in trace:
-        for e in experts:
-            accesses.append((layer, e))
-        accesses.append((-1, layer))       # shared expert, always accessed
-
-    # Future-use map for Belady
-    future_uses = {}
-    for i, key in enumerate(accesses):
-        future_uses.setdefault(key, []).append(i)
-
-    total = len(accesses)
-    routed_total = sum(1 for k in accesses if k[0] != -1)
-    print(f"accesses={total} (routed={routed_total}, shared={total-routed_total})")
+    streams = [[], []]
+    for _token, layer, experts in trace:
+        gpu = 0 if layer < LAYER_SPLIT else 1
+        streams[gpu].extend((layer, expert) for expert in experts)
+    total = sum(len(stream) for stream in streams)
+    print(f"unique staged requests={total} "
+          f"(cuda0={len(streams[0])}, cuda1={len(streams[1])}); "
+          "shared experts excluded (separate persistent path)")
 
     for budget_gib in (1.0, 2.0, 4.0, 6.0, 8.0):
         row = []
         for label, mib in (("FP16", FP16_EXPERT_MIB), ("FP4 ", FP4_EXPERT_MIB)):
-            r = simulate(budget_gib, mib, accesses, future_uses,
-                         pin_shared=True, n_shared_per_layer=N_SHARED_PER_LAYER,
-                         layer_of=None)
+            r = simulate(budget_gib, mib, trace)
             row.append((label, r))
         fp16 = row[0][1]
         fp4 = row[1][1]
         print(f"\n--- budget {budget_gib:.0f} GiB ---")
-        print(f"  FP16: {fp16['residents']:>4} residents  hit={fp16['hit_rate']*100:5.1f}%  "
-              f"routed={fp16['routed_hit_rate']*100:5.1f}%  evicts={fp16['evictions']}")
-        print(f"  FP4 : {fp4['residents']:>4} residents  hit={fp4['hit_rate']*100:5.1f}%  "
-              f"routed={fp4['routed_hit_rate']*100:5.1f}%  evicts={fp4['evictions']}")
-        bel = belady(budget_gib, FP4_EXPERT_MIB, accesses, future_uses, None)
+        print(f"  FP16: {fp16['residents_per_gpu']:>4} residents/GPU  "
+              f"routed hit={fp16['hit_rate']*100:5.1f}%  "
+              f"evicts={fp16['evictions']}")
+        print(f"  FP4 : {fp4['residents_per_gpu']:>4} residents/GPU  "
+              f"routed hit={fp4['hit_rate']*100:5.1f}%  "
+              f"evicts={fp4['evictions']}")
+        bel = belady(budget_gib, FP4_EXPERT_MIB, trace)
         print(f"  Belady ceiling (FP4 size): {bel*100:5.1f}%")
 
     # Bytes per token at 3.5 GiB (the v15/v16 primary budget)
     print("\n=== bytes/token at 3.5 GiB (v15/v16 primary) ===")
     for label, mib in (("FP16", FP16_EXPERT_MIB), ("FP4 ", FP4_EXPERT_MIB)):
-        r = simulate(3.5, mib, accesses, future_uses, True,
-                     N_SHARED_PER_LAYER, None)
-        per_token = r["total"] / 16.0
-        cold_per_token = per_token * (1 - r["hit_rate"])
-        h2d_gib = cold_per_token * mib * MIB / (1 << 30)
-        print(f"  {label}: hit={r['hit_rate']*100:5.1f}%  "
-              f"H2D={h2d_gib:.2f} GiB/token  (routed {r['routed_hit_rate']*100:.1f}%)")
+        r = simulate(3.5, mib, trace)
+        h2d_gib = (r["cold_loads"] / 16.0 * FP4_TRANSFER_MIB
+                   * MIB / (1 << 30))
+        print(f"  {label}: routed hit={r['hit_rate']*100:5.1f}%  "
+              f"packed H2D={h2d_gib:.2f} GiB/token  "
+              f"cold={r['cold_loads']}")
+
+    replay_v44 = simulate(3.5, FP16_EXPERT_MIB, trace)
+    observed = {
+        "hits": [104, 95],
+        "cold_loads": [2509, 2391],
+    }
+    print("\n=== v44 replay cross-check ===")
+    for gpu, row in enumerate(replay_v44["per_gpu"]):
+        print(f"  cuda{gpu}: replay hits/cold={row['hits']}/{row['cold_loads']} "
+              f"observed={observed['hits'][gpu]}/{observed['cold_loads'][gpu]}")
+    print(f"  measured v44 H2D={V44_H2D_BYTES / 16 / (1 << 30):.3f} "
+          "GiB/emitted token (authoritative; replay is directional)")
 
     # Reuse-distance coverage: how much reuse is even capturable?
     print("\n=== reuse-distance coverage (LRU-capturable reuse) ===")
     for budget_gib in (1.0, 2.0, 4.0, 6.0, 8.0):
         for label, mib in (("FP16", FP16_EXPERT_MIB), ("FP4 ", FP4_EXPERT_MIB)):
             cap = int(budget_gib * 1024 / mib)
-            cov = reuse_distance_coverage(accesses, cap)
+            covered = sum(
+                reuse_distance_coverage(stream, cap) * len(stream)
+                for stream in streams)
+            cov = covered / max(1, total)
             print(f"  {budget_gib:>3.0f} GiB {label}: coverage={cov*100:5.1f}%")
 
     print("\n=== conclusion ===")
