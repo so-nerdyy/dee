@@ -1,9 +1,9 @@
 {
-  "_comment": "v49 is the first full DEE4 + packed-FP4 profiled experiment after v48 accepted the packed-FP4 safetensors baseline. It validates the live DEE4 backend, records storage/transfer/cache telemetry, and enables deferred CUDA stage profiling for bottleneck selection.",
-  "run_id": "p2.4-dee4-profile-v49",
+  "_comment": "v50 reruns the accepted packed-FP4 safetensors path with the durable per-layer routed-expert journal enabled. The run is diagnostic: preserve exact 16-token correctness while producing a canonical 16 x 43 route trace for DEE4 sharding and replay design.",
+  "run_id": "p2.3-route-journal-v50",
   "cache_dtype": "fp4",
-  "expert_store": "dee4",
+  "expert_store": "safetensors",
   "dee4_validate_samples": 12,
-  "profile_stages": true,
+  "profile_stages": false,
   "n_tokens": 16
 }
