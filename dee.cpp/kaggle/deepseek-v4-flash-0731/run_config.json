@@ -1,9 +1,9 @@
 {
-  "_comment": "v48 reruns the identical canonical packed-FP4 A/B on the repaired judge: v47 executed 16/16 exact token IDs, but the pushed seal constant arrived cp1252-mojibake'd and flipped exact_decoded_text to a false reject. Physics config is unchanged from v47; only the judge and dormant instrumentation differ. DEE4 stays dormant until this A/B is accepted.",
-  "run_id": "p2.3-fp4-repair-v48",
+  "_comment": "v49 is the first full DEE4 + packed-FP4 profiled experiment after v48 accepted the packed-FP4 safetensors baseline. It validates the live DEE4 backend, records storage/transfer/cache telemetry, and enables deferred CUDA stage profiling for bottleneck selection.",
+  "run_id": "p2.4-dee4-profile-v49",
   "cache_dtype": "fp4",
-  "expert_store": "safetensors",
+  "expert_store": "dee4",
   "dee4_validate_samples": 12,
-  "profile_stages": false,
+  "profile_stages": true,
   "n_tokens": 16
 }
