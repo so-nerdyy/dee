@@ -212,6 +212,179 @@ def write_evidence(name: str, payload: dict) -> None:
     temporary.replace(path)
 
 
+class RoutedExpertJournal:
+    """Durable, canonical route-ID journal for long full-model runs.
+
+    The native FFN already copies its compact ``[rows, topk]`` route matrix
+    into pinned host memory before dispatch.  The harness passes that existing
+    buffer here after each layer, so journaling adds no CUDA event, device
+    transfer, or synchronization.  Records are emitted strictly in
+    ``forward_step, layer, token_row, topk_rank`` order.  Each record hashes
+    its canonical JSON payload, including the preceding record hash, forming
+    an incrementally verifiable chain.
+
+    Every layer is flushed to the kernel immediately.  Layer ``n_layers - 1``
+    also fsyncs the file before the generated-token checkpoint is allowed to
+    link to it.  This keeps the per-layer failure boundary visible while
+    limiting the stronger filesystem barrier to once per model forward.
+    """
+
+    SCHEMA_VERSION = 1
+    GENESIS_SHA256 = hashlib.sha256(b"").hexdigest()
+    CANONICAL_ORDER = "forward_step,layer,token_row,topk_rank"
+
+    def __init__(self, path: Path, *, run_id: str, n_layers: int,
+                 topk: int) -> None:
+        if n_layers <= 0 or topk <= 0:
+            raise ValueError("route journal n_layers/topk must be positive")
+        self.path = Path(path)
+        self.run_id = str(run_id)
+        self.n_layers = int(n_layers)
+        self.topk = int(topk)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._handle = open(self.path, "w", encoding="utf-8", newline="\n")
+        self._chain_sha256 = self.GENESIS_SHA256
+        self._record_count = 0
+        self._completed_forwards = 0
+        self._checkpoint_steps: list[int] = []
+        self._last_step: int | None = None
+        self._last_layer: int | None = None
+        self._closed = False
+
+    @staticmethod
+    def _canonical_bytes(payload: dict) -> bytes:
+        return json.dumps(
+            payload, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=True).encode("utf-8")
+
+    def append_layer(self, *, step: int, start_pos: int, layer: int,
+                     device: str, expert_ids) -> dict:
+        """Append one layer's rank-ordered route matrix and flush it."""
+        if self._closed:
+            raise RuntimeError("route journal is closed")
+        expected_step = self._completed_forwards
+        expected_layer = self._record_count % self.n_layers
+        if int(step) != expected_step or int(layer) != expected_layer:
+            raise RuntimeError(
+                "non-canonical route journal order: "
+                f"got step={step} layer={layer}, expected "
+                f"step={expected_step} layer={expected_layer}")
+        raw_rows = (expert_ids.tolist()
+                    if hasattr(expert_ids, "tolist") else expert_ids)
+        if not isinstance(raw_rows, (list, tuple)) or not raw_rows:
+            raise ValueError("route journal expert_ids must be a non-empty matrix")
+        rows: list[list[int]] = []
+        for row_index, raw_row in enumerate(raw_rows):
+            if not isinstance(raw_row, (list, tuple)):
+                raise ValueError(
+                    f"route journal row {row_index} is not a sequence")
+            row = [int(value) for value in raw_row]
+            if len(row) != self.topk:
+                raise ValueError(
+                    f"route journal row {row_index} topk={len(row)}; "
+                    f"expected {self.topk}")
+            if any(value < 0 for value in row):
+                raise ValueError(
+                    f"route journal row {row_index} has negative expert id")
+            rows.append(row)
+
+        payload = {
+            "schema_version": self.SCHEMA_VERSION,
+            "run_id": self.run_id,
+            "record_index": self._record_count,
+            "forward_step": int(step),
+            "phase": "prefill" if int(step) == 0 else "decode",
+            "start_pos": int(start_pos),
+            "layer": int(layer),
+            "device": str(device),
+            "token_rows": len(rows),
+            "topk": self.topk,
+            "expert_ids_rank_order": rows,
+            "canonical_order": self.CANONICAL_ORDER,
+            "previous_chain_sha256": self._chain_sha256,
+        }
+        chain_sha256 = hashlib.sha256(
+            self._canonical_bytes(payload)).hexdigest()
+        record = {**payload, "chain_sha256": chain_sha256}
+        line = self._canonical_bytes(record).decode("utf-8") + "\n"
+        self._handle.write(line)
+        self._handle.flush()
+
+        self._chain_sha256 = chain_sha256
+        self._record_count += 1
+        self._last_step = int(step)
+        self._last_layer = int(layer)
+        if int(layer) == self.n_layers - 1:
+            # This is the durable boundary referenced by the token journal.
+            os.fsync(self._handle.fileno())
+            self._completed_forwards += 1
+        return record
+
+    def checkpoint_link(self, step: int) -> dict:
+        """Return a fail-closed link from one token checkpoint to layer N-1."""
+        step = int(step)
+        if step != len(self._checkpoint_steps):
+            raise RuntimeError(
+                f"route checkpoint link out of order: step={step}, "
+                f"expected={len(self._checkpoint_steps)}")
+        if (self._last_step != step
+                or self._last_layer != self.n_layers - 1
+                or self._completed_forwards != step + 1):
+            raise RuntimeError(
+                "token checkpoint cannot link an incomplete route forward: "
+                f"step={step} last_step={self._last_step} "
+                f"last_layer={self._last_layer} "
+                f"completed={self._completed_forwards}")
+        self._checkpoint_steps.append(step)
+        return {
+            "artifact": self.path.name,
+            "schema_version": self.SCHEMA_VERSION,
+            "forward_step": step,
+            "terminal_layer": self.n_layers - 1,
+            "record_count": self._record_count,
+            "chain_sha256": self._chain_sha256,
+            "file_bytes": self.path.stat().st_size,
+            "layer_flush_complete": True,
+            "terminal_layer_fsync_complete": True,
+        }
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._handle.flush()
+        os.fsync(self._handle.fileno())
+        self._handle.close()
+        self._closed = True
+
+    def summary(self) -> dict:
+        if not self._closed:
+            self._handle.flush()
+        file_bytes = self.path.stat().st_size
+        return {
+            "artifact": self.path.name,
+            "schema_version": self.SCHEMA_VERSION,
+            "canonical_order": self.CANONICAL_ORDER,
+            "n_layers": self.n_layers,
+            "topk": self.topk,
+            "record_count": self._record_count,
+            "completed_forwards": self._completed_forwards,
+            "checkpoint_link_count": len(self._checkpoint_steps),
+            "checkpoint_steps": list(self._checkpoint_steps),
+            "last_forward_step": self._last_step,
+            "last_layer": self._last_layer,
+            "genesis_sha256": self.GENESIS_SHA256,
+            "chain_sha256": self._chain_sha256,
+            "file_sha256": sha256_file(self.path),
+            "file_bytes": file_bytes,
+            "flush_each_layer": True,
+            "fsync_each_completed_forward": True,
+            "source": "existing_native_pinned_route_id_buffer",
+            "adds_cuda_events": False,
+            "adds_device_transfers": False,
+            "adds_host_synchronizations": False,
+        }
+
+
 def classify_full_generation(result: dict) -> tuple[str, dict, bool]:
     """Apply the sealed exactness contract and hardware gate fail-closed."""
     tokens = [int(token) for token in result.get("generated_token_ids", [])]
@@ -261,6 +434,24 @@ def classify_full_generation(result: dict) -> tuple[str, dict, bool]:
             for key in engine_keys)
     no_cpu_expert_fallback = (
         runtime.get("backends", {}).get("cpu_expert_execution") is False)
+    route_journal = result.get("route_journal", {})
+    route_journal_complete = (
+        int(route_journal.get("schema_version", -1)) == 1
+        and route_journal.get("canonical_order")
+        == RoutedExpertJournal.CANONICAL_ORDER
+        and int(route_journal.get("n_layers", -1)) == 43
+        and int(route_journal.get("topk", -1)) == 6
+        and int(route_journal.get("record_count", -1)) == len(tokens) * 43
+        and int(route_journal.get("completed_forwards", -1)) == len(tokens)
+        and int(route_journal.get("checkpoint_link_count", -1)) == len(tokens)
+        and route_journal.get("checkpoint_steps") == list(range(len(tokens)))
+        and int(route_journal.get("last_forward_step", -1)) == len(tokens) - 1
+        and int(route_journal.get("last_layer", -1)) == 42
+        and len(str(route_journal.get("chain_sha256", ""))) == 64
+        and len(str(route_journal.get("file_sha256", ""))) == 64
+        and route_journal.get("flush_each_layer") is True
+        and route_journal.get("fsync_each_completed_forward") is True
+    )
     t4_hardware = (
         int(gpu.get("gpu_count", 0)) == 2
         and len(gpu_lines) == 2
@@ -282,6 +473,7 @@ def classify_full_generation(result: dict) -> tuple[str, dict, bool]:
         "effective_expert_store": expected_store,
         "dee4_contiguous_reads": dee4_contiguous,
         "dee4_integrity_identity": dee4_integrity,
+        "route_journal_complete": route_journal_complete,
         "required_performance_hardware": t4_hardware,
     }
     token_or_text_failed = not (
@@ -1134,12 +1326,42 @@ def main() -> int:
     # RESULT block below mirrors the old single-JSON shape.
     CHECKPOINT = WORK / "generated_checkpoint.jsonl"
     cp_handle = open(CHECKPOINT, "w", encoding="utf-8")
+    ROUTE_JOURNAL_PATH = WORK / "routed_experts.jsonl"
+    route_journal = RoutedExpertJournal(
+        ROUTE_JOURNAL_PATH, run_id=RUN_ID, n_layers=cfg.n_layers,
+        topk=cfg.topk)
+    route_step = 0
+    route_start_pos = 0
+
+    def _route_checkpoint(layer_id: int) -> None:
+        """Persist the exact CPU route buffer already consumed by native."""
+        nonlocal route_step, route_start_pos
+        layer = model.layer(int(layer_id))
+        ids_host = getattr(
+            layer.ffn_fn, "_native_route_ids_host", None)
+        if ids_host is None:
+            raise RuntimeError(
+                f"native route buffer unavailable after layer {layer_id}")
+        if bool(getattr(ids_host, "is_cuda", False)):
+            raise RuntimeError(
+                f"route journal refuses a device read at layer {layer_id}")
+        route_journal.append_layer(
+            step=route_step, start_pos=route_start_pos,
+            layer=int(layer_id), device=str(layer.device),
+            expert_ids=ids_host)
+        if int(layer_id) == cfg.n_layers - 1:
+            route_step += 1
+            route_start_pos = len(ids) + route_step - 1
 
     def _token_checkpoint(step: int, tok: int) -> None:
         mem = host_mem_available_gib()
         rec = {"step": step, "token_id": int(tok),
                "elapsed_s": round(time.monotonic() - t0, 2),
                "host_mem_available_gib": round(mem, 2)}
+        # This link is admitted only after the same forward's layer 42 row
+        # has been flushed and fsynced.  A token checkpoint can therefore
+        # never claim a partially journaled route.
+        rec["route_journal"] = route_journal.checkpoint_link(step)
         # v15 diagnostics: process + system memory breakdown and engine
         # cache counters, so a v12-style OOM is attributable to a component
         # (heap vs pinned vs page cache) instead of a mystery "leak".
@@ -1172,6 +1394,7 @@ def main() -> int:
             pass
         cp_handle.write(json.dumps(rec) + "\n")
         cp_handle.flush()
+        os.fsync(cp_handle.fileno())
         if step % 4 == 0 or mem < 4.0:
             log(f"[tok {step}] id={int(tok)} elapsed={rec['elapsed_s']}s "
                 f"mem_avail={rec['host_mem_available_gib']}GiB")
@@ -1183,11 +1406,16 @@ def main() -> int:
                 f"hp0_evict={hp0.get('evictions', 0)}")
 
     t0 = time.monotonic()
-    toks = model.generate(input_ids, max_new_tokens=N_TOKENS,
-                          decode_timings_ms=decode_ms,
-                          post_step_hook=_token_checkpoint)
-    wall_s = time.monotonic() - t0
-    cp_handle.close()
+    try:
+        toks = model.generate(
+            input_ids, max_new_tokens=N_TOKENS,
+            decode_timings_ms=decode_ms,
+            post_step_hook=_token_checkpoint,
+            post_layer_hook=_route_checkpoint)
+        wall_s = time.monotonic() - t0
+    finally:
+        route_journal.close()
+        cp_handle.close()
     log(f"decode done in {wall_s:.1f}s, {len(toks)} tokens")
 
     prefill_ms = decode_ms[0] if decode_ms else 0.0
@@ -1239,6 +1467,7 @@ def main() -> int:
         "layer_count_executed": int(
             model.last_execution.get("layers_executed", -1)),
         "execution_terminal": dict(model.last_execution),
+        "route_journal": route_journal.summary(),
     }
 
     # Stage 0 instrumentation: per-engine expert-cache + host-pack + stage
@@ -1494,7 +1723,7 @@ def main() -> int:
             name: sha256_file(WORK / name)
             for name in (
                 "environment.json", "run_config.json", "result.json",
-                "profile.json", "memory.json")
+                "profile.json", "memory.json", "routed_experts.jsonl")
         },
     })
     write_evidence("integrity.json", integrity_payload)
@@ -1585,7 +1814,8 @@ if __name__ == "__main__":
                 name: sha256_file(WORK / name)
                 for name in (
                     "environment.json", "run_config.json", "result.json",
-                    "profile.json", "memory.json")
+                    "profile.json", "memory.json", "routed_experts.jsonl")
+                if (WORK / name).is_file()
             },
         })
         write_evidence("integrity.json", failed_integrity)

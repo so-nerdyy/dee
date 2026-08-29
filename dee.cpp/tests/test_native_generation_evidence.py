@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -36,6 +39,23 @@ class FullGenerationClassificationTests(unittest.TestCase):
             "source_reads": 10,
             "contiguous_source_reads": 10,
         }
+        route_journal = {
+            "artifact": "routed_experts.jsonl",
+            "schema_version": 1,
+            "canonical_order": MODULE.RoutedExpertJournal.CANONICAL_ORDER,
+            "n_layers": 43,
+            "topk": 6,
+            "record_count": 16 * 43,
+            "completed_forwards": 16,
+            "checkpoint_link_count": 16,
+            "checkpoint_steps": list(range(16)),
+            "last_forward_step": 15,
+            "last_layer": 42,
+            "chain_sha256": "b" * 64,
+            "file_sha256": "c" * 64,
+            "flush_each_layer": True,
+            "fsync_each_completed_forward": True,
+        }
         return {
             "generated_token_ids": list(MODULE.SEALED_TOKEN_IDS),
             "decoded_text": MODULE.SEALED_DECODED_TEXT,
@@ -50,6 +70,7 @@ class FullGenerationClassificationTests(unittest.TestCase):
             "engine_config": {
                 "cuda0": dict(engine_config), "cuda1": dict(engine_config)},
             "expert_store": {"cuda0": dict(store), "cuda1": dict(store)},
+            "route_journal": route_journal,
             "model_runtime_snapshot": {
                 "backends": {
                     "router": "torch_cuda_validated_ds9_path",
@@ -115,6 +136,80 @@ class FullGenerationClassificationTests(unittest.TestCase):
         classification, gates, _ = MODULE.classify_full_generation(result)
         self.assertEqual("REJECT_INTEGRITY", classification)
         self.assertFalse(gates["dee4_contiguous_reads"])
+
+    def test_incomplete_route_journal_fails_integrity_closed(self) -> None:
+        result = self.valid_result()
+        result["route_journal"]["last_layer"] = 41
+        classification, gates, performance_eligible = (
+            MODULE.classify_full_generation(result))
+        self.assertEqual("REJECT_INTEGRITY", classification)
+        self.assertFalse(gates["route_journal_complete"])
+        self.assertFalse(performance_eligible)
+
+
+class RoutedExpertJournalTests(unittest.TestCase):
+    @staticmethod
+    def _payload_bytes(record: dict) -> bytes:
+        payload = dict(record)
+        payload.pop("chain_sha256")
+        return json.dumps(
+            payload, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=True).encode("utf-8")
+
+    def test_canonical_hash_chain_and_token_checkpoint_link(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "routed_experts.jsonl"
+            journal = MODULE.RoutedExpertJournal(
+                path, run_id="test-run", n_layers=3, topk=2)
+            matrices = (
+                [[9, 1], [7, 3]],
+                [[8, 2], [6, 4]],
+                [[5, 0], [11, 10]],
+            )
+            for layer, matrix in enumerate(matrices):
+                journal.append_layer(
+                    step=0, start_pos=0, layer=layer, device="cuda:0",
+                    expert_ids=matrix)
+            link = journal.checkpoint_link(0)
+            journal.close()
+            summary = journal.summary()
+
+            records = [
+                json.loads(line)
+                for line in path.read_text("utf-8").splitlines()
+            ]
+            self.assertEqual(3, len(records))
+            previous = MODULE.RoutedExpertJournal.GENESIS_SHA256
+            for layer, (record, matrix) in enumerate(zip(records, matrices)):
+                self.assertEqual(layer, record["layer"])
+                self.assertEqual(matrix, record["expert_ids_rank_order"])
+                self.assertEqual(previous, record["previous_chain_sha256"])
+                expected = hashlib.sha256(
+                    self._payload_bytes(record)).hexdigest()
+                self.assertEqual(expected, record["chain_sha256"])
+                previous = expected
+
+            self.assertEqual(2, records[-1]["layer"])
+            self.assertEqual(previous, link["chain_sha256"])
+            self.assertEqual(3, link["record_count"])
+            self.assertTrue(link["terminal_layer_fsync_complete"])
+            self.assertEqual(1, summary["completed_forwards"])
+            self.assertEqual([0], summary["checkpoint_steps"])
+            self.assertEqual(MODULE.sha256_file(path), summary["file_sha256"])
+            self.assertFalse(summary["adds_cuda_events"])
+            self.assertFalse(summary["adds_device_transfers"])
+            self.assertFalse(summary["adds_host_synchronizations"])
+
+    def test_noncanonical_layer_order_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            journal = MODULE.RoutedExpertJournal(
+                Path(directory) / "routes.jsonl",
+                run_id="test-run", n_layers=3, topk=2)
+            with self.assertRaisesRegex(RuntimeError, "non-canonical"):
+                journal.append_layer(
+                    step=0, start_pos=0, layer=1, device="cuda:0",
+                    expert_ids=[[1, 0]])
+            journal.close()
 
 
 if __name__ == "__main__":
