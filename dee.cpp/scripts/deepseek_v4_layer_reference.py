@@ -502,10 +502,16 @@ class DeepseekV4Layer:
         # dispatch/native, combine, shared expert, output cast) into the same
         # totals so the full-model decomposition separates routed MoE from the
         # shared expert as the storage-matrix contract requires.
+        ffn_event_interval_count = 0
+        ffn_phase_names: list[str] = []
         ffn_snapshot_fn = getattr(self.ffn_fn, "stage_profile_snapshot", None)
         if ffn_snapshot_fn is not None:
             ffn_snapshot = ffn_snapshot_fn()
             if ffn_snapshot.get("enabled"):
+                ffn_phase_names = list(ffn_snapshot["totals_ms"])
+                ffn_event_interval_count = int(ffn_snapshot.get(
+                    "event_interval_count",
+                    int(ffn_snapshot.get("calls", 0)) * len(ffn_phase_names)))
                 for name, milliseconds in ffn_snapshot["totals_ms"].items():
                     totals[name] = totals.get(name, 0.0) + float(milliseconds)
                 for start_key, values in ffn_snapshot["per_start_pos_ms"].items():
@@ -518,6 +524,17 @@ class DeepseekV4Layer:
             "layer": self.layer_id,
             "device": str(self.device),
             "calls": len(rows),
+            "coarse_event_interval_count": len(rows) * len(phase_names),
+            "ffn_event_interval_count": ffn_event_interval_count,
+            "event_interval_count": (
+                len(rows) * len(phase_names) + ffn_event_interval_count),
+            # routed_and_shared_ffn encloses every fine FFN phase.  Keeping
+            # both is useful for cross-checking event coverage, but callers
+            # must not sum every totals_ms key as if they were disjoint.
+            "totals_are_additive": not bool(ffn_phase_names),
+            "overlapping_total_groups": ({
+                "routed_and_shared_ffn": ffn_phase_names,
+            } if ffn_phase_names else {}),
             "totals_ms": {
                 name: round(milliseconds, 6)
                 for name, milliseconds in totals.items()

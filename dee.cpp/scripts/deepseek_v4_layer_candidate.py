@@ -295,6 +295,11 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
 
     def _profile_ffn_begin(self, x: torch.Tensor) -> None:
         self._active_profile_events = None
+        # Begin is also the recovery boundary for a previous call that raised
+        # after recording only some of its events.  Without resetting the
+        # cursor here, a later call starts at the stale boundary and leaves
+        # one or more newly allocated events unrecorded.
+        self._active_profile_boundary = 1
         if not self.profile_stages or not x.is_cuda:
             return
         stream = torch.cuda.current_stream(x.device)
@@ -343,6 +348,7 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
                 "enabled": False,
                 "layer": self.layer_id,
                 "calls": 0,
+                "event_interval_count": 0,
                 "totals_ms": {},
             }
         totals = {name: 0.0 for name in self._PROFILE_PHASES}
@@ -375,6 +381,7 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
             "layer": self.layer_id,
             "device": str(self.device),
             "calls": len(calls),
+            "event_interval_count": len(calls) * len(self._PROFILE_PHASES),
             "totals_ms": {
                 name: round(milliseconds, 6)
                 for name, milliseconds in totals.items()

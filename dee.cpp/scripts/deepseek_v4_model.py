@@ -663,8 +663,27 @@ class DeepseekV4Model:
             "enabled": True,
             "timing_method": "CUDA events resolved after measured generation",
             "layer_count": len(layers),
+            "coarse_event_interval_count": sum(
+                int(layer.get("coarse_event_interval_count",
+                              int(layer["calls"]) * 5))
+                for layer in layers),
+            "ffn_event_interval_count": sum(
+                int(layer.get("ffn_event_interval_count", 0))
+                for layer in layers),
             "event_interval_count": sum(
-                int(layer["calls"]) * 5 for layer in layers),
+                int(layer.get("event_interval_count",
+                              int(layer["calls"]) * 5))
+                for layer in layers),
+            "totals_are_additive": all(
+                bool(layer.get("totals_are_additive", True))
+                for layer in layers),
+            "overlapping_total_groups": {
+                "routed_and_shared_ffn": [
+                    "router", "routed_dispatch_and_native",
+                    "routed_combine", "shared_expert", "output_cast",
+                ],
+            } if any(not bool(layer.get("totals_are_additive", True))
+                     for layer in layers) else {},
             "totals_ms": {
                 name: round(milliseconds, 6)
                 for name, milliseconds in totals.items()
