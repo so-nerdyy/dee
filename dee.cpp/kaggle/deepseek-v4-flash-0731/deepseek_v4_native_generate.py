@@ -76,6 +76,19 @@ EXPERT_STORE_BACKEND = os.environ.get(
     "NATIVE_EXPERT_STORE", "safetensors").strip().lower()
 DEE4_VALIDATE_SAMPLES = int(os.environ.get("NATIVE_DEE4_VALIDATE_SAMPLES", "12"))
 DEE4_DIR = Path("/tmp/dsv4-dee4-v2")
+DEE4_TRACE_DIR = Path("/tmp/dsv4-dee4-v3-trace")
+DEE4_TRACE_PATH = Path(os.environ.get(
+    "NATIVE_DEE4_TRACE_PATH", str(DEE4_TRACE_DIR)))
+# V50 is the committed canonical route trace that defines this sparse store.
+# Do not accept another well-formed journal here: the v51 bank must be bound
+# to the exact sealed v50 bytes and terminal hash chain.
+V50_TRACE_JOURNAL_RELATIVE = Path(
+    "benchmark_reports/deepseek-v4-flash-0731-t4/"
+    "v50-evidence-20260829T195940Z/routed_experts.jsonl")
+V50_TRACE_JOURNAL_SHA256 = (
+    "665aac3e8db570237c6dc6acaf08dc39f2af890e8a04e400ce7154f1a858dae1")
+V50_TRACE_FINAL_CHAIN_SHA256 = (
+    "086f8ca83b6a3c467cdf950096141fa9bc3e55a285d7d1fed8a0ad9913e3eb3d")
 # Stage 1b (v8/v9/v10/v11/v12): host RAM LRU of packed FP4 expert bytes
 # (12.6 MB/entry).  The 16-token working set is ~2,365 pairs ≈ 30 GiB;
 # per-engine it is NOT symmetric: the v8 run measured 1,247 unique experts on
@@ -133,7 +146,7 @@ FORCE_TMP = os.environ.get("NATIVE_FORCE_TMP", "1") == "1"
 # overrides still win when actually set.
 def apply_run_config() -> None:
     global CACHE_DTYPE, N_TOKENS, EXPERT_STORE_BACKEND, DEE4_VALIDATE_SAMPLES
-    global PROFILE_STAGES, RUN_ID
+    global PROFILE_STAGES, RUN_ID, DEE4_TRACE_PATH
     cfg_path = DEE / "kaggle/deepseek-v4-flash-0731/run_config.json"
     if not cfg_path.is_file():
         log(f"[config] run_config.json not found at {cfg_path}; using defaults")
@@ -149,13 +162,15 @@ def apply_run_config() -> None:
     if not os.environ.get("NATIVE_DEE4_VALIDATE_SAMPLES"):
         DEE4_VALIDATE_SAMPLES = int(
             cfg.get("dee4_validate_samples", DEE4_VALIDATE_SAMPLES))
+    if not os.environ.get("NATIVE_DEE4_TRACE_PATH"):
+        DEE4_TRACE_PATH = Path(cfg.get("dee4_trace_path", DEE4_TRACE_PATH))
     if not os.environ.get("NATIVE_PROFILE"):
         PROFILE_STAGES = bool(cfg.get("profile_stages", PROFILE_STAGES))
     if not os.environ.get("NATIVE_RUN_ID"):
         RUN_ID = str(cfg.get("run_id", RUN_ID))
     if CACHE_DTYPE not in {"fp16", "fp4"}:
         raise ValueError(f"unsupported cache_dtype: {CACHE_DTYPE!r}")
-    if EXPERT_STORE_BACKEND not in {"safetensors", "dee4"}:
+    if EXPERT_STORE_BACKEND not in {"safetensors", "dee4", "dee4_trace"}:
         raise ValueError(
             f"unsupported expert_store: {EXPERT_STORE_BACKEND!r}")
     if DEE4_VALIDATE_SAMPLES <= 0:
@@ -164,6 +179,7 @@ def apply_run_config() -> None:
         "[config] run_config.json: "
         f"run_id={RUN_ID} cache_dtype={CACHE_DTYPE} n_tokens={N_TOKENS} "
         f"expert_store={EXPERT_STORE_BACKEND} "
+        f"dee4_trace_path={DEE4_TRACE_PATH} "
         f"dee4_validate_samples={DEE4_VALIDATE_SAMPLES} "
         f"profile_stages={PROFILE_STAGES}"
     )
@@ -423,7 +439,7 @@ def classify_full_generation(result: dict) -> tuple[str, dict, bool]:
         for key in engine_keys)
     dee4_contiguous = True
     dee4_integrity = True
-    if EXPERT_STORE_BACKEND == "dee4":
+    if EXPERT_STORE_BACKEND in {"dee4", "dee4_trace"}:
         dee4_contiguous = all(
             int(expert_store.get(key, {}).get("source_reads", 0)) > 0
             and int(expert_store.get(key, {}).get("contiguous_source_reads", -1))
@@ -432,6 +448,18 @@ def classify_full_generation(result: dict) -> tuple[str, dict, bool]:
         dee4_integrity = all(
             len(str(expert_store.get(key, {}).get("integrity_identity", ""))) == 64
             for key in engine_keys)
+    trace_store = result.get("dee4_trace_validation", {})
+    trace_store_linked = True
+    if EXPERT_STORE_BACKEND == "dee4_trace":
+        trace_store_linked = (
+            trace_store.get("success") is True
+            and trace_store.get("format") == "dee4-v3-trace"
+            and trace_store.get("record_indices_contiguous") is True
+            and trace_store.get("integrity_records_complete") is True
+            and all(len(str(trace_store.get(key, ""))) == 64 for key in (
+                "data_sha256", "trace_journal_sha256",
+                "trace_final_chain_sha256", "selection_sha256"))
+        )
     no_cpu_expert_fallback = (
         runtime.get("backends", {}).get("cpu_expert_execution") is False)
     route_journal = result.get("route_journal", {})
@@ -473,6 +501,7 @@ def classify_full_generation(result: dict) -> tuple[str, dict, bool]:
         "effective_expert_store": expected_store,
         "dee4_contiguous_reads": dee4_contiguous,
         "dee4_integrity_identity": dee4_integrity,
+        "dee4_trace_metadata_linkage": trace_store_linked,
         "route_journal_complete": route_journal_complete,
         "required_performance_hardware": t4_hardware,
     }
@@ -906,6 +935,14 @@ def main() -> int:
             FORCE_TMP = False
             log("DEE4 storage mode: canonical shards stay on dataset mount; "
                 "expert-major bank will be written to /tmp")
+    elif EXPERT_STORE_BACKEND == "dee4_trace":
+        if tmp_free and tmp_free < 45:
+            raise RuntimeError(
+                f"DEE4 trace requires at least 45 GiB free in /tmp, found {tmp_free}")
+        if DATASET_DIR.is_dir():
+            FORCE_TMP = False
+            log("DEE4 trace storage mode: canonical shards stay on dataset mount; "
+                f"sparse expert bank is {DEE4_TRACE_PATH}")
     elif FORCE_TMP and tmp_free and tmp_free < 400:
         log(f"RESOURCES-GATE: /tmp has {tmp_free} GiB (<400); "
             f"disabling FORCE_TMP staging, will use dataset mount/download "
@@ -941,6 +978,7 @@ def main() -> int:
         "run_id": RUN_ID,
         "cache_dtype": CACHE_DTYPE,
         "expert_store": EXPERT_STORE_BACKEND,
+        "dee4_trace_path": str(DEE4_TRACE_PATH),
         "dee4_validate_samples": DEE4_VALIDATE_SAMPLES,
         "profile_stages": PROFILE_STAGES,
         "n_tokens": N_TOKENS,
@@ -1016,9 +1054,10 @@ def main() -> int:
     shard_paths = download_all_shards()
     mem_report("post-download")
 
-    # ── DEE4 v2: component evidence or live serving bank ──────────────
-    log(f"=== DEE4 v2 prepare (backend={EXPERT_STORE_BACKEND}) ===")
+    # ── DEE4: component evidence or selected live serving bank ────────
+    log(f"=== DEE4 prepare (backend={EXPERT_STORE_BACKEND}) ===")
     dee4_store_path = ""
+    dee4_trace_validation = {}
     try:
         sys.path.insert(0, str(DEE / "kaggle" / "deepseek-v4-flash-0731"))
         from repack_to_dee4 import (
@@ -1026,7 +1065,9 @@ def main() -> int:
             benchmark_dee4_read as _b4r,
             benchmark_dee4_serving_access as _b4s,
             repack,
+            repack_trace as _repack_trace,
             validate_dee4_against_safetensors as _validate_dee4,
+            validate_dee4_trace_store as _validate_dee4_trace,
         )
         import struct as _struct
         _source_dir = Path(shard_paths[0]).parent
@@ -1039,20 +1080,78 @@ def main() -> int:
             _idx_data = urllib.request.urlopen(_idx_url, timeout=300).read()
             _idx.write_bytes(_idx_data)
             log(f"P2.2: index downloaded ({len(_idx_data)} bytes)")
-        _dee4_out = (
-            DEE4_DIR if EXPERT_STORE_BACKEND == "dee4"
-            else Path("/tmp/dsv4-dee4-v2-component")
-        )
-        _end_layer = 43 if EXPERT_STORE_BACKEND == "dee4" else 3
-        _t0 = time.monotonic()
-        _dee4_rpt = repack(
-            _source_dir, _dee4_out, index_path=_idx,
-            start_layer=0, end_layer=_end_layer, dry_run=False)
-        _dt = time.monotonic() - _t0
-        _dee4_bench = _b4r(_dee4_out, n_experts=64)
-        _dee4_serving_bench = _b4s(_dee4_out, groups=8, topk=6)
-        (WORK / "dee4-serving-access-benchmark.json").write_text(
-            json.dumps(_dee4_serving_bench, indent=2), "utf-8")
+        if EXPERT_STORE_BACKEND == "dee4_trace":
+            _dee4_out = (DEE4_TRACE_PATH.parent
+                         if DEE4_TRACE_PATH.name == "metadata.json"
+                         else DEE4_TRACE_PATH)
+            _trace_metadata_path = (
+                DEE4_TRACE_PATH if DEE4_TRACE_PATH.name == "metadata.json"
+                else _dee4_out / "metadata.json")
+            _trace_journal = DEE / V50_TRACE_JOURNAL_RELATIVE
+            # A previous bank is evidence, not a cache to regenerate. Validate
+            # it in place; a missing metadata file in a non-empty directory is
+            # invalid rather than permission to overwrite partial/prior output.
+            _trace_created = False
+            if _trace_metadata_path.is_file():
+                log(f"DEE4 trace bank exists; validating {_trace_metadata_path}")
+            else:
+                if _dee4_out.exists() and any(_dee4_out.iterdir()):
+                    raise RuntimeError(
+                        "DEE4 trace metadata is absent from non-empty bank "
+                        f"directory; refusing to overwrite {_dee4_out}")
+                log("DEE4 trace bank absent; repacking the committed v50 "
+                    f"journal into {_dee4_out}")
+                _repack_trace(
+                    _source_dir, _dee4_out, _trace_journal, index_path=_idx,
+                    expected_journal_sha256=V50_TRACE_JOURNAL_SHA256,
+                    expected_final_chain_sha256=V50_TRACE_FINAL_CHAIN_SHA256,
+                )
+                _trace_created = True
+            _t0 = time.monotonic()
+            dee4_trace_validation = _validate_dee4_trace(
+                _trace_metadata_path, _trace_journal,
+                expected_journal_sha256=V50_TRACE_JOURNAL_SHA256,
+                expected_final_chain_sha256=V50_TRACE_FINAL_CHAIN_SHA256,
+            )
+            dee4_trace_validation.update({
+                "configured_metadata_path": str(_trace_metadata_path),
+                "created_this_run": _trace_created,
+            })
+            _dt = time.monotonic() - _t0
+            write_evidence("dee4-trace-validation.json", dee4_trace_validation)
+            _trace_metadata = json.loads(
+                (_dee4_out / "metadata.json").read_text("utf-8"))
+            _dee4_rpt = {
+                "record_bytes": int(_trace_metadata["record_bytes"]),
+                "total_bytes_repacked": int(_trace_metadata["total_bytes"]),
+                "data_sha256": _trace_metadata["data_sha256"],
+            }
+            _dee4_bench = _b4r(_dee4_out, n_experts=64)
+            _dee4_serving_bench = {
+                "groups": 0, "topk": 0, "request_count": 0,
+                "bytes_requested_per_sweep": 0,
+                "record_order_sha256": _trace_metadata["selection_sha256"],
+                "winner": None,
+                "unavailable_modes": [{
+                    "mode": "synthetic-serving-order",
+                    "reason": "trace store uses its committed sparse record map",
+                }],
+            }
+        else:
+            _dee4_out = (
+                DEE4_DIR if EXPERT_STORE_BACKEND == "dee4"
+                else Path("/tmp/dsv4-dee4-v2-component")
+            )
+            _end_layer = 43 if EXPERT_STORE_BACKEND == "dee4" else 3
+            _t0 = time.monotonic()
+            _dee4_rpt = repack(
+                _source_dir, _dee4_out, index_path=_idx,
+                start_layer=0, end_layer=_end_layer, dry_run=False)
+            _dt = time.monotonic() - _t0
+            _dee4_bench = _b4r(_dee4_out, n_experts=64)
+            _dee4_serving_bench = _b4s(_dee4_out, groups=8, topk=6)
+            (WORK / "dee4-serving-access-benchmark.json").write_text(
+                json.dumps(_dee4_serving_bench, indent=2), "utf-8")
         _dee4_validation = _validate_dee4(
             _source_dir, _dee4_out, index_path=_idx,
             sample_count=DEE4_VALIDATE_SAMPLES)
@@ -1146,7 +1245,8 @@ def main() -> int:
             f"p95={_serving_winner.get('p95_latency_ms', 0):.1f}ms "
             f"cold={_serving_winner.get('cold_cache_observed', False)}")
         _p22_evidence = {
-            "format": "dee4-v2",
+            "format": ("dee4-v3-trace" if EXPERT_STORE_BACKEND == "dee4_trace"
+                       else "dee4-v2"),
             "serving_backend": EXPERT_STORE_BACKEND,
             "dee4_mbps": _d4_mbps, "safetensors_mbps": _st_mbps,
             "speedup": _d4_mbps / max(_st_mbps, 0.01),
@@ -1171,9 +1271,14 @@ def main() -> int:
         }
         (WORK / "p2.2-dee4-evidence.json").write_text(
             json.dumps(_p22_evidence, indent=2), "utf-8")
-        if EXPERT_STORE_BACKEND == "dee4":
-            dee4_store_path = str(_dee4_out)
-            log(f"DEE4_LIVE backend=dee4 path={dee4_store_path} "
+        if EXPERT_STORE_BACKEND in {"dee4", "dee4_trace"}:
+            # Preserve the configured metadata-file path in result evidence and
+            # pass that same exact path to the native store. The native reader
+            # supports either a bank directory or its metadata file.
+            dee4_store_path = (
+                str(_trace_metadata_path)
+                if EXPERT_STORE_BACKEND == "dee4_trace" else str(_dee4_out))
+            log(f"DEE4_LIVE backend={EXPERT_STORE_BACKEND} path={dee4_store_path} "
                 f"identity={_dee4_rpt['data_sha256']}")
         else:
             # Component-only evidence must not occupy runtime disk or be
@@ -1183,7 +1288,7 @@ def main() -> int:
         log(f"DEE4 prepare failed: {_e}")
         import traceback as _tb
         _tb.print_exc()
-        if EXPERT_STORE_BACKEND == "dee4":
+        if EXPERT_STORE_BACKEND in {"dee4", "dee4_trace"}:
             raise
 
     sys.path.insert(0, str(DEE))
@@ -1468,6 +1573,7 @@ def main() -> int:
             model.last_execution.get("layers_executed", -1)),
         "execution_terminal": dict(model.last_execution),
         "route_journal": route_journal.summary(),
+        "dee4_trace_validation": dee4_trace_validation,
     }
 
     # Stage 0 instrumentation: per-engine expert-cache + host-pack + stage
@@ -1682,6 +1788,7 @@ def main() -> int:
         "model_cuda_stage_profile": result.get("model_cuda_stage_profile", {}),
         "engine_stats": result.get("engine_stats", {}),
         "expert_store": result.get("expert_store", {}),
+        "dee4_trace_validation": result.get("dee4_trace_validation", {}),
         "host_pack": result.get("host_pack", {}),
         "byte_accounting": result["byte_accounting"],
         "per_token_accounting": result["per_token_accounting"],
@@ -1719,6 +1826,7 @@ def main() -> int:
             text.encode("utf-8")).hexdigest(),
         "sealed_contract_gates": gates,
         "expert_store": result.get("expert_store", {}),
+        "dee4_trace_validation": result.get("dee4_trace_validation", {}),
         "artifact_sha256": {
             name: sha256_file(WORK / name)
             for name in (
@@ -1726,6 +1834,9 @@ def main() -> int:
                 "profile.json", "memory.json", "routed_experts.jsonl")
         },
     })
+    if EXPERT_STORE_BACKEND == "dee4_trace":
+        integrity_payload["artifact_sha256"]["dee4-trace-validation.json"] = (
+            sha256_file(WORK / "dee4-trace-validation.json"))
     write_evidence("integrity.json", integrity_payload)
     log("RESULT " + json.dumps(result))
     (WORK / "native-generate-result.json").write_text(

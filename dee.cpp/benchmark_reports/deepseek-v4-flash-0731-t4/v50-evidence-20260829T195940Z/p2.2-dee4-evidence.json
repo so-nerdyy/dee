@@ -1,0 +1,46 @@
+{
+  "format": "dee4-v2",
+  "serving_backend": "safetensors",
+  "dee4_mbps": 273.046,
+  "safetensors_mbps": 357.043346807847,
+  "speedup": 0.7647418792176722,
+  "repack_s": 154.62750845900007,
+  "repack_gib": 9.5625,
+  "io_count_reduction": "378 random -> 1 contiguous record stream",
+  "data_sha256": "2747bd8a6a7d71046d4a23aed6a9fe1325edc052cd44b357ab96a4305872d0ab",
+  "validation_samples": 12,
+  "validation_source_shards": [
+    "model-00002-of-00048.safetensors",
+    "model-00003-of-00048.safetensors",
+    "model-00004-of-00048.safetensors"
+  ],
+  "safetensors_storage": {
+    "resolved_path": "/kaggle/input/deepseek-v4-flash-0731-shards",
+    "device_id": 52,
+    "total_bytes": 109951162777600,
+    "free_bytes": 27792287727616,
+    "mountpoint": "/kaggle/input/deepseek-v4-flash-0731-shards",
+    "filesystem": "nfs",
+    "mount_source": "192.168.3.2:/data/kagglesdsdata/datasets/11667800/18963078/dl1m7dywcmnq",
+    "mount_options": "ro,relatime"
+  },
+  "serving_access_benchmark": {
+    "groups": 8,
+    "topk": 6,
+    "request_count": 144,
+    "bytes_requested_per_sweep": 1925185536,
+    "record_order_sha256": "a4c016ebd3de0d3c634c7422ff1a11ffac2a22561ab6da113db633fbcc364856",
+    "winner": {
+      "mode": "serving_async_pread_q8",
+      "queue_depth": 8,
+      "bandwidth_mib_s": 2879.972,
+      "p95_latency_ms": 37.443,
+      "cold_cache_observed": true
+    },
+    "unavailable_modes": []
+  },
+  "working_location_benchmark": {
+    "status": "NOT_REQUESTED",
+    "reason": "live backend is not DEE4"
+  }
+}

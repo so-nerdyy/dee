@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace dee {
@@ -64,6 +65,11 @@ class ExpertStore {
 public:
     virtual ~ExpertStore() = default;
     virtual bool get(int layer, int expert, ExpertView* out) = 0;
+    // Return one layout-compatible record for engine shape discovery. This is
+    // not a routed lookup: sparse stores may not contain expert zero.
+    virtual bool get_layout_reference(int preferred_layer, ExpertView* out) {
+        return get(preferred_layer, 0, out);
+    }
     virtual const char* backend_name() const = 0;
     virtual const std::string& integrity_identity() const = 0;
 
@@ -100,9 +106,9 @@ private:
     std::string identity_ = "canonical-safetensors-resolver";
 };
 
-// DEE4 v2 maps one fixed-stride, expert-major data file.  Every get() is pure
-// arithmetic: record = ((layer - start_layer) * experts_per_layer + expert),
-// followed by fixed component offsets inside that one contiguous record.
+// DEE4 maps one fixed-stride, expert-major data file. V2 uses dense arithmetic
+// lookup. V3-trace stores only the exact routed (layer, expert) union and uses
+// an immutable sorted index; missing records fail closed.
 class Dee4ExpertStore final : public ExpertStore {
 public:
     Dee4ExpertStore();
@@ -111,13 +117,16 @@ public:
     bool open(const std::string& directory_or_metadata);
     void close();
     bool get(int layer, int expert, ExpertView* out) override;
-    const char* backend_name() const override { return "dee4"; }
+    bool get_layout_reference(int preferred_layer, ExpertView* out) override;
+    const char* backend_name() const override { return backend_.c_str(); }
     const std::string& integrity_identity() const override { return identity_; }
 
     int start_layer() const { return start_layer_; }
     int num_layers() const { return num_layers_; }
     int experts_per_layer() const { return experts_per_layer_; }
     size_t record_bytes() const { return record_bytes_; }
+    bool trace_indexed() const { return trace_indexed_; }
+    size_t stored_records() const { return stored_records_; }
     const std::string& last_error() const { return last_error_; }
 
 private:
@@ -137,6 +146,15 @@ private:
     std::array<size_t, 3> scale_nbytes_{};
     std::array<size_t, 3> scale_out_{};
     std::array<size_t, 3> scale_in_{};
+    struct TraceRecord {
+        int layer = 0;
+        int expert = 0;
+        size_t record_index = 0;
+    };
+    std::vector<TraceRecord> trace_records_;
+    bool trace_indexed_ = false;
+    size_t stored_records_ = 0;
+    std::string backend_ = "dee4";
     std::string identity_;
     std::string last_error_;
 

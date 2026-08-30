@@ -2,6 +2,7 @@
 #include "dee/json_min.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -74,6 +75,14 @@ bool json_size_array(const json::Value* root, const char* key,
 bool checked_mul(size_t lhs, size_t rhs, size_t* out) {
     if (lhs != 0 && rhs > std::numeric_limits<size_t>::max() / lhs) return false;
     *out = lhs * rhs;
+    return true;
+}
+
+bool is_sha256_hex(const std::string& value) {
+    if (value.size() != 64) return false;
+    for (const unsigned char c : value) {
+        if (!std::isxdigit(c)) return false;
+    }
     return true;
 }
 
@@ -174,6 +183,10 @@ void Dee4ExpertStore::close() {
     num_layers_ = 0;
     experts_per_layer_ = 0;
     record_bytes_ = 0;
+    trace_records_.clear();
+    trace_indexed_ = false;
+    stored_records_ = 0;
+    backend_ = "dee4";
     identity_.clear();
 }
 
@@ -268,11 +281,13 @@ bool Dee4ExpertStore::open(const std::string& directory_or_metadata) {
     size_t start_layer = 0;
     size_t num_layers = 0;
     size_t experts_per_layer = 0;
-    if (!json_string(root.get(), "format", &format) || format != "dee4-v2" ||
+    if (!json_string(root.get(), "format", &format) ||
+        (format != "dee4-v2" && format != "dee4-v3-trace") ||
         !json_string(root.get(), "codec", &codec) ||
         codec != "deepseek-fp4-e2m1-e8m0" ||
         !json_string(root.get(), "data_file", &data_file) || data_file.empty() ||
-        !json_string(root.get(), "data_sha256", &identity_) || identity_.size() != 64 ||
+        !json_string(root.get(), "data_sha256", &identity_) ||
+        !is_sha256_hex(identity_) ||
         !json_nonnegative_int(root.get(), "start_layer", &start_layer) ||
         !json_nonnegative_int(root.get(), "num_layers", &num_layers) ||
         !json_nonnegative_int(root.get(), "experts_per_layer", &experts_per_layer) ||
@@ -292,6 +307,7 @@ bool Dee4ExpertStore::open(const std::string& directory_or_metadata) {
     if (num_layers == 0 || experts_per_layer == 0 || record_bytes_ == 0 ||
         start_layer > static_cast<size_t>(std::numeric_limits<int>::max()) ||
         num_layers > static_cast<size_t>(std::numeric_limits<int>::max()) ||
+        num_layers > static_cast<size_t>(std::numeric_limits<int>::max()) - start_layer ||
         experts_per_layer > static_cast<size_t>(std::numeric_limits<int>::max())) {
         last_error_ = "DEE4 geometry is empty or out of range";
         close();
@@ -320,7 +336,67 @@ bool Dee4ExpertStore::open(const std::string& directory_or_metadata) {
     }
     size_t total_experts = 0;
     size_t expected_size = 0;
-    if (!checked_mul(num_layers, experts_per_layer, &total_experts) ||
+    if (format == "dee4-v2") {
+        if (!checked_mul(num_layers, experts_per_layer, &total_experts)) {
+            last_error_ = "DEE4 total size overflow";
+            close();
+            return false;
+        }
+    } else {
+        size_t declared_total = 0;
+        std::string journal_sha;
+        std::string final_chain_sha;
+        std::string selection_sha;
+        const json::Value* records = root->find("records");
+        if (!json_nonnegative_int(root.get(), "total_experts", &declared_total) ||
+            declared_total == 0 || !records || !records->is_array() ||
+            records->arr.size() != declared_total ||
+            !json_string(root.get(), "trace_journal_sha256", &journal_sha) ||
+            !is_sha256_hex(journal_sha) ||
+            !json_string(root.get(), "trace_final_chain_sha256", &final_chain_sha) ||
+            !is_sha256_hex(final_chain_sha) ||
+            !json_string(root.get(), "selection_sha256", &selection_sha) ||
+            !is_sha256_hex(selection_sha)) {
+            last_error_ = "DEE4 trace index metadata is invalid";
+            close();
+            return false;
+        }
+        trace_records_.reserve(declared_total);
+        for (size_t index = 0; index < records->arr.size(); ++index) {
+            const json::Value* item = records->arr[index].get();
+            size_t layer = 0;
+            size_t expert = 0;
+            size_t record_index = 0;
+            if (!item || !item->is_object() ||
+                !json_nonnegative_int(item, "layer", &layer) ||
+                !json_nonnegative_int(item, "expert", &expert) ||
+                !json_nonnegative_int(item, "record_index", &record_index) ||
+                layer < start_layer || layer >= start_layer + num_layers ||
+                expert >= experts_per_layer || record_index != index ||
+                layer > static_cast<size_t>(std::numeric_limits<int>::max()) ||
+                expert > static_cast<size_t>(std::numeric_limits<int>::max())) {
+                last_error_ = "DEE4 trace record index is invalid";
+                close();
+                return false;
+            }
+            TraceRecord record{
+                static_cast<int>(layer), static_cast<int>(expert), record_index};
+            if (!trace_records_.empty()) {
+                const TraceRecord& previous = trace_records_.back();
+                if (record.layer < previous.layer ||
+                    (record.layer == previous.layer && record.expert <= previous.expert)) {
+                    last_error_ = "DEE4 trace records are not strictly sorted/unique";
+                    close();
+                    return false;
+                }
+            }
+            trace_records_.push_back(record);
+        }
+        total_experts = declared_total;
+        trace_indexed_ = true;
+        backend_ = "dee4_trace";
+    }
+    if (
         !checked_mul(total_experts, record_bytes_, &expected_size)) {
         last_error_ = "DEE4 total size overflow";
         close();
@@ -342,6 +418,7 @@ bool Dee4ExpertStore::open(const std::string& directory_or_metadata) {
     start_layer_ = static_cast<int>(start_layer);
     num_layers_ = static_cast<int>(num_layers);
     experts_per_layer_ = static_cast<int>(experts_per_layer);
+    stored_records_ = total_experts;
     return true;
 }
 
@@ -353,10 +430,27 @@ bool Dee4ExpertStore::get(int layer, int expert, ExpertView* out) {
         record_lookup(false);
         return false;
     }
-    const size_t record_index =
-        static_cast<size_t>(layer - start_layer_) *
-            static_cast<size_t>(experts_per_layer_) +
-        static_cast<size_t>(expert);
+    size_t record_index = 0;
+    if (trace_indexed_) {
+        const auto found = std::lower_bound(
+            trace_records_.begin(), trace_records_.end(),
+            std::pair<int, int>{layer, expert},
+            [](const TraceRecord& record, const std::pair<int, int>& key) {
+                return record.layer < key.first ||
+                    (record.layer == key.first && record.expert < key.second);
+            });
+        if (found == trace_records_.end() || found->layer != layer ||
+            found->expert != expert) {
+            record_lookup(false);
+            return false;
+        }
+        record_index = found->record_index;
+    } else {
+        record_index =
+            static_cast<size_t>(layer - start_layer_) *
+                static_cast<size_t>(experts_per_layer_) +
+            static_cast<size_t>(expert);
+    }
     const size_t record_offset = record_index * record_bytes_;
     if (record_offset > size_ || record_bytes_ > size_ - record_offset) {
         record_lookup(false);
@@ -388,6 +482,21 @@ bool Dee4ExpertStore::get(int layer, int expert, ExpertView* out) {
     record_lookup(true);
     *out = std::move(view);
     return true;
+}
+
+bool Dee4ExpertStore::get_layout_reference(int preferred_layer,
+                                           ExpertView* out) {
+    if (!trace_indexed_) return get(preferred_layer, 0, out);
+    if (!out || trace_records_.empty()) {
+        record_lookup(false);
+        return false;
+    }
+    const auto found = std::lower_bound(
+        trace_records_.begin(), trace_records_.end(), preferred_layer,
+        [](const TraceRecord& record, int layer) { return record.layer < layer; });
+    const TraceRecord& record = found != trace_records_.end()
+        ? *found : trace_records_.front();
+    return get(record.layer, record.expert, out);
 }
 
 }  // namespace dee

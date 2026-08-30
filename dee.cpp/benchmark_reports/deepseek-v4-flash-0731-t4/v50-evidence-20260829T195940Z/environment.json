@@ -1,0 +1,49 @@
+{
+  "recorded_at_utc": "2026-08-29T17:53:35Z",
+  "platform": "Linux-6.12.90+-x86_64-with-glibc2.35",
+  "python": "3.12.13 (main, Mar  4 2026, 09:23:07) [GCC 11.4.0]",
+  "gpu": {
+    "gpu_count": 2,
+    "nvidia_smi_lines": [
+      "GPU 0: Tesla T4 (UUID: GPU-864725dd-04f5-f946-aee4-c561aef46c64)",
+      "GPU 1: Tesla T4 (UUID: GPU-06db7fc9-38ef-2847-ff8c-f040ab5f4805)"
+    ],
+    "compute_capabilities": [
+      7.5,
+      7.5
+    ],
+    "single_gpu_mode": false,
+    "requested_gpu": "NvidiaTeslaT4",
+    "requested_gpu_count": 2
+  },
+  "gpu_driver_rows": [
+    "Tesla T4, 580.159.04, 15360 MiB",
+    "Tesla T4, 580.159.04, 15360 MiB"
+  ],
+  "storage_mount": "/kaggle/input/deepseek-v4-flash-0731-shards",
+  "storage_filesystem": "Kaggle dataset mount plus /tmp root overlay",
+  "startup_resources": {
+    "/": {
+      "total_gb": 8062.4,
+      "free_gb": 1026.8
+    },
+    "/tmp": {
+      "total_gb": 8062.4,
+      "free_gb": 1026.8
+    },
+    "/kaggle/working": {
+      "total_gb": 19.5,
+      "free_gb": 19.5
+    },
+    "ram_gb": {
+      "MemTotal": 31.3,
+      "MemAvailable": 30.4
+    }
+  },
+  "torch_version": "2.10.0+cu128",
+  "torch_cuda_version": "12.8",
+  "cuda_device_names": [
+    "Tesla T4",
+    "Tesla T4"
+  ]
+}

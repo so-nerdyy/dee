@@ -1,0 +1,124 @@
+{
+  "format": "dee4-v2",
+  "codec": "deepseek-fp4-e2m1-e8m0",
+  "source_repository": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "source_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+  "data_file": "experts.dee4",
+  "integrity_file": "integrity.jsonl",
+  "data_sha256": "2747bd8a6a7d71046d4a23aed6a9fe1325edc052cd44b357ab96a4305872d0ab",
+  "start_layer": 0,
+  "num_layers": 3,
+  "experts_per_layer": 256,
+  "total_experts": 768,
+  "total_bytes": 10267656192,
+  "group_size": 32,
+  "components": [
+    {
+      "projection": "w1",
+      "kind": "weight",
+      "dtype": "I8",
+      "shape": [
+        2048,
+        2048
+      ],
+      "offset": 0,
+      "nbytes": 4194304
+    },
+    {
+      "projection": "w3",
+      "kind": "weight",
+      "dtype": "I8",
+      "shape": [
+        2048,
+        2048
+      ],
+      "offset": 4194304,
+      "nbytes": 4194304
+    },
+    {
+      "projection": "w2",
+      "kind": "weight",
+      "dtype": "I8",
+      "shape": [
+        4096,
+        1024
+      ],
+      "offset": 8388608,
+      "nbytes": 4194304
+    },
+    {
+      "projection": "w1",
+      "kind": "scale",
+      "dtype": "F8_E8M0",
+      "shape": [
+        2048,
+        128
+      ],
+      "offset": 12582912,
+      "nbytes": 262144
+    },
+    {
+      "projection": "w3",
+      "kind": "scale",
+      "dtype": "F8_E8M0",
+      "shape": [
+        2048,
+        128
+      ],
+      "offset": 12845056,
+      "nbytes": 262144
+    },
+    {
+      "projection": "w2",
+      "kind": "scale",
+      "dtype": "F8_E8M0",
+      "shape": [
+        4096,
+        64
+      ],
+      "offset": 13107200,
+      "nbytes": 262144
+    }
+  ],
+  "record_bytes": 13369344,
+  "weight_offsets": [
+    0,
+    4194304,
+    8388608
+  ],
+  "weight_nbytes": [
+    4194304,
+    4194304,
+    4194304
+  ],
+  "weight_out": [
+    2048,
+    2048,
+    4096
+  ],
+  "weight_stored_in": [
+    2048,
+    2048,
+    1024
+  ],
+  "scale_offsets": [
+    12582912,
+    12845056,
+    13107200
+  ],
+  "scale_nbytes": [
+    262144,
+    262144,
+    262144
+  ],
+  "scale_out": [
+    2048,
+    2048,
+    4096
+  ],
+  "scale_in": [
+    128,
+    128,
+    64
+  ]
+}

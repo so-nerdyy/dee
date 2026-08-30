@@ -3305,7 +3305,8 @@ bool Engine::init(const EngineConfig& cfg) {
     ExpertView first_expert;
     if (deepseek_v4) {
         if (!expert_store_ ||
-            !expert_store_->get(cfg_.base_layer, 0, &first_expert)) {
+            !expert_store_->get_layout_reference(cfg_.base_layer,
+                                                 &first_expert)) {
             fprintf(stderr,
                     "[engine] cannot resolve expert 0 from configured expert store\n");
             return false;

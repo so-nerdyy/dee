@@ -146,6 +146,48 @@ class FullGenerationClassificationTests(unittest.TestCase):
         self.assertFalse(gates["route_journal_complete"])
         self.assertFalse(performance_eligible)
 
+    def test_dee4_trace_requires_independently_validated_metadata_linkage(self) -> None:
+        MODULE.EXPERT_STORE_BACKEND = "dee4_trace"
+        result = self.valid_result()
+        for store in result["expert_store"].values():
+            store["backend"] = "dee4_trace"
+        result["dee4_trace_validation"] = {
+            "success": True,
+            "format": "dee4-v3-trace",
+            "record_indices_contiguous": True,
+            "integrity_records_complete": True,
+            "data_sha256": "1" * 64,
+            "trace_journal_sha256": "2" * 64,
+            "trace_final_chain_sha256": "3" * 64,
+            "selection_sha256": "4" * 64,
+        }
+        classification, gates, _ = MODULE.classify_full_generation(result)
+        self.assertEqual("ACCEPT_CORRECTNESS", classification)
+        self.assertTrue(gates["dee4_trace_metadata_linkage"])
+
+        del result["dee4_trace_validation"]["selection_sha256"]
+        classification, gates, _ = MODULE.classify_full_generation(result)
+        self.assertEqual("REJECT_INTEGRITY", classification)
+        self.assertFalse(gates["dee4_trace_metadata_linkage"])
+
+    def test_trace_bootstrap_pins_the_committed_v50_journal_and_metadata_path(self) -> None:
+        self.assertEqual(
+            MODULE.V50_TRACE_JOURNAL_SHA256,
+            "665aac3e8db570237c6dc6acaf08dc39f2af890e8a04e400ce7154f1a858dae1",
+        )
+        self.assertEqual(
+            MODULE.V50_TRACE_FINAL_CHAIN_SHA256,
+            "086f8ca83b6a3c467cdf950096141fa9bc3e55a285d7d1fed8a0ad9913e3eb3d",
+        )
+        source = HARNESS.read_text("utf-8")
+        self.assertIn("_repack_trace(", source)
+        self.assertIn(
+            "expected_journal_sha256=V50_TRACE_JOURNAL_SHA256", source)
+        self.assertIn(
+            "expected_final_chain_sha256=V50_TRACE_FINAL_CHAIN_SHA256", source)
+        self.assertIn("dee4_store_path = (", source)
+        self.assertIn("str(_trace_metadata_path)", source)
+
 
 class RoutedExpertJournalTests(unittest.TestCase):
     @staticmethod

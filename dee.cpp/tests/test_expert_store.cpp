@@ -65,6 +65,49 @@ void write_fixture(const std::filesystem::path& directory,
     metadata_stream << metadata;
 }
 
+void write_trace_fixture(const std::filesystem::path& directory) {
+    std::vector<uint8_t> data(120);
+    for (size_t i = 0; i < data.size(); ++i) {
+        data[i] = static_cast<uint8_t>((i + 17) & 0xff);
+    }
+    std::ofstream data_stream(directory / "experts.dee4", std::ios::binary);
+    data_stream.write(reinterpret_cast<const char*>(data.data()),
+                      static_cast<std::streamsize>(data.size()));
+    data_stream.close();
+
+    // Deliberately omit (6, 0): trace-backed stores must never silently
+    // substitute a dense/arithmetic record for an unseen route.
+    const std::string metadata = R"JSON({
+  "format": "dee4-v3-trace",
+  "codec": "deepseek-fp4-e2m1-e8m0",
+  "data_file": "experts.dee4",
+  "data_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "start_layer": 6,
+  "num_layers": 2,
+  "experts_per_layer": 2,
+  "record_bytes": 40,
+  "weight_offsets": [0, 8, 16],
+  "weight_nbytes": [8, 8, 8],
+  "weight_out": [2, 2, 4],
+  "weight_stored_in": [4, 4, 2],
+  "scale_offsets": [24, 28, 32],
+  "scale_nbytes": [4, 4, 8],
+  "scale_out": [2, 2, 4],
+  "scale_in": [2, 2, 2],
+  "total_experts": 3,
+  "trace_journal_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "trace_final_chain_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "selection_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "records": [
+    {"layer": 6, "expert": 1, "record_index": 0},
+    {"layer": 7, "expert": 0, "record_index": 1},
+    {"layer": 7, "expert": 1, "record_index": 2}
+  ]
+})JSON";
+    std::ofstream metadata_stream(directory / "metadata.json", std::ios::binary);
+    metadata_stream << metadata;
+}
+
 void test_arithmetic_lookup_and_stats() {
     const auto directory = make_test_dir();
     write_fixture(directory);
@@ -127,11 +170,36 @@ void test_data_size_mismatch_fails_closed() {
     std::filesystem::remove_all(directory);
 }
 
+void test_trace_index_lookup_and_fail_closed() {
+    const auto directory = make_test_dir();
+    write_trace_fixture(directory);
+    dee::Dee4ExpertStore store;
+    check(store.open(directory.string()), "valid trace DEE4 fixture opens");
+    check(store.trace_indexed() && store.stored_records() == 3,
+          "trace DEE4 exposes sparse record geometry");
+    check(std::string(store.backend_name()) == "dee4_trace",
+          "trace backend has distinct telemetry identity");
+
+    dee::ExpertView view;
+    check(store.get(7, 1, &view), "selected trace expert resolves");
+    check(view.record_index == 2 && view.contiguous_data[0] == 97,
+          "trace lookup uses explicit record index");
+    check(!store.get(6, 0, &view),
+          "unselected trace expert fails closed instead of using dense offset");
+    check(store.get_layout_reference(6, &view),
+          "layout reference does not require absent expert zero");
+    check(view.record_index == 0 && view.contiguous_data[0] == 17,
+          "layout reference selects first routed record at preferred layer");
+    store.close();
+    std::filesystem::remove_all(directory);
+}
+
 }  // namespace
 
 int main() {
     test_arithmetic_lookup_and_stats();
     test_data_size_mismatch_fails_closed();
+    test_trace_index_lookup_and_fail_closed();
     if (g_failures == 0) {
         std::printf("ALL PASS\n");
         return 0;

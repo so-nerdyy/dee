@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import struct
 import tempfile
@@ -81,6 +82,34 @@ class Dee4RepackTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    def _write_trace(self, path: Path) -> tuple[str, str]:
+        selections = ((2, 0), (1, 2), (0, 1), (0, 2), (2, 1), (1, 0))
+        previous = dee4.TRACE_GENESIS_SHA256
+        lines = []
+        for record_index, selected in enumerate(selections):
+            step, layer = divmod(record_index, 3)
+            payload = {
+                "canonical_order": dee4.TRACE_CANONICAL_ORDER,
+                "forward_step": step,
+                "layer": layer,
+                "previous_chain_sha256": previous,
+                "record_index": record_index,
+                "run_id": "synthetic-v50",
+                "schema_version": 1,
+                "token_rows": 1,
+                "topk": 2,
+                ("expert_ids_rank_order" if record_index % 2 == 0
+                 else "selected_experts"): [list(selected)],
+            }
+            chain = hashlib.sha256(dee4._canonical_json_bytes(payload)).hexdigest()
+            lines.append(dee4._canonical_json_bytes({
+                **payload, "chain_sha256": chain
+            }) + b"\n")
+            previous = chain
+        raw = b"".join(lines)
+        path.write_bytes(raw)
+        return hashlib.sha256(raw).hexdigest(), previous
+
     def test_repack_is_fixed_stride_and_byte_exact(self) -> None:
         report = dee4.repack(
             self.source,
@@ -95,6 +124,36 @@ class Dee4RepackTests(unittest.TestCase):
         self.assertEqual(metadata["record_bytes"], 20)
         self.assertEqual(metadata["total_experts"], 9)
         self.assertEqual((self.output / "experts.dee4").stat().st_size, 180)
+        self.assertEqual(
+            [(component["projection"], component["kind"])
+             for component in metadata["components"]],
+            list(dee4.COMPONENTS),
+        )
+        self.assertEqual(
+            [component["offset"] for component in metadata["components"]],
+            [0, 4, 8, 12, 14, 16],
+        )
+        integrity = [
+            json.loads(line)
+            for line in (self.output / "integrity.jsonl")
+            .read_text("utf-8")
+            .splitlines()
+        ]
+        self.assertEqual(len(integrity), 9)
+        self.assertEqual(
+            [row["record_index"] for row in integrity], list(range(9))
+        )
+        self.assertTrue(
+            all(len(row["record_sha256"]) == 64 for row in integrity)
+        )
+        self.assertTrue(
+            all(
+                set(row["component_sha256"]) == {
+                    f"{projection}.{kind}" for projection, kind in dee4.COMPONENTS
+                }
+                for row in integrity
+            )
+        )
 
         record_index = 1 * 3 + 2
         with (self.output / "experts.dee4").open("rb") as handle:
@@ -158,6 +217,20 @@ class Dee4RepackTests(unittest.TestCase):
         self.assertFalse(validation["success"])
         self.assertFalse(validation["records"][0]["components"][0]["exact_match"])
 
+    def test_dry_run_validates_layout_without_creating_artifacts(self) -> None:
+        report = dee4.repack(
+            self.source,
+            self.output,
+            start_layer=0,
+            end_layer=3,
+            experts_per_layer=3,
+            dry_run=True,
+        )
+        self.assertTrue(report["success"])
+        self.assertTrue(report["dry_run"])
+        self.assertEqual(report["total_experts_repacked"], 0)
+        self.assertFalse(self.output.exists())
+
     def test_nonempty_output_is_not_overwritten(self) -> None:
         self.output.mkdir()
         (self.output / "prior-evidence.json").write_text("{}", "utf-8")
@@ -172,6 +245,83 @@ class Dee4RepackTests(unittest.TestCase):
         self.assertEqual(
             (self.output / "prior-evidence.json").read_text("utf-8"), "{}"
         )
+
+    def test_trace_repack_is_sparse_sorted_byte_exact_and_linked(self) -> None:
+        trace_path = self.base / "routed_experts.jsonl"
+        journal_sha256, final_chain = self._write_trace(trace_path)
+        report = dee4.repack_trace(
+            self.source,
+            self.output,
+            trace_path,
+            n_layers=3,
+            experts_per_layer=3,
+            expected_journal_sha256=journal_sha256,
+            expected_final_chain_sha256=final_chain,
+        )
+        self.assertTrue(report["success"])
+        metadata = json.loads((self.output / "metadata.json").read_text("utf-8"))
+        expected_pairs = [(0, 0), (0, 2), (1, 1), (1, 2), (2, 0), (2, 1)]
+        self.assertEqual(metadata["format"], "dee4-v3-trace")
+        self.assertEqual(metadata["trace_journal_sha256"], journal_sha256)
+        self.assertEqual(metadata["trace_final_chain_sha256"], final_chain)
+        self.assertEqual(metadata["total_experts"], len(expected_pairs))
+        self.assertEqual(
+            [(row["layer"], row["expert"], row["record_index"])
+             for row in metadata["records"]],
+            [(layer, expert, index)
+             for index, (layer, expert) in enumerate(expected_pairs)],
+        )
+        expected_data = b"".join(
+            self.canonical[dee4._tensor_name(layer, expert, projection, kind)]
+            for layer, expert in expected_pairs
+            for projection, kind in dee4.COMPONENTS
+        )
+        self.assertEqual((self.output / "experts.dee4").read_bytes(), expected_data)
+        validation = dee4.validate_dee4_trace_store(
+            self.output, trace_path, n_layers=3, experts_per_layer=3,
+            expected_journal_sha256=journal_sha256,
+            expected_final_chain_sha256=final_chain,
+        )
+        self.assertTrue(validation["success"])
+        self.assertTrue(validation["record_indices_contiguous"])
+        canonical = dee4.validate_dee4_against_safetensors(
+            self.source, self.output, samples=expected_pairs)
+        self.assertTrue(canonical["success"])
+
+    def test_trace_parser_rejects_noncanonical_or_broken_records(self) -> None:
+        trace_path = self.base / "routed_experts.jsonl"
+        _, _ = self._write_trace(trace_path)
+        rows = trace_path.read_text("utf-8").splitlines()
+
+        missing = self.base / "missing.jsonl"
+        missing.write_bytes(
+            ("\n".join(rows[:1] + rows[2:]) + "\n").encode("utf-8"))
+        with self.assertRaisesRegex(ValueError, "record_index"):
+            dee4.load_trace_selection(
+                missing, n_layers=3, experts_per_layer=3)
+
+        duplicate = json.loads(rows[0])
+        duplicate["selected_experts"] = [[0, 2]]
+        payload = dict(duplicate)
+        payload.pop("chain_sha256")
+        duplicate["chain_sha256"] = hashlib.sha256(
+            dee4._canonical_json_bytes(payload)).hexdigest()
+        ambiguous = self.base / "ambiguous.jsonl"
+        ambiguous.write_bytes(
+            dee4._canonical_json_bytes(duplicate) + b"\n"
+            + b"\n".join(line.encode("utf-8") for line in rows[1:]) + b"\n")
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            dee4.load_trace_selection(
+                ambiguous, n_layers=3, experts_per_layer=3)
+
+        broken = json.loads(rows[1])
+        broken["previous_chain_sha256"] = "f" * 64
+        rows[1] = dee4._canonical_json_bytes(broken).decode("utf-8")
+        bad_chain = self.base / "bad-chain.jsonl"
+        bad_chain.write_bytes(("\n".join(rows) + "\n").encode("utf-8"))
+        with self.assertRaisesRegex(ValueError, "predecessor chain"):
+            dee4.load_trace_selection(
+                bad_chain, n_layers=3, experts_per_layer=3)
 
 
 if __name__ == "__main__":

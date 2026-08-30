@@ -144,6 +144,10 @@ if(DEE_BUILD_TESTS)
         NAME test_deepseek_v4_contract
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_deepseek_v4_contract.py)
     set_tests_properties(test_deepseek_v4_contract PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(
+        NAME test_dee4_repack
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dee4_repack.py)
+    set_tests_properties(test_dee4_repack PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
 add_custom_target(lightning_t4_benchmark
