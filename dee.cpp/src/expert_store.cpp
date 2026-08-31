@@ -2,6 +2,7 @@
 #include "dee/json_min.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -106,6 +107,33 @@ void ExpertStore::record_source_read(size_t bytes, double milliseconds,
     read_latencies_ms_.push_back(std::max(0.0, milliseconds));
 }
 
+bool ExpertStore::materialize(const ExpertView& view, uint8_t* dst,
+                              size_t nbytes) const {
+    if (!dst || !view.contiguous_data || view.contiguous_nbytes != nbytes ||
+        nbytes == 0) {
+        return false;
+    }
+    std::memcpy(dst, view.contiguous_data, nbytes);
+    return true;
+}
+
+void ExpertStore::record_source_read_batch(
+        size_t requests, size_t lanes, double wall_milliseconds,
+        double summed_read_milliseconds) {
+    if (requests == 0) return;
+    ++source_read_batches_;
+    if (requests > 1 && lanes > 1) ++concurrent_source_read_batches_;
+    max_source_read_queue_depth_ = std::max<uint64_t>(
+        max_source_read_queue_depth_, static_cast<uint64_t>(requests));
+    max_source_read_lanes_ = std::max<uint64_t>(
+        max_source_read_lanes_,
+        static_cast<uint64_t>(std::min(requests, std::max<size_t>(1, lanes))));
+    const double wall_ms = std::max(0.0, wall_milliseconds);
+    const double summed_ms = std::max(0.0, summed_read_milliseconds);
+    source_read_batch_wall_ms_ += wall_ms;
+    source_read_overlap_ms_ += std::max(0.0, summed_ms - wall_ms);
+}
+
 ExpertStoreStats ExpertStore::stats() const {
     ExpertStoreStats result;
     result.backend = backend_name();
@@ -117,6 +145,18 @@ ExpertStoreStats ExpertStore::stats() const {
     result.source_regions = source_regions_;
     result.bytes_requested = bytes_requested_;
     result.read_milliseconds = read_milliseconds_;
+    result.materialization_mode = materialization_mode();
+    result.source_read_batches = source_read_batches_;
+    result.concurrent_source_read_batches = concurrent_source_read_batches_;
+    result.max_source_read_queue_depth = max_source_read_queue_depth_;
+    result.max_source_read_lanes = max_source_read_lanes_;
+    result.source_read_batch_wall_ms = source_read_batch_wall_ms_;
+    result.source_read_overlap_ms = source_read_overlap_ms_;
+    if (read_milliseconds_ > 0.0) {
+        result.source_read_overlap_percent =
+            std::min(100.0, 100.0 * source_read_overlap_ms_ /
+                                read_milliseconds_);
+    }
     if (source_reads_ != 0) {
         result.average_request_bytes =
             static_cast<double>(bytes_requested_) / static_cast<double>(source_reads_);
@@ -497,6 +537,44 @@ bool Dee4ExpertStore::get_layout_reference(int preferred_layer,
     const TraceRecord& record = found != trace_records_.end()
         ? *found : trace_records_.front();
     return get(record.layer, record.expert, out);
+}
+
+bool Dee4ExpertStore::materialize(const ExpertView& view, uint8_t* dst,
+                                  size_t nbytes) const {
+    if (!dst || !base_ || nbytes == 0 || nbytes != record_bytes_ ||
+        view.contiguous_nbytes != record_bytes_ ||
+        view.record_index >= stored_records_) {
+        return false;
+    }
+    const size_t offset = static_cast<size_t>(view.record_index) * record_bytes_;
+    if (offset > size_ || nbytes > size_ - offset ||
+        view.contiguous_data != base_ + offset) {
+        return false;
+    }
+#ifdef _WIN32
+    std::memcpy(dst, view.contiguous_data, nbytes);
+    return true;
+#else
+    if (fd_ < 0 || offset > static_cast<size_t>(
+            std::numeric_limits<off_t>::max())) {
+        return false;
+    }
+    size_t copied = 0;
+    while (copied < nbytes) {
+        const size_t remaining = nbytes - copied;
+        if (offset + copied > static_cast<size_t>(
+                std::numeric_limits<off_t>::max())) {
+            return false;
+        }
+        const ssize_t count = ::pread(
+            fd_, dst + copied, remaining,
+            static_cast<off_t>(offset + copied));
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) return false;
+        copied += static_cast<size_t>(count);
+    }
+    return true;
+#endif
 }
 
 }  // namespace dee

@@ -46,7 +46,8 @@ target_compile_options(dee_core PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4>)
 
 find_package(ZLIB REQUIRED)
-target_link_libraries(dee_core PUBLIC ZLIB::ZLIB)
+find_package(Threads REQUIRED)
+target_link_libraries(dee_core PUBLIC ZLIB::ZLIB Threads::Threads)
 
 if(DEE_CUDA)
     target_sources(dee_core PRIVATE

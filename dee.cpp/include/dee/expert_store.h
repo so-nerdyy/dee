@@ -59,6 +59,14 @@ struct ExpertStoreStats {
     double p95_read_ms = 0.0;
     double max_read_ms = 0.0;
     double read_bandwidth_mib_s = 0.0;
+    std::string materialization_mode;
+    uint64_t source_read_batches = 0;
+    uint64_t concurrent_source_read_batches = 0;
+    uint64_t max_source_read_queue_depth = 0;
+    uint64_t max_source_read_lanes = 0;
+    double source_read_batch_wall_ms = 0.0;
+    double source_read_overlap_ms = 0.0;
+    double source_read_overlap_percent = 0.0;
 };
 
 class ExpertStore {
@@ -72,12 +80,23 @@ public:
     }
     virtual const char* backend_name() const = 0;
     virtual const std::string& integrity_identity() const = 0;
+    // Copy one exact expert record into caller-owned bounded host storage.
+    // The default consumes the already-resolved contiguous mmap view. DEE4
+    // overrides this with positional reads on Linux so several independent
+    // records can be materialized concurrently without changing lookup,
+    // routing, or transfer order.
+    virtual bool materialize(const ExpertView& view, uint8_t* dst,
+                             size_t nbytes) const;
+    virtual const char* materialization_mode() const { return "mmap_memcpy"; }
 
     // Called by the consumer around the actual source-to-host-L2 copy.  This
     // deliberately measures page-fault/storage wait rather than the cheap
     // arithmetic lookup that merely returns pointers into an mmap.
     void record_source_read(size_t bytes, double milliseconds,
                             size_t regions, bool contiguous);
+    void record_source_read_batch(size_t requests, size_t lanes,
+                                  double wall_milliseconds,
+                                  double summed_read_milliseconds);
     ExpertStoreStats stats() const;
 
 protected:
@@ -92,6 +111,12 @@ private:
     uint64_t bytes_requested_ = 0;
     double read_milliseconds_ = 0.0;
     std::vector<double> read_latencies_ms_;
+    uint64_t source_read_batches_ = 0;
+    uint64_t concurrent_source_read_batches_ = 0;
+    uint64_t max_source_read_queue_depth_ = 0;
+    uint64_t max_source_read_lanes_ = 0;
+    double source_read_batch_wall_ms_ = 0.0;
+    double source_read_overlap_ms_ = 0.0;
 };
 
 class SafetensorsExpertStore final : public ExpertStore {
@@ -120,6 +145,13 @@ public:
     bool get_layout_reference(int preferred_layer, ExpertView* out) override;
     const char* backend_name() const override { return backend_.c_str(); }
     const std::string& integrity_identity() const override { return identity_; }
+    bool materialize(const ExpertView& view, uint8_t* dst,
+                     size_t nbytes) const override;
+#ifdef _WIN32
+    const char* materialization_mode() const override { return "mmap_memcpy"; }
+#else
+    const char* materialization_mode() const override { return "pread"; }
+#endif
 
     int start_layer() const { return start_layer_; }
     int num_layers() const { return num_layers_; }

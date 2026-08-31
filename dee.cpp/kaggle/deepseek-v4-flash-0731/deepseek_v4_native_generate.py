@@ -65,6 +65,9 @@ assert SEALED_DECODED_TEXT.encode("utf-8") == (
     "SEALED_DECODED_TEXT corrupted in transit; refusing to judge exactness")
 N_TOKENS = int(os.environ.get("NATIVE_N_TOKENS", "16"))
 RUN_ID = os.environ.get("NATIVE_RUN_ID", "unconfigured")
+SOURCE_READ_LANES = int(os.environ.get("NATIVE_SOURCE_READ_LANES", "1"))
+SOURCE_READ_QUEUE_DEPTH = int(
+    os.environ.get("NATIVE_SOURCE_READ_QUEUE_DEPTH", "6"))
 # Stage 1: raise the per-GPU VRAM expert cache from 512 MiB (~10 experts) to
 # 3.5 GiB (~73 FP16 experts) — measured free VRAM after dense + engine is
 # ~6.6/4.9 GiB on the two T4s, so 3.5 GiB/GPU keeps clear headroom.
@@ -147,6 +150,7 @@ FORCE_TMP = os.environ.get("NATIVE_FORCE_TMP", "1") == "1"
 def apply_run_config() -> None:
     global CACHE_DTYPE, N_TOKENS, EXPERT_STORE_BACKEND, DEE4_VALIDATE_SAMPLES
     global PROFILE_STAGES, RUN_ID, DEE4_TRACE_PATH
+    global SOURCE_READ_LANES, SOURCE_READ_QUEUE_DEPTH
     cfg_path = DEE / "kaggle/deepseek-v4-flash-0731/run_config.json"
     if not cfg_path.is_file():
         log(f"[config] run_config.json not found at {cfg_path}; using defaults")
@@ -168,6 +172,12 @@ def apply_run_config() -> None:
         PROFILE_STAGES = bool(cfg.get("profile_stages", PROFILE_STAGES))
     if not os.environ.get("NATIVE_RUN_ID"):
         RUN_ID = str(cfg.get("run_id", RUN_ID))
+    if not os.environ.get("NATIVE_SOURCE_READ_LANES"):
+        SOURCE_READ_LANES = int(
+            cfg.get("source_read_lanes", SOURCE_READ_LANES))
+    if not os.environ.get("NATIVE_SOURCE_READ_QUEUE_DEPTH"):
+        SOURCE_READ_QUEUE_DEPTH = int(
+            cfg.get("source_read_queue_depth", SOURCE_READ_QUEUE_DEPTH))
     if CACHE_DTYPE not in {"fp16", "fp4"}:
         raise ValueError(f"unsupported cache_dtype: {CACHE_DTYPE!r}")
     if EXPERT_STORE_BACKEND not in {"safetensors", "dee4", "dee4_trace"}:
@@ -175,12 +185,18 @@ def apply_run_config() -> None:
             f"unsupported expert_store: {EXPERT_STORE_BACKEND!r}")
     if DEE4_VALIDATE_SAMPLES <= 0:
         raise ValueError("dee4_validate_samples must be positive")
+    if not 1 <= SOURCE_READ_LANES <= 8:
+        raise ValueError("source_read_lanes must be in [1, 8]")
+    if not 1 <= SOURCE_READ_QUEUE_DEPTH <= 256:
+        raise ValueError("source_read_queue_depth must be in [1, 256]")
     log(
         "[config] run_config.json: "
         f"run_id={RUN_ID} cache_dtype={CACHE_DTYPE} n_tokens={N_TOKENS} "
         f"expert_store={EXPERT_STORE_BACKEND} "
         f"dee4_trace_path={DEE4_TRACE_PATH} "
         f"dee4_validate_samples={DEE4_VALIDATE_SAMPLES} "
+        f"source_read_lanes={SOURCE_READ_LANES} "
+        f"source_read_queue_depth={SOURCE_READ_QUEUE_DEPTH} "
         f"profile_stages={PROFILE_STAGES}"
     )
 # P2.4 (2026-08-23): the dual-T4 pool has been exhausted for ~12 consecutive
@@ -1348,7 +1364,8 @@ def main() -> int:
         f"batched={USE_BATCHED_EXPERTS} profile={PROFILE_STAGES} "
         f"diagnostics={DIAGNOSTICS} mem_avail={mem_avail:.1f}GiB "
         f"mem_total={mem_total:.1f}GiB lru_cap={LRU_TOTAL_CAP_GIB}GiB "
-        f"cache_dtype={CACHE_DTYPE}")
+        f"cache_dtype={CACHE_DTYPE} source_read_lanes={SOURCE_READ_LANES} "
+        f"source_read_queue_depth={SOURCE_READ_QUEUE_DEPTH}")
     # P2.4 single-GPU mode: one engine on cuda:0 carrying the FULL budget
     # (both halves merged), all 43 layers on device0 (split=n_layers), and
     # the same-device handoff path.  eng1 is not built.  Cache budget is
@@ -1364,6 +1381,8 @@ def main() -> int:
             use_batched_experts=USE_BATCHED_EXPERTS,
             profile_stages=PROFILE_STAGES,
             cache_dtype=CACHE_DTYPE,
+            source_read_lanes=SOURCE_READ_LANES,
+            source_read_queue_depth=SOURCE_READ_QUEUE_DEPTH,
             expert_store_path=dee4_store_path)
         eng1 = eng0
         log(f"engines built SINGLE_GPU budget={single_budget/2**30:.2f}GiB "
@@ -1375,6 +1394,8 @@ def main() -> int:
             use_batched_experts=USE_BATCHED_EXPERTS,
             profile_stages=PROFILE_STAGES,
             cache_dtype=CACHE_DTYPE,
+            source_read_lanes=SOURCE_READ_LANES,
+            source_read_queue_depth=SOURCE_READ_QUEUE_DEPTH,
             expert_store_path=dee4_store_path)
         eng1 = vm.build_native_engine(
             shard_paths, device_id=1, budget_bytes=BUDGET_BYTES,
@@ -1382,6 +1403,8 @@ def main() -> int:
             use_batched_experts=USE_BATCHED_EXPERTS,
             profile_stages=PROFILE_STAGES,
             cache_dtype=CACHE_DTYPE,
+            source_read_lanes=SOURCE_READ_LANES,
+            source_read_queue_depth=SOURCE_READ_QUEUE_DEPTH,
             expert_store_path=dee4_store_path)
         log(f"engines built (cache_dtype={CACHE_DTYPE})")
 

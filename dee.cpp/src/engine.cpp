@@ -292,6 +292,9 @@ bool Engine::moe_forward_experts(int layer, const float* h_in, float* experts_ou
         for (int first = 0; first < K; first += batch_size) {
             const int last = std::min(K, first + batch_size);
             prefetcher_.begin_batch();
+            if (!prepare_fp4_experts(
+                    source_layer, experts.data() + first,
+                    static_cast<size_t>(last - first))) return false;
             for (int k = first; k < last; ++k) {
                 if (!stage_expert(layer, source_layer, experts[k], K - k)) return false;
             }
@@ -565,6 +568,9 @@ bool Engine::moe_forward_batch(int layer, const float* h_in, int tokens,
             const size_t last = std::min(
                 active_experts.size(), first + static_cast<size_t>(cache_batch));
             prefetcher_.begin_batch();
+            if (!prepare_fp4_experts(
+                    source_layer, active_experts.data() + first,
+                    last - first)) return false;
             for (size_t i = first; i < last; ++i) {
                 if (!stage_expert(layer, source_layer, active_experts[i],
                                   static_cast<int>(active_experts.size() - i))) return false;
@@ -871,6 +877,9 @@ bool Engine::moe_forward_batch_device_impl(
         const size_t last = std::min(
             active_experts.size(), first + static_cast<size_t>(cache_batch));
         prefetcher_.begin_batch();
+        if (!prepare_fp4_experts(
+                source_layer, active_experts.data() + first,
+                last - first)) return false;
         for (size_t i = first; i < last; ++i) {
             if (!stage_expert(layer, source_layer, active_experts[i],
                               static_cast<int>(active_experts.size() - i))) return false;
@@ -1661,6 +1670,11 @@ bool Engine::moe_forward_pointer_batched_device_impl(
 
     const int source_layer = avail_layer(layer);
     prefetcher_.begin_batch();
+    if (!prepare_fp4_experts(
+            source_layer, h_expert_ids, selections)) {
+        set_last_error("pointer-batched DEE4 materialization failed");
+        return false;
+    }
     for (size_t position = 0; position < selections; ++position) {
         if (!stage_expert(
                 layer, source_layer, h_expert_ids[position],
@@ -2682,6 +2696,159 @@ const Engine::QuantizedExpert* Engine::get_staging_int4(int source_layer, int ex
     return &inserted.first->second;
 }
 
+bool Engine::configure_fp4_quantized(
+        const ExpertView& expert_view, QuantizedExpert* quantized) const {
+    if (!quantized || !expert_view.ok()) return false;
+    const TensorView* weights = expert_view.weights.data();
+    const TensorView* scales = expert_view.scales.data();
+    size_t packed_total = 0;
+    size_t scale_total = 0;
+    for (int p = 0; p < 3; ++p) {
+        const TensorView& weight = weights[p];
+        const TensorView& scale = scales[p];
+        if (!weight.ok() || weight.dtype != DType::I8 ||
+            weight.shape.size() < 2 || !scale.ok() ||
+            scale.dtype != DType::F8 || scale.shape.size() < 2 ||
+            packed_total > std::numeric_limits<size_t>::max() - weight.nbytes ||
+            scale_total > std::numeric_limits<size_t>::max() - scale.nbytes) {
+            return false;
+        }
+        quantized->fp4[p].out = static_cast<size_t>(weight.shape[0]);
+        quantized->fp4[p].in = static_cast<size_t>(weight.shape[1]) * 2;
+        quantized->fp4[p].packed_offset = packed_total;
+        quantized->fp4_region_nbytes[p] = weight.nbytes;
+        quantized->fp4_region_nbytes[3 + p] = scale.nbytes;
+        packed_total += weight.nbytes;
+        scale_total += scale.nbytes;
+    }
+    if (packed_total > std::numeric_limits<size_t>::max() - scale_total) {
+        return false;
+    }
+    size_t scale_accum = 0;
+    for (int p = 0; p < 3; ++p) {
+        quantized->fp4[p].scale_offset = packed_total + scale_accum;
+        scale_accum += scales[p].nbytes;
+    }
+    quantized->fp4_total_nbytes = packed_total + scale_total;
+    return quantized->fp4_total_nbytes != 0;
+}
+
+void Engine::point_fp4_regions(
+        QuantizedExpert* quantized, const uint8_t* pack) const {
+    if (!quantized || !pack) return;
+    size_t offset = 0;
+    for (int region = 0; region < 6; ++region) {
+        quantized->fp4_regions[region] = {
+            pack + offset, quantized->fp4_region_nbytes[region]};
+        offset += quantized->fp4_region_nbytes[region];
+    }
+}
+
+bool Engine::fill_fp4_record(
+        void* context, uint8_t* dst, size_t nbytes) {
+    auto* fill = static_cast<Fp4FillContext*>(context);
+    return fill && fill->store && fill->view &&
+        fill->store->materialize(*fill->view, dst, nbytes);
+}
+
+bool Engine::prepare_fp4_experts(
+        int source_layer, const int* experts, size_t count) {
+    if (cfg_.transfer_dtype != WeightTransferDType::Fp4E2m1 ||
+        cfg_.source_read_lanes <= 1 || count == 0) {
+        return true;
+    }
+    if (!experts || !expert_store_) return false;
+    const size_t queue_depth = std::min(
+        HostPackCache::kMaxBatchRequests,
+        std::max<size_t>(1, cfg_.source_read_queue_depth));
+    if (++fp4_prepare_generation_ == 0) ++fp4_prepare_generation_;
+    const uint64_t generation = fp4_prepare_generation_;
+
+    std::array<ExpertView, HostPackCache::kMaxBatchRequests> views{};
+    std::array<QuantizedExpert, HostPackCache::kMaxBatchRequests> metadata{};
+    std::array<Fp4FillContext, HostPackCache::kMaxBatchRequests> contexts{};
+    std::array<HostPackCache::BatchRequest,
+               HostPackCache::kMaxBatchRequests> requests{};
+    std::array<HostPackCache::BatchResult,
+               HostPackCache::kMaxBatchRequests> results{};
+
+    for (size_t first = 0; first < count; first += queue_depth) {
+        const size_t batch_count = std::min(queue_depth, count - first);
+        for (size_t index = 0; index < batch_count; ++index) {
+            const int expert = experts[first + index];
+            if (expert < 0 || expert >= cfg_.num_experts) return false;
+            const uint64_t key = staging_key(source_layer, expert);
+            auto existing = staging_int8_.find(key);
+            const uint8_t* cached = pack_cache_.get_if_present(key, false);
+            if (cached && existing != staging_int8_.end()) {
+                requests[index] = {
+                    key, existing->second.fp4_total_nbytes, nullptr, nullptr};
+                continue;
+            }
+            if (!expert_store_->get(source_layer, expert, &views[index]) ||
+                views[index].contiguous_data == nullptr ||
+                views[index].contiguous_nbytes == 0 ||
+                !configure_fp4_quantized(views[index], &metadata[index]) ||
+                metadata[index].fp4_total_nbytes !=
+                    views[index].contiguous_nbytes) {
+                std::fprintf(stderr,
+                    "[engine] bounded DEE4 materialization cannot resolve exact record (%d,%d)\n",
+                    source_layer, expert);
+                return false;
+            }
+            contexts[index] = {expert_store_.get(), &views[index]};
+            requests[index] = {
+                key, metadata[index].fp4_total_nbytes,
+                &Engine::fill_fp4_record, &contexts[index]};
+        }
+
+        const HostPackCache::Stats before = pack_cache_.stats();
+        if (!pack_cache_.get_batch(
+                requests.data(), batch_count, results.data())) {
+            std::fprintf(stderr,
+                "[engine] bounded DEE4 materialization failed for layer %d (%zu records, %zu lanes)\n",
+                source_layer, batch_count, cfg_.source_read_lanes);
+            return false;
+        }
+        const HostPackCache::Stats after = pack_cache_.stats();
+        size_t filled = 0;
+        double summed_read_ms = 0.0;
+        for (size_t index = 0; index < batch_count; ++index) {
+            if (results[index].fill_executed) {
+                ++filled;
+                summed_read_ms += results[index].fill_milliseconds;
+                expert_store_->record_source_read(
+                    requests[index].nbytes,
+                    results[index].fill_milliseconds, 1, true);
+            }
+            const uint64_t key = requests[index].key;
+            auto existing = staging_int8_.find(key);
+            QuantizedExpert* target = nullptr;
+            if (existing != staging_int8_.end()) {
+                target = &existing->second;
+            } else {
+                auto inserted = staging_int8_.emplace(
+                    key, std::move(metadata[index]));
+                target = &inserted.first->second;
+            }
+            if (!target || !results[index].success || !results[index].data ||
+                target->fp4_total_nbytes != requests[index].nbytes) {
+                return false;
+            }
+            point_fp4_regions(target, results[index].data);
+            target->prepared_generation = generation;
+        }
+        if (filled != 0) {
+            const double batch_wall_ms = std::max(
+                0.0, after.fill_batch_wall_ms - before.fill_batch_wall_ms);
+            expert_store_->record_source_read_batch(
+                filled, cfg_.source_read_lanes,
+                batch_wall_ms, summed_read_ms);
+        }
+    }
+    return true;
+}
+
 const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int expert) {
     const auto profile_begin = profiler_.enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
     const uint64_t key = staging_key(source_layer, expert);
@@ -2689,6 +2856,15 @@ const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int exp
     // and refresh the six region pointers before returning, because the pack
     // LRU may have evicted (and re-materialized elsewhere) this expert's
     // buffer between calls.  Never return a cached struct without re-pointing.
+
+    auto prepared = staging_int8_.find(key);
+    if (fp4_prepare_generation_ != 0 && prepared != staging_int8_.end() &&
+        prepared->second.prepared_generation == fp4_prepare_generation_) {
+        const uint8_t* pack = pack_cache_.get_if_present(key, false);
+        if (!pack) return nullptr;
+        point_fp4_regions(&prepared->second, pack);
+        return &prepared->second;
+    }
 
     // DEEPSEEK_V4 FP4 (e2m1fn): the weights are already packed on disk
     // (dtype I8 [out, in//2]) with a matching per-block F8_E8M0 scale tensor
@@ -2710,32 +2886,14 @@ const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int exp
     const TensorView* scales = expert_view.scales.data();
 
     QuantizedExpert quantized;
-    size_t packed_total = 0;
-    size_t scale_total = 0;
-    for (int p = 0; p < 3; ++p) {
-        const TensorView& w = weights[p];
-        const TensorView& s = scales[p];
-        if (!w.ok() || w.dtype != DType::I8 || w.shape.size() < 2 ||
-            !s.ok() || s.dtype != DType::F8 || s.shape.size() < 2) {
-            std::fprintf(stderr, "[engine] expert %d has unsupported FP4 source layout\n", expert);
-            if (profiler_.enabled()) profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
-            return nullptr;
+    if (!configure_fp4_quantized(expert_view, &quantized)) {
+        std::fprintf(stderr,
+            "[engine] expert %d has unsupported FP4 source layout\n", expert);
+        if (profiler_.enabled()) {
+            profiler_.add_cpu(CpuStage::TensorResolution, profile_begin);
         }
-        // Packed I8 [out, in//2]: the stored column count is half the
-        // logical input width (two e2m1fn values per byte).  The scale is
-        // F8_E8M0 [out, in//32] (block size 32 on the in axis).
-        quantized.fp4[p].out = static_cast<size_t>(w.shape[0]);
-        quantized.fp4[p].in  = static_cast<size_t>(w.shape[1]) * 2;
-        quantized.fp4[p].packed_offset = packed_total;
-        packed_total += w.nbytes;
-        scale_total += s.nbytes;
+        return nullptr;
     }
-    size_t scale_accum = 0;
-    for (int p = 0; p < 3; ++p) {
-        quantized.fp4[p].scale_offset = packed_total + scale_accum;
-        scale_accum += scales[p].nbytes;
-    }
-    quantized.fp4_total_nbytes = packed_total + scale_total;
 
     // Stage 1 residency: keep a private RAM copy of the packed bytes (LRU,
     // bounded by cfg_.host_pack_cache_bytes) so repeated prefetch gathers hit
@@ -2753,8 +2911,20 @@ const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int exp
             expert_view.contiguous_data != nullptr &&
             expert_view.contiguous_nbytes == n;
         if (contiguous) {
-            std::memcpy(dst, expert_view.contiguous_data, n);
-            off = n;
+            // Preserve the conservative one-lane path exactly: it copies the
+            // resolved mmap view on the caller.  Positional reads are only
+            // used by the explicit multi-lane bounded fill path above.
+            if (cfg_.source_read_lanes <= 1) {
+                std::memcpy(dst, expert_view.contiguous_data, n);
+                off = n;
+            } else if (expert_store_ &&
+                       expert_store_->materialize(expert_view, dst, n)) {
+                off = n;
+            } else {
+                std::memset(dst, 0, n);
+                fill_ok = false;
+                return;
+            }
         } else {
             for (int r = 0; r < 6; ++r) {
                 if (off + sources[r]->nbytes > n) {
@@ -2843,19 +3013,13 @@ const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int exp
     QuantizedExpert* target =
         (existing != staging_int8_.end()) ? &existing->second : &quantized;
     for (int p = 0; p < 3; ++p) target->fp4[p] = quantized.fp4[p];
+    for (int region = 0; region < 6; ++region) {
+        target->fp4_region_nbytes[region] =
+            quantized.fp4_region_nbytes[region];
+    }
     target->fp4_total_nbytes = quantized.fp4_total_nbytes;
     if (pack_buf) {
-        size_t off = 0;
-        for (int p = 0; p < 3; ++p) {
-            target->fp4_regions[p] = {pack_buf + off, weights[p].nbytes};
-            target->fp4_region_nbytes[p] = weights[p].nbytes;
-            off += weights[p].nbytes;
-        }
-        for (int p = 0; p < 3; ++p) {
-            target->fp4_regions[3 + p] = {pack_buf + off, scales[p].nbytes};
-            target->fp4_region_nbytes[3 + p] = scales[p].nbytes;
-            off += scales[p].nbytes;
-        }
+        point_fp4_regions(target, pack_buf);
     } else {
         // Fallback: verbatim mmap regions (previous behavior).
         target->fp4_regions[0] = {weights[0].data, weights[0].nbytes};
@@ -3227,6 +3391,15 @@ bool Engine::init(const EngineConfig& cfg) {
         std::fprintf(stderr, "[engine] invalid or late prefetch depth: %zu\n", cfg.prefetch_depth);
         return false;
     }
+    if (cfg_.source_read_lanes == 0 ||
+        cfg_.source_read_lanes > HostPackCache::kMaxFillLanes ||
+        cfg_.source_read_queue_depth == 0 ||
+        cfg_.source_read_queue_depth > HostPackCache::kMaxBatchRequests) {
+        std::fprintf(stderr,
+            "[engine] invalid bounded source read lanes/queue: %zu/%zu\n",
+            cfg_.source_read_lanes, cfg_.source_read_queue_depth);
+        return false;
+    }
     // Expert dims are taken from the SHARD (so a mock inter=64 and the real
     // inter=256 are both handled). The Oracle's own MLP width (H=256) is a
     // separate, fixed quantity passed to oracle.load().
@@ -3406,6 +3579,18 @@ bool Engine::init(const EngineConfig& cfg) {
         cfg_.host_pack_cache_bytes = 8ULL << 30;  // 8 GiB default host pack LRU
     }
     pack_cache_.set_budget(cfg_.host_pack_cache_bytes);
+    if (!pack_cache_.set_fill_lanes(cfg_.source_read_lanes)) {
+        std::fprintf(stderr,
+            "[engine] cannot initialize %zu bounded source-read lanes\n",
+            cfg_.source_read_lanes);
+        return false;
+    }
+    if (cfg_.verbose) {
+        std::fprintf(stderr,
+            "[engine] source materialization: mode=%s lanes=%zu queue_depth=%zu\n",
+            expert_store_ ? expert_store_->materialization_mode() : "n/a",
+            cfg_.source_read_lanes, cfg_.source_read_queue_depth);
+    }
     Arena::Backend be;
     if (cfg.use_cuda) {
 #ifdef DEE_CUDA
@@ -3822,6 +4007,9 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
         const int last = std::min(K, first + batch_size);
         if (!bypass_cache) {
             prefetcher_.begin_batch();
+            if (!prepare_fp4_experts(
+                    source_layer, experts.data() + first,
+                    static_cast<size_t>(last - first))) return false;
             for (int k = first; k < last; ++k) {
                 if (!stage_expert(layer, source_layer, experts[k], cfg_.topk - k)) return false;
             }

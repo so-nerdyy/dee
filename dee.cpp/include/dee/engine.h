@@ -93,6 +93,12 @@ struct EngineConfig {
     int         num_layers  = 40;   // depth (clamped to oracle.num_layers)
     size_t      budget_bytes = 0;   // VRAM budget (0 => 4 experts auto)
     size_t      host_pack_cache_bytes = 0; // packed-source RAM LRU (0 => 8 GiB)
+    // Bounded DEE4 cold-record materialization. One lane is the conservative
+    // legacy-equivalent default; queue depth bounds a layer worklist chunk.
+    // Workers only populate disjoint host-cache reservations. H2D and compute
+    // retain canonical expert order.
+    size_t      source_read_lanes = 1;
+    size_t      source_read_queue_depth = 6;
     bool        use_batched_experts = false; // stacked strided-batched SwiGLU
     size_t      prefetch_depth = 64;// bounded pinned/device staging ring
     DeviceCacheDType cache_dtype = DeviceCacheDType::Fp32;
@@ -543,6 +549,7 @@ private:
         // Byte length of each of the six regions (mirrors fp4_regions), kept
         // so hit-path refreshes can re-point without recomputing shapes.
         size_t fp4_region_nbytes[6] = {0, 0, 0, 0, 0, 0};
+        uint64_t prepared_generation = 0;
     };
     std::unordered_map<uint64_t, QuantizedExpert> staging_int8_;
     size_t pinned_staging_bytes_ = 0;
@@ -569,6 +576,18 @@ private:
     const QuantizedExpert* get_staging_int8(int source_layer, int expert);
     const QuantizedExpert* get_staging_int4(int source_layer, int expert);
     const QuantizedExpert* get_staging_fp4(int source_layer, int expert);
+    bool configure_fp4_quantized(const ExpertView& view,
+                                 QuantizedExpert* quantized) const;
+    void point_fp4_regions(QuantizedExpert* quantized,
+                           const uint8_t* pack) const;
+    bool prepare_fp4_experts(int source_layer, const int* experts,
+                             size_t count);
+    struct Fp4FillContext {
+        const ExpertStore* store = nullptr;
+        const ExpertView* view = nullptr;
+    };
+    static bool fill_fp4_record(void* context, uint8_t* dst, size_t nbytes);
+    uint64_t fp4_prepare_generation_ = 0;
     bool prepack_quantized_sources();
     StageProfile external_profile_snapshot(double total_wall_ms);
 

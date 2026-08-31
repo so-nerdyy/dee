@@ -84,6 +84,8 @@ PYBIND11_MODULE(pydee_core, m) {
         .def_readwrite("device_id", &dee::EngineConfig::device_id)
         .def_readwrite("budget_bytes", &dee::EngineConfig::budget_bytes)
         .def_readwrite("host_pack_cache_bytes", &dee::EngineConfig::host_pack_cache_bytes)
+        .def_readwrite("source_read_lanes", &dee::EngineConfig::source_read_lanes)
+        .def_readwrite("source_read_queue_depth", &dee::EngineConfig::source_read_queue_depth)
         .def_readwrite("use_batched_experts", &dee::EngineConfig::use_batched_experts)
         .def_readwrite("cache_dtype", &dee::EngineConfig::cache_dtype)
         .def_readwrite("transfer_dtype", &dee::EngineConfig::transfer_dtype)
@@ -114,6 +116,8 @@ PYBIND11_MODULE(pydee_core, m) {
                 dee::weight_transfer_dtype_name(cfg.transfer_dtype);
             result["budget_bytes"] = cfg.budget_bytes;
             result["host_pack_cache_bytes"] = cfg.host_pack_cache_bytes;
+            result["source_read_lanes"] = cfg.source_read_lanes;
+            result["source_read_queue_depth"] = cfg.source_read_queue_depth;
             result["expert_store_path"] = cfg.expert_store_path;
             result["use_batched_experts"] = cfg.use_batched_experts;
             result["num_layers"] = cfg.num_layers;
@@ -132,6 +136,14 @@ PYBIND11_MODULE(pydee_core, m) {
             result["evictions"] = hp.evictions;
             result["bytes"] = hp.bytes;
             result["entries"] = hp.entries;
+            result["fill_batches"] = hp.fill_batches;
+            result["concurrent_fill_batches"] = hp.concurrent_fill_batches;
+            result["fill_requests"] = hp.fill_requests;
+            result["max_fill_queue_depth"] = hp.max_fill_queue_depth;
+            result["max_fill_lanes"] = hp.max_fill_lanes;
+            result["fill_batch_wall_ms"] = hp.fill_batch_wall_ms;
+            result["fill_worker_ms"] = hp.fill_worker_ms;
+            result["fill_overlap_ms"] = hp.fill_overlap_ms;
             return result;
         })
         .def("expert_store_stats", [](const dee::Engine& self) -> py::dict {
@@ -152,6 +164,14 @@ PYBIND11_MODULE(pydee_core, m) {
             result["p95_read_ms"] = stats.p95_read_ms;
             result["max_read_ms"] = stats.max_read_ms;
             result["read_bandwidth_mib_s"] = stats.read_bandwidth_mib_s;
+            result["materialization_mode"] = stats.materialization_mode;
+            result["source_read_batches"] = stats.source_read_batches;
+            result["concurrent_source_read_batches"] = stats.concurrent_source_read_batches;
+            result["max_source_read_queue_depth"] = stats.max_source_read_queue_depth;
+            result["max_source_read_lanes"] = stats.max_source_read_lanes;
+            result["source_read_batch_wall_ms"] = stats.source_read_batch_wall_ms;
+            result["source_read_overlap_ms"] = stats.source_read_overlap_ms;
+            result["source_read_overlap_percent"] = stats.source_read_overlap_percent;
             return result;
         })
         .def("reset_runtime_cache", &dee::Engine::reset_runtime_cache,

@@ -8,10 +8,13 @@
 #include "dee/host_pack_cache.h"
 
 #include <cstdint>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <functional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -39,6 +42,26 @@ bool matches_pattern(const uint8_t* data, size_t n, uint64_t key) {
         }
     }
     return true;
+}
+
+struct BatchContext {
+    uint64_t key = 0;
+    std::atomic<int>* active = nullptr;
+    std::atomic<int>* max_active = nullptr;
+    bool fail = false;
+};
+
+bool batch_fill(void* raw, uint8_t* dst, size_t n) {
+    auto* context = static_cast<BatchContext*>(raw);
+    if (!context || !dst) return false;
+    const int active = context->active->fetch_add(1) + 1;
+    int observed = context->max_active->load();
+    while (observed < active &&
+           !context->max_active->compare_exchange_weak(observed, active)) {}
+    std::this_thread::sleep_for(std::chrono::milliseconds(15));
+    pattern_fill(dst, n, context->key);
+    context->active->fetch_sub(1);
+    return !context->fail;
 }
 
 void test_basic_hit_miss() {
@@ -140,6 +163,93 @@ void test_same_buffer_stays_valid_until_evicted() {
           "re-touch returns prior payload");
 }
 
+void test_bounded_batch_fill_and_rollback() {
+    dee::HostPackCache cache;
+    cache.set_budget(4096);
+    check(cache.set_fill_lanes(3), "three bounded fill lanes initialize");
+    std::atomic<int> active{0};
+    std::atomic<int> max_active{0};
+    BatchContext contexts[4];
+    dee::HostPackCache::BatchRequest requests[4];
+    dee::HostPackCache::BatchResult results[4];
+    for (size_t index = 0; index < 4; ++index) {
+        contexts[index] = {
+            static_cast<uint64_t>(20 + index), &active, &max_active, false};
+        requests[index] = {
+            contexts[index].key, 256, &batch_fill, &contexts[index]};
+    }
+    check(cache.get_batch(requests, 4, results),
+          "bounded concurrent batch succeeds");
+    check(max_active.load() >= 2 && max_active.load() <= 3,
+          "fill concurrency obeys configured lane bound");
+    for (size_t index = 0; index < 4; ++index) {
+        check(results[index].success && results[index].fill_executed,
+              "each cold batch request executes exactly one fill");
+        check(matches_pattern(results[index].data, 256, contexts[index].key),
+              "concurrent fill preserves deterministic bytes");
+    }
+    check(cache.stats().fill_batches == 1 &&
+          cache.stats().concurrent_fill_batches == 1 &&
+          cache.stats().fill_requests == 4 &&
+          cache.stats().max_fill_queue_depth == 4 &&
+          cache.stats().max_fill_lanes == 3,
+          "bounded fill telemetry is exact");
+    check(cache.stats().fill_worker_ms >= cache.stats().fill_batch_wall_ms &&
+          cache.stats().fill_overlap_ms > 0.0,
+          "concurrent worker overlap is measured");
+
+    // A short/error fill is fail-closed and does not leave a readable cache
+    // entry behind. Existing successful entries remain intact.
+    BatchContext bad{99, &active, &max_active, true};
+    dee::HostPackCache::BatchRequest bad_request{
+        99, 128, &batch_fill, &bad};
+    dee::HostPackCache::BatchResult bad_result;
+    check(!cache.get_batch(&bad_request, 1, &bad_result),
+          "failed fill rejects the complete batch");
+    check(!cache.contains(99) && cache.get_if_present(99) == nullptr,
+          "failed reservation is rolled back");
+    check(cache.contains(20) && cache.contains(21),
+          "failed fill does not corrupt prior cache entries");
+
+    // A failure in a multi-record batch rolls back every reservation created
+    // by that batch, not merely the record whose callback returned false.
+    BatchContext mixed_contexts[2] = {
+        {100, &active, &max_active, false},
+        {101, &active, &max_active, true},
+    };
+    dee::HostPackCache::BatchRequest mixed_requests[2] = {
+        {100, 128, &batch_fill, &mixed_contexts[0]},
+        {101, 128, &batch_fill, &mixed_contexts[1]},
+    };
+    dee::HostPackCache::BatchResult mixed_results[2];
+    check(!cache.get_batch(mixed_requests, 2, mixed_results),
+          "a mixed-success batch fails closed");
+    check(!cache.contains(100) && !cache.contains(101) &&
+          mixed_results[0].data == nullptr && mixed_results[1].data == nullptr,
+          "mixed batch leaves no partial reservation readable");
+}
+
+void test_batch_duplicate_is_single_materialization() {
+    dee::HostPackCache cache;
+    cache.set_budget(1024);
+    check(cache.set_fill_lanes(2), "two bounded fill lanes initialize");
+    std::atomic<int> active{0};
+    std::atomic<int> max_active{0};
+    BatchContext context{7, &active, &max_active, false};
+    dee::HostPackCache::BatchRequest requests[2] = {
+        {7, 128, &batch_fill, &context},
+        {7, 128, &batch_fill, &context},
+    };
+    dee::HostPackCache::BatchResult results[2];
+    check(cache.get_batch(requests, 2, results),
+          "duplicate batch keys resolve");
+    check(results[0].fill_executed && !results[1].fill_executed &&
+          results[0].data == results[1].data,
+          "duplicate key materializes once and shares exact bytes");
+    check(cache.stats().misses == 1 && cache.stats().hits == 1,
+          "duplicate batch preserves sequential hit/miss semantics");
+}
+
 }  // namespace
 
 int main() {
@@ -147,6 +257,8 @@ int main() {
     test_lru_eviction();
     test_oversize_and_clear();
     test_same_buffer_stays_valid_until_evicted();
+    test_bounded_batch_fill_and_rollback();
+    test_batch_duplicate_is_single_materialization();
     if (g_failures == 0) {
         std::printf("ALL PASS\n");
         return 0;

@@ -75,6 +75,8 @@ def cmake_cache_value(name):
 cuda_enabled = (cmake_cache_value("DEE_CUDA") or "").upper() in {"ON", "TRUE", "1"}
 library_dirs = [os.path.dirname(STATIC_LIB)]
 libraries = ["dee_core", "z", "stdc++"]
+if not sys.platform.startswith("win"):
+    libraries.append("pthread")
 if cuda_enabled:
     cuda_root = cmake_cache_value("CUDAToolkit_ROOT")
     if not cuda_root:
