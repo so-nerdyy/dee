@@ -1,0 +1,53 @@
+{
+  "format": "dee4-v3-trace",
+  "serving_backend": "dee4_trace",
+  "dee4_mbps": 245.749,
+  "safetensors_mbps": 188.2530798161654,
+  "speedup": 1.3054182180710192,
+  "repack_s": 222.9234923140002,
+  "repack_gib": 29.4345703125,
+  "io_count_reduction": "378 random -> 1 contiguous record stream",
+  "data_sha256": "c83462ba50d2154a241cabf7d2b8d084e46f2eaa54416a96c90770ca7172d6e8",
+  "validation_samples": 12,
+  "validation_source_shards": [
+    "model-00002-of-00048.safetensors",
+    "model-00004-of-00048.safetensors",
+    "model-00007-of-00048.safetensors",
+    "model-00020-of-00048.safetensors",
+    "model-00029-of-00048.safetensors",
+    "model-00030-of-00048.safetensors",
+    "model-00034-of-00048.safetensors",
+    "model-00040-of-00048.safetensors",
+    "model-00041-of-00048.safetensors",
+    "model-00042-of-00048.safetensors",
+    "model-00043-of-00048.safetensors"
+  ],
+  "safetensors_storage": {
+    "resolved_path": "/kaggle/input/deepseek-v4-flash-0731-shards",
+    "device_id": 52,
+    "total_bytes": 82463372083200,
+    "free_bytes": 24872636907520,
+    "mountpoint": "/kaggle/input/deepseek-v4-flash-0731-shards",
+    "filesystem": "nfs",
+    "mount_source": "192.168.16.2:/data/kagglesdsdata/datasets/11667800/18963078/dl2s05p60yvx",
+    "mount_options": "ro,relatime"
+  },
+  "serving_access_benchmark": {
+    "groups": 0,
+    "topk": 0,
+    "request_count": 0,
+    "bytes_requested_per_sweep": 0,
+    "record_order_sha256": "7f41f8d0351491ce9d4b11b5317257c3dfb3ec282666fcac7cd711aa9bcd99bf",
+    "winner": null,
+    "unavailable_modes": [
+      {
+        "mode": "synthetic-serving-order",
+        "reason": "trace store uses its committed sparse record map"
+      }
+    ]
+  },
+  "working_location_benchmark": {
+    "status": "NOT_REQUESTED",
+    "reason": "live backend is not DEE4"
+  }
+}
