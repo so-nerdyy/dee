@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <cctype>
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
