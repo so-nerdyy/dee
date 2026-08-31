@@ -1,10 +1,12 @@
 {
-  "_comment": "Run the 16-token sealed gate against the trace-guided DEE4 v3 store linked to the committed canonical v50 route journal.",
-  "run_id": "p2.3-dee4-trace-profile-v52",
+  "_comment": "Run the 16-token sealed gate against the trace-guided DEE4 v3 store with bounded parallel host fills and full stage profiling.",
+  "run_id": "p2.3-dee4-trace-fillpool-profile-v56",
   "cache_dtype": "fp4",
   "expert_store": "dee4_trace",
   "dee4_trace_path": "/tmp/dsv4-dee4-v3-trace/metadata.json",
   "dee4_validate_samples": 12,
   "profile_stages": true,
-  "n_tokens": 16
+  "n_tokens": 16,
+  "source_read_lanes": 3,
+  "source_read_queue_depth": 6
 }
