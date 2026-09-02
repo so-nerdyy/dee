@@ -2799,7 +2799,8 @@ bool Engine::prepare_fp4_experts(
             contexts[index] = {expert_store_.get(), &views[index]};
             requests[index] = {
                 key, metadata[index].fp4_total_nbytes,
-                &Engine::fill_fp4_record, &contexts[index]};
+                &Engine::fill_fp4_record, &contexts[index],
+                views[index].record_index};
         }
 
         const HostPackCache::Stats before = pack_cache_.stats();

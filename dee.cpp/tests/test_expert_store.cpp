@@ -5,6 +5,7 @@
 
 #include "dee/expert_store.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -184,6 +185,19 @@ void test_trace_index_lookup_and_fail_closed() {
     check(store.get(7, 1, &view), "selected trace expert resolves");
     check(view.record_index == 2 && view.contiguous_data[0] == 97,
           "trace lookup uses explicit record index");
+    std::vector<uint8_t> materialized(40, 0xee);
+    check(store.materialize(view, materialized.data(), materialized.size()),
+          "exact trace record materializes");
+    check(materialized.front() == 97 && materialized.back() == 136,
+          "materialized bytes preserve routed expert identity");
+    dee::ExpertView forged = view;
+    forged.record_index = 1;
+    std::fill(materialized.begin(), materialized.end(),
+              static_cast<uint8_t>(0xee));
+    check(!store.materialize(forged, materialized.data(), materialized.size()),
+          "mismatched record index and pointer fail closed");
+    check(materialized.front() == 0xee && materialized.back() == 0xee,
+          "failed identity check does not expose another record");
     check(!store.get(6, 0, &view),
           "unselected trace expert fails closed instead of using dense offset");
     check(store.get_layout_reference(6, &view),

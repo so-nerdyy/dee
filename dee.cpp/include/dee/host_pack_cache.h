@@ -20,6 +20,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <atomic>
@@ -60,6 +61,10 @@ public:
         size_t nbytes = 0;
         BatchFill fill = nullptr;
         void* context = nullptr;
+        // Stable source-local ordering hint for cold fills.  The cache still
+        // returns results in caller order; this only orders the bounded worker
+        // queue so positional reads do not inherit rank-order seek churn.
+        uint64_t source_order = 0;
     };
     struct BatchResult {
         const uint8_t* data = nullptr;
@@ -134,7 +139,8 @@ private:
     size_t fill_workers_pending_ = 0;
     const BatchRequest* active_requests_ = nullptr;
     BatchResult* active_results_ = nullptr;
-    size_t active_request_count_ = 0;
+    std::array<size_t, kMaxBatchRequests> active_fill_order_{};
+    size_t active_fill_count_ = 0;
     std::atomic<size_t> next_fill_index_{0};
 
     void stop_fill_workers();

@@ -25,7 +25,7 @@ void HostPackCache::stop_fill_workers() {
     fill_workers_pending_ = 0;
     active_requests_ = nullptr;
     active_results_ = nullptr;
-    active_request_count_ = 0;
+    active_fill_count_ = 0;
 }
 
 bool HostPackCache::set_fill_lanes(size_t lanes) {
@@ -54,12 +54,12 @@ bool HostPackCache::set_fill_lanes(size_t lanes) {
 
 void HostPackCache::run_fill_lane() {
     for (;;) {
-        const size_t index = next_fill_index_.fetch_add(
+        const size_t order_index = next_fill_index_.fetch_add(
             1, std::memory_order_relaxed);
-        if (index >= active_request_count_) return;
+        if (order_index >= active_fill_count_) return;
+        const size_t index = active_fill_order_[order_index];
         const BatchRequest& request = active_requests_[index];
         BatchResult& result = active_results_[index];
-        if (!result.fill_executed) continue;
         const auto begin = std::chrono::steady_clock::now();
         bool success = false;
         try {
@@ -273,7 +273,26 @@ bool HostPackCache::get_batch(
     const auto batch_begin = std::chrono::steady_clock::now();
     active_requests_ = requests;
     active_results_ = results;
-    active_request_count_ = count;
+    active_fill_count_ = 0;
+    for (size_t index = 0; index < count; ++index) {
+        if (results[index].fill_executed) {
+            active_fill_order_[active_fill_count_++] = index;
+        }
+    }
+    // DEE4 trace records are laid out by record index, while decode requests
+    // arrive in authoritative router-rank order.  Stable sorting only the
+    // private fill queue makes each worker consume monotonic positional-read
+    // work without changing request/result order, cache identity, or later
+    // H2D/compute order. Equal/default hints retain the legacy order exactly.
+    std::sort(
+        active_fill_order_.begin(),
+        active_fill_order_.begin() + active_fill_count_,
+        [&](size_t lhs, size_t rhs) {
+            if (requests[lhs].source_order != requests[rhs].source_order) {
+                return requests[lhs].source_order < requests[rhs].source_order;
+            }
+            return lhs < rhs;
+        });
     next_fill_index_.store(0, std::memory_order_relaxed);
     if (!fill_workers_.empty() && unique_misses > 1) {
         {
@@ -340,7 +359,7 @@ bool HostPackCache::get_batch(
     }
     active_requests_ = nullptr;
     active_results_ = nullptr;
-    active_request_count_ = 0;
+    active_fill_count_ = 0;
 
     ++stats_.fill_batches;
     if (unique_misses > 1 && fill_lanes_ > 1) {

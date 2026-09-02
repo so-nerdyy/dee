@@ -49,6 +49,7 @@ struct BatchContext {
     std::atomic<int>* active = nullptr;
     std::atomic<int>* max_active = nullptr;
     bool fail = false;
+    std::vector<uint64_t>* invocation_order = nullptr;
 };
 
 bool batch_fill(void* raw, uint8_t* dst, size_t n) {
@@ -58,6 +59,9 @@ bool batch_fill(void* raw, uint8_t* dst, size_t n) {
     int observed = context->max_active->load();
     while (observed < active &&
            !context->max_active->compare_exchange_weak(observed, active)) {}
+    if (context->invocation_order) {
+        context->invocation_order->push_back(context->key);
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(15));
     pattern_fill(dst, n, context->key);
     context->active->fetch_sub(1);
@@ -176,7 +180,8 @@ void test_bounded_batch_fill_and_rollback() {
         contexts[index] = {
             static_cast<uint64_t>(20 + index), &active, &max_active, false};
         requests[index] = {
-            contexts[index].key, 256, &batch_fill, &contexts[index]};
+            contexts[index].key, 256, &batch_fill, &contexts[index],
+            static_cast<uint64_t>(100 - index)};
     }
     check(cache.get_batch(requests, 4, results),
           "bounded concurrent batch succeeds");
@@ -250,6 +255,50 @@ void test_batch_duplicate_is_single_materialization() {
           "duplicate batch preserves sequential hit/miss semantics");
 }
 
+void test_source_order_preserves_request_identity() {
+    dee::HostPackCache cache;
+    cache.set_budget(2048);
+    check(cache.set_fill_lanes(1), "single deterministic fill lane initializes");
+    std::atomic<int> active{0};
+    std::atomic<int> max_active{0};
+    std::vector<uint64_t> invocation_order;
+    const uint64_t keys[4] = {40, 41, 42, 43};
+    const uint64_t source_order[4] = {30, 10, 20, 20};
+    BatchContext contexts[4];
+    dee::HostPackCache::BatchRequest requests[4];
+    dee::HostPackCache::BatchResult results[4];
+    for (size_t index = 0; index < 4; ++index) {
+        contexts[index] = {
+            keys[index], &active, &max_active, false, &invocation_order};
+        requests[index] = {
+            keys[index], 128, &batch_fill, &contexts[index],
+            source_order[index]};
+    }
+
+    check(cache.get_batch(requests, 4, results),
+          "source-ordered batch succeeds");
+    const std::vector<uint64_t> expected_order{41, 42, 43, 40};
+    check(invocation_order == expected_order,
+          "source order is stable and deterministic for equal hints");
+    for (size_t index = 0; index < 4; ++index) {
+        check(results[index].success &&
+              matches_pattern(results[index].data, 128, keys[index]),
+              "source scheduling preserves original request/result identity");
+    }
+
+    invocation_order.clear();
+    dee::HostPackCache::BatchResult hit_results[4];
+    check(cache.get_batch(requests, 4, hit_results),
+          "source-ordered batch hits remain valid");
+    check(invocation_order.empty(),
+          "cache hits do not re-run source callbacks");
+    for (size_t index = 0; index < 4; ++index) {
+        check(hit_results[index].cache_hit && hit_results[index].success &&
+              matches_pattern(hit_results[index].data, 128, keys[index]),
+              "hit result order and expert identity remain unchanged");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -259,6 +308,7 @@ int main() {
     test_same_buffer_stays_valid_until_evicted();
     test_bounded_batch_fill_and_rollback();
     test_batch_duplicate_is_single_materialization();
+    test_source_order_preserves_request_identity();
     if (g_failures == 0) {
         std::printf("ALL PASS\n");
         return 0;
