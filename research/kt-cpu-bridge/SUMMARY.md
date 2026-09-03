@@ -1,5 +1,11 @@
 # KT CPU Bridge — final summary (research/kt-cpu-bridge)
 
+2026-09-03 numerical-review update: the real-weight probe is now available,
+but strict C++ allclose and emulator DS8 acceptance are blocked. The older
+synthetic results below are not real-expert acceptance. See
+[the numerical review](NUMERICAL_REVIEW_20260903.md) for measured failures,
+an omitted KT rounding boundary, and the missing sealed-activation evidence.
+
 Upstream pin: ktransformers `31985f40bcc40da08107efdb1f81bf88cb38c6b2` (2026-09-01), Apache-2.0.
 Branch: `research/kt-cpu-bridge`. Untouched: `freebuff/deepseek-v4-flash-0731-t4`
 + all campaign kernels/configs/evidence. No merge. No full-model TPS claim.

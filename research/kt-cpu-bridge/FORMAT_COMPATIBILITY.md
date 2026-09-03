@@ -1,5 +1,12 @@
 # Format Compatibility — dee official MXFP4 vs KTransformers MXFP4
 
+2026-09-03 correction: real tensor decoding/scale adaptation was verified,
+but the portable emulator omits KT's preweight BF16 down-output boundary and
+does not reproduce native SIMD reductions/activation approximation. Its
+real-weight DS8 probe fails. The mathematical-equivalence claims below do
+not establish exact numerical parity; see
+[the numerical review](NUMERICAL_REVIEW_20260903.md).
+
 Branch: `research/kt-cpu-bridge`. Upstream commit `31985f40bcc40da08107efdb1f81bf88cb38c6b2`.
 References: dee `dee.cpp/include/dee/weight_mmap.h`, `dee.cpp/src/weight_mmap.cpp`,
 `dee.cpp/src/cuda_convert.cu`, `dee.cpp/scripts/deepseek_v4_expert_reference.py`,
