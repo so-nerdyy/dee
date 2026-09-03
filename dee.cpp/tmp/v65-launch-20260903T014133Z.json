@@ -1,0 +1,15 @@
+{
+  "kernel": "nivind/dee-cpp-dsv4-native-generate",
+  "version": 65,
+  "status_at_launch": "RUNNING",
+  "pushed_at_utc": "2026-09-03T01:41:33.7629741Z",
+  "run_id": "p2.3-dee4-storage-readahead-ab1-candidate-q6l6-v65",
+  "candidate_commit": "c3182fc4ecfad5f5bae8f8ad548087cc16a1e978",
+  "source_read_lanes": 6,
+  "source_read_queue_depth": 6,
+  "profile_stages": false,
+  "n_tokens": 16,
+  "cache_dtype": "fp4",
+  "expert_store": "dee4_trace",
+  "hardware": "2x Tesla T4"
+}

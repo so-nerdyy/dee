@@ -1,0 +1,193 @@
+{
+  "schema": "dsv4-real-generation-six-lane-terminal-seal-v1",
+  "sealed_at_utc": "2026-09-03T02:06:25Z",
+  "scope": "Read-only independent audit of the already-fetched v65 terminal bundle. The source bundle was neither modified, replaced, deleted, nor copied. This seal is additive and does not launch or restart Kaggle work.",
+  "source": {
+    "bundle": "dee.cpp/tmp/v65-terminal-fetch-20260903T020220Z",
+    "run_id": "p2.3-dee4-storage-readahead-ab1-candidate-q6l6-v65",
+    "git_commit": "c3182fc4ecfad5f5bae8f8ad548087cc16a1e978",
+    "raw_file_count": 18,
+    "raw_total_bytes": 9788809,
+    "local_commit_present": true,
+    "comparison_sources": {
+      "v64_candidate": {
+        "bundle": "dee.cpp/tmp/v64-terminal-fetch-20260903T0120Z",
+        "run_id": "p2.3-dee4-trace-record-order-ab1-candidate-q6l3-v64",
+        "git_commit": "c3182fc4ecfad5f5bae8f8ad548087cc16a1e978"
+      },
+      "v63_baseline": {
+        "bundle": "dee.cpp/tmp/v63-terminal-fetch-20260903T0048Z",
+        "run_id": "p2.3-dee4-trace-record-order-ab1-baseline-q6l3-v63",
+        "git_commit": "236bdb29cf77de6ac741f4f70f3c801a68bba5c4"
+      },
+      "prior_ab_seal": "dee.cpp/benchmark_reports/deepseek-v4-flash-0731-t4/v63-v64-terminal-ab-seal-20260903T013055Z.json"
+    }
+  },
+  "execution_and_correctness": {
+    "profile_stages": false,
+    "n_tokens": 16,
+    "cache_dtype": "fp4",
+    "expert_store": "dee4_trace",
+    "authoritative_router": "torch_cuda_validated_ds9_path",
+    "cpu_expert_execution": false,
+    "execution_terminal": "complete",
+    "layers_executed": 43,
+    "finite_outputs": true,
+    "expected_and_observed_token_ids": [666, 95140, 96807, 343, 4470, 20, 1127, 3298, 22, 22604, 515, 411, 3947, 85349, 14, 6341],
+    "expected_and_observed_decoded_text": "**Alan Turing (1912\u20131954)** was an English mathematician, computer",
+    "decoded_text_sha256": "7fc87fbf71af7f5f3510bc2fd01a9342a866f9b4daa8382b52fd21e5a1e160e9",
+    "result_and_native_result_semantically_identical": true,
+    "bridge_counters": {
+      "numpy_bridge_calls": 0,
+      "full_hidden_d2h_copies": 0,
+      "raw_expert_output_d2h_copies": 0,
+      "hidden_h2d_copies": 0,
+      "engine_fallbacks": {"cuda0": 0, "cuda1": 0}
+    },
+    "all_18_sealed_contract_gates_true": true,
+    "sealed_contract_gates": {
+      "exact_16_token_ids": true,
+      "exact_decoded_text": true,
+      "all_43_layers": true,
+      "finite_outputs_observed": true,
+      "finite_outputs": true,
+      "numpy_bridge_calls": true,
+      "full_hidden_d2h_copies": true,
+      "raw_expert_output_d2h_copies": true,
+      "official_router_authoritative": true,
+      "no_cpu_expert_fallback": true,
+      "effective_cuda_execution": true,
+      "effective_cache_dtype": true,
+      "effective_expert_store": true,
+      "dee4_contiguous_reads": true,
+      "dee4_integrity_identity": true,
+      "dee4_trace_metadata_linkage": true,
+      "route_journal_complete": true,
+      "required_performance_hardware": true
+    }
+  },
+  "hardware": {
+    "required_and_observed": "2x Tesla T4",
+    "gpu_count": 2,
+    "device_names": ["Tesla T4", "Tesla T4"],
+    "compute_capabilities": [7.5, 7.5],
+    "hardware_classification": "ELIGIBLE_2X_TESLA_T4",
+    "performance_eligible": true
+  },
+  "six_lane_configuration_and_telemetry": {
+    "topk": 6,
+    "both_engines": {
+      "source_read_lanes": 6,
+      "source_read_queue_depth": 6,
+      "observed_max_source_read_lanes": 6,
+      "observed_max_source_read_queue_depth": 6,
+      "max_lanes_bounded_by_topk": true,
+      "queue_depth_equals_configured": true
+    },
+    "cuda0": {
+      "source_read_batches": 413,
+      "concurrent_source_read_batches": 319,
+      "source_read_batch_wall_ms": 53563.916599,
+      "source_read_overlap_ms": 189285.215483,
+      "source_read_overlap_percent": 77.943584,
+      "read_bandwidth_mib_s": 72.977447,
+      "average_read_ms": 174.711511,
+      "p50_read_ms": 215.509674,
+      "p95_read_ms": 265.575699,
+      "max_read_ms": 281.291107
+    },
+    "cuda1": {
+      "source_read_batches": 351,
+      "concurrent_source_read_batches": 247,
+      "source_read_batch_wall_ms": 41668.631611,
+      "source_read_overlap_ms": 147306.557954,
+      "source_read_overlap_percent": 77.950271,
+      "read_bandwidth_mib_s": 73.608926,
+      "average_read_ms": 173.212688,
+      "p50_read_ms": 220.794306,
+      "p95_read_ms": 264.874351,
+      "max_read_ms": 272.475913
+    }
+  },
+  "route_journal_and_checkpoints": {
+    "independent_recomputation": true,
+    "canonical_json_and_newlines": true,
+    "predecessor_chain": true,
+    "record_order": "contiguous record_index and forward_step/layer order",
+    "record_count": 688,
+    "completed_forwards": 16,
+    "layers_per_forward": 43,
+    "topk": 6,
+    "every_row_has_six_unique_expert_ids_in_0_255": true,
+    "file_sha256": "ee5c95682a2e7a72691bec1ceb9dda78852b3967de59bc0a40bcf6032048ece1",
+    "final_chain_sha256": "b3badc389fc24d2234d7cb21f2cb0afd17e54c47cfbc6dfbb78c8912a70d250c",
+    "checkpoint_records": 16,
+    "checkpoint_steps": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    "checkpoint_token_ids_match_generated_tokens": true,
+    "checkpoint_chain_and_exact_prefix_bytes_cross_link": true,
+    "checkpoint_terminal_layer_fsync_complete": true
+  },
+  "dee4_identity_and_integrity": {
+    "format": "dee4-v3-trace",
+    "source_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+    "data_sha256": "c83462ba50d2154a241cabf7d2b8d084e46f2eaa54416a96c90770ca7172d6e8",
+    "trace_journal_sha256": "665aac3e8db570237c6dc6acaf08dc39f2af890e8a04e400ce7154f1a858dae1",
+    "trace_final_chain_sha256": "086f8ca83b6a3c467cdf950096141fa9bc3e55a285d7d1fed8a0ad9913e3eb3d",
+    "selection_sha256": "7f41f8d0351491ce9d4b11b5317257c3dfb3ec282666fcac7cd711aa9bcd99bf",
+    "trace_record_count": 688,
+    "trace_completed_forwards": 16,
+    "integrity_records": 2364,
+    "record_bytes": 13369344,
+    "total_bytes": 31605129216,
+    "metadata_integrity_rows_contiguous_and_cross_linked": true,
+    "every_integrity_row_has_record_hash_six_component_hashes_and_source_shard": true,
+    "metadata_trace_validation_repack_full_identity_cross_link": true,
+    "import_validation": {"success": true, "sample_count": 12, "source_shards_covered": 11, "data_sha256_matches": true},
+    "repack_report": {"success": true, "errors_empty": true, "total_experts_repacked": 2364, "total_bytes_repacked": 31605129216},
+    "trace_validation": {"success": true, "record_indices_contiguous": true, "integrity_records_complete": true, "created_this_run": true},
+    "p2_2_evidence_data_sha256_matches": true
+  },
+  "metrics": {
+    "v65": {"total_wall_s": 168.97, "prefill_s": 95.6939, "decode_wall_s": 72.267, "decode_tps": 0.208, "median_inter_token_ms": 4587.91, "p95_inter_token_ms": 6876.35},
+    "v65_minus_v64": {
+      "total_wall_s": {"delta": -1.95, "percent": -1.140885},
+      "decode_wall_s": {"delta": 0.463, "percent": 0.644811},
+      "decode_tps": {"delta": -0.001, "percent": -0.478469},
+      "cuda0": {"read_bandwidth_mib_s": {"delta": -50.719925, "percent": -41.003236}, "average_read_ms": {"delta": 71.637373, "percent": 69.500822}, "overlap_percent": {"delta": 15.777885, "percent": 25.38037}},
+      "cuda1": {"read_bandwidth_mib_s": {"delta": -53.519493, "percent": -42.098764}, "average_read_ms": {"delta": 72.920401, "percent": 72.707884}, "overlap_percent": {"delta": 15.755614, "percent": 25.332744}}
+    },
+    "v65_minus_v63": {
+      "total_wall_s": {"delta": -2.28, "percent": -1.331387},
+      "decode_wall_s": {"delta": 0.952, "percent": 1.334923},
+      "decode_tps": {"delta": -0.002, "percent": -0.952381},
+      "cuda0": {"read_bandwidth_mib_s": {"delta": -49.835672, "percent": -40.57846}, "average_read_ms": {"delta": 70.89524, "percent": 68.289142}, "overlap_percent": {"delta": 15.865263, "percent": 25.556848}},
+      "cuda1": {"read_bandwidth_mib_s": {"delta": -50.306098, "percent": -40.597255}, "average_read_ms": {"delta": 70.319596, "percent": 68.342389}, "overlap_percent": {"delta": 15.81694, "percent": 25.456449}}
+    }
+  },
+  "raw_sha256": {
+    "dee-cpp-dsv4-native-generate.log": "0d7798e54ff05b47db8f602bb8349997ede8dbcaf497968be398d347f2febc8b",
+    "dee4-import-validation.json": "75b5773f326038675f40c1c63b02b6f57c7ec640e358ae3f852cc8506ac82593",
+    "dee4-integrity.jsonl": "55129bc080555d57caff1d89899de0e3cd85a8f5cfa57668b1b4ce6b1545fea4",
+    "dee4-metadata.json": "04c84e2d797b753a6ce9a3d926c763aee227bb29a9c5bb2366542401df84a1fb",
+    "dee4-repack_report.json": "b0c98091472250adde0b9ab7d0467b97ac9f408fa53dc556aafd4be195768c3d",
+    "dee4-trace-validation.json": "063ed2d0a97a226207d87fbd6ed92ade39a84f86947ecf15e0d7795bc7631718",
+    "environment.json": "9597dcb5d610f12afdd28d2b6f1f9da8d2f9fb047a3420e91c7f459fed156afb",
+    "generated_checkpoint.jsonl": "4279ec09e7dfbb9163fa10d7550f9e18fc2a8540274d27451eaee458a273130d",
+    "integrity.json": "20440fc63f7b347f3e6ed074c904acb1cd991e0e8f1652ac40cf11c6b068008a",
+    "memory.json": "e8b120e159b3fa295baa81556019f0eef4df04b7ff0bd2e1d7e208324334860e",
+    "model.safetensors.index.json": "98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b",
+    "native-generate-result.json": "2800cd99361307d5350c9e1fdce04d185098fd9c6adbdc7ca092dc668a3224dc",
+    "p2.2-dee4-evidence.json": "f4f16efd0bf0709f1402366cf588785435de3dce3b9104e1374b72c16bc7e38c",
+    "profile.json": "2514a54c589a979306a08ee82d4a0b097c6fab788335acde84440433892b317b",
+    "progress.log": "b35c7ae57569ef711fe2e11cf5b4f0247009fe20ebef7e275efc70de54e69148",
+    "result.json": "2800cd99361307d5350c9e1fdce04d185098fd9c6adbdc7ca092dc668a3224dc",
+    "routed_experts.jsonl": "ee5c95682a2e7a72691bec1ceb9dda78852b3967de59bc0a40bcf6032048ece1",
+    "run_config.json": "80fc423085d541fbcf5e505b8179c572a4771a16cb30af5015b35fa605d98192"
+  },
+  "embedded_artifact_hashes": {
+    "declared_count": 7,
+    "all_recomputed_and_matched": true,
+    "names": ["environment.json", "run_config.json", "result.json", "profile.json", "memory.json", "routed_experts.jsonl", "dee4-trace-validation.json"]
+  },
+  "interpretation": "This correctly seals one unprofiled terminal v65 execution and its six-lane telemetry. It does not accept a performance improvement: v65 is n=1, changes lane count from v63/v64's 3 to 6, and has slower decode / lower decode TPS despite lower total wall time. The higher overlap with lower per-worker bandwidth and higher per-request latency is descriptive only. Require replicated, matched q6l6 versus q6l3 trials on the same 2x Tesla T4 hardware before making causal or performance claims."
+}

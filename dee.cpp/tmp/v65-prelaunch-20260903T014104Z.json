@@ -1,0 +1,31 @@
+{
+  "run_id": "p2.3-dee4-storage-readahead-ab1-candidate-q6l6-v65",
+  "candidate_commit": "c3182fc4ecfad5f5bae8f8ad548087cc16a1e978",
+  "source_read_lanes": 6,
+  "source_read_queue_depth": 6,
+  "top_k": 6,
+  "cache_dtype": "fp4",
+  "expert_store": "dee4_trace",
+  "profile_stages": false,
+  "n_tokens": 16,
+  "accelerator": "NvidiaTeslaT4",
+  "gpu_count": 2,
+  "expected_hardware": ["Tesla T4", "Tesla T4"],
+  "kernel": "nivind/dee-cpp-dsv4-native-generate",
+  "previous_terminal_version": 64,
+  "previous_status": "COMPLETE",
+  "preflight": {
+    "payload_ast_config": "PASS",
+    "kernel_metadata": "PASS",
+    "local_tests": "16 passed",
+    "browser_private_page": "visible authenticated page, version 64 of 64",
+    "cli_status": "COMPLETE",
+    "prior_versions_untouched": true
+  },
+  "comparison_baselines": [
+    "dee.cpp/benchmark_reports/deepseek-v4-flash-0731-t4/v63-v64-terminal-ab-seal-20260903T013055Z.json",
+    "dee.cpp/tmp/v63-terminal-fetch-20260903T0048Z",
+    "dee.cpp/tmp/v64-terminal-fetch-20260903T0120Z"
+  ],
+  "sealed_at_utc": "2026-09-03T01:41:04.4537494Z"
+}
