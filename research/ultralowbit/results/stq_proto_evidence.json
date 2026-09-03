@@ -1,0 +1,69 @@
+{
+  "format": {
+    "block_weights": 256,
+    "group": 4,
+    "payload_bytes": 40,
+    "scale_bytes": 2,
+    "block_bytes": 42,
+    "bpw": 1.3125
+  },
+  "per_expert_projection": {
+    "logical_weights": 25165824,
+    "blocks": 98304,
+    "stq_bytes": 4128768,
+    "mxfp4_bytes": 13369344,
+    "ratio": 0.3088
+  },
+  "tests": [
+    {
+      "test": "roundtrip_random_block",
+      "pass": true,
+      "block_bytes": 42,
+      "bpw": 1.3125
+    },
+    {
+      "test": "sparsity_3of4",
+      "pass": true,
+      "zeros_per_256": 64
+    },
+    {
+      "test": "format_constants",
+      "pass": true,
+      "payload_bytes": 40,
+      "scale_bytes": 2,
+      "block_bytes": 42,
+      "bpw": 1.3125
+    },
+    {
+      "test": "reencode_idempotent",
+      "pass": true
+    },
+    {
+      "test": "edge_blocks",
+      "pass": true
+    },
+    {
+      "test": "numpy_decode_equivalence",
+      "pass": true,
+      "blocks_checked": 1000
+    }
+  ],
+  "all_tests_pass": true,
+  "decode_throughput": {
+    "python_reference": {
+      "impl": "python_ref",
+      "blocks": 2000,
+      "weights": 512000,
+      "seconds": 0.3038,
+      "Mweights_per_s": 1.685
+    },
+    "numpy": {
+      "impl": "numpy_vectorized",
+      "blocks": 40000,
+      "weights": 10240000,
+      "seconds": 0.7461,
+      "Mweights_per_s": 13.725
+    }
+  },
+  "note": "reference prototype only; NOT for production; not benchmarked on CUDA"
+}
