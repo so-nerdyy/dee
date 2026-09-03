@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "reviewer": "Terra independent sealing review",
+  "reviewed_at_utc": "2026-09-03T23:15:03Z",
+  "kernel": "nivind/dee-cpp-dsv4-kt-input-capture-20260903",
+  "kernel_version": 2,
+  "seal_status": "SEALED_UNSUCCESSFUL_REAL_INPUT_CAPTURE",
+  "terminal_status": "ERROR",
+  "failure_message": null,
+  "terminal_evidence": {
+    "primary_api_snapshot": "terminal-status-api.json",
+    "primary_api_snapshot_sha256": "f757ec1845169b9419ae8877f7770c4c62fb29bca9f7e4890890a360e01126ac",
+    "primary_api_observed_at_utc": "2026-09-03T23:15:03.206496+00:00",
+    "primary_api_operation": "read-only official Kaggle API",
+    "primary_api_server_source_sha256": "3c439689837a043c780ce376a13b383a76f5882bbfc7ebf418e99633db06b27b",
+    "status_file": "v2-terminal-status.json",
+    "status_file_sha256": "1b28ba546e6d86d4458aec020c017938a12d0da561d7d8958303c6f141eb21b9",
+    "live_stream": "v2-live-stream.jsonl",
+    "live_stream_sha256": "596abf164869e3d38fa409271cbdc4448093b6ca53a49d472689607549c9e354",
+    "output_directory": "v2-terminal",
+    "output_files_returned": 0,
+    "fatal_traceback_returned": false
+  },
+  "observed_runtime_prerequisites": {
+    "source_commit": "c3182fc4ecfad5f5bae8f8ad548087cc16a1e978",
+    "gpu_count": 2,
+    "gpu_names": ["Tesla T4", "Tesla T4"],
+    "compute_capabilities": [7.5, 7.5],
+    "native_cuda_regression_tests": "PASS observed in live stream; not generation or capture acceptance",
+    "pydee_build": "completed in live stream"
+  },
+  "payload_identity": {
+    "local_payload": "payload-v2/deepseek_v4_native_generate.py",
+    "local_payload_sha256": "9d14571c94a1452a1f2a3be2a65f946bee5bdc2203704d22910bcfe60398dc2f",
+    "terminal_server_payload": "terminal-v2-server/dee-cpp-dsv4-kt-input-capture-20260903.py",
+    "terminal_server_payload_sha256": "583a8311eaf28440e69b792c672b49970812f71bb78caf30c382d3636792c83d",
+    "ast_equivalent_after_line_ending_normalization": true,
+    "note": "The primary API snapshot separately records the server-source byte hash; the local terminal source pull is AST-equivalent to the dispatched payload but has a distinct serialized-byte hash.",
+    "preflight": "preflight-v2.json",
+    "preflight_sha256": "09e75b69aa51f37c01bd0d30b7be0bfa6c40f4b12bcc706080b83b51f76998d9"
+  },
+  "capture_contract": {
+    "requested_rows": [[0, 4, 3], [3, 0, 3], [10, 0, 0]],
+    "requested_layer": 0,
+    "requested_expert": 155,
+    "requested_tensor_bytes": 73800,
+    "capture_artifacts_present": false,
+    "real_input_rows_available": false,
+    "official_router_weight_rows_available": false,
+    "generation_observed": false,
+    "all_18_generation_gates": "NOT_OBSERVED",
+    "route_semantics_against_v65": "NOT_OBSERVED",
+    "d2h_export_bound": "NOT_OBSERVED"
+  },
+  "last_observed_phase": "Original snapshot_download fallback after expected dataset mount was absent or incomplete; Fetching 48 files: 0/48",
+  "cause": "UNPROVEN: terminal ERROR occurred during checkpoint acquisition. No fatal traceback or output artifact was returned.",
+  "quota_exhaustion_established": false,
+  "claims_not_authorized": [
+    "No real layer-0/expert-155 inputs were captured.",
+    "No KT execution or CPU execution occurred or is claimed.",
+    "No unchanged-generation, route, numerical, source-ledger, tensor-hash, or export-bound acceptance is claimed.",
+    "The observed build and regression PASS lines are prerequisites only, not capture success."
+  ]
+}
