@@ -14,3 +14,6 @@ else()
 endif()
 add_executable(kt_bridge_smoke src/smoke_main.cpp)
 target_link_libraries(kt_bridge_smoke PRIVATE kt_bridge)
+# Independent reference-only probe: does not link the KT emulator or backend.
+add_executable(kt_bridge_reference_probe src/reference_probe.cpp src/reference_cpu_executor.cpp)
+target_include_directories(kt_bridge_reference_probe PRIVATE include)

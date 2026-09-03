@@ -2,17 +2,19 @@
 
 Uses dee trusted fixtures when reachable (scripts/deepseek_v4_expert_reference),
 else the bridge's own mirrored reference (byte-identical semantics). Synthetic
-fixtures only (small multiples of 32); a real-expert path runs if
-DEE_REAL_EXPERT_DIR provides w1/w2/w3 weight+scale tensors, else logs a skip.
+fixtures use small multiples of 32. A real-expert path runs if
+DEE_REAL_EXPERT_DIR provides real-expert-config.json; otherwise pytest skips.
 Does NOT weaken existing dee gates.
 """
 from __future__ import annotations
 
 import os
+import json
 import sys
 from pathlib import Path
 
 import torch
+import pytest
 
 BRIDGE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BRIDGE / "python"))
@@ -49,8 +51,7 @@ def _make_expert(hidden: int, inter: int, seed: int):
 
 def test_matches_dee_trusted_reference_when_available():
     if not HAS_DEE_REF:
-        print("SKIP: dee scripts/deepseek_v4_expert_reference not importable")
-        return
+        pytest.skip("dee trusted reference not importable")
     hidden, inter = 64, 32
     p1, s1, p2, s2, p3, s3 = _make_expert(hidden, inter, 7)
     torch.manual_seed(11)
@@ -114,9 +115,11 @@ def test_kt_emulated_metrics_and_determinism():
 
 def test_real_expert_if_available():
     d = os.environ.get("DEE_REAL_EXPERT_DIR")
-    if not d or not Path(d).exists():
-        print("SKIP: DEE_REAL_EXPERT_DIR not set (synthetic fixtures used)")
-        return
-    # Expected files: w1.weight/scale, w2.*, w3.* as raw tensors + x.pt
-    # Kept minimal on purpose: real-tensor wiring is host-specific.
-    raise AssertionError("DEE_REAL_EXPERT_DIR set but loader not configured for this host")
+    if not d:
+        pytest.skip("run bench/verify_real_expert.py with a sealed local bundle")
+    sys.path.insert(0, str(BRIDGE / "bench"))
+    from verify_real_expert import verify
+    config = json.loads((Path(d) / "real-expert-config.json").read_text(encoding="utf-8"))
+    report = verify(**{k: Path(config[k]) for k in ("shard", "bundle", "seal", "executor")},
+                    layer=config.get("layer", 0), expert=config.get("expert", 155))
+    assert report["reference_pass"], report

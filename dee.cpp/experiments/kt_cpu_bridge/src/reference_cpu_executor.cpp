@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 #include "kt_bridge/cpu_executor.hpp"
@@ -20,8 +21,9 @@ bool valid_projection(const PackedProjection& p) {
     if (p.packed == nullptr || p.scale == nullptr) return false;
     if (p.out == 0 || p.in == 0) return false;
     if (p.in % 2 != 0 || p.in % 32 != 0) return false;
-    if (p.packed_nbytes != p.out * p.in / 2) return false;
-    if (p.scale_nbytes != p.out * p.in / 32) return false;
+    if (p.out > std::numeric_limits<size_t>::max() / (p.in / 2)) return false;
+    if (p.packed_nbytes != p.out * (p.in / 2)) return false;
+    if (p.scale_nbytes != p.out * (p.in / 32)) return false;
     return true;
 }
 
@@ -85,6 +87,7 @@ ExecuteError validate_execute_args(const PackedExpertView& packed,
         return ExecuteError::kShape;
     if (out_dim != hidden_dim) return ExecuteError::kShape;
     if (config.swiglu_alpha != 0.0f) return ExecuteError::kConfig;
+    if (!std::isfinite(config.swiglu_limit)) return ExecuteError::kConfig;
     if (!std::isfinite(routing_weight)) return ExecuteError::kNonFinite;
     for (size_t i = 0; i < hidden_dim; ++i) {
         if (!std::isfinite(hidden[i])) return ExecuteError::kNonFinite;
@@ -113,9 +116,8 @@ ExecuteError ReferenceCpuExecutor::execute(
     const float limit = config.swiglu_limit;
 
     // gate = x @ W1^T ; up = x @ W3^T  (fp32, row-major)
-    // Use caller-stack-friendly heap via static thread_local scratch growth.
-    // Phase 1 favors clarity over arena reuse (bounded: inter <= 8192 typical).
-    std::vector<float> gate(inter), up(inter), h(inter);
+    // Per-call scratch only; no executor-retained weights or cache ownership.
+    std::vector<float> h(inter);
     const auto t1 = std::chrono::steady_clock::now();
     for (size_t o = 0; o < inter; ++o) {
         float g = 0.0f, u = 0.0f;
@@ -128,8 +130,6 @@ ExecuteError ReferenceCpuExecutor::execute(
             if (u > limit) u = limit;
             if (u < -limit) u = -limit;
         }
-        gate[o] = g;
-        up[o] = u;
         h[o] = silu_f32(g) * u * routing_weight;  // dee placement: before w2
     }
     for (size_t o = 0; o < hidden_dim; ++o) {
