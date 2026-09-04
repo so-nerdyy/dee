@@ -1,76 +1,60 @@
-# Route-pipeline track — final summary
+# Route-pipeline goal track — final summary (MUSE)
 
-No production modified (only `research/route-pipeline/`,
-`dee.cpp/experiments/route_pipeline/`, `tests/` added). No router-output,
-tolerance, campaign, sealed-evidence, or `research/t4-kernel-next` change.
-No merge.
+Previous dependency audit accepted and built on (lead-0 spine, R1–R6 in
+`sim.py`). This installment turns the three legal overlaps into
+implementation-quality isolated prototypes. No production, tolerance,
+campaign, sealed-evidence, or `research/t4-kernel-next` change. No merge.
+
+## Profiler cross-check (read-only, sealed A/B)
+
+Newest valid profiled candidate (`host-reuse` seal): decode 71.179 s /
+16 tokens, storage 2.07 GB/token, H2D 3.71 GB/token; summed CUDA-event
+device time ≈ 3.5 s of 71 s wall. Critical path is host-side staging +
+synchronization — the exact surface A/B/C attack. Shared-expert time is NOT
+in the profile (torch path → UNKNOWN); individual sync costs are UNKNOWN
+(inside the host-side gap). No speedup is derived from launch counts.
+
+## Ranking
+
+| Candidate | Rank | Why |
+|---|---|---|
+| A hash L0–L2 early staging | LIVE_MICROBENCH_NEXT | Legality + exactness + implementation all closed host-side (table-gated IDs, evidence-gated weights, immutable records, dup suppression, cancel accounting). Only unknown is measured hidden ms. Max 240.6 MB/token early. |
+| B shared overlap | WORTH_PROTOTYPING | Join exactness closed (buffered, order-preserved). Value hinges on unmeasured shared runtime + contention `c` (runner case B). Likely hides under host-bound staging, not under GEMM — must be measured, not assumed. |
+| C event handoff (+D2H narrow) | WORTH_PROTOTYPING | Numerically free, lifecycle-expensive: needs the per-consumer reader/eviction/error proof (listed, not done). Prize bounded by unmeasured unrelated-work + event costs (runner case C). Never remove-a-sync without that proof. |
 
 ## The 10 required answers
 
-1. **One layer ahead? No** for score layers (R5: router needs post-residual
-   hidden). Hash-layer IDs for layers 0–2: yes, at token start.
-2. **Two layers? No** (transitive chain through expert execution).
-3. **Eight layers? No** (same chain, longer).
-4. **Preventing dependency:** the residual stream — `route(L+1) = f(h_{L+1})`,
-   `h_{L+1}` requires `combine(L)` requires `compute(L)`. Centimeters of code
-   cannot cut it; only different model math could.
-5. **Same-layer legal overlap:** shared-expert forward across all routed
-   staging/compute; batch-submit all reads at route-known; transfer/combine
-   prep. Simulated saving ≈ one shared-expert time per layer when routed
-   work dominates (locked relationally in tests; ms pending calibration).
-6. **Dual-GPU additional overlap: effectively none for official decode routes**
-   (serial layer order + handoff on the critical path; streams independent
-   but starved of early routes). The wins are intra-side and barrier cuts.
-7. **Biggest avoidable barrier (candidate, NOT removed):** per-layer
-   `cudaStreamSynchronize` (`engine.cpp:1037-1054`, forced at `:748-754`) —
-   an event handoff suffices if every reader is proven to wait; the combined
-   path already runs sync-free (`:1927-1935`). Runner-up: route-ID D2H full
-   stream sync per layer (24 B of data, sync-dominated cost).
-8. **Source changes for legal earlier staging:** (a) token-start hash-id
-   resolve + L0–2 read submission; (b) shared-forward reorder onto an
-   overlapped stream with event join; (c) batch-submit host loop reorder;
-   (d) event-handoff audit + sync reduction. (a)–(c) are reorder-only;
-   (d) needs the reader proof.
-9. **Purely simulated:** every millisecond in `sim.py` outputs (assumed
-   latencies until calibrated); the no-layer-sync saving; any "lead-N"
-   schedule for score layers. Structural claims (lead 0, legal edge lists,
-   barrier inventory) are source-grounded, not simulated.
-10. **Return to C1/C2 when:** the campaign profiler shows SSD-staging no
-    longer dominating the measured critical path — i.e. staging fraction
-    below decode+compute on the profiled token timeline for consecutive
-    runs. No fixed X is set here; X must come from profiler evidence
-    (`--profile-timeline`), per Phase H. C1-PRE stays the queued candidate;
-    C2 stays a cheap gated win; `eddb752` is preserved untouched on its
-    branch.
+1. **Yes** — hash IDs for L0–L2 at token start (table lookup; fail-closed).
+2. **≤18 reads / ≤240.6 MB per token**, minus resident/host-packed/pending
+   duplicates (suppression implemented + tested).
+3. **Lead per layer**: L0 = embedding+dense_0+router_0 window; L1/L2 = full
+   predecessor-layer compute windows for staging submits (consumption still
+   chained on weights). Exact ms pending runner case A.
+4. **Yes** — shared needs only `h_L`; prototype runs it across routed
+   staging/compute with buffered exact join.
+5. **Possibly, for the GEMM region — which is why the expected value sits in
+   the staging region**: routed staging uses no SMs/DRAM, so shared hiding
+   there is near-free; shared-vs-GEMM splits bandwidth (`c` measured live).
+6. **Per-layer `cudaStreamSynchronize`** (forced at `engine.cpp:748-754`) is
+   wider than necessary in principle; sync-free precedent exists
+   (`:1927-1935`). Route-D2H full-stream sync likewise. Neither removed here.
+7. **Yes in principle** — pinned copy + copy-event wait; prize = unrelated
+   work skipped, copy wait unavoidable. Formal verdict after case C.
+8. **Lifecycle risk for events**: premature reuse/eviction, double record,
+   swallowed errors — each with a negative test; plus the unsealed
+   per-consumer reader proof. Numerical risk: none.
+9. **Next microbench: `kaggle_runner_abc.py` full A/B/C run** (one session;
+   A gates the staging prize, B yields `c`, C bounds the barrier prize).
+10. **Return to C1/C2 when** the campaign profiler shows
+    decode/materialization or expert compute on the end-to-end critical path
+    AFTER storage work improves (profiler evidence, no fixed X).
+    `research/t4-kernel-next @ eddb752` preserved untouched.
 
-## Phase G handoff (for Flash's research/exact-staging track)
+## Verification
 
-```json
-{
-  "future_layer_official_lead": 0,
-  "hash_layer_early_ids": [0, 1, 2],
-  "hash_ids_basis": "tid2eid[input_ids]; weights still need hidden",
-  "same_layer_overlap": ["shared_expert", "batch_submit_all_reads",
-    "transfer_setup", "combine_prep"],
-  "cross_gpu_official_overlap": false,
-  "token_level_lead": 0,
-  "barrier_candidates": ["per_layer_cudaStreamSynchronize",
-    "route_id_d2h_stream_sync", "per_rank_addcmul_loop",
-    "sequential_prepare_stage_loop"],
-  "removed_barriers": [],
-  "latency_source": "ASSUMED (calibrate from profiler/host.json)",
-  "kernel_track": "research/t4-kernel-next @ eddb752 (untouched; queued)"
-}
-```
-
-(`sim.py:handoff()` emits the live version of this record.)
-
-## Verification performed
-
-- `pytest tests/test_route_pipeline.py` — 10 passed, warning-free:
-  determinism, fail-closed inputs, legal schedules never pessimizing,
-  hit/miss ordering, shared-overlap bound, 42-sync accounting, causal edge
-  order incl. the hash exception, handoff schema, +1/+2/+4/+8 table.
-- The simulator caught and fixed one real modeling bug during development
-  (hash-layer compute incorrectly unchained); regression locked in
-  `test_edges_form_causal_chain`.
+- `tests/test_route_pipeline_abc.py` — 18 passed (this track's cases).
+- `tests/test_route_pipeline.py` — 10 passed (prior sim, untouched).
+- Note: `tests/test_legal_overlap.py` (untracked files from a concurrent
+  worker in this shared worktree: `legal_overlap.py`, `shared_reorder.py`)
+  has 1 failure in THEIR work-in-progress; left completely untouched, not
+  committed, unrelated to this track (no shared imports).

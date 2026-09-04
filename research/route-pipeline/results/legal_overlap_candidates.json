@@ -1,0 +1,64 @@
+{
+  "schema": "dee.route_pipeline.candidates/v1",
+  "note": "Timings are SIMULATED (assumed latencies) except where profiler-observed totals are cited. No ms here is a claim.",
+  "profiler_crosscheck": {
+    "source": "codex/host-reuse-evidence sealed A/B (read-only): ab-comparison-v1-v2.json + profile-seal-ledger.json",
+    "decode_wall_s": 71.179,
+    "tokens": 16,
+    "storage_bytes_per_token": 2073083904,
+    "h2d_bytes_per_token": 3713335296,
+    "device_busy_ms_both_gpus": "~3500 (h2d ~5074ms + gemm ~1297ms + misc)",
+    "conclusion": "device-busy is a small fraction of 71s wall; critical path is host-side staging + synchronization. Shared-expert time NOT in profile (torch path). Individual sync costs UNKNOWN."
+  },
+  "candidates": [
+    {
+      "id": "A",
+      "name": "hash-layer L0-L2 early staging",
+      "rank": "LIVE_MICROBENCH_NEXT",
+      "dependency_proof": "router_select hash branch: ids=tid2eid[input_ids]; layers 0-2 (layer_id<n_hash_layers). Weights need hidden (gated in prototype).",
+      "complexity": "low (submit path + telemetry; consume gated on weights_ready)",
+      "numerical_risk": "none (identical bytes, identical weights, identical order)",
+      "lifecycle_risk": "low (immutable records; pending cancels are accounting-only)",
+      "mechanism": "submit up to 18x12.75MiB reads at token start; overlap with early dense work",
+      "max_early_bytes": 240648192,
+      "evidence": "source-grounded causality; ms pending live measurement",
+      "prototype": "dee.cpp/experiments/route_pipeline/hash_stage.py"
+    },
+    {
+      "id": "B",
+      "name": "shared-expert overlap",
+      "rank": "WORTH_PROTOTYPING",
+      "dependency_proof": "shared(h_L) needs layer input only; join order routed+shared preserved via buffering.",
+      "complexity": "medium (second stream + event join + workspace)",
+      "numerical_risk": "none if join order preserved (buffered); gate on exact-output test",
+      "lifecycle_risk": "low (one join event; workspace bounded 2*hidden*tokens)",
+      "mechanism": "shared compute across routed staging (host-bound) and routed GEMM (bandwidth-shared)",
+      "evidence": "shared runtime UNKNOWN in profile; contention factor c must be measured (runner case B)",
+      "prototype": "dee.cpp/experiments/route_pipeline/shared_overlap.py"
+    },
+    {
+      "id": "C",
+      "name": "event-based layer handoff",
+      "rank": "WORTH_PROTOTYPING",
+      "dependency_proof": "sync-scope audit lists 9 protected items; each maps to an event wait. Removal NOT done; reader-proof required.",
+      "complexity": "high (lifetime + eviction + error audit per consumer)",
+      "numerical_risk": "none (ordering only, no arithmetic change)",
+      "lifecycle_risk": "high (use-after-free, premature eviction, swallowed errors) — negative tests included",
+      "mechanism": "replace 42 per-layer full syncs with event waits; narrow route-D2H to copy-event wait",
+      "evidence": "individual sync costs UNKNOWN (inside host-side wall gap); runner case C bounds the prize",
+      "prototype": "dee.cpp/experiments/route_pipeline/event_handoff.py"
+    },
+    {
+      "id": "D2H",
+      "name": "narrow route-ID D2H wait",
+      "rank": "WORTH_PROTOTYPING",
+      "dependency_proof": "CPU needs the 24B ID bytes (unavoidable); unrelated stream work need not be waited on.",
+      "complexity": "medium (pinned copy + event + host wait on event)",
+      "numerical_risk": "none",
+      "lifecycle_risk": "medium (ID buffer lifetime across the wait)",
+      "mechanism": "event-ordered copy; host waits copy-event only",
+      "evidence": "unrelated-work size UNKNOWN per layer; prize bounded by it",
+      "prototype": "event_handoff.narrow_d2h model + runner case C"
+    }
+  ]
+}

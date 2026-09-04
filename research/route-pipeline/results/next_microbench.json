@@ -1,0 +1,13 @@
+{
+  "schema": "dee.route_pipeline.next_microbench/v1",
+  "choice": "kaggle_runner_abc.py full A/B/C run on 2x T4 (one run, three cases)",
+  "why": "A is the only candidate whose legality, exactness, and implementation are all closed host-side; its remaining unknown is purely measured (submit mechanics + hidden ms). The same run also captures B's contention factor c and C's barrier prize, which are the gating unknowns for the other two. One live session retires all three measurement gaps.",
+  "requires": ["2x T4 (or 1x T4 for mechanics; SM75 or --allow-non-sm75 dev)", "torch with CUDA", "no campaign checkout", "no checkpoint"],
+  "gates_before_timing": ["A: exact IDs + telemetry suppression checks (host tests)", "B: runner reports efficiency_c", "C: runner reports sync_ms vs event_ms"],
+  "emits": ["gpu/sm/fixture/correctness/timings p50-mean-min/sync+event counts/bytes/overlap per case"],
+  "t4_kernel_track": {
+    "preserved": "research/t4-kernel-next @ eddb75254f79079bb37107bbfcf5557a1fa0f5dc (unmodified)",
+    "return_trigger": "campaign profiler shows decode/materialization or expert compute on the end-to-end critical path AFTER storage work improves (profiler evidence, no fixed X here)",
+    "queued": ["C1-PRE", "C2", "C12"]
+  }
+}
