@@ -1,0 +1,100 @@
+{
+  "schema": "exact-staging/pack-budget-wall-estimate-v1",
+  "note": "SIMULATED wall estimates: calibrated critical-path model (research/exact-critical-path @2db0fde, baseline error -1.19%) with per-step SSD-read tables substituted from the validated LRU host-pack replay (pack state carried from prefill into decode, matching sealed counts within 1 record). Not measured. No TPS claims.",
+  "baseline_observed_decode_wall_s": 72.267,
+  "baseline_simulated_decode_wall_s": 71.41,
+  "budgets": {
+    "682_records_8.49_GiB": {
+      "decode_storage_misses": 1251,
+      "simulated_decode_wall_s": 71.37,
+      "delta_vs_sim_baseline_pct": -0.06,
+      "delta_vs_observed_pct": -1.24,
+      "per_step_ssd_reads": [
+        96,
+        68,
+        78,
+        113,
+        125,
+        114,
+        97,
+        79,
+        56,
+        64,
+        79,
+        61,
+        70,
+        90,
+        61
+      ]
+    },
+    "851_records_10.6_GiB": {
+      "decode_storage_misses": 1187,
+      "simulated_decode_wall_s": 68.69,
+      "delta_vs_sim_baseline_pct": -3.8,
+      "delta_vs_observed_pct": -4.94,
+      "per_step_ssd_reads": [
+        96,
+        68,
+        72,
+        106,
+        119,
+        112,
+        88,
+        78,
+        50,
+        61,
+        72,
+        58,
+        65,
+        84,
+        58
+      ]
+    },
+    "1024_records_12.75_GiB": {
+      "decode_storage_misses": 1153,
+      "simulated_decode_wall_s": 67.27,
+      "delta_vs_sim_baseline_pct": -5.79,
+      "delta_vs_observed_pct": -6.91,
+      "per_step_ssd_reads": [
+        96,
+        68,
+        72,
+        106,
+        119,
+        112,
+        86,
+        73,
+        49,
+        56,
+        66,
+        57,
+        62,
+        76,
+        55
+      ]
+    },
+    "1365_records_17.0_GiB": {
+      "decode_storage_misses": 1135,
+      "simulated_decode_wall_s": 66.52,
+      "delta_vs_sim_baseline_pct": -6.84,
+      "delta_vs_observed_pct": -7.95,
+      "per_step_ssd_reads": [
+        96,
+        68,
+        72,
+        106,
+        119,
+        112,
+        86,
+        73,
+        49,
+        53,
+        64,
+        53,
+        61,
+        72,
+        51
+      ]
+    }
+  }
+}
