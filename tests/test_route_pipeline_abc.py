@@ -39,6 +39,18 @@ def _table():
     return {7: [10, 11, 12, 13, 14, 15], 9: [20, 21, 22, 23, 24, 25]}
 
 
+def _tables_distinct():
+    """Per-layer tables with DIFFERENT rows (the faithful case)."""
+    return {0: {7: [10, 11, 12, 13, 14, 15]},
+            1: {7: [15, 14, 13, 12, 11, 10]},
+            2: {7: [30, 31, 32, 33, 34, 35]}}
+
+
+def _tables_same():
+    row = {7: [10, 11, 12, 13, 14, 15]}
+    return {0: dict(row), 1: dict(row), 2: dict(row)}
+
+
 # --- A: hash causality ----------------------------------------------------
 
 def test_hash_ids_depend_only_on_table_and_token():
@@ -53,7 +65,7 @@ def test_hash_unknown_token_fails_closed():
 
 def test_weights_never_consumed_early():
     p = HashStagePlanner()
-    p.token_start(_table(), 7, t_ms=0.0)
+    p.token_start(_tables_same(), 7, t_ms=0.0)
     with pytest.raises(ValueError):
         p.consume(0, 10, t_ms=5.0)  # staged but weights not ready
     p.mark_weights_ready(0, t_ms=6.0, evidence="h_0 post-residual")
@@ -79,7 +91,7 @@ def test_duplicate_suppression_and_bytes():
     p = HashStagePlanner()
     p.resident.add((0, 10))
     p.hostpacked.add((1, 11))
-    submitted = p.token_start(_table(), 7, t_ms=0.0)
+    submitted = p.token_start(_tables_same(), 7, t_ms=0.0)
     assert (0, 10) not in submitted and (1, 11) not in submitted
     summary = p.bytes_summary()
     assert summary["suppressed_duplicates"] == 2
@@ -89,7 +101,7 @@ def test_duplicate_suppression_and_bytes():
 
 def test_invalidate_cancels_pending_not_resident():
     p = HashStagePlanner()
-    p.token_start(_table(), 7, t_ms=0.0)
+    p.token_start(_tables_same(), 7, t_ms=0.0)
     cancelled = p.invalidate(t_ms=3.0)
     assert len(cancelled) == 18
     assert p.pending == {}
@@ -104,6 +116,72 @@ def test_no_future_layer_score_lookahead():
     import inspect
     src = inspect.getsource(HashStagePlanner.token_start)
     assert "HASH_LAYERS" in src
+
+
+# --- A regression: per-layer tables (review fix) --------------------------
+
+from hash_stage import resolve_all_hash_layers  # noqa: E402
+
+
+def test_layers_may_have_different_rows():
+    per = resolve_all_hash_layers(_tables_distinct(), 7)
+    assert per[0] == [10, 11, 12, 13, 14, 15]
+    assert per[1] == [15, 14, 13, 12, 11, 10]
+    assert per[2] == [30, 31, 32, 33, 34, 35]
+
+
+def test_each_layer_gets_correct_six_ids():
+    p = HashStagePlanner()
+    submitted = p.token_start(_tables_distinct(), 7, t_ms=0.0)
+    by_layer: dict[int, list[int]] = {}
+    for layer, expert in submitted:
+        by_layer.setdefault(layer, []).append(expert)
+    assert by_layer[0] == [10, 11, 12, 13, 14, 15]
+    assert by_layer[1] == [15, 14, 13, 12, 11, 10]
+    assert by_layer[2] == [30, 31, 32, 33, 34, 35]
+
+
+def test_missing_layer_table_fails_closed():
+    from hash_stage import HASH_LAYERS as _HL  # noqa: E402
+    assert set(_HL) == {0, 1, 2}
+    with pytest.raises(KeyError):
+        resolve_all_hash_layers({0: {7: [1, 2, 3, 4, 5, 6]}}, 7)
+
+
+def test_same_numeric_id_across_layers_not_duplicate():
+    # Expert #10 in L0 and #10 in L1 are different records: both stage.
+    p = HashStagePlanner()
+    tables = {0: {7: [10, 11, 12, 13, 14, 15]},
+              1: {7: [10, 21, 22, 23, 24, 25]},
+              2: {7: [10, 31, 32, 33, 34, 35]}}
+    submitted = p.token_start(tables, 7, t_ms=0.0)
+    assert (0, 10) in submitted and (1, 10) in submitted and (2, 10) in submitted
+    assert len(submitted) == 18
+    assert p.bytes_summary()["suppressed_duplicates"] == 0
+
+
+def test_same_layer_expert_record_suppressed():
+    p = HashStagePlanner()
+    p.token_start(_tables_distinct(), 7, t_ms=0.0)
+    # Second token_start for the same token: all pending -> suppressed.
+    submitted = p.token_start(_tables_distinct(), 7, t_ms=1.0)
+    assert submitted == []
+    assert p.bytes_summary()["suppressed_duplicates"] == 18
+
+
+def test_no_l3plus_prefetch():
+    p = HashStagePlanner()
+    submitted = p.token_start(_tables_distinct(), 7, t_ms=0.0)
+    assert all(layer in (0, 1, 2) for layer, _ in submitted)
+    assert all(r.layer in (0, 1, 2) for r in p.telemetry)
+
+
+def test_table_tags_recorded_per_row():
+    p = HashStagePlanner()
+    p.token_start(_tables_distinct(), 7, t_ms=0.0,
+                  table_tags={0: "shaA", 1: "shaB", 2: "shaC"})
+    tags = {(r.layer, r.table_tag) for r in p.telemetry}
+    assert (0, "shaA") in tags and (1, "shaB") in tags and (2, "shaC") in tags
 
 
 # --- B: shared join -------------------------------------------------------

@@ -103,6 +103,10 @@ def case_a(torch, workdir: Path, reps: int) -> dict:
         del devs
     return {"fixture": "synthetic", "reads": HASH_READS,
             "bytes": HASH_READS * EXPERT_BYTES,
+            "route_table_realism": "ROUTE_TABLE_REALISM_NOT_MEASURED",
+            "route_table_note": ("synthetic read pattern only; real per-layer "
+                                 "tid2eid rows (ids_L0/L1/L2) unavailable to "
+                                 "this runner — never treated as route evidence"),
             "serial_ms": stats_ms(serial), "batched_ms": stats_ms(batched),
             "status": "ok"}
 

@@ -5,6 +5,19 @@ Previous dependency audit accepted and built on (lead-0 spine, R1–R6 in
 implementation-quality isolated prototypes. No production, tolerance,
 campaign, sealed-evidence, or `research/t4-kernel-next` change. No merge.
 
+## Model-faithfulness fix (review-driven)
+
+Candidate A initially resolved one six-ID list and reused it across L0–L2.
+Official semantics are per-layer tables (`tid2eid` is a per-Gate
+parameter), so the prototype now contracts `ids_L0/L1/L2` independently
+(`resolve_all_hash_layers`, missing table raises), keys suppression on
+`(layer, expert_id)` tuples only, tags telemetry rows with table identity,
+and ships `load_tid2eid_rows()` for real per-layer fixture extraction.
+Regression tests lock: distinct rows, correct six per layer, cross-layer
+numerics never suppressed, same-record suppression, weights gate, no L3+
+prefetch. Maximum accounting revalidated unchanged: 18 records,
+240,648,192 B. A remains LIVE_MICROBENCH_NEXT.
+
 ## Profiler cross-check (read-only, sealed A/B)
 
 Newest valid profiled candidate (`host-reuse` seal): decode 71.179 s /

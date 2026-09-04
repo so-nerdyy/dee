@@ -5,6 +5,30 @@ Source re-audit (accepted finding re-proven): `router_select` hash branch
 with no use of `x`; `weights` still derive from `scores = x @ W^T`
 (`:375-394`). Hash layers are 0–2 (`deepseek_v4_model.py:360,596`).
 
+## Per-layer table contract (review fix)
+
+Official DeepSeek-V4 creates `tid2eid` as a parameter of EACH Gate
+instance. The contract is explicitly per-layer and never shared:
+
+    ids_L0 = tid2eid_L0[input_id]
+    ids_L1 = tid2eid_L1[input_id]
+    ids_L2 = tid2eid_L2[input_id]
+
+The six IDs are NOT assumed identical across layers
+(`resolve_all_hash_layers`; a missing layer table raises instead of
+falling back). Expert identity is `(layer, expert_id)`: #42 in L0 and #42
+in L1 are different records; duplicate suppression operates on
+`(layer, expert_id)` tuples only and never collapses numeric IDs across
+layers. Telemetry rows carry the producing table's tag.
+
+## Real fixture support
+
+`load_tid2eid_rows(shard, input_id)`: header-only parse, raw reads of
+`layers.{0,1,2}.ffn.gate.tid2eid` (I64 [vocab, topk]), struct decode of the
+token row per layer, table-identity tags, within-layer duplicate flags, and
+the cross-layer numeric-ID sharing map (informational only — shared numerics
+do NOT suppress). Needs only the shard(s) with the three small tables.
+
 ## Proven
 
 - **ID known at token start**: `resolve_hash_ids()` depends on (table,
@@ -24,7 +48,11 @@ residency insert. Forbidden and absent: routed compute before true weights.
 ## Measured/modeled (prototype `hash_stage.py`)
 
 - Bytes staged: ≤18 reads × 12.75 MiB = **240,648,192 B max**/token
-  (`bytes_summary`, `test_duplicate_suppression_and_bytes`).
+  (`bytes_summary`, `test_duplicate_suppression_and_bytes`). Revalidated:
+  maximum requests = 3 × top-6 = 18; maximum bytes = 18 × 13,369,344 =
+  240,648,192 — counted AFTER (layer,expert) suppression, and never reduced
+  by shared numerics across layers (locked by
+  `test_same_numeric_id_across_layers_not_duplicate`).
 - Reads hidden: up to 18 minus resident/host-packed duplicates (suppression
   locked in tests; redundant staging never re-submits).
 - Lead time: L0 reads lead by (embedding + dense_0 + router_0); L1/L2 reads

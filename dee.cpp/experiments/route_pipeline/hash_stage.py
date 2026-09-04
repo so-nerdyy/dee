@@ -9,8 +9,20 @@ mark_weights_ready(layer) is called with hidden-state evidence.
 
 Legal early operations (IDs alone suffice): host-pack lookup, SSD read,
 packed-buffer preparation, H2D of packed bytes, VRAM residency insertion.
-Forbidden: routed contribution before true weights exist (no compute path
+Forbidden: routed compute before true weights exist (no compute path
 exists in this module at all).
+
+Model-faithfulness contract (per-layer tables): official DeepSeek-V4
+creates tid2eid as a parameter of EACH Gate instance, so hash layers have
+layer-specific tables. The contract is explicitly:
+
+    ids_L0 = tid2eid_L0[input_id]
+    ids_L1 = tid2eid_L1[input_id]
+    ids_L2 = tid2eid_L2[input_id]
+
+The six IDs are NEVER assumed identical across layers. Expert identity is
+(layer, expert_id): expert #42 in L0 and #42 in L1 are different records.
+Duplicate suppression operates on (layer, expert_id) tuples only.
 
 Staleness: expert records are immutable, so a staged-but-unused expert is
 merely wasted bandwidth, never wrong. invalidate() cancels pending submits
@@ -19,16 +31,21 @@ at token boundaries for accounting; resident bytes stay valid.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import struct
 from dataclasses import dataclass, field
 
 HASH_LAYERS = (0, 1, 2)
 TOPK_DEFAULT = 6
 EXPERT_BYTES_DEFAULT = 13369344  # 12.75 MiB packed MXFP4 record
+TID2EID_NAME = "layers.{layer}.ffn.gate.tid2eid"  # I64 [vocab, topk]
 
 
 def resolve_hash_ids(tid2eid: dict[int, list[int]], input_id: int,
                      topk: int = TOPK_DEFAULT) -> list[int]:
-    """Pure table lookup. Depends on (table, token id) only — never hidden.
+    """One layer's IDs: tid2eid_L[input_id]. Pure table lookup depending on
+    (that layer's table, token id) only — never hidden, never another layer.
 
     Raises KeyError for unknown token ids (fail-closed: no guessed routes).
     """
@@ -39,11 +56,71 @@ def resolve_hash_ids(tid2eid: dict[int, list[int]], input_id: int,
     return list(ids[:topk])
 
 
+def resolve_all_hash_layers(tables: dict[int, dict[int, list[int]]],
+                            input_id: int,
+                            topk: int = TOPK_DEFAULT) -> dict[int, list[int]]:
+    """ids_L = tables[L][input_id] for each hash layer. Every layer table
+    independently required: a missing layer table raises (fail-closed),
+    never falls back to another layer's row."""
+    out: dict[int, list[int]] = {}
+    for layer in HASH_LAYERS:
+        if layer not in tables:
+            raise KeyError(f"missing tid2eid table for hash layer {layer}; "
+                           "refusing to reuse another layer's IDs")
+        out[layer] = resolve_hash_ids(tables[layer], input_id, topk)
+    return out
+
+
+def load_tid2eid_rows(shard_path: str, input_id: int,
+                      layers: tuple[int, ...] = HASH_LAYERS,
+                      topk: int = TOPK_DEFAULT) -> dict:
+    """Real-fixture loader: header-only safetensors parse, then raw reads of
+    layers.{L}.ffn.gate.tid2eid (I64 [vocab, topk]) and struct decode of the
+    input_id row per layer. Returns per-layer {tensor, sha256, ids,
+    duplicate_within_layer} plus cross-layer numeric-ID comparison. Needs
+    only the shard(s) holding the three small tables, never the checkpoint.
+    """
+    with open(shard_path, "rb") as fh:
+        header_len = struct.unpack("<Q", fh.read(8))[0]
+        header = json.loads(fh.read(header_len).decode("utf-8"))
+        data_start = 8 + header_len
+        result: dict = {"shard": shard_path, "input_id": input_id,
+                        "layers": {}}
+        for layer in layers:
+            name = TID2EID_NAME.format(layer=layer)
+            entry = header.get(name)
+            if not entry:
+                raise KeyError(f"tensor {name} not in {shard_path}")
+            begin, end = entry["data_offsets"]
+            row_off = data_start + begin + input_id * topk * 8
+            if not (data_start + begin <= row_off
+                    and row_off + topk * 8 <= data_start + end):
+                raise ValueError(f"input_id {input_id} out of range for {name}")
+            fh.seek(row_off)
+            raw = fh.read(topk * 8)
+            ids = list(struct.unpack("<" + "q" * topk, raw))
+            result["layers"][layer] = {
+                "tensor": name,
+                "table_sha256": hashlib.sha256(
+                    f"{name}:{begin}:{end}".encode()).hexdigest()[:16],
+                "ids": ids,
+                "duplicate_within_layer": len(set(ids)) != len(ids),
+            }
+        seen: dict[int, list[int]] = {}
+        for layer, info in result["layers"].items():
+            for e in info["ids"]:
+                seen.setdefault(e, []).append(layer)
+        result["numeric_id_shared_across_layers"] = {
+            str(e): ls for e, ls in seen.items() if len(ls) > 1}
+        return result
+
+
 @dataclass
 class TelemetryRow:
     layer: int
     expert: int
     id_known_t: float
+    table_tag: str = ""  # identity of the layer table that produced the ID
     stage_submit_t: float | None = None
     stage_complete_t: float | None = None
     weight_ready_t: float | None = None
@@ -68,18 +145,25 @@ class HashStagePlanner:
     def _key(self, layer: int, expert: int) -> tuple[int, int]:
         return (layer, expert)
 
-    def token_start(self, tid2eid: dict[int, list[int]], input_id: int,
-                    t_ms: float = 0.0) -> list[tuple[int, int]]:
-        """Resolve hash IDs and submit staging for L0-L2 misses. Returns the
-        submitted [(layer, expert)] list. Duplicate-suppresses resident and
-        host-packed experts (no redundant staging)."""
+    def token_start(self, tables: dict[int, dict[int, list[int]]],
+                    input_id: int, t_ms: float = 0.0,
+                    table_tags: dict[int, str] | None = None) -> list[tuple[int, int]]:
+        """Resolve each hash layer's OWN six IDs and submit staging for L0-L2
+        misses. Returns the submitted [(layer, expert)] list.
+        Duplicate-suppresses (layer, expert) records already resident,
+        host-packed, or pending — the same numeric expert ID in different
+        layers is a DIFFERENT record and is never suppressed. Score layers
+        (L3+) are never touched: no official IDs exist for them at token
+        start and none are guessed."""
         self.now_ms = t_ms
         submitted: list[tuple[int, int]] = []
-        ids = resolve_hash_ids(tid2eid, input_id, self.topk)
+        per_layer = resolve_all_hash_layers(tables, input_id, self.topk)
         for layer in HASH_LAYERS:
-            for expert in ids:
+            tag = (table_tags or {}).get(layer, f"layer-{layer}-table")
+            for expert in per_layer[layer]:
                 key = self._key(layer, expert)
-                row = TelemetryRow(layer=layer, expert=expert, id_known_t=t_ms)
+                row = TelemetryRow(layer=layer, expert=expert,
+                                   id_known_t=t_ms, table_tag=tag)
                 if key in self.resident or key in self.hostpacked or key in self.pending:
                     row.suppressed_as_duplicate = True
                     row.stage_submit_t = None

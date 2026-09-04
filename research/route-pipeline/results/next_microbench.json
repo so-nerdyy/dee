@@ -3,6 +3,7 @@
   "choice": "kaggle_runner_abc.py full A/B/C run on 2x T4 (one run, three cases)",
   "why": "A is the only candidate whose legality, exactness, and implementation are all closed host-side; its remaining unknown is purely measured (submit mechanics + hidden ms). The same run also captures B's contention factor c and C's barrier prize, which are the gating unknowns for the other two. One live session retires all three measurement gaps.",
   "requires": ["2x T4 (or 1x T4 for mechanics; SM75 or --allow-non-sm75 dev)", "torch with CUDA", "no campaign checkout", "no checkpoint"],
+  "route_table_realism": "ROUTE_TABLE_REALISM_NOT_MEASURED (runner case A is transfer mechanics with synthetic bytes; real per-layer tid2eid rows via load_tid2eid_rows, never implied)",
   "gates_before_timing": ["A: exact IDs + telemetry suppression checks (host tests)", "B: runner reports efficiency_c", "C: runner reports sync_ms vs event_ms"],
   "emits": ["gpu/sm/fixture/correctness/timings p50-mean-min/sync+event counts/bytes/overlap per case"],
   "t4_kernel_track": {

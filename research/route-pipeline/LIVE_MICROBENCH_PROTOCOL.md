@@ -9,7 +9,10 @@ labeled; shared shape ASSUMED 4096×2048 fp16 and labeled).
 - **A (hash staging mechanics)**: 18×12.75 MiB file reads + pinned H2D,
   serial vs batched-submit. Proves the submit path can actually hide reads;
   pairs with `hash_stage.py` telemetry (`ready_before_demand`) for the
-  exactness half.
+  exactness half. Reports `route_table_realism:
+  ROUTE_TABLE_REALISM_NOT_MEASURED` — the runner measures transfer
+  mechanics with synthetic bytes only; it never sees real per-layer
+  `tid2eid` rows and its IDs are not route evidence.
 - **B (contention)**: shared-shaped GEMM alone vs under H2D saturation.
   Produces efficiency `c` consumed by `shared_overlap.OverlapWindow`.
   Decides whether shared hides under staging (expected) or contends.
