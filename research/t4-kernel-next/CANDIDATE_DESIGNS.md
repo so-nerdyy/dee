@@ -18,15 +18,22 @@ is unlikely; admission needs the FP32-oracle gate (MICROBENCH_PROTOCOL F2),
 not bitwise. Complexity high (needs a fast SM75 FP16 kernel to beat cuBLAS
 memory-bound streaming — plausible but unproven). T4-compatible (plain
 FMA/shared memory; optional `mma.sync.m8n8k4` later).
+Premise-risk retirement is now isolated in C1-PRE
+(`c1_tile_consume.cu`, doc `C1_TILE_CONSUME.md`): if the tile gate passes,
+materialization is eliminable with identical order; the remaining risk is
+purely "can a full fused GEMM match cuBLAS throughput," not numerics
+plumbing.
 
-## C2. Gate/up dual-projection single GEMM — MICROBENCH_NOW
+## C2. Gate/up dual-projection single GEMM — MICROBENCH_NOW (prototype built)
 
 One `cublasGemmEx` with m=4096 over the contiguous decoded gate|up region
 instead of two m=2048 calls. Saves 1 launch + 1 epilogue per expert, 0 bytes.
 **EXACT_NEEDS_TEST**: cuBLAS may select a different algorithm for m=4096 vs
-m=2048 (different summation order); bitwise must be tested, and on failure
-the design is REJECT_NUMERICS (no tolerance change allowed). Trivial to
-implement and benchmark (host-side only). Production touch: `swiglu_cuda.cu`
+m=2048 (different summation order); the prototype
+(`dee.cpp/experiments/t4_kernel_next/c2_gate_up_stack.cu`, doc
+`C2_GATE_UP_FUSION.md`) gates `BITWISE_IDENTICAL` vs `NUMERICALLY_DIFFERENT`
+on-device and reports timings either way. Trivial to integrate if the gate
+passes (host-side only). Production touch: `swiglu_cuda.cu`
 `swiglu_expert_batch_fp16_cuda` only.
 
 ## C3. Fused clamp + SiLU + multiply — ALREADY DONE (LOW_VALUE)
@@ -109,10 +116,15 @@ success: `cuda_convert.cu` decode kernel only.
 
 ## Ranked order for Codex
 
-1. **C12** (MICROBENCH_NOW) — run `kaggle_microbench_fp4_decode.py` next.
-2. **C2** (MICROBENCH_NOW) — bitwise A/B of m=4096 vs 2×m=2048 on T4.
-3. **C1** (PROMISING_BUT_COMPLEX) — needs F2 oracle gate + a fast SM75 kernel.
-4. **C8** (PROMISING) — host-side batching after C2.
-5. **C7** (PROMISING_BUT_COMPLEX) — after C1 exists.
-6. C4/C9/C11 LOW_VALUE-or-mechanism. C3/C6 already done. C10 REJECT_NUMERICS.
+1. **C12** (MICROBENCH_NOW, control — unchanged) — run
+   `kaggle_microbench_three_way.py`; its `c12` case builds the untouched
+   `fp4_decode_vec.cu`.
+2. **C2** (MICROBENCH_NOW) — `c2` case: stacked-decode check + m=4096 vs
+   2×m=2048 bitwise A/B on T4.
+3. **C1-PRE** (MICROBENCH_NOW premise test) — `c1pre` case: tile-local
+   decode→dot bitwise gate + bytes-avoided accounting.
+4. **C1** (PROMISING_BUT_COMPLEX) — full fused GEMM only after C1-PRE passes.
+5. **C8** (PROMISING) — host-side batching after C2.
+6. **C7** (PROMISING_BUT_COMPLEX) — after C1 exists.
+7. C4/C9/C11 LOW_VALUE-or-mechanism. C3/C6 already done. C10 REJECT_NUMERICS.
    Native FP4 GEMM / `cp.async` / FP8 paths: REJECT_T4 (no SM75 hardware).

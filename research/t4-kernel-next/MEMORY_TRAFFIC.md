@@ -46,6 +46,22 @@ At ~258 routed experts/token (corrected-trace shape): ~30–33 GB device
 traffic per token. Locked by `tests/test_t4_kernel_next.py`
 (`test_decode_dominates_traffic`, `test_token_scale_upper_bound_only`).
 
+## Per-candidate traffic accounting (Part 5; batch-1 per expert)
+
+Base current HIT path (no H2D): packed-resident 12.75 MB (already in VRAM,
+re-read 13.37 MB by decode) + 50.33 MB FP16 write + 50.33 MB GEMM re-read =
+**114,032,640 B (~108.8 MiB)** before act/gather (locked in tests). Miss
+adds 12.75 MB H2D.
+
+| Candidate | Same materialization? | Bytes avoided | Launches avoided | Arithmetic | Bottleneck affected |
+|---|---|---|---|---|---|
+| C12 vec decode | yes (full 50.33 MB FP16) | 0 | 0 (1 decode kernel either way) | unchanged (bitwise by construction) | instruction issue on decode pass only |
+| C2 stacked GEMM | yes | 0 | 1/expert (7→6) | unchanged by construction; library choice is the gated variable | launch overhead |
+| C1-PRE tile consume | **no: full FP16 row eliminated** | 100,663,296 B/expert at scale (50.33 MB write + 50.33 MB re-read); tile temp 192 B/block shared | 1 per row-segment (2→1: no separate decode launch) | unchanged (identical order; bitwise-gated) | DRAM bandwidth on decode+GEMM |
+
+No row converts traffic reduction to TPS; the admitted next numbers are the
+three-way runner's kernel-time reports.
+
 ## Roofline UPPER BOUNDS (T4 320 GB/s; bounds only, never TPS)
 
 - Removing the 50.33 MB FP16 write + 50.33 MB re-read (fused
