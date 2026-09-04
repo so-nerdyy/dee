@@ -1,0 +1,116 @@
+{
+  "trace": "v65-terminal-fetch-20260903T0202Z",
+  "method": "even-step train / odd-step validation; features use only earlier-step routing (causal); coefficient selection never sees validation outcomes",
+  "best_coefficients": {
+    "w_pred": 0.0,
+    "w_freq": 0.0,
+    "w_stale": 1.0,
+    "w_pollute": 0.0
+  },
+  "train_misses": 2719,
+  "valid_misses": 1527,
+  "valid_accesses": 2064,
+  "valid_hit_rate": 0.260174,
+  "all_trials": {
+    "(0.0, 1.0, 0.0, 0.0)": {
+      "weights": [
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "misses": 3087,
+      "hits": 525,
+      "accesses": 3612
+    },
+    "(1.0, 0.0, 0.0, 0.0)": {
+      "weights": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "misses": 2791,
+      "hits": 821,
+      "accesses": 3612
+    },
+    "(0.0, 0.0, 1.0, 0.0)": {
+      "weights": [
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      "misses": 2719,
+      "hits": 893,
+      "accesses": 3612
+    },
+    "(0.0, 0.0, 0.0, 1.0)": {
+      "weights": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "misses": 3091,
+      "hits": 521,
+      "accesses": 3612
+    },
+    "(1.0, 1.0, 1.0, 0.5)": {
+      "weights": [
+        1.0,
+        1.0,
+        1.0,
+        0.5
+      ],
+      "misses": 2792,
+      "hits": 820,
+      "accesses": 3612
+    },
+    "(1.0, 2.0, 1.0, 0.5)": {
+      "weights": [
+        1.0,
+        2.0,
+        1.0,
+        0.5
+      ],
+      "misses": 2792,
+      "hits": 820,
+      "accesses": 3612
+    },
+    "(2.0, 1.0, 0.5, 0.1)": {
+      "weights": [
+        2.0,
+        1.0,
+        0.5,
+        0.1
+      ],
+      "misses": 2751,
+      "hits": 861,
+      "accesses": 3612
+    },
+    "(1.0, 1.0, 2.0, 1.0)": {
+      "weights": [
+        1.0,
+        1.0,
+        2.0,
+        1.0
+      ],
+      "misses": 2794,
+      "hits": 818,
+      "accesses": 3612
+    },
+    "(3.0, 1.0, 1.0, 0.2)": {
+      "weights": [
+        3.0,
+        1.0,
+        1.0,
+        0.2
+      ],
+      "misses": 2725,
+      "hits": 887,
+      "accesses": 3612
+    }
+  },
+  "overfit_risk_note": "single 16-step trace; even/odd steps share the same prefill token, prompt and session; treat coefficients as trace-local only."
+}

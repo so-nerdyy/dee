@@ -1,0 +1,1754 @@
+{
+  "purpose": "Phase A trace discovery/validation (read-only)",
+  "scan_root": "C:\\Users\\carth\\Downloads\\dynamic_expert_eviction\\dee.cpp\\tmp",
+  "traces": [
+    {
+      "dir": "v65-terminal-fetch-20260903T0202Z",
+      "present": true,
+      "file": "dee.cpp\\tmp\\v65-terminal-fetch-20260903T0202Z\\routed_experts.jsonl",
+      "bytes": 339794,
+      "sha256_first_record_chain": "b3badc389fc24d2234d7cb21f2cb0afd17e54c47cfbc6dfbb78c8912a70d250c",
+      "records": 688,
+      "malformed_lines": 0,
+      "forwards": 16,
+      "layers_seen": 43,
+      "unique_experts": 256,
+      "total_selections": 5676,
+      "phases_records": {
+        "prefill": 43,
+        "decode": 645
+      },
+      "token_rows_hist": {
+        "7": 43,
+        "1": 645
+      },
+      "run_ids": [
+        "p2.3-dee4-storage-readahead-ab1-candidate-q6l6-v65"
+      ],
+      "schema_versions": [
+        "1"
+      ],
+      "topk_values": [
+        "6"
+      ],
+      "chain_links_ok": 688,
+      "chain_links_bad": 0,
+      "file_sha256": "ee5c95682a2e7a72691bec1ceb9dda78852b3967de59bc0a40bcf6032048ece1",
+      "sidecars": {
+        "result.json": {
+          "route_journal": {
+            "schema_version": 1,
+            "n_layers": 43,
+            "topk": 6,
+            "record_count": 688,
+            "completed_forwards": 16
+          }
+        },
+        "integrity.json": {
+          "keys": [
+            "actual_decoded_text_sha256",
+            "actual_token_ids",
+            "actual_token_ids_sha256",
+            "artifact_sha256",
+            "branch",
+            "classification",
+            "cloned_harness_sha256",
+            "completed_at_utc",
+            "dee4_trace_validation",
+            "executing_harness_sha256",
+            "expected_decoded_text",
+            "expected_token_ids",
+            "expert_store",
+            "git_commit",
+            "kernel_metadata_sha256",
+            "model_revision",
+            "performance_eligible",
+            "recorded_at_utc",
+            "repository",
+            "required_gpu"
+          ]
+        },
+        "dee4-metadata.json": {
+          "keys": [
+            "codec",
+            "components",
+            "data_file",
+            "data_sha256",
+            "experts_per_layer",
+            "format",
+            "group_size",
+            "integrity_file",
+            "num_layers",
+            "record_bytes",
+            "records",
+            "scale_in",
+            "scale_nbytes",
+            "scale_offsets",
+            "scale_out",
+            "selection_canonical_encoding",
+            "selection_sha256",
+            "source_repository",
+            "source_revision",
+            "start_layer"
+          ]
+        }
+      }
+    },
+    {
+      "dir": "v65-terminal-fetch-20260903T020220Z",
+      "present": true,
+      "file": "dee.cpp\\tmp\\v65-terminal-fetch-20260903T020220Z\\routed_experts.jsonl",
+      "bytes": 339794,
+      "sha256_first_record_chain": "b3badc389fc24d2234d7cb21f2cb0afd17e54c47cfbc6dfbb78c8912a70d250c",
+      "records": 688,
+      "malformed_lines": 0,
+      "forwards": 16,
+      "layers_seen": 43,
+      "unique_experts": 256,
+      "total_selections": 5676,
+      "phases_records": {
+        "prefill": 43,
+        "decode": 645
+      },
+      "token_rows_hist": {
+        "7": 43,
+        "1": 645
+      },
+      "run_ids": [
+        "p2.3-dee4-storage-readahead-ab1-candidate-q6l6-v65"
+      ],
+      "schema_versions": [
+        "1"
+      ],
+      "topk_values": [
+        "6"
+      ],
+      "chain_links_ok": 688,
+      "chain_links_bad": 0,
+      "file_sha256": "ee5c95682a2e7a72691bec1ceb9dda78852b3967de59bc0a40bcf6032048ece1",
+      "sidecars": {
+        "result.json": {
+          "route_journal": {
+            "schema_version": 1,
+            "n_layers": 43,
+            "topk": 6,
+            "record_count": 688,
+            "completed_forwards": 16
+          }
+        },
+        "integrity.json": {
+          "keys": [
+            "actual_decoded_text_sha256",
+            "actual_token_ids",
+            "actual_token_ids_sha256",
+            "artifact_sha256",
+            "branch",
+            "classification",
+            "cloned_harness_sha256",
+            "completed_at_utc",
+            "dee4_trace_validation",
+            "executing_harness_sha256",
+            "expected_decoded_text",
+            "expected_token_ids",
+            "expert_store",
+            "git_commit",
+            "kernel_metadata_sha256",
+            "model_revision",
+            "performance_eligible",
+            "recorded_at_utc",
+            "repository",
+            "required_gpu"
+          ]
+        },
+        "dee4-metadata.json": {
+          "keys": [
+            "codec",
+            "components",
+            "data_file",
+            "data_sha256",
+            "experts_per_layer",
+            "format",
+            "group_size",
+            "integrity_file",
+            "num_layers",
+            "record_bytes",
+            "records",
+            "scale_in",
+            "scale_nbytes",
+            "scale_offsets",
+            "scale_out",
+            "selection_canonical_encoding",
+            "selection_sha256",
+            "source_repository",
+            "source_revision",
+            "start_layer"
+          ]
+        }
+      }
+    },
+    {
+      "dir": "v64-terminal-fetch-20260903T0120Z",
+      "present": true,
+      "file": "dee.cpp\\tmp\\v64-terminal-fetch-20260903T0120Z\\routed_experts.jsonl",
+      "bytes": 340482,
+      "sha256_first_record_chain": "69ab32bef641a997bbb7eb6cea57fe18df6e5e92aefc295d2979251157c23778",
+      "records": 688,
+      "malformed_lines": 0,
+      "forwards": 16,
+      "layers_seen": 43,
+      "unique_experts": 256,
+      "total_selections": 5676,
+      "phases_records": {
+        "prefill": 43,
+        "decode": 645
+      },
+      "token_rows_hist": {
+        "7": 43,
+        "1": 645
+      },
+      "run_ids": [
+        "p2.3-dee4-trace-record-order-ab1-candidate-q6l3-v64"
+      ],
+      "schema_versions": [
+        "1"
+      ],
+      "topk_values": [
+        "6"
+      ],
+      "chain_links_ok": 688,
+      "chain_links_bad": 0,
+      "file_sha256": "ea82068b642320379f5f4e99c87d91eb15d9ec7aafc62148488bd46e94e55816",
+      "sidecars": {
+        "result.json": {
+          "route_journal": {
+            "schema_version": 1,
+            "n_layers": 43,
+            "topk": 6,
+            "record_count": 688,
+            "completed_forwards": 16
+          }
+        },
+        "integrity.json": {
+          "keys": [
+            "actual_decoded_text_sha256",
+            "actual_token_ids",
+            "actual_token_ids_sha256",
+            "artifact_sha256",
+            "branch",
+            "classification",
+            "cloned_harness_sha256",
+            "completed_at_utc",
+            "dee4_trace_validation",
+            "executing_harness_sha256",
+            "expected_decoded_text",
+            "expected_token_ids",
+            "expert_store",
+            "git_commit",
+            "kernel_metadata_sha256",
+            "model_revision",
+            "performance_eligible",
+            "recorded_at_utc",
+            "repository",
+            "required_gpu"
+          ]
+        },
+        "dee4-metadata.json": {
+          "keys": [
+            "codec",
+            "components",
+            "data_file",
+            "data_sha256",
+            "experts_per_layer",
+            "format",
+            "group_size",
+            "integrity_file",
+            "num_layers",
+            "record_bytes",
+            "records",
+            "scale_in",
+            "scale_nbytes",
+            "scale_offsets",
+            "scale_out",
+            "selection_canonical_encoding",
+            "selection_sha256",
+            "source_repository",
+            "source_revision",
+            "start_layer"
+          ]
+        }
+      }
+    },
+    {
+      "dir": "v63-terminal-fetch-20260903T0048Z",
+      "present": true,
+      "file": "dee.cpp\\tmp\\v63-terminal-fetch-20260903T0048Z\\routed_experts.jsonl",
+      "bytes": 339794,
+      "sha256_first_record_chain": "a9fd27dcc07b07d0fbe2d5bf52290e2ff9ea09cfe32819adc481febd4ac7e7d8",
+      "records": 688,
+      "malformed_lines": 0,
+      "forwards": 16,
+      "layers_seen": 43,
+      "unique_experts": 256,
+      "total_selections": 5676,
+      "phases_records": {
+        "prefill": 43,
+        "decode": 645
+      },
+      "token_rows_hist": {
+        "7": 43,
+        "1": 645
+      },
+      "run_ids": [
+        "p2.3-dee4-trace-record-order-ab1-baseline-q6l3-v63"
+      ],
+      "schema_versions": [
+        "1"
+      ],
+      "topk_values": [
+        "6"
+      ],
+      "chain_links_ok": 688,
+      "chain_links_bad": 0,
+      "file_sha256": "ea13b233c966c58a755922b792bf09035c51cada98a4a1e1409f3e5bbc24bb61",
+      "sidecars": {
+        "result.json": {
+          "route_journal": {
+            "schema_version": 1,
+            "n_layers": 43,
+            "topk": 6,
+            "record_count": 688,
+            "completed_forwards": 16
+          }
+        },
+        "integrity.json": {
+          "keys": [
+            "actual_decoded_text_sha256",
+            "actual_token_ids",
+            "actual_token_ids_sha256",
+            "artifact_sha256",
+            "branch",
+            "classification",
+            "cloned_harness_sha256",
+            "completed_at_utc",
+            "dee4_trace_validation",
+            "executing_harness_sha256",
+            "expected_decoded_text",
+            "expected_token_ids",
+            "expert_store",
+            "git_commit",
+            "kernel_metadata_sha256",
+            "model_revision",
+            "performance_eligible",
+            "recorded_at_utc",
+            "repository",
+            "required_gpu"
+          ]
+        },
+        "dee4-metadata.json": {
+          "keys": [
+            "codec",
+            "components",
+            "data_file",
+            "data_sha256",
+            "experts_per_layer",
+            "format",
+            "group_size",
+            "integrity_file",
+            "num_layers",
+            "record_bytes",
+            "records",
+            "scale_in",
+            "scale_nbytes",
+            "scale_offsets",
+            "scale_out",
+            "selection_canonical_encoding",
+            "selection_sha256",
+            "source_repository",
+            "source_revision",
+            "start_layer"
+          ]
+        }
+      }
+    },
+    {
+      "dir": "v62-live-20260902T003709Z",
+      "present": true,
+      "file": "dee.cpp\\tmp\\v62-live-20260902T003709Z\\routed_experts.jsonl",
+      "bytes": 330850,
+      "sha256_first_record_chain": "d6152a3c09879fe74ed16f19b166380d002cc6224f7478330cc710dee8e6478b",
+      "records": 688,
+      "malformed_lines": 0,
+      "forwards": 16,
+      "layers_seen": 43,
+      "unique_experts": 256,
+      "total_selections": 5676,
+      "phases_records": {
+        "prefill": 43,
+        "decode": 645
+      },
+      "token_rows_hist": {
+        "7": 43,
+        "1": 645
+      },
+      "run_ids": [
+        "p2.3-dee4-trace-fillpool-ab2-q8l4-v62"
+      ],
+      "schema_versions": [
+        "1"
+      ],
+      "topk_values": [
+        "6"
+      ],
+      "chain_links_ok": 688,
+      "chain_links_bad": 0,
+      "file_sha256": "249d21943d8eb363d9af1578da4b5c3629804a17b27d443542da6def7baa978c",
+      "sidecars": {
+        "result.json": {
+          "route_journal": {
+            "schema_version": 1,
+            "n_layers": 43,
+            "topk": 6,
+            "record_count": 688,
+            "completed_forwards": 16
+          }
+        },
+        "integrity.json": {
+          "keys": [
+            "actual_decoded_text_sha256",
+            "actual_token_ids",
+            "actual_token_ids_sha256",
+            "artifact_sha256",
+            "branch",
+            "classification",
+            "cloned_harness_sha256",
+            "completed_at_utc",
+            "dee4_trace_validation",
+            "executing_harness_sha256",
+            "expected_decoded_text",
+            "expected_token_ids",
+            "expert_store",
+            "git_commit",
+            "kernel_metadata_sha256",
+            "model_revision",
+            "performance_eligible",
+            "recorded_at_utc",
+            "repository",
+            "required_gpu"
+          ]
+        },
+        "dee4-metadata.json": {
+          "keys": [
+            "codec",
+            "components",
+            "data_file",
+            "data_sha256",
+            "experts_per_layer",
+            "format",
+            "group_size",
+            "integrity_file",
+            "num_layers",
+            "record_bytes",
+            "records",
+            "scale_in",
+            "scale_nbytes",
+            "scale_offsets",
+            "scale_out",
+            "selection_canonical_encoding",
+            "selection_sha256",
+            "source_repository",
+            "source_revision",
+            "start_layer"
+          ]
+        }
+      }
+    },
+    {
+      "dir": "v61-live-20260902T000809Z",
+      "present": true,
+      "file": "dee.cpp\\tmp\\v61-live-20260902T000809Z\\routed_experts.jsonl",
+      "bytes": 330850,
+      "sha256_first_record_chain": "e1b0d41a77ff763fd79088324fc729458ad719668c907e5c2ebbecbc5c7bb753",
+      "records": 688,
+      "malformed_lines": 0,
+      "forwards": 16,
+      "layers_seen": 43,
+      "unique_experts": 256,
+      "total_selections": 5676,
+      "phases_records": {
+        "prefill": 43,
+        "decode": 645
+      },
+      "token_rows_hist": {
+        "7": 43,
+        "1": 645
+      },
+      "run_ids": [
+        "p2.3-dee4-trace-fillpool-ab2-q6l3-v61"
+      ],
+      "schema_versions": [
+        "1"
+      ],
+      "topk_values": [
+        "6"
+      ],
+      "chain_links_ok": 688,
+      "chain_links_bad": 0,
+      "file_sha256": "611dafc5f3cbedbee145060c1671496e14a25f04a4ac14e136a5de74f472c4a7",
+      "sidecars": {
+        "result.json": {
+          "route_journal": {
+            "schema_version": 1,
+            "n_layers": 43,
+            "topk": 6,
+            "record_count": 688,
+            "completed_forwards": 16
+          }
+        },
+        "integrity.json": {
+          "keys": [
+            "actual_decoded_text_sha256",
+            "actual_token_ids",
+            "actual_token_ids_sha256",
+            "artifact_sha256",
+            "branch",
+            "classification",
+            "cloned_harness_sha256",
+            "completed_at_utc",
+            "dee4_trace_validation",
+            "executing_harness_sha256",
+            "expected_decoded_text",
+            "expected_token_ids",
+            "expert_store",
+            "git_commit",
+            "kernel_metadata_sha256",
+            "model_revision",
+            "performance_eligible",
+            "recorded_at_utc",
+            "repository",
+            "required_gpu"
+          ]
+        },
+        "dee4-metadata.json": {
+          "keys": [
+            "codec",
+            "components",
+            "data_file",
+            "data_sha256",
+            "experts_per_layer",
+            "format",
+            "group_size",
+            "integrity_file",
+            "num_layers",
+            "record_bytes",
+            "records",
+            "scale_in",
+            "scale_nbytes",
+            "scale_offsets",
+            "scale_out",
+            "selection_canonical_encoding",
+            "selection_sha256",
+            "source_repository",
+            "source_revision",
+            "start_layer"
+          ]
+        }
+      }
+    },
+    {
+      "dir": "v60-live-20260901T040935Z",
+      "present": true,
+      "file": "dee.cpp\\tmp\\v60-live-20260901T040935Z\\routed_experts.jsonl",
+      "bytes": 330162,
+      "sha256_first_record_chain": "d8539b6e7c61d18820ccdcc17e492168a4132186f021ba30ca182581c5fcc75e",
+      "records": 688,
+      "malformed_lines": 0,
+      "forwards": 16,
+      "layers_seen": 43,
+      "unique_experts": 256,
+      "total_selections": 5676,
+      "phases_records": {
+        "prefill": 43,
+        "decode": 645
+      },
+      "token_rows_hist": {
+        "7": 43,
+        "1": 645
+      },
+      "run_ids": [
+        "p2.3-dee4-trace-fillpool-ab-q8l4-v60"
+      ],
+      "schema_versions": [
+        "1"
+      ],
+      "topk_values": [
+        "6"
+      ],
+      "chain_links_ok": 688,
+      "chain_links_bad": 0,
+      "file_sha256": "f20f63ffb9c1243c75eca60aabd7b72cbad995b6b6fee7a50ec197b69cdea706",
+      "sidecars": {
+        "result.json": {
+          "route_journal": {
+            "schema_version": 1,
+            "n_layers": 43,
+            "topk": 6,
+            "record_count": 688,
+            "completed_forwards": 16
+          }
+        },
+        "integrity.json": {
+          "keys": [
+            "actual_decoded_text_sha256",
+            "actual_token_ids",
+            "actual_token_ids_sha256",
+            "artifact_sha256",
+            "branch",
+            "classification",
+            "cloned_harness_sha256",
+            "completed_at_utc",
+            "dee4_trace_validation",
+            "executing_harness_sha256",
+            "expected_decoded_text",
+            "expected_token_ids",
+            "expert_store",
+            "git_commit",
+            "kernel_metadata_sha256",
+            "model_revision",
+            "performance_eligible",
+            "recorded_at_utc",
+            "repository",
+            "required_gpu"
+          ]
+        },
+        "dee4-metadata.json": {
+          "keys": [
+            "codec",
+            "components",
+            "data_file",
+            "data_sha256",
+            "experts_per_layer",
+            "format",
+            "group_size",
+            "integrity_file",
+            "num_layers",
+            "record_bytes",
+            "records",
+            "scale_in",
+            "scale_nbytes",
+            "scale_offsets",
+            "scale_out",
+            "selection_canonical_encoding",
+            "selection_sha256",
+            "source_repository",
+            "source_revision",
+            "start_layer"
+          ]
+        }
+      }
+    },
+    {
+      "dir": "v59-live-20260901T034302Z",
+      "present": true,
+      "file": "dee.cpp\\tmp\\v59-live-20260901T034302Z\\routed_experts.jsonl",
+      "bytes": 330162,
+      "sha256_first_record_chain": "351c11b8c0424ce9f8d74bf5fee0a3adc326c8d0d192cb543d7535cdf1357c18",
+      "records": 688,
+      "malformed_lines": 0,
+      "forwards": 16,
+      "layers_seen": 43,
+      "unique_experts": 256,
+      "total_selections": 5676,
+      "phases_records": {
+        "prefill": 43,
+        "decode": 645
+      },
+      "token_rows_hist": {
+        "7": 43,
+        "1": 645
+      },
+      "run_ids": [
+        "p2.3-dee4-trace-fillpool-ab-q6l3-v59"
+      ],
+      "schema_versions": [
+        "1"
+      ],
+      "topk_values": [
+        "6"
+      ],
+      "chain_links_ok": 688,
+      "chain_links_bad": 0,
+      "file_sha256": "fea7e04a1f5a78e6a236a1be7663ca7847138fd383b6fcc0817204c024085e4b",
+      "sidecars": {
+        "result.json": {
+          "route_journal": {
+            "schema_version": 1,
+            "n_layers": 43,
+            "topk": 6,
+            "record_count": 688,
+            "completed_forwards": 16
+          }
+        },
+        "integrity.json": {
+          "keys": [
+            "actual_decoded_text_sha256",
+            "actual_token_ids",
+            "actual_token_ids_sha256",
+            "artifact_sha256",
+            "branch",
+            "classification",
+            "cloned_harness_sha256",
+            "completed_at_utc",
+            "dee4_trace_validation",
+            "executing_harness_sha256",
+            "expected_decoded_text",
+            "expected_token_ids",
+            "expert_store",
+            "git_commit",
+            "kernel_metadata_sha256",
+            "model_revision",
+            "performance_eligible",
+            "recorded_at_utc",
+            "repository",
+            "required_gpu"
+          ]
+        },
+        "dee4-metadata.json": {
+          "keys": [
+            "codec",
+            "components",
+            "data_file",
+            "data_sha256",
+            "experts_per_layer",
+            "format",
+            "group_size",
+            "integrity_file",
+            "num_layers",
+            "record_bytes",
+            "records",
+            "scale_in",
+            "scale_nbytes",
+            "scale_offsets",
+            "scale_out",
+            "selection_canonical_encoding",
+            "selection_sha256",
+            "source_repository",
+            "source_revision",
+            "start_layer"
+          ]
+        }
+      }
+    },
+    {
+      "dir": "v58-live-20260901T025855Z",
+      "present": true,
+      "file": "dee.cpp\\tmp\\v58-live-20260901T025855Z\\routed_experts.jsonl",
+      "bytes": 334290,
+      "sha256_first_record_chain": "68bbe9326def39ee93b7ab361792aea194fe8384c386d79e0f1edbe735342718",
+      "records": 688,
+      "malformed_lines": 0,
+      "forwards": 16,
+      "layers_seen": 43,
+      "unique_experts": 256,
+      "total_selections": 5676,
+      "phases_records": {
+        "prefill": 43,
+        "decode": 645
+      },
+      "token_rows_hist": {
+        "7": 43,
+        "1": 645
+      },
+      "run_ids": [
+        "p2.3-dee4-trace-fillpool-lane4-profile-v58"
+      ],
+      "schema_versions": [
+        "1"
+      ],
+      "topk_values": [
+        "6"
+      ],
+      "chain_links_ok": 688,
+      "chain_links_bad": 0,
+      "file_sha256": "437884a0f36a40159f210322429c58b737f48f8afbde1b32dd07ff721d8bc5a8",
+      "sidecars": {
+        "result.json": {
+          "route_journal": {
+            "schema_version": 1,
+            "n_layers": 43,
+            "topk": 6,
+            "record_count": 688,
+            "completed_forwards": 16
+          }
+        },
+        "integrity.json": {
+          "keys": [
+            "actual_decoded_text_sha256",
+            "actual_token_ids",
+            "actual_token_ids_sha256",
+            "artifact_sha256",
+            "branch",
+            "classification",
+            "cloned_harness_sha256",
+            "completed_at_utc",
+            "dee4_trace_validation",
+            "executing_harness_sha256",
+            "expected_decoded_text",
+            "expected_token_ids",
+            "expert_store",
+            "git_commit",
+            "kernel_metadata_sha256",
+            "model_revision",
+            "performance_eligible",
+            "recorded_at_utc",
+            "repository",
+            "required_gpu"
+          ]
+        },
+        "dee4-metadata.json": {
+          "keys": [
+            "codec",
+            "components",
+            "data_file",
+            "data_sha256",
+            "experts_per_layer",
+            "format",
+            "group_size",
+            "integrity_file",
+            "num_layers",
+            "record_bytes",
+            "records",
+            "scale_in",
+            "scale_nbytes",
+            "scale_offsets",
+            "scale_out",
+            "selection_canonical_encoding",
+            "selection_sha256",
+            "source_repository",
+            "source_revision",
+            "start_layer"
+          ]
+        }
+      }
+    },
+    {
+      "dir": "v58-live-20260831T052427Z",
+      "present": true,
+      "file": "dee.cpp\\tmp\\v58-live-20260831T052427Z\\routed_experts.jsonl",
+      "bytes": 334290,
+      "sha256_first_record_chain": "68bbe9326def39ee93b7ab361792aea194fe8384c386d79e0f1edbe735342718",
+      "records": 688,
+      "malformed_lines": 0,
+      "forwards": 16,
+      "layers_seen": 43,
+      "unique_experts": 256,
+      "total_selections": 5676,
+      "phases_records": {
+        "prefill": 43,
+        "decode": 645
+      },
+      "token_rows_hist": {
+        "7": 43,
+        "1": 645
+      },
+      "run_ids": [
+        "p2.3-dee4-trace-fillpool-lane4-profile-v58"
+      ],
+      "schema_versions": [
+        "1"
+      ],
+      "topk_values": [
+        "6"
+      ],
+      "chain_links_ok": 688,
+      "chain_links_bad": 0,
+      "file_sha256": "437884a0f36a40159f210322429c58b737f48f8afbde1b32dd07ff721d8bc5a8",
+      "sidecars": {
+        "result.json": {
+          "route_journal": {
+            "schema_version": 1,
+            "n_layers": 43,
+            "topk": 6,
+            "record_count": 688,
+            "completed_forwards": 16
+          }
+        },
+        "integrity.json": {
+          "keys": [
+            "actual_decoded_text_sha256",
+            "actual_token_ids",
+            "actual_token_ids_sha256",
+            "artifact_sha256",
+            "branch",
+            "classification",
+            "cloned_harness_sha256",
+            "completed_at_utc",
+            "dee4_trace_validation",
+            "executing_harness_sha256",
+            "expected_decoded_text",
+            "expected_token_ids",
+            "expert_store",
+            "git_commit",
+            "kernel_metadata_sha256",
+            "model_revision",
+            "performance_eligible",
+            "recorded_at_utc",
+            "repository",
+            "required_gpu"
+          ]
+        },
+        "dee4-metadata.json": {
+          "keys": [
+            "codec",
+            "components",
+            "data_file",
+            "data_sha256",
+            "experts_per_layer",
+            "format",
+            "group_size",
+            "integrity_file",
+            "num_layers",
+            "record_bytes",
+            "records",
+            "scale_in",
+            "scale_nbytes",
+            "scale_offsets",
+            "scale_out",
+            "selection_canonical_encoding",
+            "selection_sha256",
+            "source_repository",
+            "source_revision",
+            "start_layer"
+          ]
+        }
+      }
+    },
+    {
+      "dir": "v57-live-20260831T044713Z",
+      "present": true,
+      "file": "dee.cpp\\tmp\\v57-live-20260831T044713Z\\routed_experts.jsonl",
+      "bytes": 328786,
+      "sha256_first_record_chain": "395ff2a1c021f7556e15709610fcf7a810c581e77924acd12564262e8255901a",
+      "records": 688,
+      "malformed_lines": 0,
+      "forwards": 16,
+      "layers_seen": 43,
+      "unique_experts": 256,
+      "total_selections": 5676,
+      "phases_records": {
+        "prefill": 43,
+        "decode": 645
+      },
+      "token_rows_hist": {
+        "7": 43,
+        "1": 645
+      },
+      "run_ids": [
+        "p2.3-dee4-trace-fillpool-lane4-v57"
+      ],
+      "schema_versions": [
+        "1"
+      ],
+      "topk_values": [
+        "6"
+      ],
+      "chain_links_ok": 688,
+      "chain_links_bad": 0,
+      "file_sha256": "7873bac2e14f54eff4bc144b4daa217e9c27af2aa3b1e23dff35792a15d7444c",
+      "sidecars": {
+        "result.json": {
+          "route_journal": {
+            "schema_version": 1,
+            "n_layers": 43,
+            "topk": 6,
+            "record_count": 688,
+            "completed_forwards": 16
+          }
+        },
+        "integrity.json": {
+          "keys": [
+            "actual_decoded_text_sha256",
+            "actual_token_ids",
+            "actual_token_ids_sha256",
+            "artifact_sha256",
+            "branch",
+            "classification",
+            "cloned_harness_sha256",
+            "completed_at_utc",
+            "dee4_trace_validation",
+            "executing_harness_sha256",
+            "expected_decoded_text",
+            "expected_token_ids",
+            "expert_store",
+            "git_commit",
+            "kernel_metadata_sha256",
+            "model_revision",
+            "performance_eligible",
+            "recorded_at_utc",
+            "repository",
+            "required_gpu"
+          ]
+        },
+        "dee4-metadata.json": {
+          "keys": [
+            "codec",
+            "components",
+            "data_file",
+            "data_sha256",
+            "experts_per_layer",
+            "format",
+            "group_size",
+            "integrity_file",
+            "num_layers",
+            "record_bytes",
+            "records",
+            "scale_in",
+            "scale_nbytes",
+            "scale_offsets",
+            "scale_out",
+            "selection_canonical_encoding",
+            "selection_sha256",
+            "source_repository",
+            "source_revision",
+            "start_layer"
+          ]
+        }
+      }
+    },
+    {
+      "dir": "v56-live-20260831T041432Z",
+      "present": true,
+      "file": "dee.cpp\\tmp\\v56-live-20260831T041432Z\\routed_experts.jsonl",
+      "bytes": 330162,
+      "sha256_first_record_chain": "a9e323b5169b7158fde338c3e9433107fb1de130f10d309edd181e654d352aa8",
+      "records": 688,
+      "malformed_lines": 0,
+      "forwards": 16,
+      "layers_seen": 43,
+      "unique_experts": 256,
+      "total_selections": 5676,
+      "phases_records": {
+        "prefill": 43,
+        "decode": 645
+      },
+      "token_rows_hist": {
+        "7": 43,
+        "1": 645
+      },
+      "run_ids": [
+        "p2.3-dee4-trace-fillpool-profile-v56"
+      ],
+      "schema_versions": [
+        "1"
+      ],
+      "topk_values": [
+        "6"
+      ],
+      "chain_links_ok": 688,
+      "chain_links_bad": 0,
+      "file_sha256": "559c25164dd1a9cc6706fad6dea52b255ee6c041f3cc18f6349f019914b87cf2",
+      "sidecars": {
+        "result.json": {
+          "route_journal": {
+            "schema_version": 1,
+            "n_layers": 43,
+            "topk": 6,
+            "record_count": 688,
+            "completed_forwards": 16
+          }
+        },
+        "integrity.json": {
+          "keys": [
+            "actual_decoded_text_sha256",
+            "actual_token_ids",
+            "actual_token_ids_sha256",
+            "artifact_sha256",
+            "branch",
+            "classification",
+            "cloned_harness_sha256",
+            "completed_at_utc",
+            "dee4_trace_validation",
+            "executing_harness_sha256",
+            "expected_decoded_text",
+            "expected_token_ids",
+            "expert_store",
+            "git_commit",
+            "kernel_metadata_sha256",
+            "model_revision",
+            "performance_eligible",
+            "recorded_at_utc",
+            "repository",
+            "required_gpu"
+          ]
+        },
+        "dee4-metadata.json": {
+          "keys": [
+            "codec",
+            "components",
+            "data_file",
+            "data_sha256",
+            "experts_per_layer",
+            "format",
+            "group_size",
+            "integrity_file",
+            "num_layers",
+            "record_bytes",
+            "records",
+            "scale_in",
+            "scale_nbytes",
+            "scale_offsets",
+            "scale_out",
+            "selection_canonical_encoding",
+            "selection_sha256",
+            "source_repository",
+            "source_revision",
+            "start_layer"
+          ]
+        }
+      }
+    },
+    {
+      "dir": "v56-live-20260831T035018Z",
+      "present": true,
+      "file": "dee.cpp\\tmp\\v56-live-20260831T035018Z\\routed_experts.jsonl",
+      "bytes": 324658,
+      "sha256_first_record_chain": "1110b4e219c2c38b1a3bf3f61b309eaf3c8f17860008327aeced0fb98c9148cb",
+      "records": 688,
+      "malformed_lines": 0,
+      "forwards": 16,
+      "layers_seen": 43,
+      "unique_experts": 256,
+      "total_selections": 5676,
+      "phases_records": {
+        "prefill": 43,
+        "decode": 645
+      },
+      "token_rows_hist": {
+        "7": 43,
+        "1": 645
+      },
+      "run_ids": [
+        "p2.3-dee4-trace-fillpool-v55"
+      ],
+      "schema_versions": [
+        "1"
+      ],
+      "topk_values": [
+        "6"
+      ],
+      "chain_links_ok": 688,
+      "chain_links_bad": 0,
+      "file_sha256": "d235ba9e1329360944b7e28a2f9f2b51748799726109b77c5b7972b098ae5b99",
+      "sidecars": {
+        "result.json": {
+          "route_journal": {
+            "schema_version": 1,
+            "n_layers": 43,
+            "topk": 6,
+            "record_count": 688,
+            "completed_forwards": 16
+          }
+        },
+        "integrity.json": {
+          "keys": [
+            "actual_decoded_text_sha256",
+            "actual_token_ids",
+            "actual_token_ids_sha256",
+            "artifact_sha256",
+            "branch",
+            "classification",
+            "cloned_harness_sha256",
+            "completed_at_utc",
+            "dee4_trace_validation",
+            "executing_harness_sha256",
+            "expected_decoded_text",
+            "expected_token_ids",
+            "expert_store",
+            "git_commit",
+            "kernel_metadata_sha256",
+            "model_revision",
+            "performance_eligible",
+            "recorded_at_utc",
+            "repository",
+            "required_gpu"
+          ]
+        },
+        "dee4-metadata.json": {
+          "keys": [
+            "codec",
+            "components",
+            "data_file",
+            "data_sha256",
+            "experts_per_layer",
+            "format",
+            "group_size",
+            "integrity_file",
+            "num_layers",
+            "record_bytes",
+            "records",
+            "scale_in",
+            "scale_nbytes",
+            "scale_offsets",
+            "scale_out",
+            "selection_canonical_encoding",
+            "selection_sha256",
+            "source_repository",
+            "source_revision",
+            "start_layer"
+          ]
+        }
+      }
+    },
+    {
+      "dir": "v55-live-20260831T030956Z",
+      "present": true,
+      "file": "dee.cpp\\tmp\\v55-live-20260831T030956Z\\routed_experts.jsonl",
+      "bytes": 324658,
+      "sha256_first_record_chain": "1110b4e219c2c38b1a3bf3f61b309eaf3c8f17860008327aeced0fb98c9148cb",
+      "records": 688,
+      "malformed_lines": 0,
+      "forwards": 16,
+      "layers_seen": 43,
+      "unique_experts": 256,
+      "total_selections": 5676,
+      "phases_records": {
+        "prefill": 43,
+        "decode": 645
+      },
+      "token_rows_hist": {
+        "7": 43,
+        "1": 645
+      },
+      "run_ids": [
+        "p2.3-dee4-trace-fillpool-v55"
+      ],
+      "schema_versions": [
+        "1"
+      ],
+      "topk_values": [
+        "6"
+      ],
+      "chain_links_ok": 688,
+      "chain_links_bad": 0,
+      "file_sha256": "d235ba9e1329360944b7e28a2f9f2b51748799726109b77c5b7972b098ae5b99",
+      "sidecars": {
+        "result.json": {
+          "route_journal": {
+            "schema_version": 1,
+            "n_layers": 43,
+            "topk": 6,
+            "record_count": 688,
+            "completed_forwards": 16
+          }
+        },
+        "integrity.json": {
+          "keys": [
+            "actual_decoded_text_sha256",
+            "actual_token_ids",
+            "actual_token_ids_sha256",
+            "artifact_sha256",
+            "branch",
+            "classification",
+            "cloned_harness_sha256",
+            "completed_at_utc",
+            "dee4_trace_validation",
+            "executing_harness_sha256",
+            "expected_decoded_text",
+            "expected_token_ids",
+            "expert_store",
+            "git_commit",
+            "kernel_metadata_sha256",
+            "model_revision",
+            "performance_eligible",
+            "recorded_at_utc",
+            "repository",
+            "required_gpu"
+          ]
+        },
+        "dee4-metadata.json": {
+          "keys": [
+            "codec",
+            "components",
+            "data_file",
+            "data_sha256",
+            "experts_per_layer",
+            "format",
+            "group_size",
+            "integrity_file",
+            "num_layers",
+            "record_bytes",
+            "records",
+            "scale_in",
+            "scale_nbytes",
+            "scale_offsets",
+            "scale_out",
+            "selection_canonical_encoding",
+            "selection_sha256",
+            "source_repository",
+            "source_revision",
+            "start_layer"
+          ]
+        }
+      }
+    },
+    {
+      "dir": "v54-live-20260831T025719Z",
+      "present": true,
+      "file": "dee.cpp\\tmp\\v54-live-20260831T025719Z\\routed_experts.jsonl",
+      "bytes": 324658,
+      "sha256_first_record_chain": "24f805b83b50fff0d0767456855292ba6b5b011263e6848392827d7d5e7df4c2",
+      "records": 688,
+      "malformed_lines": 0,
+      "forwards": 16,
+      "layers_seen": 43,
+      "unique_experts": 256,
+      "total_selections": 5676,
+      "phases_records": {
+        "prefill": 43,
+        "decode": 645
+      },
+      "token_rows_hist": {
+        "7": 43,
+        "1": 645
+      },
+      "run_ids": [
+        "p2.3-dee4-trace-fillpool-v54"
+      ],
+      "schema_versions": [
+        "1"
+      ],
+      "topk_values": [
+        "6"
+      ],
+      "chain_links_ok": 688,
+      "chain_links_bad": 0,
+      "file_sha256": "0a5ac54c8ef6347f31043a0f33908245e2825358db39ec431c4d03221602a9a1",
+      "sidecars": {
+        "result.json": {
+          "route_journal": {
+            "schema_version": 1,
+            "n_layers": 43,
+            "topk": 6,
+            "record_count": 688,
+            "completed_forwards": 16
+          }
+        },
+        "integrity.json": {
+          "keys": [
+            "actual_decoded_text_sha256",
+            "actual_token_ids",
+            "actual_token_ids_sha256",
+            "artifact_sha256",
+            "branch",
+            "classification",
+            "cloned_harness_sha256",
+            "completed_at_utc",
+            "dee4_trace_validation",
+            "executing_harness_sha256",
+            "expected_decoded_text",
+            "expected_token_ids",
+            "expert_store",
+            "git_commit",
+            "kernel_metadata_sha256",
+            "model_revision",
+            "performance_eligible",
+            "recorded_at_utc",
+            "repository",
+            "required_gpu"
+          ]
+        },
+        "dee4-metadata.json": {
+          "keys": [
+            "codec",
+            "components",
+            "data_file",
+            "data_sha256",
+            "experts_per_layer",
+            "format",
+            "group_size",
+            "integrity_file",
+            "num_layers",
+            "record_bytes",
+            "records",
+            "scale_in",
+            "scale_nbytes",
+            "scale_offsets",
+            "scale_out",
+            "selection_canonical_encoding",
+            "selection_sha256",
+            "source_repository",
+            "source_revision",
+            "start_layer"
+          ]
+        }
+      }
+    },
+    {
+      "dir": "v52-live-20260830T133749",
+      "present": true,
+      "file": "dee.cpp\\tmp\\v52-live-20260830T133749\\routed_experts.jsonl",
+      "bytes": 323970,
+      "sha256_first_record_chain": "4f5d5a13c1827d18f5e4ffb1183a75782239da6c8c2d5ce69ebcdfc79f4a072f",
+      "records": 688,
+      "malformed_lines": 0,
+      "forwards": 16,
+      "layers_seen": 43,
+      "unique_experts": 256,
+      "total_selections": 5676,
+      "phases_records": {
+        "prefill": 43,
+        "decode": 645
+      },
+      "token_rows_hist": {
+        "7": 43,
+        "1": 645
+      },
+      "run_ids": [
+        "p2.3-dee4-trace-profile-v52"
+      ],
+      "schema_versions": [
+        "1"
+      ],
+      "topk_values": [
+        "6"
+      ],
+      "chain_links_ok": 688,
+      "chain_links_bad": 0,
+      "file_sha256": "a096743f3bdcfad29b6a52322e9945d41170876ef64077c70a6d375621f23124",
+      "sidecars": {
+        "result.json": {
+          "route_journal": {
+            "schema_version": 1,
+            "n_layers": 43,
+            "topk": 6,
+            "record_count": 688,
+            "completed_forwards": 16
+          }
+        },
+        "integrity.json": {
+          "keys": [
+            "actual_decoded_text_sha256",
+            "actual_token_ids",
+            "actual_token_ids_sha256",
+            "artifact_sha256",
+            "branch",
+            "classification",
+            "cloned_harness_sha256",
+            "completed_at_utc",
+            "dee4_trace_validation",
+            "executing_harness_sha256",
+            "expected_decoded_text",
+            "expected_token_ids",
+            "expert_store",
+            "git_commit",
+            "kernel_metadata_sha256",
+            "model_revision",
+            "performance_eligible",
+            "recorded_at_utc",
+            "repository",
+            "required_gpu"
+          ]
+        },
+        "dee4-metadata.json": {
+          "keys": [
+            "codec",
+            "components",
+            "data_file",
+            "data_sha256",
+            "experts_per_layer",
+            "format",
+            "group_size",
+            "integrity_file",
+            "num_layers",
+            "record_bytes",
+            "records",
+            "scale_in",
+            "scale_nbytes",
+            "scale_offsets",
+            "scale_out",
+            "selection_canonical_encoding",
+            "selection_sha256",
+            "source_repository",
+            "source_revision",
+            "start_layer"
+          ]
+        }
+      }
+    },
+    {
+      "dir": "v51-evidence-20260830T132128Z",
+      "present": true,
+      "file": "dee.cpp\\tmp\\v51-evidence-20260830T132128Z\\routed_experts.jsonl",
+      "bytes": 318466,
+      "sha256_first_record_chain": "bbdf48deb25687e611538fbf7a10d4a80fc3b42a7cd735fd4c19fbc074711851",
+      "records": 688,
+      "malformed_lines": 0,
+      "forwards": 16,
+      "layers_seen": 43,
+      "unique_experts": 256,
+      "total_selections": 5676,
+      "phases_records": {
+        "prefill": 43,
+        "decode": 645
+      },
+      "token_rows_hist": {
+        "7": 43,
+        "1": 645
+      },
+      "run_ids": [
+        "p2.3-dee4-trace-v51"
+      ],
+      "schema_versions": [
+        "1"
+      ],
+      "topk_values": [
+        "6"
+      ],
+      "chain_links_ok": 688,
+      "chain_links_bad": 0,
+      "file_sha256": "032ce67b8d92a6abcb32ea97a6cc876110f42c8f75fed490a0a3dafbdfdc759f",
+      "sidecars": {
+        "result.json": {
+          "route_journal": {
+            "schema_version": 1,
+            "n_layers": 43,
+            "topk": 6,
+            "record_count": 688,
+            "completed_forwards": 16
+          }
+        },
+        "integrity.json": {
+          "keys": [
+            "actual_decoded_text_sha256",
+            "actual_token_ids",
+            "actual_token_ids_sha256",
+            "artifact_sha256",
+            "branch",
+            "classification",
+            "cloned_harness_sha256",
+            "completed_at_utc",
+            "dee4_trace_validation",
+            "executing_harness_sha256",
+            "expected_decoded_text",
+            "expected_token_ids",
+            "expert_store",
+            "git_commit",
+            "kernel_metadata_sha256",
+            "model_revision",
+            "performance_eligible",
+            "recorded_at_utc",
+            "repository",
+            "required_gpu"
+          ]
+        },
+        "dee4-metadata.json": {
+          "keys": [
+            "codec",
+            "components",
+            "data_file",
+            "data_sha256",
+            "experts_per_layer",
+            "format",
+            "group_size",
+            "integrity_file",
+            "num_layers",
+            "record_bytes",
+            "records",
+            "scale_in",
+            "scale_nbytes",
+            "scale_offsets",
+            "scale_out",
+            "selection_canonical_encoding",
+            "selection_sha256",
+            "source_repository",
+            "source_revision",
+            "start_layer"
+          ]
+        }
+      }
+    },
+    {
+      "dir": "v50-evidence-20260829T195940",
+      "present": true,
+      "file": "dee.cpp\\tmp\\v50-evidence-20260829T195940\\routed_experts.jsonl",
+      "bytes": 320530,
+      "sha256_first_record_chain": "086f8ca83b6a3c467cdf950096141fa9bc3e55a285d7d1fed8a0ad9913e3eb3d",
+      "records": 688,
+      "malformed_lines": 0,
+      "forwards": 16,
+      "layers_seen": 43,
+      "unique_experts": 256,
+      "total_selections": 5676,
+      "phases_records": {
+        "prefill": 43,
+        "decode": 645
+      },
+      "token_rows_hist": {
+        "7": 43,
+        "1": 645
+      },
+      "run_ids": [
+        "p2.3-route-journal-v50"
+      ],
+      "schema_versions": [
+        "1"
+      ],
+      "topk_values": [
+        "6"
+      ],
+      "chain_links_ok": 688,
+      "chain_links_bad": 0,
+      "file_sha256": "665aac3e8db570237c6dc6acaf08dc39f2af890e8a04e400ce7154f1a858dae1",
+      "sidecars": {
+        "result.json": {
+          "route_journal": {
+            "schema_version": 1,
+            "n_layers": 43,
+            "topk": 6,
+            "record_count": 688,
+            "completed_forwards": 16
+          }
+        },
+        "integrity.json": {
+          "keys": [
+            "actual_decoded_text_sha256",
+            "actual_token_ids",
+            "actual_token_ids_sha256",
+            "artifact_sha256",
+            "branch",
+            "classification",
+            "cloned_harness_sha256",
+            "completed_at_utc",
+            "executing_harness_sha256",
+            "expected_decoded_text",
+            "expected_token_ids",
+            "expert_store",
+            "git_commit",
+            "kernel_metadata_sha256",
+            "model_revision",
+            "performance_eligible",
+            "recorded_at_utc",
+            "repository",
+            "required_gpu",
+            "run_config_sha256"
+          ]
+        },
+        "dee4-metadata.json": {
+          "keys": [
+            "codec",
+            "components",
+            "data_file",
+            "data_sha256",
+            "experts_per_layer",
+            "format",
+            "group_size",
+            "integrity_file",
+            "num_layers",
+            "record_bytes",
+            "scale_in",
+            "scale_nbytes",
+            "scale_offsets",
+            "scale_out",
+            "source_repository",
+            "source_revision",
+            "start_layer",
+            "total_bytes",
+            "total_experts",
+            "weight_nbytes"
+          ]
+        }
+      }
+    },
+    {
+      "dir": "kt-input-capture-v3-output",
+      "present": true,
+      "file": "dee.cpp\\tmp\\kt-input-capture-v3-output\\routed_experts.jsonl",
+      "bytes": 341858,
+      "sha256_first_record_chain": "ad73a6e893052d2530227cf015b6d5b4e4d0b27b9fe17b7f8c9e23ce518ba4f7",
+      "records": 688,
+      "malformed_lines": 0,
+      "forwards": 16,
+      "layers_seen": 43,
+      "unique_experts": 256,
+      "total_selections": 5676,
+      "phases_records": {
+        "prefill": 43,
+        "decode": 645
+      },
+      "token_rows_hist": {
+        "7": 43,
+        "1": 645
+      },
+      "run_ids": [
+        "kt-input-capture-layer0-expert155-guarded-v3-20260904"
+      ],
+      "schema_versions": [
+        "1"
+      ],
+      "topk_values": [
+        "6"
+      ],
+      "chain_links_ok": 688,
+      "chain_links_bad": 0,
+      "file_sha256": "6696c90d5de13fb5ff6e83a05d7522cb747c1ce4fec69162e78578284a663a09",
+      "sidecars": {
+        "result.json": {
+          "route_journal": {
+            "schema_version": 1,
+            "n_layers": 43,
+            "topk": 6,
+            "record_count": 688,
+            "completed_forwards": 16
+          }
+        },
+        "integrity.json": {
+          "keys": [
+            "actual_decoded_text_sha256",
+            "actual_token_ids",
+            "actual_token_ids_sha256",
+            "artifact_sha256",
+            "branch",
+            "classification",
+            "cloned_harness_sha256",
+            "completed_at_utc",
+            "dee4_trace_validation",
+            "executing_harness_sha256",
+            "expected_decoded_text",
+            "expected_token_ids",
+            "expert_store",
+            "git_commit",
+            "kernel_metadata_sha256",
+            "model_revision",
+            "performance_eligible",
+            "recorded_at_utc",
+            "repository",
+            "required_gpu"
+          ]
+        },
+        "dee4-metadata.json": {
+          "keys": [
+            "codec",
+            "components",
+            "data_file",
+            "data_sha256",
+            "experts_per_layer",
+            "format",
+            "group_size",
+            "integrity_file",
+            "num_layers",
+            "record_bytes",
+            "records",
+            "scale_in",
+            "scale_nbytes",
+            "scale_offsets",
+            "scale_out",
+            "selection_canonical_encoding",
+            "selection_sha256",
+            "source_repository",
+            "source_revision",
+            "start_layer"
+          ]
+        }
+      }
+    }
+  ]
+}
