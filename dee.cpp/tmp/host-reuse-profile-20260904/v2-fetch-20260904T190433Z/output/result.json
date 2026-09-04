@@ -1,0 +1,9 @@
+{
+  "status": "ERROR",
+  "classification": "INVALID_EXPERIMENT",
+  "performance_eligible": false,
+  "failed_at_utc": "2026-09-04T19:02:04Z",
+  "error_type": "RuntimeError",
+  "error": "Matched run configuration drift",
+  "traceback": "Traceback (most recent call last):\n  File \"/kaggle/src/script.py\", line 1896, in <module>\n    main()\n  File \"/kaggle/src/script.py\", line 943, in main\n    raise RuntimeError(\"Matched run configuration drift\")\nRuntimeError: Matched run configuration drift\n"
+}

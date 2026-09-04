@@ -1,0 +1,13 @@
+{
+  "profiled_candidate_evidence": "v2-fetch-20260904T194914Z/output",
+  "replication_evidence": "../host-reuse-rep-20260904/replication-comparison.json",
+  "original_ab_evidence": "../host-reuse-ab-20260904/ab-comparison-v1-v2.json",
+  "terminal": "COMPLETE",
+  "correctness": {"classification": "ACCEPT_CORRECTNESS", "exact_ids_and_text_match": true, "all_sealed_gates": true, "layers": 43},
+  "profile_validation": {"run_config_profile_stages": true, "profile_stages_enabled": true, "cuda0_stage_profile_enabled": true, "cuda1_stage_profile_enabled": true},
+  "profiler_metrics_ms": {"cuda0": {"h2d": 2539.021118, "gate_projection": 376.962112, "up_projection": 207.617952, "silu_multiply": 16.746208, "down_projection": 280.032832, "d2d_gather": 24.949824, "d2d_scatter": 17.034816}, "cuda1": {"h2d": 2535.412064, "gate_projection": 207.707231, "up_projection": 197.343328, "silu_multiply": 15.647744, "down_projection": 225.562177, "d2d_gather": 23.06096, "d2d_scatter": 16.176224}},
+  "reuse": {"buffers": 1117, "bytes": 14933557248},
+  "run_metrics": {"total_wall_seconds": 168.37, "decode_wall_seconds": 71.179},
+  "performance_acceptance": false,
+  "seal_conclusion": "Profiler evidence is valid and correctness is sealed; performance acceptance remains false by rule."
+}
