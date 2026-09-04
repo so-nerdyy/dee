@@ -146,7 +146,7 @@ def provenance(bundle: Path, validation_path: Path, sealed_bundle: Path,
 
 
 def replay(shard: Path, capture_bundle: Path, validation: Path, sealed_bundle: Path,
-           terminal_seal: Path, executor: Path) -> dict:
+           terminal_seal: Path, executor: Path, diagnostics: bool = False) -> dict:
     capture, seal = provenance(capture_bundle, validation, sealed_bundle, terminal_seal)
     subprocess.run([str(executor), "--self-test"], check=True, timeout=30,
                    capture_output=True, text=True)
@@ -158,6 +158,9 @@ def replay(shard: Path, capture_bundle: Path, validation: Path, sealed_bundle: P
     args = [tensors[name] for name in ("w1.weight", "w1.scale", "w2.weight", "w2.scale", "w3.weight", "w3.scale")]
     w1, w2, w3 = [trusted.dequantize_expert_weight(tensors[f"{p}.weight"], tensors[f"{p}.scale"])
                   for p in ("w1", "w2", "w3")]
+    if diagnostics:
+        from captured_real_diagnostics import codec_diagnostics, row_diagnostics
+        codec_report = codec_diagnostics(tensors)
     rows = []
     with tempfile.TemporaryDirectory(prefix="dee-kt-captured-real-") as scratch_dir:
         scratch = Path(scratch_dir)
@@ -173,6 +176,8 @@ def replay(shard: Path, capture_bundle: Path, validation: Path, sealed_bundle: P
             x_native = load_f16(capture_bundle / native["path"], 4096)
             require(torch.equal(x_fp32.to(torch.float16), x_native), "native FP16 capture is not the FP32 conversion")
             router_values = load_f32(capture_bundle / router["path"], 6)
+            require(router_values.tolist() == item["official_router_weights_rank_order"],
+                    "captured full router weight vector mismatch")
             rank = item["topk_rank"]
             require(item["expert_ids_rank_order"][rank] == 155, "captured rank does not select expert 155")
             weight = float(router_values[rank])
@@ -211,13 +216,16 @@ def replay(shard: Path, capture_bundle: Path, validation: Path, sealed_bundle: P
                 "output_sha256": {"trusted_dee": sha(expected.numpy().tobytes()), "cpp_reference": sha(first.numpy().tobytes()),
                                   "kt_candidate": sha(candidate.numpy().tobytes())},
             })
+            if diagnostics:
+                rows[-1]["diagnostics"] = row_diagnostics(
+                    x, x_fp32.reshape(1, 4096), (w1, w2, w3), weight, expected, candidate)
     cpp_ok = all(row["cpp_reference_ds8_pass"] and row["cpp_reference_repeat_bitwise"] and
                  row["trusted_dee_repeat_bitwise"] and row["trusted_dee_vs_cpp_reference"]["finite"] for row in rows)
     kt_ok = all(row["kt_candidate_ds8_pass"] and row["kt_candidate_repeat_bitwise"] and
                 row["trusted_dee_vs_kt_candidate"]["finite"] for row in rows)
     cpp_coverage_failure = any(row["cpp_reference_full_ds8_metrics"]["excluded"]["fraction"] >
                                contract.DS8_TOLERANCE["max_excluded_fraction"] for row in rows)
-    return {
+    report = {
         "schema": "kt-captured-real-expert-replay-v1", "scope": "evidence-only; one captured expert, no full-model or native KT execution",
         "capture_seal": seal, "record_evidence": record_evidence,
         "executor": {"path": str(executor), "sha256": sha(executor.read_bytes()), "self_test_pass": True},
@@ -233,12 +241,26 @@ def replay(shard: Path, capture_bundle: Path, validation: Path, sealed_bundle: P
                     "failure_classification": None if kt_ok else "numerical: deterministic finite KT emulation exceeds predeclared relative-error gates; no routing/provenance/finite-mask semantic failure observed",
                     "interface_cherry_pick_justified": False},
     }
+    if diagnostics:
+        import captured_real_diagnostics
+        report["diagnostics"] = {
+            "codec": codec_report, "native_kt_executed": False,
+            "script_sha256": sha(Path(captured_real_diagnostics.__file__).read_bytes()),
+            "replay_script_sha256": sha(Path(__file__).read_bytes()),
+            "torch_version": torch.__version__, "torch_threads": torch.get_num_threads(),
+            "contract_source_sha256": sha(Path(contract.__file__).read_bytes()),
+            "sources": {"shard": str(shard), "capture_bundle": str(capture_bundle),
+                        "validation": str(validation), "sealed_bundle": str(sealed_bundle),
+                        "terminal_seal": str(terminal_seal)},
+        }
+    return report
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("shard", "capture_bundle", "validation", "sealed_bundle", "terminal_seal", "executor", "out"):
         parser.add_argument(f"--{name}", type=Path, required=True)
+    parser.add_argument("--diagnostics", action="store_true", help="Record independent BF16 boundary ablations")
     options = vars(parser.parse_args())
     out = options.pop("out")
     report = replay(**options)
