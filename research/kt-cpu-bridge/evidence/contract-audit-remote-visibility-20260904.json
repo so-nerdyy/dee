@@ -1,0 +1,24 @@
+{
+  "schema": "kt-contract-audit-remote-visibility-v1",
+  "observed_utc": "2026-09-04T04:30:13.572527+00:00",
+  "remote_url": "https://github.com/so-nerdyy/dee.git",
+  "remote_ref": "refs/heads/codex/kt-real-expert-review",
+  "remote_tip": "f44967ffbe29d62e89c2f005d95c5d2b6613a568",
+  "ls_remote_output": "f44967ffbe29d62e89c2f005d95c5d2b6613a568\trefs/heads/codex/kt-real-expert-review",
+  "commits": {
+    "be46276": {
+      "full_sha": "be462765772cccc2a9825366a62c23da746bbc73",
+      "reachable_from_observed_remote_tip": true
+    },
+    "5650045": {
+      "full_sha": "5650045aac6481615b8260ab27f3fbbffd8f6215",
+      "reachable_from_observed_remote_tip": true
+    },
+    "f44967f": {
+      "full_sha": "f44967ffbe29d62e89c2f005d95c5d2b6613a568",
+      "reachable_from_observed_remote_tip": true
+    }
+  },
+  "local_head": "f44967ffbe29d62e89c2f005d95c5d2b6613a568",
+  "local_head_equals_remote_tip": true
+}
