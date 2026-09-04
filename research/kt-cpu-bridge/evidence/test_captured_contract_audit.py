@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 
+import pytest
 import torch
 
 from audit_captured_contract import compare, contract, contract_probes, decompose, grouped_dot, ordered_f32
@@ -17,17 +18,19 @@ def test_reference_coverage_is_invariant_for_finite_candidates():
 
 def test_candidate_can_change_finite_intersection_but_not_rescue_gate():
     probe = contract_probes()["candidate_nan_can_change_finite_intersection_but_fails_mask"]
-    assert probe["excluded"]["fraction"] == 0
+    # Coverage is reference-only; a nonfinite candidate cannot alter it.
+    assert probe["excluded"]["fraction"] == pytest.approx(.03)
     assert not probe["decomposition"]["actual_ds8_pass"]
     assert "sentinel_mask_exact" in probe["decomposition"]["failed_checks"]
 
 
-def test_current_ds8_documented_nonfinite_rule_has_a_proven_enforcement_gap():
+def test_documented_nonfinite_rule_is_enforced_by_candidate_fidelity_gate():
     probes = contract_probes()
     for name in ("matching_nan", "matching_posinf", "neginf_to_nan", "neginf_to_posinf"):
         result = probes[name]["decomposition"]
-        assert result["actual_ds8_pass"]
+        assert not result["actual_ds8_pass"]
         assert not result["checks"]["documented_no_nan_or_posinf"]["pass"]
+        assert not result["candidate_fidelity"]["pass"]
 
 
 def test_f32_ulp_ordering_handles_negative_neighbors_and_signed_zero():
@@ -75,7 +78,10 @@ def test_audit_preserves_all_real_output_hashes_and_decomposes_failures():
         assert kt["output_sha256"] == old["output_sha256"]["kt_candidate"]
         assert cpp["metrics"] == old["cpp_reference_full_ds8_metrics"]
         assert kt["metrics"] == old["kt_candidate_full_ds8_metrics"]
-        assert cpp["gate_decomposition"]["candidate_dependent_checks_pass_diagnostic_only"]
+        cpp_refreshed = decompose(cpp["metrics"])
+        assert cpp_refreshed["sample_validity"]["pass"] == (row["forward_step"] not in (0, 3))
+        assert cpp_refreshed["candidate_fidelity"]["pass"]
+        assert cpp_refreshed["candidate_dependent_checks_pass_diagnostic_only"]
         assert cpp["fixed_fp32_allclose"]["pass"]
         assert "p99_rel_error" in kt["gate_decomposition"]["failed_checks"]
         assert not kt["fixed_fp32_allclose"]["pass"]
@@ -83,4 +89,31 @@ def test_audit_preserves_all_real_output_hashes_and_decomposes_failures():
         assert all(row["repeat_checks"].values())
         assert not row["bf16_output_lattice"]["strict_allclose"]["any_bf16_output_can_pass"]
         assert kt["gate_decomposition"]["checks"]["documented_no_nan_or_posinf"]["pass"]
-        assert decompose(kt["metrics"]) == kt["gate_decomposition"]
+        # The checked-in audit predates the explicit structured fields; its
+        # numerical facts stay immutable while a fresh decomposition adds the
+        # separated sample/candidate decisions.
+        refreshed = decompose(kt["metrics"])
+        assert refreshed["actual_ds8_pass"] == kt["gate_decomposition"]["actual_ds8_pass"]
+        assert refreshed["candidate_fidelity"]["pass"] is False
+
+
+def test_refactored_sealed_replay_separates_coverage_and_preserves_valid_decisions():
+    root = Path(__file__).parent
+    report = json.loads((root / "captured-real-expert155-contract-refactor-20260904.json").read_text())
+    assert report["contract"]["tolerance"] == contract.DS8_TOLERANCE
+    assert report["verdict"]["trusted_dee_vs_cpp_reference_passes_strict_ds8"] is False
+    assert report["verdict"]["trusted_dee_vs_cpp_reference_candidate_fidelity"] is True
+    assert report["verdict"]["kt_candidate_fidelity"] is False
+    assert report["verdict"]["kt_cpu_remains_disabled"] is True
+    by_step = {row["forward_step"]: row for row in report["rows"]}
+    for step in (0, 3):
+        assert by_step[step]["sample_validity"]["pass"] is False
+        assert by_step[step]["cpp_reference_candidate_fidelity"]["pass"] is True
+        assert by_step[step]["cpp_reference_ds8_pass"] is False
+    assert by_step[10]["sample_validity"]["pass"] is True
+    assert by_step[10]["cpp_reference_candidate_fidelity"]["pass"] is True
+    assert by_step[10]["cpp_reference_ds8_pass"] is True
+    compatibility = report["compatibility"]
+    assert compatibility["previously_valid_sample_count"] == 1
+    assert compatibility["candidate_decision_count"] == 2
+    assert compatibility["all_previously_valid_candidate_fidelity_decisions_identical"] is True

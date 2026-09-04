@@ -71,6 +71,7 @@ def compact_metrics(metrics: dict) -> dict:
         "p99_rel": nnz["p99_rel_error"],
         "cosine": metrics["cosine_similarity"],
         "finite": finite,
+        "sample_validity": metrics["sample_validity"],
     }
 
 
@@ -145,8 +146,44 @@ def provenance(bundle: Path, validation_path: Path, sealed_bundle: Path,
     }
 
 
+def compatibility_with_prior(prior_path: Path, rows: list[dict]) -> dict:
+    """Prove the refactor preserves decisions on previously-valid samples.
+
+    Before this refactor, a combined DS8 pass on a valid sample was also the
+    candidate-fidelity decision.  Compare that archived decision directly to
+    the new separated candidate-fidelity result for every previously-valid
+    sealed sample and both candidates.
+    """
+    prior = read_json(prior_path)
+    require(len(prior["rows"]) == len(rows), "prior replay row count mismatch")
+    compared = []
+    for old, new in zip(prior["rows"], rows, strict=True):
+        identity = {key: old[key] for key in ("forward_step", "token_row", "topk_rank")}
+        require(identity == {key: new[key] for key in identity}, "prior replay identity mismatch")
+        old_sample = contract.sample_validity_passed(old["cpp_reference_full_ds8_metrics"])
+        if not old_sample:
+            continue
+        for label, old_key, new_key in (
+            ("cpp_reference", "cpp_reference_ds8_pass", "cpp_reference_candidate_fidelity"),
+            ("kt_candidate", "kt_candidate_ds8_pass", "kt_candidate_fidelity"),
+        ):
+            old_decision = bool(old[old_key])
+            new_decision = bool(new[new_key]["pass"])
+            compared.append({**identity, "candidate": label,
+                             "previous_ds8_decision_on_valid_sample": old_decision,
+                             "candidate_fidelity_after_refactor": new_decision,
+                             "identical": old_decision == new_decision})
+    return {
+        "prior_report": str(prior_path), "prior_report_sha256": sha(prior_path.read_bytes()),
+        "previously_valid_sample_count": len({row["forward_step"] for row in compared}),
+        "candidate_decision_count": len(compared), "decisions": compared,
+        "all_previously_valid_candidate_fidelity_decisions_identical": all(row["identical"] for row in compared),
+    }
+
+
 def replay(shard: Path, capture_bundle: Path, validation: Path, sealed_bundle: Path,
-           terminal_seal: Path, executor: Path, diagnostics: bool = False) -> dict:
+           terminal_seal: Path, executor: Path, diagnostics: bool = False,
+           prior_report: Path | None = None) -> dict:
     capture, seal = provenance(capture_bundle, validation, sealed_bundle, terminal_seal)
     subprocess.run([str(executor), "--self-test"], check=True, timeout=30,
                    capture_output=True, text=True)
@@ -200,6 +237,8 @@ def replay(shard: Path, capture_bundle: Path, validation: Path, sealed_bundle: P
             second = torch.frombuffer(bytearray(output.read_bytes()), dtype=torch.float32).clone().reshape(1, 4096)
             cpp_metrics = contract.compute_ds8_metrics(expected, first)
             kt_metrics = contract.compute_ds8_metrics(expected, candidate)
+            cpp_gate = contract.ds8_gate_report(cpp_metrics)
+            kt_gate = contract.ds8_gate_report(kt_metrics)
             rows.append({
                 "forward_step": item["forward_step"], "token_row": item["token_row"], "topk_rank": rank,
                 "router_weight": weight, "input_fp16_sha256": native["sha256"],
@@ -207,8 +246,14 @@ def replay(shard: Path, capture_bundle: Path, validation: Path, sealed_bundle: P
                 "cpp_reference_repeat_bitwise": bool(torch.equal(first, second)),
                 "kt_candidate_repeat_bitwise": bool(torch.equal(candidate, candidate_repeat)),
                 "cpp_reference_fixed_fp32_allclose_atol_1e-5_rtol_1e-4": bool(torch.allclose(expected, first, atol=1e-5, rtol=1e-4)),
-                "cpp_reference_ds8_pass": contract.ds8_gate_passed(cpp_metrics),
-                "kt_candidate_ds8_pass": contract.ds8_gate_passed(kt_metrics),
+                # Retain the historical combined acceptance field.  The two
+                # structured decisions make coverage and candidate numerical
+                # fidelity independently machine-readable.
+                "sample_validity": cpp_gate["sample_validity"],
+                "cpp_reference_candidate_fidelity": cpp_gate["candidate_fidelity"],
+                "kt_candidate_fidelity": kt_gate["candidate_fidelity"],
+                "cpp_reference_ds8_pass": cpp_gate["ds8_gate_passed"],
+                "kt_candidate_ds8_pass": kt_gate["ds8_gate_passed"],
                 "trusted_dee_vs_cpp_reference": compact_metrics(cpp_metrics),
                 "trusted_dee_vs_kt_candidate": compact_metrics(kt_metrics),
                 "cpp_reference_full_ds8_metrics": cpp_metrics,
@@ -223,6 +268,12 @@ def replay(shard: Path, capture_bundle: Path, validation: Path, sealed_bundle: P
                  row["trusted_dee_repeat_bitwise"] and row["trusted_dee_vs_cpp_reference"]["finite"] for row in rows)
     kt_ok = all(row["kt_candidate_ds8_pass"] and row["kt_candidate_repeat_bitwise"] and
                 row["trusted_dee_vs_kt_candidate"]["finite"] for row in rows)
+    cpp_fidelity_ok = all(row["cpp_reference_candidate_fidelity"]["pass"] and
+                          row["cpp_reference_repeat_bitwise"] and
+                          row["trusted_dee_repeat_bitwise"] and
+                          row["trusted_dee_vs_cpp_reference"]["finite"] for row in rows)
+    kt_fidelity_ok = all(row["kt_candidate_fidelity"]["pass"] and row["kt_candidate_repeat_bitwise"] and
+                         row["trusted_dee_vs_kt_candidate"]["finite"] for row in rows)
     cpp_coverage_failure = any(row["cpp_reference_full_ds8_metrics"]["excluded"]["fraction"] >
                                contract.DS8_TOLERANCE["max_excluded_fraction"] for row in rows)
     report = {
@@ -232,11 +283,13 @@ def replay(shard: Path, capture_bundle: Path, validation: Path, sealed_bundle: P
         "contract": {"name": "predeclared DS8_TOLERANCE; unmodified", "tolerance": contract.DS8_TOLERANCE},
         "rows": rows,
         "verdict": {"trusted_dee_vs_cpp_reference_passes_strict_ds8": cpp_ok,
+                    "trusted_dee_vs_cpp_reference_candidate_fidelity": cpp_fidelity_ok,
                     "cpp_reference_strict_gate_note": None if cpp_ok else
                     ("coverage gate only: captured rows exceed unchanged DS8 max_excluded_fraction=0.02; "
                      "all C++ numerical, finite-mask, and repeat checks passed" if cpp_coverage_failure else
                      "one or more unchanged DS8 numerical/semantic reference gates failed"),
                     "kt_candidate_passes_strict_ds8": kt_ok,
+                    "kt_candidate_fidelity": kt_fidelity_ok,
                     "kt_cpu_remains_disabled": not kt_ok,
                     "failure_classification": None if kt_ok else "numerical: deterministic finite KT emulation exceeds predeclared relative-error gates; no routing/provenance/finite-mask semantic failure observed",
                     "interface_cherry_pick_justified": False},
@@ -253,6 +306,8 @@ def replay(shard: Path, capture_bundle: Path, validation: Path, sealed_bundle: P
                         "validation": str(validation), "sealed_bundle": str(sealed_bundle),
                         "terminal_seal": str(terminal_seal)},
         }
+    if prior_report is not None:
+        report["compatibility"] = compatibility_with_prior(prior_report, rows)
     return report
 
 
@@ -261,6 +316,8 @@ def main() -> int:
     for name in ("shard", "capture_bundle", "validation", "sealed_bundle", "terminal_seal", "executor", "out"):
         parser.add_argument(f"--{name}", type=Path, required=True)
     parser.add_argument("--diagnostics", action="store_true", help="Record independent BF16 boundary ablations")
+    parser.add_argument("--prior_report", type=Path,
+                        help="Archived sealed replay used to prove valid-sample decision compatibility")
     options = vars(parser.parse_args())
     out = options.pop("out")
     report = replay(**options)

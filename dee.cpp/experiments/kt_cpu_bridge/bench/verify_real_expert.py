@@ -141,10 +141,15 @@ def verify(shard: Path, bundle: Path, seal: Path, executor: Path, layer=0, exper
             got = torch.frombuffer(bytearray(out_bytes), dtype=torch.float32).reshape(1, 4096)
             metrics = contract.compute_ds8_metrics(expected, got)
             kt_metrics = contract.compute_ds8_metrics(expected, emulated)
+            cpp_gate = contract.ds8_gate_report(metrics)
+            kt_gate = contract.ds8_gate_report(kt_metrics)
             evidence["rows"].append({"row": i, "python_reference_bitwise": torch.equal(expected, python_ref),
                 "cpp_reference_allclose": torch.allclose(expected, got, atol=1e-5, rtol=1e-4),
-                "cpp_reference_ds8_pass": contract.ds8_gate_passed(metrics), "cpp_reference_metrics": metrics,
-                "kt_emulated_ds8_pass": contract.ds8_gate_passed(kt_metrics), "kt_emulated_metrics": kt_metrics})
+                "sample_validity": cpp_gate["sample_validity"],
+                "cpp_reference_candidate_fidelity": cpp_gate["candidate_fidelity"],
+                "kt_emulated_candidate_fidelity": kt_gate["candidate_fidelity"],
+                "cpp_reference_ds8_pass": cpp_gate["ds8_gate_passed"], "cpp_reference_metrics": metrics,
+                "kt_emulated_ds8_pass": kt_gate["ds8_gate_passed"], "kt_emulated_metrics": kt_metrics})
     evidence["reference_pass"] = all(r["python_reference_bitwise"] and r["cpp_reference_allclose"]
                                       and r["cpp_reference_ds8_pass"] for r in evidence["rows"])
     evidence["unchanged_dee_contract_pass"] = all(r["cpp_reference_ds8_pass"] for r in evidence["rows"])

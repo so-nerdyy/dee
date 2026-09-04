@@ -69,6 +69,23 @@ def test_near_zero_exclusion_prevents_rel_spike() -> None:
     assert contract.ds8_gate_passed(metrics)
 
 
+def test_sample_validity_is_reference_only_and_does_not_fail_faithful_candidate() -> None:
+    # Three reference near-zeros exceed the unchanged 0.02 coverage cap.  The
+    # candidate is bitwise faithful, so numerical candidate fidelity must be
+    # reported separately from the out-of-scope sample decision.
+    ref = torch.ones(100)
+    ref[:3] = 1e-4
+    metrics = contract.compute_ds8_metrics(ref, ref.clone())
+    report = contract.ds8_gate_report(metrics)
+    assert metrics["excluded"]["threshold"] == 0.001
+    assert metrics["excluded"]["fraction"] > 0.02
+    assert report["sample_validity"]["pass"] is False
+    assert report["candidate_fidelity"]["pass"] is True
+    assert report["ds8_gate_passed"] is False
+    assert contract.candidate_fidelity_passed(metrics) is True
+    assert contract.ds8_gate_passed(metrics) is False
+
+
 def test_worst_element_reporting() -> None:
     ref = torch.zeros(10, 10)
     cand = torch.zeros(10, 10)
@@ -130,6 +147,29 @@ def test_nan_in_candidate_fails_gates_and_reports_nan_counts() -> None:
     assert metrics["sentinel_mask_exact"] is False
     assert metrics["mask_counts"]["nan_candidate"] == 1
     assert not contract.ds8_gate_passed(metrics)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
+def test_matching_forbidden_nan_or_posinf_fails_explicitly(value: float) -> None:
+    # Mask equality alone cannot authorize matching NaN/+inf.  -inf remains
+    # the only documented non-finite sentinel allowed on both sides.
+    ref = torch.tensor([1.0, value])
+    metrics = contract.compute_ds8_metrics(ref, ref.clone())
+    report = contract.ds8_gate_report(metrics)
+    assert metrics["sentinel_mask_exact"] is True
+    assert report["sample_validity"]["checks"]["documented_no_nan_or_posinf"]["pass"] is False
+    assert report["candidate_fidelity"]["checks"]["documented_no_nan_or_posinf"]["pass"] is False
+    assert contract.candidate_fidelity_passed(metrics) is False
+    assert contract.ds8_gate_passed(metrics) is False
+
+
+def test_matching_neginf_sentinel_remains_allowed() -> None:
+    ref = torch.tensor([1.0, float("-inf")])
+    metrics = contract.compute_ds8_metrics(ref, ref.clone())
+    report = contract.ds8_gate_report(metrics)
+    assert report["sample_validity"]["pass"] is True
+    assert report["candidate_fidelity"]["pass"] is True
+    assert contract.ds8_gate_passed(metrics) is True
 
 
 def test_no_finite_overlap_fails_explicitly() -> None:

@@ -32,30 +32,23 @@ def swiglu(gate: torch.Tensor, up: torch.Tensor, limit: float = 10.0) -> torch.T
 
 def failed_gates(metrics: dict) -> list[str]:
     """Explain DS8 without editing its tolerances or overriding its verdict."""
-    tol = contract.DS8_TOLERANCE
-    failures = []
-    for name in ("sentinel_mask_exact", "finite_overlap"):
-        if not metrics[name]:
-            failures.append(name)
-    if not metrics["finite_overlap"]:
-        return failures
-    checks = {name: metrics["all_elements"][name]
-              for name in ("max_abs_error", "mean_abs_error")}
-    checks.update({name: metrics["non_near_zero"][name]
-                   for name in ("mean_rel_error", "p95_rel_error", "p99_rel_error")})
-    checks.update({name: metrics[name]
-                   for name in ("normalized_rmse", "output_norm_rel_error")})
-    checks["max_excluded_fraction"] = metrics["excluded"]["fraction"]
-    failures.extend(name for name, value in checks.items() if value > tol[name])
-    if metrics["cosine_similarity"] < tol["cosine_similarity"]:
-        failures.append("cosine_similarity")
-    assert bool(not failures) == contract.ds8_gate_passed(metrics)
+    report = contract.ds8_gate_report(metrics)
+    failures = [name for name, check in report["sample_validity"]["checks"].items()
+                if not check["pass"]]
+    # A reference nonfinite value is visible in both decisions.  Keep the
+    # historical flat list readable rather than emitting it twice.
+    failures.extend(name for name, check in report["candidate_fidelity"]["checks"].items()
+                    if not check["pass"] and name not in failures)
+    assert bool(not failures) == report["ds8_gate_passed"] == contract.ds8_gate_passed(metrics)
     return failures
 
 
 def measure(reference: torch.Tensor, candidate: torch.Tensor) -> dict:
     metrics = contract.compute_ds8_metrics(reference, candidate)
-    return {"ds8_pass": contract.ds8_gate_passed(metrics),
+    gate = contract.ds8_gate_report(metrics)
+    return {"ds8_pass": gate["ds8_gate_passed"],
+            "sample_validity": gate["sample_validity"],
+            "candidate_fidelity": gate["candidate_fidelity"],
             "failed_gates": failed_gates(metrics),
             "output_sha256": tensor_sha(candidate),
             "full_ds8_metrics": metrics}

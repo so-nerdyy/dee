@@ -15,8 +15,10 @@ predeclared gate set for the generalized expert runtime:
 Near-zero reference elements (|ref| < NEAR_ZERO_THRESHOLD = 1e-3) are
 excluded from the RELATIVE statistics (relative error is undefined for
 near-zero reference values -- catastrophic cancellation).  The absolute
-gates still apply to them.  The excluded fraction is reported and gated
-(max_excluded_fraction <= 0.02).
+gates still apply to them.  The reference-only excluded fraction is a SAMPLE
+VALIDITY check (max_excluded_fraction <= 0.02), not a candidate-fidelity
+check.  Reports expose both decisions: a faithful candidate is not labelled
+numerically unfaithful merely because its reference sample is out of scope.
 
 These values are declared here BEFORE any DS8 run; they are NOT derived from
 DS8 results.  They were chosen from the DS7 evidence (max_abs 0.0046,
@@ -52,6 +54,34 @@ def _flatten(x: torch.Tensor) -> torch.Tensor:
     return x.detach().float().reshape(-1)
 
 
+def _sample_validity_facts(ref: torch.Tensor) -> dict[str, Any]:
+    """Candidate-independent facts needed to decide reference-sample validity.
+
+    ``-inf`` remains an allowed causal-mask sentinel.  NaN and +inf are
+    forbidden by the documented numerical contract and are recorded here so
+    the sample decision is explicit rather than inferred from finite overlap.
+    """
+    ref_fin = torch.isfinite(ref)
+    finite_ref = ref[ref_fin]
+    near_zero = finite_ref.abs() < NEAR_ZERO_THRESHOLD
+    finite_count = int(finite_ref.numel())
+    excluded_count = int(near_zero.sum())
+    return {
+        "reference_finite_overlap": finite_count > 0,
+        "excluded_fraction": {
+            "threshold": NEAR_ZERO_THRESHOLD,
+            "count": excluded_count,
+            "denominator": finite_count,
+            "fraction": float(near_zero.float().mean()) if finite_count else 0.0,
+        },
+        "reference_mask_counts": {
+            "nan": int(torch.isnan(ref).sum()),
+            "posinf": int((ref == float("inf")).sum()),
+            "neginf": int((ref == float("-inf")).sum()),
+        },
+    }
+
+
 def compute_ds8_metrics(reference: torch.Tensor, candidate: torch.Tensor) -> dict[str, Any]:
     """Full DS8 metric set, split into all-element and non-near-zero views.
 
@@ -65,7 +95,9 @@ def compute_ds8_metrics(reference: torch.Tensor, candidate: torch.Tensor) -> dic
     (finite vs non-finite) masks are compared EXACTLY.  A mask mismatch is a
     semantic failure and fails every gate regardless of numerics.  Cosine is
     never emitted as NaN: with no finite overlap it is None and the gates
-    fail explicitly.
+    fail explicitly.  ``excluded`` is always computed from finite REFERENCE
+    elements, never the finite intersection, so sample validity cannot depend
+    on the candidate.
     """
     if reference.shape != candidate.shape:
         raise ValueError(
@@ -80,6 +112,7 @@ def compute_ds8_metrics(reference: torch.Tensor, candidate: torch.Tensor) -> dic
 
     ref_fin = torch.isfinite(ref)
     cand_fin = torch.isfinite(cand)
+    sample_validity = _sample_validity_facts(ref)
     sentinel_mask_exact = bool(torch.equal(ref_fin, cand_fin))
     both_fin = ref_fin & cand_fin
     # Naming: "ref_only_nonfinite" = positions where the REFERENCE is
@@ -108,8 +141,11 @@ def compute_ds8_metrics(reference: torch.Tensor, candidate: torch.Tensor) -> dic
             "non_near_zero": {"count": 0, "max_abs_error": 0.0,
                               "mean_abs_error": 0.0, "mean_rel_error": 0.0,
                               "p95_rel_error": 0.0, "p99_rel_error": 0.0},
-            "excluded": {"threshold": NEAR_ZERO_THRESHOLD, "count": 0,
-                         "fraction": 0.0},
+            # Kept at its historical top-level location for evidence readers;
+            # it now aliases the candidate-independent sample fact.
+            "excluded": {key: sample_validity["excluded_fraction"][key]
+                         for key in ("threshold", "count", "fraction")},
+            "sample_validity": sample_validity,
             "cosine_similarity": None,
             "normalized_rmse": None,
             "output_norm_rel_error": None,
@@ -125,7 +161,6 @@ def compute_ds8_metrics(reference: torch.Tensor, candidate: torch.Tensor) -> dic
     abs_err = (r - c).abs()
     near_zero = r.abs() < NEAR_ZERO_THRESHOLD
     not_near_zero = ~near_zero
-    excluded_fraction = float(near_zero.float().mean())
 
     def rel_of(mask: torch.Tensor) -> torch.Tensor:
         denom = r[mask].abs() + 1e-8
@@ -167,11 +202,11 @@ def compute_ds8_metrics(reference: torch.Tensor, candidate: torch.Tensor) -> dic
             "p99_rel_error": float(rel_nnz.flatten().quantile(0.99))
             if rel_nnz.numel() else 0.0,
         },
-        "excluded": {
-            "threshold": NEAR_ZERO_THRESHOLD,
-            "count": int(near_zero.sum()),
-            "fraction": excluded_fraction,
-        },
+        # Kept at its historical top-level location for evidence readers;
+        # its count/fraction come from the reference-only sample facts above.
+        "excluded": {key: sample_validity["excluded_fraction"][key]
+                     for key in ("threshold", "count", "fraction")},
+        "sample_validity": sample_validity,
         "cosine_similarity": cosine,
         "normalized_rmse": normalized_rmse,
         "output_norm_rel_error": out_norm_rel,
@@ -198,30 +233,109 @@ def compute_ds8_metrics(reference: torch.Tensor, candidate: torch.Tensor) -> dic
     return metrics
 
 
-def ds8_gate_passed(metrics: dict[str, Any], tol: dict[str, float] | None = None) -> bool:
-    """Check the predeclared DS8 gates against computed metrics.
+def ds8_gate_report(metrics: dict[str, Any], tol: dict[str, float] | None = None) -> dict[str, Any]:
+    """Return the separated DS8 sample-validity and candidate-fidelity gate.
 
-    DS9 v7: ``sentinel_mask_exact`` and ``finite_overlap`` are REQUIRED.  A
-    finite/-inf mask mismatch or a NaN/+inf anywhere is a semantic failure
-    and fails all gates even if finite-intersection numerics look fine.
+    The historical ``ds8_gate_passed`` decision remains the conjunction of
+    these two decisions.  This keeps callers fail-closed while giving reports
+    a machine-readable answer to the distinct question, "is the candidate
+    numerically faithful on the available finite reference?".
+
+    NaN and +inf are explicitly forbidden on either side.  Matching NaNs or
+    matching +infs therefore cannot silently pass a finite-mask comparison.
+    Matching ``-inf`` causal sentinels remain allowed.
     """
     tol = tol or DS8_TOLERANCE
-    if not metrics.get("sentinel_mask_exact", True):
-        return False
-    if not metrics.get("finite_overlap", True):
-        return False
-    nnz = metrics["non_near_zero"]
-    return (
-        metrics["all_elements"]["max_abs_error"] <= tol["max_abs_error"]
-        and metrics["all_elements"]["mean_abs_error"] <= tol["mean_abs_error"]
-        and nnz["mean_rel_error"] <= tol["mean_rel_error"]
-        and nnz["p95_rel_error"] <= tol["p95_rel_error"]
-        and nnz["p99_rel_error"] <= tol["p99_rel_error"]
-        and metrics["cosine_similarity"] >= tol["cosine_similarity"]
-        and metrics["normalized_rmse"] <= tol["normalized_rmse"]
-        and metrics["output_norm_rel_error"] <= tol["output_norm_rel_error"]
-        and metrics["excluded"]["fraction"] <= tol["max_excluded_fraction"]
-    )
+    # Archived DS8 evidence predates the explicit object.  It remains
+    # readable: every previously-valid sealed sample had a finite candidate,
+    # so its recorded ``excluded`` fact is already reference-equivalent.
+    sample = metrics.get("sample_validity")
+    if sample is None:
+        counts = metrics["mask_counts"]
+        legacy_excluded = metrics["excluded"]
+        sample = {
+            "reference_finite_overlap": (counts["both_finite"] + counts["cand_only_nonfinite"]) > 0,
+            "excluded_fraction": {
+                "threshold": legacy_excluded["threshold"], "count": legacy_excluded["count"],
+                "denominator": counts["both_finite"] + counts["cand_only_nonfinite"],
+                "fraction": legacy_excluded["fraction"],
+            },
+            "reference_mask_counts": {
+                "nan": counts["nan_reference"], "posinf": counts["posinf_reference"],
+                "neginf": 0,
+            },
+        }
+    reference_counts = sample["reference_mask_counts"]
+    excluded = sample["excluded_fraction"]
+    sample_checks = {
+        "reference_finite_overlap": {
+            "value": sample["reference_finite_overlap"], "pass": bool(sample["reference_finite_overlap"]),
+        },
+        "documented_no_nan_or_posinf": {
+            "value": reference_counts["nan"] + reference_counts["posinf"], "limit": 0,
+            "pass": reference_counts["nan"] == 0 and reference_counts["posinf"] == 0,
+        },
+        "max_excluded_fraction": {
+            "value": excluded["fraction"], "limit": tol["max_excluded_fraction"], "operator": "<=",
+            "pass": excluded["fraction"] <= tol["max_excluded_fraction"],
+        },
+    }
+
+    counts = metrics["mask_counts"]
+    forbidden = sum(counts[k] for k in ("nan_reference", "nan_candidate", "posinf_reference", "posinf_candidate"))
+    candidate_checks: dict[str, dict[str, Any]] = {
+        "sentinel_mask_exact": {"value": metrics["sentinel_mask_exact"], "pass": bool(metrics["sentinel_mask_exact"])},
+        "finite_overlap": {"value": metrics["finite_overlap"], "pass": bool(metrics["finite_overlap"])},
+        "documented_no_nan_or_posinf": {"value": forbidden, "limit": 0, "pass": forbidden == 0},
+    }
+    if metrics["finite_overlap"]:
+        nnz = metrics["non_near_zero"]
+        numerical = {
+            "max_abs_error": metrics["all_elements"]["max_abs_error"],
+            "mean_abs_error": metrics["all_elements"]["mean_abs_error"],
+            "mean_rel_error": nnz["mean_rel_error"],
+            "p95_rel_error": nnz["p95_rel_error"],
+            "p99_rel_error": nnz["p99_rel_error"],
+            "cosine_similarity": metrics["cosine_similarity"],
+            "normalized_rmse": metrics["normalized_rmse"],
+            "output_norm_rel_error": metrics["output_norm_rel_error"],
+        }
+        for name, value in numerical.items():
+            is_cosine = name == "cosine_similarity"
+            candidate_checks[name] = {
+                "value": value, "limit": tol[name], "operator": ">=" if is_cosine else "<=",
+                "pass": value is not None and (value >= tol[name] if is_cosine else value <= tol[name]),
+            }
+    else:
+        # Preserve a uniform machine-readable check set without attempting
+        # comparisons against undefined numerical metrics.
+        for name in ("max_abs_error", "mean_abs_error", "mean_rel_error", "p95_rel_error",
+                     "p99_rel_error", "cosine_similarity", "normalized_rmse", "output_norm_rel_error"):
+            candidate_checks[name] = {"value": None, "limit": tol[name], "pass": False}
+
+    sample_pass = all(check["pass"] for check in sample_checks.values())
+    candidate_pass = all(check["pass"] for check in candidate_checks.values())
+    return {
+        "sample_validity": {"pass": sample_pass, "checks": sample_checks,
+                            "facts": sample},
+        "candidate_fidelity": {"pass": candidate_pass, "checks": candidate_checks},
+        "ds8_gate_passed": sample_pass and candidate_pass,
+    }
+
+
+def sample_validity_passed(metrics: dict[str, Any], tol: dict[str, float] | None = None) -> bool:
+    """Whether the reference sample is in the predeclared DS8 assessment scope."""
+    return bool(ds8_gate_report(metrics, tol)["sample_validity"]["pass"])
+
+
+def candidate_fidelity_passed(metrics: dict[str, Any], tol: dict[str, float] | None = None) -> bool:
+    """Whether candidate semantics/numerics pass, independently of coverage."""
+    return bool(ds8_gate_report(metrics, tol)["candidate_fidelity"]["pass"])
+
+
+def ds8_gate_passed(metrics: dict[str, Any], tol: dict[str, float] | None = None) -> bool:
+    """Historical DS8 acceptance decision: valid sample AND faithful candidate."""
+    return bool(ds8_gate_report(metrics, tol)["ds8_gate_passed"])
 
 
 # ---------------------------------------------------------------------------

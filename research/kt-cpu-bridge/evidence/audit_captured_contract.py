@@ -29,32 +29,26 @@ def git(*args: str) -> str:
 
 
 def decompose(metrics: dict) -> dict:
-    tol = contract.DS8_TOLERANCE
-    values = {key: metrics["all_elements"][key] for key in ("max_abs_error", "mean_abs_error")}
-    values.update({key: metrics["non_near_zero"][key] for key in
-                   ("mean_rel_error", "p95_rel_error", "p99_rel_error")})
-    values.update({key: metrics[key] for key in
-                   ("cosine_similarity", "normalized_rmse", "output_norm_rel_error")})
-    values["max_excluded_fraction"] = metrics["excluded"]["fraction"]
-    gates = {key: {"value": value, "limit": tol[key],
-                   "operator": ">=" if key == "cosine_similarity" else "<=",
-                   "pass": value is not None and
-                   (value >= tol[key] if key == "cosine_similarity" else value <= tol[key])}
-             for key, value in values.items()}
-    for key in ("sentinel_mask_exact", "finite_overlap"):
-        gates[key] = {"value": metrics[key], "pass": bool(metrics[key])}
-    # This reports what the documented rule requires; ds8_gate_passed itself
-    # does not inspect these counts, a separately demonstrated contract defect.
-    counts = metrics["mask_counts"]
-    forbidden = sum(counts[k] for k in ("nan_reference", "nan_candidate", "posinf_reference", "posinf_candidate"))
-    gates["documented_no_nan_or_posinf"] = {"value": forbidden, "limit": 0, "pass": forbidden == 0}
-    actual = all(v["pass"] for k, v in gates.items() if k != "documented_no_nan_or_posinf")
-    assert actual == contract.ds8_gate_passed(metrics)
-    return {"checks": gates, "actual_ds8_pass": actual,
-            "failed_checks": [k for k, v in gates.items() if not v["pass"]],
-            "candidate_dependent_checks_pass_diagnostic_only": all(
-                v["pass"] for k, v in gates.items() if k != "max_excluded_fraction"),
-            "mask_counts": counts}
+    gate = contract.ds8_gate_report(metrics)
+    sample_checks = gate["sample_validity"]["checks"]
+    candidate_checks = gate["candidate_fidelity"]["checks"]
+    # The flat field preserves the prior report-reader convenience; structured
+    # fields below are the contract authority and avoid conflating coverage
+    # with candidate numerics.
+    checks = dict(candidate_checks)
+    checks["max_excluded_fraction"] = sample_checks["max_excluded_fraction"]
+    failed = [name for name, value in sample_checks.items() if not value["pass"]]
+    failed.extend(name for name, value in candidate_checks.items()
+                  if not value["pass"] and name not in failed)
+    assert gate["ds8_gate_passed"] == contract.ds8_gate_passed(metrics)
+    return {"checks": checks, "actual_ds8_pass": gate["ds8_gate_passed"],
+            "sample_validity": gate["sample_validity"],
+            "candidate_fidelity": gate["candidate_fidelity"],
+            "failed_checks": failed,
+            # Retained name for old readers.  It now means the explicit
+            # candidate-fidelity decision, not a coverage-excluded proxy.
+            "candidate_dependent_checks_pass_diagnostic_only": gate["candidate_fidelity"]["pass"],
+            "mask_counts": metrics["mask_counts"]}
 
 
 def ordered_f32(x: torch.Tensor) -> torch.Tensor:
@@ -95,6 +89,13 @@ def compare(reference: torch.Tensor, candidate: torch.Tensor) -> dict:
     if torch.equal(bf16(reference), reference) and torch.equal(bf16(candidate), candidate):
         out["bf16_ulp_distance"] = percentiles(ulp[finite].double() / 65536)
     return out
+
+
+def legacy_metric_view(metrics: dict) -> dict:
+    """Remove additive v2 report facts before comparing immutable v1 evidence."""
+    copied = json.loads(json.dumps(metrics))
+    copied.pop("sample_validity", None)
+    return copied
 
 
 def contract_probes() -> dict:
@@ -201,8 +202,8 @@ def run() -> dict:
     tensors, record, record_evidence = replay.load_real_expert(source["shard"], source["sealed_bundle"], source["terminal_seal"], 0, 155)
     assert seal == baseline["capture_seal"]
     assert json.loads(json.dumps(record_evidence)) == baseline["record_evidence"]
-    assert replay.sha(Path(contract.__file__).read_bytes()) == baseline["diagnostics"]["contract_source_sha256"]
     assert contract.DS8_TOLERANCE == baseline["contract"]["tolerance"]
+    assert contract.NEAR_ZERO_THRESHOLD == 0.001
     executor = Path(baseline["executor"]["path"])
     assert replay.sha(executor.read_bytes()) == baseline["executor"]["sha256"]
     subprocess.run([str(executor), "--self-test"], check=True, capture_output=True, timeout=30)
@@ -245,11 +246,11 @@ def run() -> dict:
                            "trusted_vs_ideal_bf16": compare(expected, bf16(expected)),
                            "cpp_vs_kt_emulator": compare(cpp, candidate),
                            "ideal_bf16_vs_kt_emulator": compare(bf16(expected), candidate)}
-            assert comparisons["trusted_vs_cpp"]["metrics"] == old["cpp_reference_full_ds8_metrics"]
-            assert comparisons["trusted_vs_kt_emulator"]["metrics"] == old["kt_candidate_full_ds8_metrics"]
+            assert legacy_metric_view(comparisons["trusted_vs_cpp"]["metrics"]) == old["cpp_reference_full_ds8_metrics"]
+            assert legacy_metric_view(comparisons["trusted_vs_kt_emulator"]["metrics"]) == old["kt_candidate_full_ds8_metrics"]
             decomposition = {name: compare(expected, value) for name, value in variants.items()}
             for name, value in decomposition.items():
-                assert value["metrics"] == old["diagnostics"]["variants"][name]["full_ds8_metrics"]
+                assert legacy_metric_view(value["metrics"]) == old["diagnostics"]["variants"][name]["full_ds8_metrics"]
             identity_metrics = contract.compute_ds8_metrics(expected, expected)
             finite_candidate_exclusions = {name: val["metrics"]["excluded"] for name, val in decomposition.items()}
             assert all(ex == identity_metrics["excluded"] for ex in finite_candidate_exclusions.values())
@@ -266,14 +267,17 @@ def run() -> dict:
                                            "kt_emulator_bitwise": torch.equal(candidate, replay.kt_emulated_forward(x, *args, routing_weight=weight))}})
             print(f"Audited step {item['forward_step']}; archived hashes and metrics reproduced", flush=True)
     probes = contract_probes()
-    assert all(row["comparisons"]["trusted_vs_cpp"]["gate_decomposition"]["candidate_dependent_checks_pass_diagnostic_only"] for row in rows)
-    assert all(not row["comparisons"]["trusted_vs_kt_emulator"]["gate_decomposition"]["candidate_dependent_checks_pass_diagnostic_only"] for row in rows)
+    assert all(row["comparisons"]["trusted_vs_cpp"]["gate_decomposition"]["candidate_fidelity"]["pass"] for row in rows)
+    assert all(not row["comparisons"]["trusted_vs_kt_emulator"]["gate_decomposition"]["candidate_fidelity"]["pass"] for row in rows)
     assert all(not row["bf16_output_lattice"]["strict_allclose"]["any_bf16_output_can_pass"] for row in rows)
     return {"schema": "kt-correctness-contract-audit-v1", "created_utc": datetime.now(timezone.utc).isoformat(),
             "audit_base_commit": git("rev-parse", "HEAD"), "branch": git("branch", "--show-current"),
             "scope": "three real captured inputs, one expert; trusted output is recomputed FP32 CPU oracle, not GPU output dump; no native KT",
             "contract": {"near_zero_threshold": contract.NEAR_ZERO_THRESHOLD, "tolerance": contract.DS8_TOLERANCE,
-                         "source_sha256": replay.sha(Path(contract.__file__).read_bytes()), "policy_modified": False},
+                         "source_sha256": replay.sha(Path(contract.__file__).read_bytes()),
+                         "baseline_source_sha256": baseline["diagnostics"]["contract_source_sha256"],
+                         "numerical_tolerances_modified": False,
+                         "gate_structure_refactored": True},
             "source_baseline_sha256": replay.sha(baseline_path.read_bytes()),
             "script_sha256": replay.sha(Path(__file__).read_bytes()), "capture_seal": seal, "record_evidence": record_evidence,
             "codec_diagnostics": codec_diagnostics(tensors), "source_paths": {k: str(v) for k, v in source.items()},
@@ -284,7 +288,8 @@ def run() -> dict:
                         "coverage_failed_steps": [r["forward_step"] for r in rows if not r["fp32_identity_gate_decomposition"]["actual_ds8_pass"]],
                         "native_kt_ds8_fidelity": "unresolved; no native execution or instruction-exact emulator",
                         "native_kt_executed": False, "production_cpu_enabled": False, "policy_changed": False,
-                        "structural_separation_is_diagnostic_only": True}}
+                        "structural_separation_is_diagnostic_only": False,
+                        "candidate_fidelity_is_separate_from_sample_validity": True}}
 
 
 if __name__ == "__main__":
