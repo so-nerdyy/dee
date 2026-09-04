@@ -144,6 +144,9 @@ PYBIND11_MODULE(pydee_core, m) {
             result["fill_batch_wall_ms"] = hp.fill_batch_wall_ms;
             result["fill_worker_ms"] = hp.fill_worker_ms;
             result["fill_overlap_ms"] = hp.fill_overlap_ms;
+            result["reused_fill_buffers"] = hp.reused_fill_buffers;
+            result["reused_fill_bytes"] = hp.reused_fill_bytes;
+            result["fill_reservation_wall_ms"] = hp.fill_reservation_wall_ms;
             return result;
         })
         .def("expert_store_stats", [](const dee::Engine& self) -> py::dict {

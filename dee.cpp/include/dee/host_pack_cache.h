@@ -15,8 +15,10 @@
 //
 // Thread-safety: the engine host path is single-threaded per engine; the cache
 // is only touched from get_staging_fp4 / stage paths, all on the same thread.
-// The returned buffer pointer stays valid until the next call that evicts this
-// key (LRU never evicts the just-inserted/just-touched entry).
+// Raw pointers returned by get/get_batch/get_if_present stay valid until the
+// next call that evicts their key. Cross-component consumers that may re-enter
+// the cache must use consume_if_present(), which prevents eviction/recycling
+// until the callback has finished reading the payload.
 
 #pragma once
 
@@ -53,6 +55,11 @@ public:
         double fill_batch_wall_ms = 0.0;
         double fill_worker_ms = 0.0;
         double fill_overlap_ms = 0.0;
+        // Same-size payloads transferred directly from this batch's LRU
+        // victims. No spare-buffer pool or extra cache residency is retained.
+        uint64_t reused_fill_buffers = 0;
+        uint64_t reused_fill_bytes = 0;
+        double fill_reservation_wall_ms = 0.0;
     };
 
     using BatchFill = bool (*)(void* context, uint8_t* dst, size_t nbytes);
@@ -99,6 +106,9 @@ public:
     // workers only write disjoint reserved payloads. Requests must fit the
     // fixed bound and all miss callbacks must succeed, otherwise failed
     // reservations are removed and the call fails closed.
+    // Same-sized LRU victim payloads may be reused without zeroing: callbacks
+    // must overwrite the entire payload before reporting success. Payloads
+    // remain unreadable by cache lookup until the complete batch succeeds.
     bool get_batch(const BatchRequest* requests, size_t count,
                    BatchResult* results);
 
@@ -106,6 +116,17 @@ public:
     // used after get_batch so the unchanged staging/H2D path can consume the
     // prepared bytes without double-counting a second logical cache lookup.
     const uint8_t* get_if_present(uint64_t key, bool count_hit = true);
+
+    // Invoke `consume(data, nbytes)` while the complete entry is protected
+    // from eviction and same-size payload recycling. The callback's return is
+    // the explicit consumer-completion boundary: false returns and exceptions
+    // fail closed, release the transient protection, and leave the cached entry
+    // intact. This is a synchronous, same-thread contract; consumers retaining
+    // `data` after the callback returns need a different lifetime mechanism.
+    bool consume_if_present(
+        uint64_t key,
+        const std::function<bool(const uint8_t* data, size_t nbytes)>& consume,
+        bool count_hit = true);
 
     bool contains(uint64_t key) const {
         return map_.find(key) != map_.end();
@@ -119,6 +140,7 @@ private:
         std::vector<uint8_t> bytes;
         size_t nbytes = 0;
         bool ready = true;
+        size_t active_consumers = 0;
     };
     // map: key -> (payload, LRU position). lru_ front = most recently used.
     using LruIter = typename std::list<uint64_t>::iterator;
@@ -148,6 +170,8 @@ private:
     void run_fill_lane();
     bool is_batch_key(uint64_t key, const BatchRequest* requests,
                       size_t count) const;
+    bool is_evictable(uint64_t key, const BatchRequest* requests = nullptr,
+                      size_t count = 0) const;
 };
 
 }  // namespace dee

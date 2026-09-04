@@ -109,6 +109,13 @@ bool HostPackCache::is_batch_key(
     return false;
 }
 
+bool HostPackCache::is_evictable(
+        uint64_t key, const BatchRequest* requests, size_t count) const {
+    if (requests && is_batch_key(key, requests, count)) return false;
+    const auto found = map_.find(key);
+    return found == map_.end() || found->second.first.active_consumers == 0;
+}
+
 const uint8_t* HostPackCache::get(
     uint64_t key, size_t nbytes,
     const std::function<void(uint8_t* dst, size_t n)>& fill) {
@@ -128,9 +135,18 @@ const uint8_t* HostPackCache::get(
         // Cannot ever fit; do not allocate.
         return nullptr;
     }
-    while (used_bytes_ + nbytes > budget_bytes_ && !lru_.empty()) {
-        const uint64_t victim_key = lru_.back();
-        lru_.pop_back();
+    while (used_bytes_ + nbytes > budget_bytes_) {
+        auto victim_position = lru_.end();
+        for (auto it = lru_.end(); it != lru_.begin();) {
+            --it;
+            if (is_evictable(*it)) {
+                victim_position = it;
+                break;
+            }
+        }
+        if (victim_position == lru_.end()) return nullptr;
+        const uint64_t victim_key = *victim_position;
+        lru_.erase(victim_position);
         auto victim = map_.find(victim_key);
         if (victim == map_.end()) continue;
         used_bytes_ -= victim->second.first.nbytes;
@@ -161,6 +177,40 @@ const uint8_t* HostPackCache::get_if_present(uint64_t key, bool count_hit) {
     return found->second.first.bytes.data();
 }
 
+bool HostPackCache::consume_if_present(
+        uint64_t key,
+        const std::function<bool(const uint8_t*, size_t)>& consume,
+        bool count_hit) {
+    if (!consume) return false;
+    auto found = map_.find(key);
+    if (found == map_.end() || !found->second.first.ready) return false;
+
+    lru_.erase(found->second.second);
+    lru_.push_front(key);
+    found->second.second = lru_.begin();
+    if (count_hit) ++stats_.hits;
+    ++found->second.first.active_consumers;
+    const uint8_t* data = found->second.first.bytes.data();
+    const size_t nbytes = found->second.first.nbytes;
+
+    bool success = false;
+    try {
+        success = consume(data, nbytes);
+    } catch (...) {
+        success = false;
+    }
+
+    // The callback may re-enter get/get_batch and rehash map_, so reacquire
+    // the entry instead of retaining the iterator across the callback. Its
+    // active-consumer guard made eviction/recycling of this key impossible.
+    found = map_.find(key);
+    if (found == map_.end() || found->second.first.active_consumers == 0) {
+        return false;
+    }
+    --found->second.first.active_consumers;
+    return success;
+}
+
 bool HostPackCache::get_batch(
         const BatchRequest* requests, size_t count, BatchResult* results) {
     if (!requests || !results || count == 0 ||
@@ -168,6 +218,7 @@ bool HostPackCache::get_batch(
         return false;
     }
     for (size_t index = 0; index < count; ++index) results[index] = {};
+    const auto reservation_begin = std::chrono::steady_clock::now();
 
     size_t additional_bytes = 0;
     size_t unique_misses = 0;
@@ -207,13 +258,23 @@ bool HostPackCache::get_batch(
         ++stats_.misses;
     }
 
-    // Protect every key in the incoming batch while selecting LRU victims.
-    // This makes all reservations stable until their disjoint fills finish.
+    // Keep only same-sized victims needed by a unique miss in this batch.
+    // Moving the existing vector preserves its allocation and committed pages
+    // instead of freeing it and serially zero-filling another full DEE4 record
+    // before the source-read workers can start. Every retained payload replaces
+    // one of additional_bytes; cached + retained + new payload bytes therefore
+    // never exceed the existing budget. The local array owns no spare buffers
+    // after the call, including on reservation/fill failure.
+    std::array<std::vector<uint8_t>, kMaxBatchRequests> reusable_payloads;
+    // Protect every key in the incoming batch and every active consumer while
+    // selecting LRU victims. This makes reservations stable until their
+    // disjoint fills finish and keeps a cross-component source reader's bytes
+    // immutable until it reports completion.
     while (used_bytes_ > budget_bytes_ - additional_bytes) {
         auto victim = lru_.end();
         for (auto it = lru_.end(); it != lru_.begin();) {
             --it;
-            if (!is_batch_key(*it, requests, count)) {
+            if (is_evictable(*it, requests, count)) {
                 victim = it;
                 break;
             }
@@ -223,6 +284,14 @@ bool HostPackCache::get_batch(
         auto found = map_.find(victim_key);
         lru_.erase(victim);
         if (found == map_.end()) continue;
+        for (size_t index = 0; index < count; ++index) {
+            if (!results[index].cache_hit &&
+                reusable_payloads[index].empty() &&
+                requests[index].nbytes == found->second.first.nbytes) {
+                reusable_payloads[index] = std::move(found->second.first.bytes);
+                break;
+            }
+        }
         used_bytes_ -= found->second.first.nbytes;
         map_.erase(found);
         ++stats_.evictions;
@@ -240,7 +309,12 @@ bool HostPackCache::get_batch(
             }
             if (duplicate) continue;
             Entry entry;
-            entry.bytes.resize(requests[index].nbytes);
+            const bool reused = !reusable_payloads[index].empty();
+            if (reused) {
+                entry.bytes = std::move(reusable_payloads[index]);
+            } else {
+                entry.bytes.resize(requests[index].nbytes);
+            }
             entry.nbytes = requests[index].nbytes;
             entry.ready = false;
             lru_.push_front(requests[index].key);
@@ -254,6 +328,10 @@ bool HostPackCache::get_batch(
             used_bytes_ += requests[index].nbytes;
             results[index].data = inserted.first->second.first.bytes.data();
             results[index].fill_executed = true;
+            if (reused) {
+                ++stats_.reused_fill_buffers;
+                stats_.reused_fill_bytes += requests[index].nbytes;
+            }
         }
     } catch (const std::bad_alloc&) {
         for (size_t index = 0; index < count; ++index) {
@@ -271,6 +349,9 @@ bool HostPackCache::get_batch(
     }
 
     const auto batch_begin = std::chrono::steady_clock::now();
+    stats_.fill_reservation_wall_ms +=
+        std::chrono::duration<double, std::milli>(
+            batch_begin - reservation_begin).count();
     active_requests_ = requests;
     active_results_ = results;
     active_fill_count_ = 0;
@@ -396,6 +477,9 @@ void HostPackCache::clear() {
     stats_.fill_batch_wall_ms = 0.0;
     stats_.fill_worker_ms = 0.0;
     stats_.fill_overlap_ms = 0.0;
+    stats_.reused_fill_buffers = 0;
+    stats_.reused_fill_bytes = 0;
+    stats_.fill_reservation_wall_ms = 0.0;
 }
 
 }  // namespace dee

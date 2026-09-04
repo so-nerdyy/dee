@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -299,6 +300,202 @@ void test_source_order_preserves_request_identity() {
     }
 }
 
+struct CompletionCheckedFillContext {
+    uint64_t key = 0;
+    const bool* consumer_complete = nullptr;
+    bool observed_complete = false;
+};
+
+bool completion_checked_fill(void* raw, uint8_t* dst, size_t n) {
+    auto* context = static_cast<CompletionCheckedFillContext*>(raw);
+    if (!context || !dst || !context->consumer_complete) return false;
+    context->observed_complete = *context->consumer_complete;
+    pattern_fill(dst, n, context->key);
+    return context->observed_complete;
+}
+
+void test_consumer_completion_precedes_payload_reuse() {
+    dee::HostPackCache cache;
+    cache.set_budget(128);
+    const uint8_t* original = cache.get(1, 128, [](uint8_t* dst, size_t n) {
+        pattern_fill(dst, n, 1);
+    });
+    bool consumer_complete = false;
+    check(cache.consume_if_present(
+              1,
+              [&](const uint8_t* data, size_t nbytes) {
+                  check(data == original && nbytes == 128 &&
+                            matches_pattern(data, nbytes, 1),
+                        "consumer sees the complete original payload");
+                  consumer_complete = true;
+                  return true;
+              },
+              false),
+          "successful consumer reports completion");
+
+    CompletionCheckedFillContext context{2, &consumer_complete};
+    dee::HostPackCache::BatchRequest request{
+        2, 128, &completion_checked_fill, &context};
+    dee::HostPackCache::BatchResult result;
+    check(cache.get_batch(&request, 1, &result),
+          "same-size reservation succeeds after consumer completion");
+    check(context.observed_complete && result.data == original &&
+              matches_pattern(result.data, 128, 2),
+          "recycled payload is overwritten only after consumer completes");
+    check(cache.stats().reused_fill_buffers == 1 &&
+              cache.stats().reused_fill_bytes == 128 &&
+              cache.stats().bytes == 128 && cache.stats().entries == 1 &&
+              cache.stats().evictions == 1,
+          "completion-gated reuse preserves exact cache accounting and cap");
+}
+
+void test_active_consumer_blocks_reuse() {
+    dee::HostPackCache cache;
+    cache.set_budget(128);
+    const uint8_t* original = cache.get(1, 128, [](uint8_t* dst, size_t n) {
+        pattern_fill(dst, n, 1);
+    });
+    check(cache.consume_if_present(
+              1,
+              [&](const uint8_t* data, size_t nbytes) {
+                  std::atomic<int> active{0};
+                  std::atomic<int> max_active{0};
+                  BatchContext context{2, &active, &max_active, false};
+                  dee::HostPackCache::BatchRequest request{
+                      2, 128, &batch_fill, &context};
+                  dee::HostPackCache::BatchResult result;
+                  check(!cache.get_batch(&request, 1, &result),
+                        "reservation fails when every victim is in use");
+                  check(data == original && nbytes == 128 &&
+                            matches_pattern(data, nbytes, 1),
+                        "blocked reuse cannot overwrite active consumer bytes");
+                  check(cache.contains(1) && !cache.contains(2) &&
+                            cache.stats().bytes == 128 &&
+                            cache.stats().entries == 1 &&
+                            cache.stats().evictions == 0,
+                        "blocked reuse preserves cache cap and residency");
+                  return true;
+              },
+              false),
+          "consumer remains valid across a blocked reservation");
+}
+
+void test_active_consumer_is_eviction_protected() {
+    dee::HostPackCache cache;
+    cache.set_budget(256);
+    const uint8_t* protected_data = cache.get(
+        1, 128, [](uint8_t* dst, size_t n) { pattern_fill(dst, n, 1); });
+    cache.get(2, 128, [](uint8_t* dst, size_t n) { pattern_fill(dst, n, 2); });
+
+    check(cache.consume_if_present(
+              1,
+              [&](const uint8_t* data, size_t nbytes) {
+                  const uint8_t* inserted = cache.get(
+                      3, 128, [](uint8_t* dst, size_t n) {
+                          pattern_fill(dst, n, 3);
+                      });
+                  check(inserted != nullptr && cache.contains(3),
+                        "another unprotected victim permits insertion");
+                  check(cache.contains(1) && !cache.contains(2),
+                        "active consumer is skipped during LRU eviction");
+                  check(data == protected_data && nbytes == 128 &&
+                            matches_pattern(data, nbytes, 1),
+                        "protected payload remains byte-exact during eviction");
+                  return true;
+              },
+              false),
+          "protected consumer completes after alternate eviction");
+    check(cache.stats().bytes == 256 && cache.stats().entries == 2 &&
+              cache.stats().evictions == 1,
+          "eviction protection retains the original cache bound");
+}
+
+void test_consumer_callback_failure_rolls_back_protection() {
+    for (bool throw_error : {false, true}) {
+        dee::HostPackCache cache;
+        cache.set_budget(128);
+        const uint8_t* original = cache.get(
+            1, 128, [](uint8_t* dst, size_t n) { pattern_fill(dst, n, 1); });
+        bool callback_entered = false;
+        const bool consumed = cache.consume_if_present(
+            1,
+            [&](const uint8_t* data, size_t nbytes) -> bool {
+                callback_entered = true;
+                check(data == original && nbytes == 128,
+                      "failing consumer receives the protected payload");
+                if (throw_error) throw std::runtime_error("consumer failed");
+                return false;
+            },
+            false);
+        check(callback_entered && !consumed,
+              "false/throwing consumer fails closed without escaping");
+        check(cache.contains(1) && matches_pattern(
+                  cache.get_if_present(1, false), 128, 1),
+              "consumer failure leaves the original cache entry intact");
+
+        std::atomic<int> active{0};
+        std::atomic<int> max_active{0};
+        BatchContext context{2, &active, &max_active, false};
+        dee::HostPackCache::BatchRequest request{
+            2, 128, &batch_fill, &context};
+        dee::HostPackCache::BatchResult result;
+        check(cache.get_batch(&request, 1, &result) &&
+                  result.data == original && !cache.contains(1) &&
+                  matches_pattern(result.data, 128, 2),
+              "consumer failure rolls back its guard so later reuse can proceed");
+    }
+}
+
+struct ReusedFillFailureContext {
+    uint64_t key = 0;
+    bool fail = false;
+    bool throw_error = false;
+};
+
+bool reused_fill_failure(void* raw, uint8_t* dst, size_t n) {
+    auto* context = static_cast<ReusedFillFailureContext*>(raw);
+    if (!context || !dst) return false;
+    if (context->fail || context->throw_error) {
+        std::memset(dst, 0xFE, n / 2);
+        if (context->throw_error) throw std::runtime_error("fill failed");
+        return false;
+    }
+    pattern_fill(dst, n, context->key);
+    return true;
+}
+
+void test_reused_fill_callback_failure_rolls_back_batch() {
+    for (bool throw_error : {false, true}) {
+        dee::HostPackCache cache;
+        cache.set_budget(3 * 128);
+        for (uint64_t key = 1; key <= 3; ++key) {
+            cache.get(key, 128, [key](uint8_t* dst, size_t n) {
+                pattern_fill(dst, n, key);
+            });
+        }
+        ReusedFillFailureContext contexts[2] = {
+            {10, false, false},
+            {11, !throw_error, throw_error},
+        };
+        dee::HostPackCache::BatchRequest requests[3] = {
+            {10, 128, &reused_fill_failure, &contexts[0]},
+            {11, 128, &reused_fill_failure, &contexts[1]},
+            {3, 128, nullptr, nullptr},
+        };
+        dee::HostPackCache::BatchResult results[3];
+        check(!cache.get_batch(requests, 3, results),
+              "false/throwing reused fill rejects the complete batch");
+        check(!cache.contains(10) && !cache.contains(11) &&
+                  results[0].data == nullptr && results[1].data == nullptr &&
+                  !results[0].success && !results[1].success,
+              "fill failure rolls back every new reused reservation");
+        const uint8_t* retained = cache.get_if_present(3, false);
+        check(retained && matches_pattern(retained, 128, 3) &&
+                  cache.stats().bytes == 128 && cache.stats().entries == 1,
+              "fill failure preserves the pre-existing protected batch hit");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -309,6 +506,11 @@ int main() {
     test_bounded_batch_fill_and_rollback();
     test_batch_duplicate_is_single_materialization();
     test_source_order_preserves_request_identity();
+    test_consumer_completion_precedes_payload_reuse();
+    test_active_consumer_blocks_reuse();
+    test_active_consumer_is_eviction_protected();
+    test_consumer_callback_failure_rolls_back_protection();
+    test_reused_fill_callback_failure_rolls_back_batch();
     if (g_failures == 0) {
         std::printf("ALL PASS\n");
         return 0;

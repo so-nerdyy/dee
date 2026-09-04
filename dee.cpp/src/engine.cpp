@@ -3137,45 +3137,66 @@ bool Engine::stage_expert(int logical_layer, int source_layer, int expert, int p
         if (cfg_.transfer_dtype == WeightTransferDType::Fp4E2m1) {
             const QuantizedExpert* quantized = get_staging_fp4(source_layer, expert);
             if (!quantized) return false;
-            const void* region_src[6];
-            size_t region_nbytes[6];
-            size_t packed_offsets[3];
-            size_t scale_offsets[3];
-            size_t out[3];
-            size_t in[3];
-            for (int r = 0; r < 6; ++r) {
-                region_src[r] = quantized->fp4_regions[r].data;
-                region_nbytes[r] = quantized->fp4_regions[r].nbytes;
-            }
-            for (int p = 0; p < 3; ++p) {
-                packed_offsets[p] = quantized->fp4[p].packed_offset;
-                scale_offsets[p]  = quantized->fp4[p].scale_offset;
-                out[p] = quantized->fp4[p].out;
-                in[p]  = quantized->fp4[p].in;
-            }
-            if (cfg_.cache_dtype == DeviceCacheDType::Fp4E2m1) {
-                // P2.3 packed residency: the cache block keeps the packed
-                // bytes verbatim (no transfer-stream FP16 expansion).  Capture
-                // the resident layout so compute-time decode needs no resolver
-                // re-lookup, then stream packed bytes straight into the block.
-                for (int p = 0; p < 3; ++p) {
-                    fp4_cache_packed_offsets_[p] = packed_offsets[p];
-                    fp4_cache_scale_offsets_[p]  = scale_offsets[p];
-                    fp4_cache_out_[p] = out[p];
-                    fp4_cache_in_[p]  = in[p];
+            auto submit = [&]() -> bool {
+                const void* region_src[6];
+                size_t region_nbytes[6];
+                size_t packed_offsets[3];
+                size_t scale_offsets[3];
+                size_t out[3];
+                size_t in[3];
+                for (int r = 0; r < 6; ++r) {
+                    region_src[r] = quantized->fp4_regions[r].data;
+                    region_nbytes[r] = quantized->fp4_regions[r].nbytes;
                 }
-                fp4_cache_layout_valid_ = true;
-                return prefetcher_.prefetch_fp4_regions_packed(
+                for (int p = 0; p < 3; ++p) {
+                    packed_offsets[p] = quantized->fp4[p].packed_offset;
+                    scale_offsets[p]  = quantized->fp4[p].scale_offset;
+                    out[p] = quantized->fp4[p].out;
+                    in[p]  = quantized->fp4[p].in;
+                }
+                if (cfg_.cache_dtype == DeviceCacheDType::Fp4E2m1) {
+                    // P2.3 packed residency: the cache block keeps the packed
+                    // bytes verbatim (no transfer-stream FP16 expansion).
+                    for (int p = 0; p < 3; ++p) {
+                        fp4_cache_packed_offsets_[p] = packed_offsets[p];
+                        fp4_cache_scale_offsets_[p]  = scale_offsets[p];
+                        fp4_cache_out_[p] = out[p];
+                        fp4_cache_in_[p]  = in[p];
+                    }
+                    fp4_cache_layout_valid_ = true;
+                    return prefetcher_.prefetch_fp4_regions_packed(
+                               source_layer, expert, region_src, region_nbytes,
+                               quantized->fp4_total_nbytes,
+                               packed_offsets, scale_offsets,
+                               priority, current_token_, logical_layer) >= 0;
+                }
+                return prefetcher_.prefetch_fp4_regions_to_f16(
                            source_layer, expert, region_src, region_nbytes,
                            quantized->fp4_total_nbytes,
-                           packed_offsets, scale_offsets,
+                           packed_offsets, scale_offsets, out, in,
                            priority, current_token_, logical_layer) >= 0;
+            };
+
+            const uint64_t key = staging_key(source_layer, expert);
+            if (!pack_cache_.contains(key)) {
+                // Preserve the existing budget/allocation fallback: when the
+                // host cache cannot hold a record, get_staging_fp4 points the
+                // regions directly at mmap and no cache lifetime is involved.
+                return submit();
             }
-            return prefetcher_.prefetch_fp4_regions_to_f16(
-                       source_layer, expert, region_src, region_nbytes,
-                       quantized->fp4_total_nbytes,
-                       packed_offsets, scale_offsets, out, in,
-                       priority, current_token_, logical_layer) >= 0;
+            return pack_cache_.consume_if_present(
+                key,
+                [&](const uint8_t* pack, size_t nbytes) {
+                    if (nbytes != quantized->fp4_total_nbytes) return false;
+                    point_fp4_regions(
+                        const_cast<QuantizedExpert*>(quantized), pack);
+                    // AsyncPrefetcher synchronously gathers these pageable
+                    // regions into its pinned slot before returning. H2D then
+                    // reads that slot, so callback completion is precisely the
+                    // earliest safe cache-eviction/recycling boundary.
+                    return submit();
+                },
+                false);
         }
         const uint16_t* blob = get_staging_bf16(source_layer, expert);
         if (!blob) {
