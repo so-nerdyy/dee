@@ -1,0 +1,15 @@
+scenario,predicted_wall_s,delta_s_vs_baseline,delta_pct
+staging_lead_8,52.787,-18.623,-26.08
+staging_lead_16,52.787,-18.623,-26.08
+staging_lead_30,52.787,-18.623,-26.08
+staging_lead_full,52.787,-18.623,-26.08
+buffer_reuse,62.602,-8.808,-12.33
+h2d_2x_rate,67.621,-3.789,-5.31
+host_orch_-100%,70.654,-0.756,-1.06
+grouped_dispatch,71.032,-0.378,-0.53
+host_orch_-50%,71.032,-0.378,-0.53
+grouped_h2d,71.36,-0.05,-0.07
+baseline_v65,71.41,0.0,0.0
+lanes_3,71.41,0.0,0.0
+lanes_12,71.41,0.0,0.0
+no_overlap,72.209,0.799,1.12

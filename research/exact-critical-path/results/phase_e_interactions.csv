@@ -1,0 +1,8 @@
+combo,wall_s,delta_pct_vs_baseline
+buffer_reuse+grouped_h2d+lead16,52.576,-26.37
+buffer_reuse+lead16,52.578,-26.37
+orch-100%+lead16,52.769,-26.1
+grouped_h2d+lead16,52.786,-26.08
+buffer_reuse+grouped_h2d,62.552,-12.4
+orch-100%+grouped_dispatch,70.654,-1.06
+grouped_h2d+grouped_dispatch,70.982,-0.6

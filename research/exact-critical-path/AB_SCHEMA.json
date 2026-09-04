@@ -1,0 +1,27 @@
+{
+  "$comment": "Contract for Codex's sealed host-buffer-reuse A/B artifact so the exact-critical-path simulator can ingest it (Phase F). Only decode_wall_s is required; everything absent is reported as UNKNOWN, never inferred.",
+  "artifact": {
+    "baseline": {
+      "run_id": "string",
+      "commit": "string",
+      "variant": "baseline",
+      "decode_wall_s": 0.0,
+      "decode_tokens": 15,
+      "reuse_telemetry": {
+        "$comment": "free-form; echoed verbatim into the ingestion report (e.g. buffers_reused, buffer_allocs, peak_pinned_bytes)"
+      }
+    },
+    "candidate": {
+      "run_id": "string",
+      "commit": "string",
+      "variant": "candidate",
+      "decode_wall_s": 0.0,
+      "decode_tokens": 15,
+      "reuse_telemetry": {}
+    }
+  },
+  "single_arm_variant": {
+    "$comment": "Alternatively, two standard result.json-shaped files, each with variant: baseline|candidate",
+    "variant": "baseline | candidate"
+  }
+}

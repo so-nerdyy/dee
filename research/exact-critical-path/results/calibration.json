@@ -1,0 +1,212 @@
+{
+  "params": {
+    "ssd_aggregate_mb_s": 320.0,
+    "read_lanes": 6,
+    "read_queue_depth": 6,
+    "host_pack_ms_per_record": 2.855010940919037,
+    "h2d_gbps": 5.54,
+    "h2d_gbps_microbench": 5.38,
+    "h2d_per_copy_overhead_us": 20.0,
+    "gpu_compute_per_record_ms": 0.4537,
+    "compute_overlaps_copies": true,
+    "host_orchestration_per_layer_ms": 1.2,
+    "host_syncs_per_step": 86.0,
+    "host_sync_overhead_ms": 0.02,
+    "staging_lead_layers": 0,
+    "grouped_h2d": false,
+    "grouped_dispatch": false,
+    "host_orch_reduction": 0.0,
+    "host_buffer_reuse": false,
+    "seed": 1234
+  },
+  "result": {
+    "predicted_wall_s": 71.41019631742711,
+    "observed_wall_s": 72.267,
+    "abs_error_s": -0.8568036825728882,
+    "rel_error": -0.011856084832259375,
+    "steps": [
+      {
+        "wall_ms": 5163.79299229505,
+        "disk_drain_ms": 5134.691165585276,
+        "h2d_busy_ms": 5158.1507922950495,
+        "h2d_total_ms": 238.06865603445786,
+        "compute_only_ms": 59.88840000000001,
+        "compute_end_ms": 5162.0729922950495,
+        "reads": 95.99999999999997,
+        "pack_hits": 95.0,
+        "resident_hits": 66.99999999999999
+      },
+      {
+        "wall_ms": 3999.598771635024,
+        "disk_drain_ms": 3971.356721820374,
+        "h2d_busy_ms": 3993.9565716350244,
+        "h2d_total_ms": 229.34362675570804,
+        "compute_only_ms": 59.88840000000001,
+        "compute_end_ms": 3997.8787716350243,
+        "reads": 69.0,
+        "pack_hits": 115.0,
+        "resident_hits": 73.99999999999999
+      },
+      {
+        "wall_ms": 4474.665323346462,
+        "disk_drain_ms": 4446.0547977196165,
+        "h2d_busy_ms": 4469.023123346462,
+        "h2d_total_ms": 233.08292501802916,
+        "compute_only_ms": 59.88840000000001,
+        "compute_end_ms": 4472.945323346462,
+        "reads": 80.0,
+        "pack_hits": 107.0,
+        "resident_hits": 70.99999999999999
+      },
+      {
+        "wall_ms": 5883.453102563691,
+        "disk_drain_ms": 5852.140420980745,
+        "h2d_busy_ms": 5877.81090256369,
+        "h2d_total_ms": 260.5044456083858,
+        "compute_only_ms": 59.88840000000001,
+        "compute_end_ms": 5881.73310256369,
+        "reads": 110.99999999999997,
+        "pack_hits": 98.0,
+        "resident_hits": 49.000000000000014
+      },
+      {
+        "wall_ms": 6525.178192172311,
+        "disk_drain_ms": 6492.514432611316,
+        "h2d_busy_ms": 6519.535992172311,
+        "h2d_total_ms": 274.2152059035641,
+        "compute_only_ms": 59.88840000000001,
+        "compute_end_ms": 6523.458192172311,
+        "reads": 125.0,
+        "pack_hits": 94.99999999999999,
+        "resident_hits": 38.00000000000001
+      },
+      {
+        "wall_ms": 6050.111640460865,
+        "disk_drain_ms": 6017.816356712065,
+        "h2d_busy_ms": 6044.4694404608645,
+        "h2d_total_ms": 270.47590764124266,
+        "compute_only_ms": 59.88840000000001,
+        "compute_end_ms": 6048.391640460864,
+        "reads": 114.00000000000001,
+        "pack_hits": 102.99999999999999,
+        "resident_hits": 41.0
+      },
+      {
+        "wall_ms": 5365.232564543772,
+        "disk_drain_ms": 5331.340552275459,
+        "h2d_busy_ms": 5359.590364543772,
+        "h2d_total_ms": 286.67953344463496,
+        "compute_only_ms": 59.88840000000001,
+        "compute_end_ms": 5363.512564543772,
+        "reads": 95.99999999999997,
+        "pack_hits": 133.99999999999997,
+        "resident_hits": 27.99999999999999
+      },
+      {
+        "wall_ms": 4681.270012832344,
+        "disk_drain_ms": 4647.7464763762255,
+        "h2d_busy_ms": 4675.627812832344,
+        "h2d_total_ms": 282.94023518231364,
+        "compute_only_ms": 59.88840000000001,
+        "compute_end_ms": 4679.550012832344,
+        "reads": 80.0,
+        "pack_hits": 147.00000000000003,
+        "resident_hits": 31.00000000000001
+      },
+      {
+        "wall_ms": 3678.5692128323362,
+        "disk_drain_ms": 3645.045676376219,
+        "h2d_busy_ms": 3672.9270128323365,
+        "h2d_total_ms": 282.9402351823135,
+        "compute_only_ms": 59.88840000000001,
+        "compute_end_ms": 3676.8492128323364,
+        "reads": 55.99999999999998,
+        "pack_hits": 170.99999999999994,
+        "resident_hits": 31.00000000000001
+      },
+      {
+        "wall_ms": 3950.8214059865645,
+        "disk_drain_ms": 3918.7717727792287,
+        "h2d_busy_ms": 3945.1792059865647,
+        "h2d_total_ms": 267.9830421330285,
+        "compute_only_ms": 59.88840000000001,
+        "compute_end_ms": 3949.1014059865647,
+        "reads": 64.0,
+        "pack_hits": 151.00000000000003,
+        "resident_hits": 43.00000000000001
+      },
+      {
+        "wall_ms": 4593.0047576980105,
+        "disk_drain_ms": 4560.586648678479,
+        "h2d_busy_ms": 4587.36255769801,
+        "h2d_total_ms": 271.7223403953497,
+        "compute_only_ms": 59.88840000000001,
+        "compute_end_ms": 4591.28475769801,
+        "reads": 79.00000000000003,
+        "pack_hits": 139.00000000000003,
+        "resident_hits": 40.0
+      },
+      {
+        "wall_ms": 3866.8047438837384,
+        "disk_drain_ms": 3833.7725085105485,
+        "h2d_busy_ms": 3861.1625438837386,
+        "h2d_total_ms": 277.9545041658851,
+        "compute_only_ms": 59.88840000000001,
+        "compute_end_ms": 3865.0847438837386,
+        "reads": 61.0,
+        "pack_hits": 161.99999999999994,
+        "resident_hits": 34.99999999999999
+      },
+      {
+        "wall_ms": 4206.203461120891,
+        "disk_drain_ms": 4173.048400476969,
+        "h2d_busy_ms": 4200.561261120891,
+        "h2d_total_ms": 279.2009369199924,
+        "compute_only_ms": 59.88840000000001,
+        "compute_end_ms": 4204.483461120891,
+        "reads": 69.0,
+        "pack_hits": 154.99999999999994,
+        "resident_hits": 34.00000000000001
+      },
+      {
+        "wall_ms": 5109.850509409454,
+        "disk_drain_ms": 5077.0639245777265,
+        "h2d_busy_ms": 5104.208309409454,
+        "h2d_total_ms": 275.46163865767096,
+        "compute_only_ms": 59.88840000000001,
+        "compute_end_ms": 5108.130509409454,
+        "reads": 91.00000000000001,
+        "pack_hits": 130.0,
+        "resident_hits": 36.99999999999999
+      },
+      {
+        "wall_ms": 3861.6396266465977,
+        "disk_drain_ms": 3828.7302165441392,
+        "h2d_busy_ms": 3855.997426646598,
+        "h2d_total_ms": 276.7080714117781,
+        "compute_only_ms": 59.88840000000001,
+        "compute_end_ms": 3859.919626646598,
+        "reads": 61.0,
+        "pack_hits": 161.0,
+        "resident_hits": 36.0
+      }
+    ],
+    "observed_steps_ms": [
+      5751.08,
+      4237.45,
+      4423.46,
+      6122.33,
+      6876.35,
+      6162.25,
+      5227.35,
+      4721.48,
+      3573.43,
+      3714.79,
+      4587.91,
+      3654.13,
+      4276.98,
+      5114.55,
+      3823.66
+    ]
+  }
+}
