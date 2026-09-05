@@ -1,0 +1,48 @@
+{
+  "schema": "pack-cap-ab/memory-validation-v1",
+  "projected": {
+    "B": {
+      "label": "SIMULATED/PROJECTED (ce6cb81 model)",
+      "projected_total_gib": 27.227,
+      "projected_total_decimal_gb": 29.23,
+      "projected_min_mem_available_gib": 4.12
+    }
+  },
+  "measured": {
+    "session1": {
+      "label": "MEASURED",
+      "vmhwm_gib": 25.64,
+      "vmrss_gib": 25.64,
+      "vmdata_gib": 25.4,
+      "mem_total_gib": 31.35,
+      "min_checkpoint_mem_available_gib": 4.83,
+      "host_pack_budget_bytes": [
+        10737418240,
+        10737418240
+      ],
+      "checkpoint_records": 16
+    },
+    "session2": {
+      "label": "MEASURED",
+      "vmhwm_gib": 25.54,
+      "vmrss_gib": 25.46,
+      "vmdata_gib": 25.39,
+      "mem_total_gib": 31.35,
+      "min_checkpoint_mem_available_gib": 4.94,
+      "host_pack_budget_bytes": [
+        10737418240,
+        10737418240
+      ],
+      "checkpoint_records": 16
+    }
+  },
+  "deltas": {
+    "label": "DERIVED",
+    "session1_measured_total_gib": 26.52,
+    "session1_measured_minus_projected_gib": -0.707,
+    "session1_min_avail_measured_minus_projected_gib": 0.71,
+    "session2_measured_total_gib": 26.41,
+    "session2_measured_minus_projected_gib": -0.817,
+    "session2_min_avail_measured_minus_projected_gib": 0.82
+  }
+}

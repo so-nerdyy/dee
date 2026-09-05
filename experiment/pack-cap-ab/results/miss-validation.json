@@ -1,0 +1,32 @@
+{
+  "schema": "pack-cap-ab/miss-validation-v1",
+  "predicted": {
+    "label": "SIMULATED (pack replay, ce6cb81)",
+    "predicted_delta_misses_total": -51
+  },
+  "measured": {
+    "session1": {
+      "label": "DERIVED",
+      "delta_decode_wall_s": -2.163,
+      "delta_misses_total": -52,
+      "delta_misses_pct": -2.1,
+      "delta_decode_wall_pct": -3.062,
+      "misses_A_total": 2481,
+      "misses_B_total": 2429
+    },
+    "session2": {
+      "label": "DERIVED",
+      "delta_decode_wall_s": 2.226,
+      "delta_misses_total": -52,
+      "delta_misses_pct": -2.1,
+      "delta_decode_wall_pct": 3.149,
+      "misses_A_total": 2481,
+      "misses_B_total": 2429
+    }
+  },
+  "deltas": {
+    "label": "DERIVED",
+    "session1_measured_minus_predicted_misses": -1,
+    "session2_measured_minus_predicted_misses": -1
+  }
+}

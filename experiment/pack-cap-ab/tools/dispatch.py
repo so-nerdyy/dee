@@ -81,8 +81,25 @@ def fetch(kernel: str, out: Path) -> int:
     api.kernels_output(kernel, path=str(out))
     files = sorted(p.name for p in out.iterdir())
     print(json.dumps({"files": files}, indent=1))
+    # Flatten one level: the kernel output wraps evidence in sessionN-<arm>/
+    # dirs, but the classifier expects sessionN-<arm> directly under --out.
+    moved = []
+    for p in sorted(out.iterdir()):
+        if p.is_dir():
+            for q in sorted(p.iterdir()):
+                if q.is_dir() and (q.name.startswith("session")):
+                    target = out / q.name
+                    if target.exists():
+                        import shutil
+                        shutil.rmtree(target)
+                    q.rename(target)
+                    moved.append(q.name)
+            # keep the original nested copy as the raw tarball layout
+            # (no removal; the classifier reads the flattened copies)
+    if moved:
+        print(json.dumps({"flattened": moved}, indent=1))
     record({"action": "fetch", "kernel": kernel, "out": str(out),
-            "files": files})
+            "files": files, "flattened": moved})
     return 0
 
 

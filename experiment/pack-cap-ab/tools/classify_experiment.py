@@ -174,7 +174,8 @@ def apply_decision(combined: dict, contract: dict) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--live-dir", type=Path, required=True,
-                    help="directory containing sessionN-<arm>/ evidence")
+                    help="directory containing sessionN-<arm>/ evidence "
+                         "(directly, or under per-kernel subdirs)")
     ap.add_argument("--out-dir", type=Path, default=PKG / "results")
     args = ap.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -186,6 +187,12 @@ def main() -> int:
         present = False
         for arm in order:
             d = args.live_dir / f"{sname}-{arm}"
+            if not d.is_dir():
+                # also accept per-kernel fetch subdirs (results/live/<slug>)
+                for sub in sorted(args.live_dir.iterdir()):
+                    if sub.is_dir() and (sub / f"{sname}-{arm}").is_dir():
+                        d = sub / f"{sname}-{arm}"
+                        break
             if d.is_dir():
                 present = True
             arms[arm] = arm_metrics(d)

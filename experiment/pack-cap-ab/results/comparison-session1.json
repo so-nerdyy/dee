@@ -1,0 +1,125 @@
+{
+  "order": [
+    "A",
+    "B"
+  ],
+  "a": {
+    "status": "OK",
+    "label": "MEASURED",
+    "dir": "experiment\\pack-cap-ab\\results\\live\\s1\\session1-A",
+    "run_id": "host-reuse-217-candidate-q6l3-20260904-v2",
+    "engine_commit": "217a33359b06a0453444a698ec52e4078b77e388",
+    "model_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+    "classification": "ACCEPT_CORRECTNESS",
+    "performance_eligible": true,
+    "hardware": "ELIGIBLE_2X_TESLA_T4",
+    "decode_wall_s": 70.646,
+    "decode_tok_s": 0.212,
+    "prefill_ms": 102864.54,
+    "total_wall_seconds": 173.63,
+    "token_latency_p50_ms": 4337.75,
+    "token_latency_p95_ms": 6828.2,
+    "host_pack_budget_gib": [
+      8.5,
+      8.5
+    ],
+    "host_pack_hits": {
+      "cuda0": 1223,
+      "cuda1": 1395
+    },
+    "host_pack_misses": {
+      "cuda0": 1390,
+      "cuda1": 1091
+    },
+    "host_pack_evictions": {
+      "cuda0": 708,
+      "cuda1": 409
+    },
+    "storage_requests_total": {
+      "cuda0": 2285,
+      "cuda1": 2159
+    },
+    "h2d_bytes": {
+      "cuda0": 30548951040,
+      "cuda1": 28864413696
+    },
+    "storage_bytes_total": 33169342464,
+    "memory": {
+      "label": "MEASURED",
+      "vmhwm_gib": 22.62,
+      "vmrss_gib": 22.54,
+      "vmdata_gib": 22.35,
+      "mem_total_gib": 31.35,
+      "min_checkpoint_mem_available_gib": 7.87,
+      "host_pack_budget_bytes": [
+        9126805504,
+        9126805504
+      ],
+      "checkpoint_records": 16
+    }
+  },
+  "b": {
+    "status": "OK",
+    "label": "MEASURED",
+    "dir": "experiment\\pack-cap-ab\\results\\live\\s1\\session1-B",
+    "run_id": "host-reuse-217-candidate-q6l3-20260904-v2",
+    "engine_commit": "217a33359b06a0453444a698ec52e4078b77e388",
+    "model_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+    "classification": "ACCEPT_CORRECTNESS",
+    "performance_eligible": true,
+    "hardware": "ELIGIBLE_2X_TESLA_T4",
+    "decode_wall_s": 68.483,
+    "decode_tok_s": 0.219,
+    "prefill_ms": 106345.67,
+    "total_wall_seconds": 174.95,
+    "token_latency_p50_ms": 4418.56,
+    "token_latency_p95_ms": 6780.94,
+    "host_pack_budget_gib": [
+      10.0,
+      10.0
+    ],
+    "host_pack_hits": {
+      "cuda0": 1265,
+      "cuda1": 1405
+    },
+    "host_pack_misses": {
+      "cuda0": 1348,
+      "cuda1": 1081
+    },
+    "host_pack_evictions": {
+      "cuda0": 545,
+      "cuda1": 278
+    },
+    "storage_requests_total": {
+      "cuda0": 2285,
+      "cuda1": 2159
+    },
+    "h2d_bytes": {
+      "cuda0": 30548951040,
+      "cuda1": 28864413696
+    },
+    "storage_bytes_total": 32474136576,
+    "memory": {
+      "label": "MEASURED",
+      "vmhwm_gib": 25.64,
+      "vmrss_gib": 25.64,
+      "vmdata_gib": 25.4,
+      "mem_total_gib": 31.35,
+      "min_checkpoint_mem_available_gib": 4.83,
+      "host_pack_budget_bytes": [
+        10737418240,
+        10737418240
+      ],
+      "checkpoint_records": 16
+    }
+  },
+  "pair_delta": {
+    "label": "DERIVED",
+    "delta_decode_wall_s": -2.163,
+    "delta_misses_total": -52,
+    "delta_misses_pct": -2.1,
+    "delta_decode_wall_pct": -3.062,
+    "misses_A_total": 2481,
+    "misses_B_total": 2429
+  }
+}
