@@ -1,0 +1,62 @@
+{
+ "schema": "exact-staging/seal-derived-memory-v1",
+ "source_seal": "14864034a7354e0e29e11c1c09f18b0863afe6a0",
+ "note": "Derived memory.json digests (read-only) from the 5 host-reuse seal runs.",
+ "runs": {
+  "ab_baseline": {
+   "sha256_memory_json": "0c44f26469722a7273c35f164f4357666b5fc1c1928cf29fce977be5847a5f1d",
+   "VmHWM_gib": 22.67,
+   "VmRSS_gib": 22.56,
+   "MemTotal_gib": 31.35,
+   "MemAvailable_final_gib": 7.9,
+   "min_checkpoint_available_gib": 7.88,
+   "pack_budget_gib_per_gpu": 8.5,
+   "pack_occupied_gib_both_gpus": 16.983,
+   "nonpack_hwm_gib": 5.687
+  },
+  "ab_candidate": {
+   "sha256_memory_json": "53bec31467c23ce1e5b150ea0a9af7fa3aa17ee05994bea41fa4cc09b25a6df3",
+   "VmHWM_gib": 22.79,
+   "VmRSS_gib": 22.68,
+   "MemTotal_gib": 31.35,
+   "MemAvailable_final_gib": 7.78,
+   "min_checkpoint_available_gib": 7.77,
+   "pack_budget_gib_per_gpu": 8.5,
+   "pack_occupied_gib_both_gpus": 16.983,
+   "nonpack_hwm_gib": 5.807
+  },
+  "rep_baseline": {
+   "sha256_memory_json": "5ebec95f7718e144abca15a4e7ba36141b2928eca286a32193472cf50964055e",
+   "VmHWM_gib": 22.8,
+   "VmRSS_gib": 22.7,
+   "MemTotal_gib": 31.35,
+   "MemAvailable_final_gib": 7.78,
+   "min_checkpoint_available_gib": 7.76,
+   "pack_budget_gib_per_gpu": 8.5,
+   "pack_occupied_gib_both_gpus": 16.983,
+   "nonpack_hwm_gib": 5.817
+  },
+  "rep_candidate": {
+   "sha256_memory_json": "bb3f1b970d2c7b7e32b26ee2081d57db0d4367a63d8ce984391d80df197bb958",
+   "VmHWM_gib": 22.58,
+   "VmRSS_gib": 22.49,
+   "MemTotal_gib": 31.35,
+   "MemAvailable_final_gib": 7.97,
+   "min_checkpoint_available_gib": 7.96,
+   "pack_budget_gib_per_gpu": 8.5,
+   "pack_occupied_gib_both_gpus": 16.983,
+   "nonpack_hwm_gib": 5.597
+  },
+  "profiled_candidate": {
+   "sha256_memory_json": "00dc7fbe727f8911aabeb16685d9514ab6deb6ae9fcd018c6925f53c2eed1926",
+   "VmHWM_gib": 22.7,
+   "VmRSS_gib": 22.7,
+   "MemTotal_gib": 31.35,
+   "MemAvailable_final_gib": 7.85,
+   "min_checkpoint_available_gib": 7.82,
+   "pack_budget_gib_per_gpu": 8.5,
+   "pack_occupied_gib_both_gpus": 16.983,
+   "nonpack_hwm_gib": 5.717
+  }
+ }
+}

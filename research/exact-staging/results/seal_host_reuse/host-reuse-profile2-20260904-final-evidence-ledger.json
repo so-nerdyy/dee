@@ -1,0 +1,10 @@
+{
+  "original_ab": "../host-reuse-ab-20260904/ab-comparison-v1-v2.json",
+  "independent_replication": "../host-reuse-rep-20260904/replication-comparison.json",
+  "invalid_unprofiled_attempt": "../host-reuse-profile-20260904/v2-fetch-20260904T190433Z/output/result.json",
+  "valid_profiled_candidate": "v2-fetch-20260904T194914Z/output",
+  "correctness_claim": "ACCEPT_CORRECTNESS only; exact output and sealed gates pass for valid profiled candidate",
+  "performance_acceptance": false,
+  "performance_reason": "No matched valid profiled baseline and profiled replication pair under required rules; unprofiled and single-run metrics are insufficient.",
+  "source_hashes": {"original_baseline": "598fc98760aecf92948380f041ef7978a13e89076f5a0c1f6b887711f9318d5a", "original_candidate": "8ac333757bf3c952966a81b00f41c00928c717b3d4ba91a3b4ce0ab4b1859e9a", "valid_profiled_candidate": "c613b3ea68e74e64ae9f4bcf800126fd7e169ec83a24f012ff5e0e3e7cfc05b1"}
+}

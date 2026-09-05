@@ -25,39 +25,22 @@ from bounded_staging_queue import pack_replay  # noqa: E402
 
 RECORD_BYTES = 13_369_344
 SEALED_DECODE_MISSES = 1252
-# calibration.json from research/exact-critical-path @ 2db0fde (baseline
-# 71.41 s modeled vs 72.267 s observed, -1.19%)
-SIM_BASELINE_S = 71.410
+# recalibrated observational model (recalibrate_model.py, results/recalibrated_model.json):
+# wall_ms_step = 754.74 + 48.679 * misses (R^2 0.9785 on sealed v65; held-out
+# errors 1.3-2.2% on the 5 host-reuse seal runs). SIM_BASELINE_S below is the
+# model's prediction for the 8.5 GiB/GPU (682-record) replay, not a measurement.
+MISS_SERVICE_MS = 48.679
+SERIAL_RESIDUAL_MS = 754.74
+SIM_BASELINE_S = (SERIAL_RESIDUAL_MS * 15 + MISS_SERVICE_MS * SEALED_DECODE_MISSES) / 1000
 OBSERVED_S = 72.267
 
 
 def maybe_wall_estimate(per_step_reads: list[int]) -> float | None:
-    """Substitute the replay's per-step SSD-read table into the calibrated
-    critical-path model. Requires the sibling exact-critical-path worktree;
-    returns None (with a note) when unavailable."""
-    cp_tools = WORKTREE_ROOT.parent / "dee-critical-path" / "tools"
-    try:
-        sys.path.insert(0, str(cp_tools))
-        import exact_critical_path_sim as sim  # type: ignore
-    except Exception as exc:  # pragma: no cover - environment dependent
-        print(f"  (wall estimate skipped: cannot import critical-path sim: {exc})")
-        return None
-    jp = None
-    for cand in [
-        WORKTREE_ROOT.parent / "dynamic_expert_eviction" / "dee.cpp" / "tmp"
-        / "v65-terminal-fetch-20260903T0202Z" / "routed_experts.jsonl",
-    ]:
-        if cand.exists():
-            jp = cand
-            break
-    if jp is None:
-        print("  (wall estimate skipped: sealed v65 journal not found)")
-        return None
-    params = json.load(open(cp_tools.parent / "research" / "exact-critical-path"
-                            / "results" / "calibration.json"))["params"]
-    uniques = sim.gpu_layer_uniques(sim.load_route_bundles(jp))
-    sim.V65["per_step"]["ssd_reads"] = per_step_reads
-    return round(sim.simulate(params, uniques)["predicted_wall_s"], 2)
+    """Predict decode wall with the recalibrated observational model
+    (research/exact-staging/recalibrate_model.py)."""
+    return sum(SERIAL_RESIDUAL_MS + MISS_SERVICE_MS * r
+               for r in per_step_reads) / 1000
+
 
 
 def main() -> None:
@@ -65,7 +48,7 @@ def main() -> None:
     ap.add_argument("--journal", type=Path, required=True,
                     help="sealed routed_experts.jsonl (read-only)")
     ap.add_argument("--budgets", type=int, nargs="+",
-                    default=[682, 851, 1024, 1365],
+                    default=[682, 762, 843, 883, 923, 963, 1024],
                     help="pack capacity in records (682 = sealed 8.5 GiB)")
     ap.add_argument("--out", type=Path, default=HERE / "results")
     args = ap.parse_args()

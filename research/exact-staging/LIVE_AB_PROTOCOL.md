@@ -1,6 +1,11 @@
 # LIVE_AB_PROTOCOL.md — matched A/B: host-pack budget 8.5 → 12.75 GiB
 
 Branch: `research/exact-staging` · Date: 2026-09-04
+> **SUPERSEDED (2026-09-04, v2 recalibration):** 12.75 GiB/GPU is classified
+> NOT_SAFE_FOR_32GB (MEMORY_BUDGET.md §4) after the seal's measured memory
+> anchors. The live A/B is now **LIVE_AB_V2_PROTOCOL.md** (17→20 GiB cap,
+> 10.0 GiB/GPU; 19 GiB/9.5 conservative variant). Kept for provenance of the
+> original simulation-based suggestion.
 Prepared for Codex. **One candidate, one knob, matched everything else.**
 All expected deltas below are SIMULATED estimates from the validated replay +
 calibrated model (see STAGING_DESIGN.md); the A/B is the only arbiter.

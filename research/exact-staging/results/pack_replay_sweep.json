@@ -1,6 +1,6 @@
 {
   "schema": "exact-staging/pack-replay-sweep-v1",
-  "journal": "C:\\Users\\carth\\Downloads\\dynamic_expert_eviction\\dee.cpp\\tmp\\v65-terminal-fetch-20260903T0202Z\\routed_experts.jsonl",
+  "journal": "C:\\Users\\carth\\Downloads\\dynamic_expert_eviction\\dee.cpp\\tmp\\host-reuse-profile2-20260904\\v2-fetch-20260904T194914Z\\output\\routed_experts.jsonl",
   "sealed_decode_storage_misses": 1252,
   "note": "Replay is validated: LRU@682 reproduces sealed v65 per-GPU pack counters within 2 records. Wall numbers are SIMULATED.",
   "sweep": [
@@ -41,27 +41,150 @@
         "14": 90,
         "15": 61
       },
-      "simulated_decode_wall_s": 71.37,
-      "delta_vs_sim_baseline_pct": -0.06,
-      "delta_vs_observed_pct": -1.24
+      "simulated_decode_wall_s": 72.218529,
+      "delta_vs_sim_baseline_pct": -0.07,
+      "delta_vs_observed_pct": -0.07
     },
     {
-      "budget_records": 851,
-      "budget_gib_per_gpu": 10.6,
-      "decode_storage_misses": 1187,
+      "budget_records": 723,
+      "budget_gib_per_gpu": 9.0,
+      "decode_storage_misses": 1229,
       "per_device": {
         "cuda:0": {
-          "misses": 1340,
-          "hits": 1273,
-          "evictions": 489,
-          "decode_misses": 707,
+          "misses": 1370,
+          "hits": 1243,
+          "evictions": 647,
+          "decode_misses": 737,
           "distinct_records": 1297
         },
         "cuda:1": {
-          "misses": 1076,
-          "hits": 1410,
-          "evictions": 225,
-          "decode_misses": 480,
+          "misses": 1088,
+          "hits": 1398,
+          "evictions": 365,
+          "decode_misses": 492,
+          "distinct_records": 1067
+        }
+      },
+      "decode_per_step_reads": {
+        "1": 96,
+        "2": 68,
+        "3": 72,
+        "4": 108,
+        "5": 125,
+        "6": 113,
+        "7": 96,
+        "8": 79,
+        "9": 55,
+        "10": 63,
+        "11": 78,
+        "12": 60,
+        "13": 68,
+        "14": 88,
+        "15": 60
+      },
+      "simulated_decode_wall_s": 71.147591,
+      "delta_vs_sim_baseline_pct": -1.55,
+      "delta_vs_observed_pct": -1.55
+    },
+    {
+      "budget_records": 762,
+      "budget_gib_per_gpu": 9.49,
+      "decode_storage_misses": 1209,
+      "per_device": {
+        "cuda:0": {
+          "misses": 1355,
+          "hits": 1258,
+          "evictions": 593,
+          "decode_misses": 722,
+          "distinct_records": 1297
+        },
+        "cuda:1": {
+          "misses": 1083,
+          "hits": 1403,
+          "evictions": 321,
+          "decode_misses": 487,
+          "distinct_records": 1067
+        }
+      },
+      "decode_per_step_reads": {
+        "1": 96,
+        "2": 68,
+        "3": 72,
+        "4": 106,
+        "5": 122,
+        "6": 112,
+        "7": 93,
+        "8": 79,
+        "9": 52,
+        "10": 61,
+        "11": 76,
+        "12": 60,
+        "13": 67,
+        "14": 86,
+        "15": 59
+      },
+      "simulated_decode_wall_s": 70.174011,
+      "delta_vs_sim_baseline_pct": -2.9,
+      "delta_vs_observed_pct": -2.9
+    },
+    {
+      "budget_records": 802,
+      "budget_gib_per_gpu": 9.99,
+      "decode_storage_misses": 1200,
+      "per_device": {
+        "cuda:0": {
+          "misses": 1348,
+          "hits": 1265,
+          "evictions": 546,
+          "decode_misses": 715,
+          "distinct_records": 1297
+        },
+        "cuda:1": {
+          "misses": 1081,
+          "hits": 1405,
+          "evictions": 279,
+          "decode_misses": 485,
+          "distinct_records": 1067
+        }
+      },
+      "decode_per_step_reads": {
+        "1": 96,
+        "2": 68,
+        "3": 72,
+        "4": 106,
+        "5": 121,
+        "6": 112,
+        "7": 92,
+        "8": 78,
+        "9": 51,
+        "10": 61,
+        "11": 74,
+        "12": 60,
+        "13": 66,
+        "14": 84,
+        "15": 59
+      },
+      "simulated_decode_wall_s": 69.7359,
+      "delta_vs_sim_baseline_pct": -3.5,
+      "delta_vs_observed_pct": -3.5
+    },
+    {
+      "budget_records": 843,
+      "budget_gib_per_gpu": 10.5,
+      "decode_storage_misses": 1189,
+      "per_device": {
+        "cuda:0": {
+          "misses": 1341,
+          "hits": 1272,
+          "evictions": 498,
+          "decode_misses": 708,
+          "distinct_records": 1297
+        },
+        "cuda:1": {
+          "misses": 1077,
+          "hits": 1409,
+          "evictions": 234,
+          "decode_misses": 481,
           "distinct_records": 1067
         }
       },
@@ -76,97 +199,15 @@
         "8": 78,
         "9": 50,
         "10": 61,
-        "11": 72,
-        "12": 58,
+        "11": 73,
+        "12": 59,
         "13": 65,
         "14": 84,
         "15": 58
       },
-      "simulated_decode_wall_s": 68.69,
-      "delta_vs_sim_baseline_pct": -3.81,
-      "delta_vs_observed_pct": -4.95
-    },
-    {
-      "budget_records": 1024,
-      "budget_gib_per_gpu": 12.75,
-      "decode_storage_misses": 1153,
-      "per_device": {
-        "cuda:0": {
-          "misses": 1315,
-          "hits": 1298,
-          "evictions": 291,
-          "decode_misses": 682,
-          "distinct_records": 1297
-        },
-        "cuda:1": {
-          "misses": 1067,
-          "hits": 1419,
-          "evictions": 43,
-          "decode_misses": 471,
-          "distinct_records": 1067
-        }
-      },
-      "decode_per_step_reads": {
-        "1": 96,
-        "2": 68,
-        "3": 72,
-        "4": 106,
-        "5": 119,
-        "6": 112,
-        "7": 86,
-        "8": 73,
-        "9": 49,
-        "10": 56,
-        "11": 66,
-        "12": 57,
-        "13": 62,
-        "14": 76,
-        "15": 55
-      },
-      "simulated_decode_wall_s": 67.27,
-      "delta_vs_sim_baseline_pct": -5.8,
-      "delta_vs_observed_pct": -6.91
-    },
-    {
-      "budget_records": 1365,
-      "budget_gib_per_gpu": 17.0,
-      "decode_storage_misses": 1135,
-      "per_device": {
-        "cuda:0": {
-          "misses": 1297,
-          "hits": 1316,
-          "evictions": 0,
-          "decode_misses": 664,
-          "distinct_records": 1297
-        },
-        "cuda:1": {
-          "misses": 1067,
-          "hits": 1419,
-          "evictions": 0,
-          "decode_misses": 471,
-          "distinct_records": 1067
-        }
-      },
-      "decode_per_step_reads": {
-        "1": 96,
-        "2": 68,
-        "3": 72,
-        "4": 106,
-        "5": 119,
-        "6": 112,
-        "7": 86,
-        "8": 73,
-        "9": 49,
-        "10": 53,
-        "11": 64,
-        "12": 53,
-        "13": 61,
-        "14": 72,
-        "15": 51
-      },
-      "simulated_decode_wall_s": 66.52,
-      "delta_vs_sim_baseline_pct": -6.85,
-      "delta_vs_observed_pct": -7.95
+      "simulated_decode_wall_s": 69.200431,
+      "delta_vs_sim_baseline_pct": -4.24,
+      "delta_vs_observed_pct": -4.24
     }
   ]
 }

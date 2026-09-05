@@ -1,98 +1,88 @@
-# FINAL_SUMMARY.md — exact-staging track
+# FINAL_SUMMARY.md — recalibration + host-pack frontier (v2)
 
-Branch: `research/exact-staging` (worktree `../dee-staging`, base `2db0fde`) · Date: 2026-09-04
-Track: OFFLINE exact storage/staging research. Official router authoritative.
-No production runtime modified (prototype isolated under
-`dee.cpp/experiments/exact_staging/`), no sealed evidence touched, nothing
-merged, Codex's active host-buffer A/B untouched.
+Branch: `research/exact-staging` (worktree `../dee-staging`) · Date: 2026-09-04
+Inputs: seal `14864034a7354e0e29e11c1c09f18b0863afe6a0` (sha256-gated), sealed
+v65, causality audit (this branch), Muse `research/route-pipeline` (read-only).
+Pipeline: `python research/exact-staging/recalibrate_model.py`.
+Labels: **[M]** measured · **[S]** simulated · **[T]** theoretical ceiling.
 
----
+## The 10 answers
 
-## The headline
+1. **Why did the old model predict ~−12.3% reuse when measurement says
+   −0.94%/−2.63%?** Structural artifact, quantified in RECALIBRATION.md §1:
+   it charged the host-pack copy (2.855 ms/rec × 3,215 transfers ≈ 9.2 s) as
+   a *serial chain stage* and modeled reuse as copy elimination. Seal
+   evidence shows the copies are worker-pipelined (`fill_worker_ms` 144 s vs
+   `fill_batch_wall_ms` 54.6 s; `fill_overlap_ms` 89.5 s), still present with
+   reuse ON (`mmap_to_pinned` 12.38 s in the profiled candidate), and that
+   reuse actually removes buffer allocation (= evictions: 1,117 reused =
+   708+409 evicted), which was already hidden. Secondary: v52 profiler
+   inflation leaked into the pack constant; async completion was treated as
+   blocking. No scalar fudge was applied — the mechanism was deleted and the
+   model refit. **[M]**
 
-**The critical-path model's simulated "lead ≥ 8 layers → −26%" is not
-causally implementable in exact mode** — layer L+1's official route does not
-exist until layer L's MoE output computes (CAUSALITY_AUDIT.md §2). The legal
-cross-step mechanism production already has is the **host-pack LRU at
-682 records (8.5 GiB/GPU)**, and a **config-only budget increase captures a
-simulated −6.9% decode wall** — smaller than the impossible lead scenario,
-but real, legal, and available without engine changes.
+2. **Recalibrated v65 error?** Fit on v65: R²=0.9785, per-step MAPE 2.52%.
+   `wall_ms = 754.74 + 48.679 × misses` (ODR, physicality-gated). **[M fit]**
 
-## Answers to the required questions
+3. **Reproduce the host-buffer A/B?** As a *level* prediction, yes: held-out
+   error +1.27/+2.23/−1.29/+1.38/+1.53% on the five seal runs (never fit).
+   As a *reuse effect*, the model now predicts 0.0 s — matching the truth
+   that both measured deltas sit inside the 1.85 s baseline run spread.
+   Direction of the tiny measured win is acknowledged as unresolvable from
+   two pairs at n=15 tokens. **[M]**
 
-1. **What is true measured concurrent pread capability?**
-   UNKNOWN — no expert store exists on this host, so the bench
-   (`tools/bench_expert_pread.py`, validated for bookkeeping by tests) has
-   produced no measurements. Sealed evidence pins two points: v63 3-lane and
-   v65 6-lane both ≈370 MB/s aggregate (p50 × lanes invariant); the calibrated
-   model uses 320 MB/s within a 320–459 MB/s byte-accounting band.
-2. **At what queue depth does it saturate?**
-   UNKNOWN directly; the sealed 3→6-lane neutrality (identical batch wall,
-   per-read latency doubling) implies saturation is reached **by depth 3**.
-   The bench measures depths 1–16 to replace this inference.
-3. **Is simulator lead ≥ 8 causally implementable?**
-   **No.** `IMPOSSIBLE_WITHOUT_FUTURE_ROUTE` for any in-step lead ≥ 1.
-4. **What is the largest legal exact lead?**
-   In-step: **0 layers**. Cross-step: one full step (step k−1's official
-   routes → step k's demands) — already implemented as the host pack; its
-   binding constraint is **capacity**, not mechanism.
-5. **What code restructuring would expose more legal lead?**
-   None identified that preserves exactness: official routes are produced
-   sequentially by the router from each layer's output. Executing multiple
-   layers of routing per pass would change execution architecture (and is
-   therefore out of contract for this track). The exploitable axis is the
-   pack budget, not the staging schedule.
-6. **How much bounded host memory does the candidate require?**
-   +4.25 GiB/GPU over sealed (8.5 → 12.75 GiB; +8.5 GiB total across both
-   GPUs → 25.5 GiB committed). The sealed host reported 29.64 GiB host RAM
-   available during v65 with both 8.5 GiB packs resident, so the candidate
-   leaves ≥4 GiB margin. Labeled: derived from sealed counters + harness
-   probe, not a fresh measurement.
-7. **What exact candidate should Codex A/B next?**
-   `host_pack_cache_bytes` 8.5 → **12.75 GiB per GPU**, same commit/config
-   otherwise, per LIVE_AB_PROTOCOL.md (matched design, interleaved arms,
-   pre-registered success/falsification).
-8. **What telemetry proves reads were actually hidden?**
-   Per-request `exact-staging/staging-telemetry-v1` (ready_before_demand +
-   useful_lead_ms), plus aggregate proof: decode `storage_requests`
-   1252 → ≈1153 and pack evictions 706/410 → 291/43 per GPU (replay at
-   1024 rec; 0/0 at the 17 GiB oracle point — see
-   results/pack_replay_sweep.json).
-9. **What condition would falsify the staging hypothesis?**
-   Pre-registered in LIVE_AB_PROTOCOL.md §4: (a) misses don't fall to ≈1153
-   (±10) → the validated replay does not transfer to the live host; (b) misses
-   fall but wall doesn't → storage is not the binding stage live; recalibrate
-   with the pread bench before further storage-side claims.
-10. **What should Codex test after staging if it succeeds?**
-    (1) the pread bench to pin the true storage floor; (2) if RAM allows on
-    the host fleet, the 17 GiB/GPU oracle point (simulated −7.9%, floor of
-    all offline policies); (3) re-check the host-buffer-reuse interaction
-    (its modeled gain shrinks toward zero once pack misses drop).
+4. **Safest pack budget under a real 32 GB TOTAL limit?** Projected envelope
+   (measured non-pack 5.82 GiB + system 0.91 + 0.5 unknown allowance):
+   **9.5 GiB/GPU** is the risk-balanced SAFE default (30.23 GB projected,
+   1.77 GB headroom, 5.12 GiB min-available, 8.68 GiB OOM margin); **10.0
+   GiB/GPU** is the largest SAFE point (31.36 GB, all gates pass). **[M
+   anchors, S projection]**
 
-## Evidence chain (all reproducible)
+5. **SSD reads removed by that budget?** Replay (validated ≤2/step vs
+   sealed): 9.5 → **−42**; 10.0 → **−51** (1,252 → 1,201/1,211-class tables;
+   per-GPU split ≈ 27/24). **[M replay of sealed trace]**
 
-- `results/pack_replay_sweep.json` — validated pack replay: LRU@682
-  reproduces sealed v65 per-GPU misses/evictions within 2 records
-  (1388/706 vs 1390/708; 1092/410 vs 1091/409; decode misses 1251 vs 1252;
-  per-step reads within ±2 every step).
-- `results/pack_budget_wall_estimates.json` — simulated walls via the
-  calibrated critical-path model (baseline −1.19% error), per-step read
-  tables substituted from the replay.
-- Belady on the fill stream @ sealed budget: 1135 decode misses — identical
-  to LRU@17 GiB. At fixed budget, policy headroom ≤ 9.3%; capacity is the
-  whole game on this trace.
-- `CAUSALITY_AUDIT.md` — source-verified route-known timing; lead
-  classification table.
-- `STAGING_DESIGN.md` — bounded queue semantics + candidate rationale.
-- `LIVE_AB_PROTOCOL.md` — the matched A/B package.
-- `PREAD_BENCH_PROTOCOL.md` — how to produce the missing measurement.
-- Tests: 14 passed (`research/exact-staging/tests/`).
+6. **Marginal miss reduction per extra GiB?** 8.5→9.0: 44/GiB; →9.5: 42/GiB;
+   →10.0: 34/GiB; →10.5: 31/GiB; →12.75: ~23/GiB. First 1.5–2 GiB buy 3×
+   the last 2. **[M replay]**
 
-## Claim discipline
+7. **SIMULATED wall improvement after recalibration?** 9.5: −2.09 s;
+   10.0: −2.53 s (central; statistical CI ±5.6% on the miss term; run noise
+   ~1.0–1.9 s). These are hypotheses for the A/B, not results. **[S]**
 
-- Replay pack counters: **validated against sealed evidence** (±2 records).
-- Budget → misses mapping: **trace-local replay** (15 decode tokens, one
-  prompt; do not generalize across prompts/workloads without re-validation).
-- Wall deltas: **simulated estimates only** (calibrated model, −1.19%
-  baseline error). No TPS claims, no ACCEPT_PERFORMANCE.
-- Pread capability: **UNKNOWN** until the bench runs on the store host.
+8. **Is 12.75 GiB/GPU safe for the 32 GB thesis?** **NO.** Projected
+   37.71 GB (+5.71 over) and within 2.2 GiB of the nearest clean measured
+   OOM (27.68 GiB pack total). REJECTED for the main thesis; acceptable
+   only on 48/64 GB hosts. **[M ledger + S projection]**
+
+9. **The one A/B Astra should run next?** `next_ab.json` /
+   LIVE_AB_V2_PROTOCOL.md: **`LRU_TOTAL_CAP_GIB` 17.0 → 20.0** (10.0 GiB/GPU;
+   drop to the 19.0-cap variant if memory telemetry looks tight), matched
+   pair + one replication, metrics and pre-registered criteria in the
+   protocol. **[S expectation, M design]**
+
+10. **What would falsify the host-pack hypothesis?** Pack misses fall
+    exactly as replayed while decode wall stays flat beyond run noise in
+    two matched pairs (⇒ miss service isn't wall service on this path);
+    or the candidate OOMs / breaches the projected envelope; or any
+    correctness divergence. **[M criteria]**
+
+## Bottom line
+
+The recalibrated model keeps what survived evidence (disk-drain-dominated
+decode, ~48.7 ms effective service per miss), deletes what did not (reuse
+mechanism, future-layer lead), and points the next live experiment at the
+one lever that is simultaneously large, legal, config-only, and memory-safe:
+**a bigger bounded host pack, 8.5 → 9.5–10.0 GiB/GPU** — while the pread
+package (Phase G) and Muse's hash-layer microbench remain the two
+measurements that would most change the picture.
+
+## Verification & provenance
+
+- 14 existing tests + 11 new (see `tests/`): replay accounting, budget
+  arithmetic, UNKNOWN-safe memory, no-future-lookahead, seal ingestion,
+  predicted-vs-observed labeling — all green.
+- Seal inputs hash-verified at run time (`recalibrate_model.py` fails
+  closed on any mismatch).
+- Nothing merged; no sealed evidence modified; no production runtime
+  changed; Muse's branch untouched; performance acceptance stays FALSE.

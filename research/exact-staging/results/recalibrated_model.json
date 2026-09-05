@@ -1,0 +1,465 @@
+{
+ "schema": "exact-staging/recalibrated-model-v2",
+ "source_seal": "14864034a7354e0e29e11c1c09f18b0863afe6a0",
+ "seal_inputs_sha256": {
+  "dee.cpp/tmp/host-reuse-ab-20260904/v1-fetch-20260904T171320Z/output/profile.json": "a95f85796418b722a36645ed4047a7f8a88123d5b9807d310c1b971e7afb2203",
+  "dee.cpp/tmp/host-reuse-ab-20260904/v2-fetch-20260904T173515Z/output/profile.json": "c7dd63ffaa075bbcec984a292852cd7787b128cfca96f52c5cf7e49a452288ab",
+  "dee.cpp/tmp/host-reuse-rep-20260904/v1-fetch-20260904T180559Z/output/profile.json": "5c7e3a08834e23b82d5d4d1a44c0d91e38d5a0daaf2284aede6c01b5f4f082a4",
+  "dee.cpp/tmp/host-reuse-rep-20260904/v2-fetch-20260904T183100Z/output/profile.json": "72a25a83bbb8f9ac364809e366cc9d4cbaaf7661ca5758a9279ca298345e8a07",
+  "dee.cpp/tmp/host-reuse-profile2-20260904/v2-fetch-20260904T194914Z/output/profile.json": "0a80b4b60262f84b4d41ac9932cd62b42abdcffb4dcc7c9debb14eff07ecc3ca",
+  "dee.cpp/tmp/host-reuse-ab-20260904/v1-fetch-20260904T171320Z/output/memory.json": "0c44f26469722a7273c35f164f4357666b5fc1c1928cf29fce977be5847a5f1d",
+  "dee.cpp/tmp/host-reuse-ab-20260904/v2-fetch-20260904T173515Z/output/memory.json": "53bec31467c23ce1e5b150ea0a9af7fa3aa17ee05994bea41fa4cc09b25a6df3",
+  "dee.cpp/tmp/host-reuse-rep-20260904/v1-fetch-20260904T180559Z/output/memory.json": "5ebec95f7718e144abca15a4e7ba36141b2928eca286a32193472cf50964055e",
+  "dee.cpp/tmp/host-reuse-rep-20260904/v2-fetch-20260904T183100Z/output/memory.json": "bb3f1b970d2c7b7e32b26ee2081d57db0d4367a63d8ce984391d80df197bb958",
+  "dee.cpp/tmp/host-reuse-profile2-20260904/v2-fetch-20260904T194914Z/output/memory.json": "00dc7fbe727f8911aabeb16685d9514ab6deb6ae9fcd018c6925f53c2eed1926",
+  "dee.cpp/tmp/host-reuse-profile2-20260904/v2-fetch-20260904T194914Z/output/routed_experts.jsonl": "3ec6b3aff604e6f6fa176e9f744a52c6428abe9a8db1b52a5d2f3dfeadf3f0ce"
+ },
+ "performance_acceptance": false,
+ "labels": {
+  "measured": "from sealed evidence (hash-gated)",
+  "simulated": "model output; NOT measured speedup"
+ },
+ "model": {
+  "form": "wall_ms_step = serial_residual_ms + miss_service_ms * ssd_misses_step",
+  "miss_service_ms": 48.679,
+  "serial_residual_ms_per_step": 754.74,
+  "fit_method": "orthogonal (total least squares) on v65 15 decode steps",
+  "r_squared": 0.9785,
+  "slope_se_ms": 1.391,
+  "slope_ci95_pct_of_slope": 5.6,
+  "physicality_gates": "slope>0, intercept>0 (both enforced; run fails otherwise)",
+  "interpretation": "miss_service_ms is EFFECTIVE wall service per storage miss (marginal, observational; includes correlated allocation/orchestration). NOT raw disk bandwidth, NOT decomposed latency.",
+  "ordinary_future_layer_lead": 0,
+  "future_layer_lead_note": "route(L+1) requires combine(L): ordinary in-step lead-N staging is IMPOSSIBLE_WITHOUT_FUTURE_ROUTE (CAUSALITY_AUDIT.md; Muse research/route-pipeline lead=0). Hash layers 0-2 early staging (<=18 records/token) is the only legal special case (Muse A).",
+  "host_buffer_reuse_lever": "NONE mechanistic. Measured (seal 1486403): fill_batch_wall_ms unchanged with reuse ON (54.63->55.76 s cuda0; within run spread), mmap_to_pinned still present (12.38 s full-run profiled candidate), reused_fill_buffers (1117) == total evictions (708+409) i.e. reuse recycles eviction buffers; reservation wall ~6.0 s/GPU is worker-overlapped. Predicted reuse delta = 0.0 s; measured deltas (-0.671 s, -1.929 s) sit inside baseline run-to-run spread."
+ },
+ "validation": {
+  "v65_training": {
+   "predicted_s": 72.267,
+   "observed_s": 72.267,
+   "total_error_pct": 0.0,
+   "step_mape_pct": 2.613,
+   "role": "fit (calibration data)"
+  },
+  "ab_baseline_held_out": {
+   "predicted_s": 72.267,
+   "observed_s": 71.362,
+   "total_error_pct": 1.268,
+   "step_mape_pct": 2.517,
+   "role": "validation (held out; identical reads/copies tables)"
+  },
+  "ab_candidate_held_out": {
+   "predicted_s": 72.267,
+   "observed_s": 70.691,
+   "total_error_pct": 2.23,
+   "step_mape_pct": 3.303,
+   "role": "validation (held out; identical reads/copies tables)"
+  },
+  "rep_baseline_held_out": {
+   "predicted_s": 72.267,
+   "observed_s": 73.213,
+   "total_error_pct": -1.292,
+   "step_mape_pct": 2.564,
+   "role": "validation (held out; identical reads/copies tables)"
+  },
+  "rep_candidate_held_out": {
+   "predicted_s": 72.267,
+   "observed_s": 71.284,
+   "total_error_pct": 1.379,
+   "step_mape_pct": 2.783,
+   "role": "validation (held out; identical reads/copies tables)"
+  },
+  "profiled_candidate_held_out": {
+   "predicted_s": 72.267,
+   "observed_s": 71.179,
+   "total_error_pct": 1.529,
+   "step_mape_pct": 2.676,
+   "role": "validation (held out; identical reads/copies tables)"
+  },
+  "held_out_reads_tables_identical_to_v65": true,
+  "baseline_run_to_run_spread_s": {
+   "min": 71.362,
+   "max": 73.213,
+   "spread": 1.851,
+   "note": "three baselines of the SAME config; reuse-pair deltas must be judged against this, not against 0"
+  },
+  "lane_neutrality_check": {
+   "measured_walls_s": {
+    "v63_3lanes": 71.3,
+    "v64_3lanes": 71.8,
+    "v65_6lanes": 72.3
+   },
+   "spread_s": 1.0,
+   "model_behavior": "wall does not depend on lane count (saturated-disk aggregate); consistent with measured neutrality",
+   "status": "consistent"
+  }
+ },
+ "old_model_audit": {
+  "old_model": "research/exact-critical-path @ 2db0fde (event simulator)",
+  "old_prediction": {
+   "reuse_delta_s": -8.8,
+   "reuse_delta_pct": -12.33
+  },
+  "measured": {
+   "original_pair": {
+    "delta_s": -0.6709999999999923,
+    "delta_pct": -0.94
+   },
+   "replication_pair": {
+    "delta_s": -1.9289999999999878,
+    "delta_pct": -2.63
+   }
+  },
+  "root_causes": [
+   {
+    "cause": "pack copy charged as a SERIAL batch-blocking stage",
+    "detail": "the old simulator applied pack_ms=2.855 ms/record serially to 1963 pack-sourced transfers (~5.6 s of chain) per before/after reuse; measured fill telemetry shows the worker pool PIPELINES these copies (fill_worker_ms 144 s wall-vs-worker vs fill_batch_wall_ms 54.6 s; fill_overlap_ms 89.5 s overlapped), so most of that time was never on the critical path"
+   },
+   {
+    "cause": "reuse was modeled as copy elimination (pack_ms 2.855 -> 0.05)",
+    "detail": "measured: the copy is NOT removed. Profiled candidate with reuse ON still shows mmap_to_pinned = 12.38 s (full run) and fill_batch_wall_ms unchanged within run spread. What reuse removes is buffer ALLOCATION/RESERVATION, which is already hidden under the fill worker pipeline."
+   },
+   {
+    "cause": "v52-derived pack rate leaked a profiler-inflated cost",
+    "detail": "host_pack_ms_per_record=2.855 ms came from the v52 stage-profiled run (decode wall inflated 138.7 s vs 72.3 s unprofiled); the old model treated that busy time as critical-path-blocking while the calibrated disk-drain term already dominated, so removing it showed up as a large counterfactual win that in reality was overlapped work."
+   },
+   {
+    "cause": "async completion treated as blocking",
+    "detail": "the event model advanced the consumer chain to pack_end/h2d_end per batch; in the engine the consumer waits per-layer and the fill pool runs ahead asynchronously (inflight_hits/duplicate suppression), so per-batch serialization overstated exposure of removed work."
+   }
+  ],
+  "rule": "no scalar correction factor was applied; the mechanism was removed and the model refit on measured stage tables",
+  "quantified": {
+   "old_model_pack_chain_ms": 5604.0,
+   "measured_fill_overlap_ms_cuda0": 89486.4,
+   "measured_fill_batch_wall_ms_cuda0_baseline": 54633.7,
+   "measured_fill_batch_wall_ms_cuda0_candidate": 55760.2,
+   "measured_mmap_to_pinned_full_run_ms_profiled_candidate": 12380.0,
+   "measured_reused_fill_buffers": 1117,
+   "measured_total_evictions": 1117
+  }
+ },
+ "replay_validation": {
+  "v65_journal@682": {
+   "decode_misses": 1251,
+   "sealed_misses": 1252,
+   "per_step_max_abs_diff": 2,
+   "per_step_table": [
+    96,
+    68,
+    78,
+    113,
+    125,
+    114,
+    97,
+    79,
+    56,
+    64,
+    79,
+    61,
+    70,
+    90,
+    61
+   ],
+   "sealed_table": [
+    96,
+    69,
+    80,
+    111,
+    125,
+    114,
+    96,
+    80,
+    56,
+    64,
+    79,
+    61,
+    69,
+    91,
+    61
+   ]
+  },
+  "profiled_journal@682": {
+   "decode_misses": 1251,
+   "sealed_misses": 1252,
+   "per_step_max_abs_diff": 2,
+   "per_step_table": [
+    96,
+    68,
+    78,
+    113,
+    125,
+    114,
+    97,
+    79,
+    56,
+    64,
+    79,
+    61,
+    70,
+    90,
+    61
+   ],
+   "sealed_table": [
+    96,
+    69,
+    80,
+    111,
+    125,
+    114,
+    96,
+    80,
+    56,
+    64,
+    79,
+    61,
+    69,
+    91,
+    61
+   ]
+  }
+ },
+ "decode_compulsory_misses": 1135,
+ "frontier": [
+  {
+   "pack_gib_per_gpu": 8.5,
+   "records_per_gpu": 682,
+   "pack_total_gib": 17.0,
+   "decode_misses_replayed": 1251,
+   "decode_compulsory_misses": 1135,
+   "decode_capacity_misses": 116,
+   "bytes_retained_gib_both_gpus": 16.983,
+   "miss_reduction_vs_8gib5": 0,
+   "delta_misses_per_extra_gib": 0.0,
+   "resident_plus_pack_hits_note": "per-GPU hits/misses in replay_details",
+   "simulated_decode_wall_s": 72.219,
+   "simulated_delta_s_vs_8gib5": 0.0,
+   "simulated_delta_pct_vs_observed_v65": -0.07,
+   "label": "SIMULATED (recalibrated observational model)",
+   "memory_classification": "SAFE_FOR_32GB"
+  },
+  {
+   "pack_gib_per_gpu": 9.0,
+   "records_per_gpu": 722,
+   "pack_total_gib": 18.0,
+   "decode_misses_replayed": 1229,
+   "decode_compulsory_misses": 1135,
+   "decode_capacity_misses": 94,
+   "bytes_retained_gib_both_gpus": 17.979,
+   "miss_reduction_vs_8gib5": 22,
+   "delta_misses_per_extra_gib": 44.0,
+   "resident_plus_pack_hits_note": "per-GPU hits/misses in replay_details",
+   "simulated_decode_wall_s": 71.148,
+   "simulated_delta_s_vs_8gib5": -1.071,
+   "simulated_delta_pct_vs_observed_v65": -1.55,
+   "label": "SIMULATED (recalibrated observational model)",
+   "memory_classification": "SAFE_FOR_32GB"
+  },
+  {
+   "pack_gib_per_gpu": 9.5,
+   "records_per_gpu": 762,
+   "pack_total_gib": 19.0,
+   "decode_misses_replayed": 1209,
+   "decode_compulsory_misses": 1135,
+   "decode_capacity_misses": 74,
+   "bytes_retained_gib_both_gpus": 18.976,
+   "miss_reduction_vs_8gib5": 42,
+   "delta_misses_per_extra_gib": 42.0,
+   "resident_plus_pack_hits_note": "per-GPU hits/misses in replay_details",
+   "simulated_decode_wall_s": 70.174,
+   "simulated_delta_s_vs_8gib5": -2.045,
+   "simulated_delta_pct_vs_observed_v65": -2.9,
+   "label": "SIMULATED (recalibrated observational model)",
+   "memory_classification": "SAFE_FOR_32GB"
+  },
+  {
+   "pack_gib_per_gpu": 10.0,
+   "records_per_gpu": 803,
+   "pack_total_gib": 20.0,
+   "decode_misses_replayed": 1200,
+   "decode_compulsory_misses": 1135,
+   "decode_capacity_misses": 65,
+   "bytes_retained_gib_both_gpus": 19.997,
+   "miss_reduction_vs_8gib5": 51,
+   "delta_misses_per_extra_gib": 34.0,
+   "resident_plus_pack_hits_note": "per-GPU hits/misses in replay_details",
+   "simulated_decode_wall_s": 69.736,
+   "simulated_delta_s_vs_8gib5": -2.483,
+   "simulated_delta_pct_vs_observed_v65": -3.5,
+   "label": "SIMULATED (recalibrated observational model)",
+   "memory_classification": "SAFE_FOR_32GB"
+  },
+  {
+   "pack_gib_per_gpu": 10.5,
+   "records_per_gpu": 843,
+   "pack_total_gib": 21.0,
+   "decode_misses_replayed": 1189,
+   "decode_compulsory_misses": 1135,
+   "decode_capacity_misses": 54,
+   "bytes_retained_gib_both_gpus": 20.993,
+   "miss_reduction_vs_8gib5": 62,
+   "delta_misses_per_extra_gib": 31.0,
+   "resident_plus_pack_hits_note": "per-GPU hits/misses in replay_details",
+   "simulated_decode_wall_s": 69.2,
+   "simulated_delta_s_vs_8gib5": -3.018,
+   "simulated_delta_pct_vs_observed_v65": -4.24,
+   "label": "SIMULATED (recalibrated observational model)",
+   "memory_classification": "BORDERLINE_FOR_32GB"
+  },
+  {
+   "pack_gib_per_gpu": 10.75,
+   "records_per_gpu": 863,
+   "pack_total_gib": 21.5,
+   "decode_misses_replayed": 1186,
+   "decode_compulsory_misses": 1135,
+   "decode_capacity_misses": 51,
+   "bytes_retained_gib_both_gpus": 21.491,
+   "miss_reduction_vs_8gib5": 65,
+   "delta_misses_per_extra_gib": 28.9,
+   "resident_plus_pack_hits_note": "per-GPU hits/misses in replay_details",
+   "simulated_decode_wall_s": 69.054,
+   "simulated_delta_s_vs_8gib5": -3.164,
+   "simulated_delta_pct_vs_observed_v65": -4.45,
+   "label": "SIMULATED (recalibrated observational model)",
+   "memory_classification": "BORDERLINE_FOR_32GB"
+  },
+  {
+   "pack_gib_per_gpu": 11.0,
+   "records_per_gpu": 883,
+   "pack_total_gib": 22.0,
+   "decode_misses_replayed": 1184,
+   "decode_compulsory_misses": 1135,
+   "decode_capacity_misses": 49,
+   "bytes_retained_gib_both_gpus": 21.989,
+   "miss_reduction_vs_8gib5": 67,
+   "delta_misses_per_extra_gib": 26.8,
+   "resident_plus_pack_hits_note": "per-GPU hits/misses in replay_details",
+   "simulated_decode_wall_s": 68.957,
+   "simulated_delta_s_vs_8gib5": -3.261,
+   "simulated_delta_pct_vs_observed_v65": -4.58,
+   "label": "SIMULATED (recalibrated observational model)",
+   "memory_classification": "BORDERLINE_FOR_32GB"
+  },
+  {
+   "pack_gib_per_gpu": 11.25,
+   "records_per_gpu": 903,
+   "pack_total_gib": 22.5,
+   "decode_misses_replayed": 1179,
+   "decode_compulsory_misses": 1135,
+   "decode_capacity_misses": 44,
+   "bytes_retained_gib_both_gpus": 22.487,
+   "miss_reduction_vs_8gib5": 72,
+   "delta_misses_per_extra_gib": 26.2,
+   "resident_plus_pack_hits_note": "per-GPU hits/misses in replay_details",
+   "simulated_decode_wall_s": 68.714,
+   "simulated_delta_s_vs_8gib5": -3.505,
+   "simulated_delta_pct_vs_observed_v65": -4.92,
+   "label": "SIMULATED (recalibrated observational model)",
+   "memory_classification": "BORDERLINE_FOR_32GB"
+  },
+  {
+   "pack_gib_per_gpu": 11.5,
+   "records_per_gpu": 923,
+   "pack_total_gib": 23.0,
+   "decode_misses_replayed": 1177,
+   "decode_compulsory_misses": 1135,
+   "decode_capacity_misses": 42,
+   "bytes_retained_gib_both_gpus": 22.985,
+   "miss_reduction_vs_8gib5": 74,
+   "delta_misses_per_extra_gib": 24.7,
+   "resident_plus_pack_hits_note": "per-GPU hits/misses in replay_details",
+   "simulated_decode_wall_s": 68.616,
+   "simulated_delta_s_vs_8gib5": -3.602,
+   "simulated_delta_pct_vs_observed_v65": -5.05,
+   "label": "SIMULATED (recalibrated observational model)",
+   "memory_classification": "NOT_SAFE_FOR_32GB"
+  },
+  {
+   "pack_gib_per_gpu": 12.0,
+   "records_per_gpu": 963,
+   "pack_total_gib": 24.0,
+   "decode_misses_replayed": 1163,
+   "decode_compulsory_misses": 1135,
+   "decode_capacity_misses": 28,
+   "bytes_retained_gib_both_gpus": 23.981,
+   "miss_reduction_vs_8gib5": 88,
+   "delta_misses_per_extra_gib": 25.1,
+   "resident_plus_pack_hits_note": "per-GPU hits/misses in replay_details",
+   "simulated_decode_wall_s": 67.935,
+   "simulated_delta_s_vs_8gib5": -4.284,
+   "simulated_delta_pct_vs_observed_v65": -5.99,
+   "label": "SIMULATED (recalibrated observational model)",
+   "memory_classification": "NOT_SAFE_FOR_32GB"
+  },
+  {
+   "pack_gib_per_gpu": 12.25,
+   "records_per_gpu": 983,
+   "pack_total_gib": 24.5,
+   "decode_misses_replayed": 1159,
+   "decode_compulsory_misses": 1135,
+   "decode_capacity_misses": 24,
+   "bytes_retained_gib_both_gpus": 24.479,
+   "miss_reduction_vs_8gib5": 92,
+   "delta_misses_per_extra_gib": 24.5,
+   "resident_plus_pack_hits_note": "per-GPU hits/misses in replay_details",
+   "simulated_decode_wall_s": 67.74,
+   "simulated_delta_s_vs_8gib5": -4.478,
+   "simulated_delta_pct_vs_observed_v65": -6.26,
+   "label": "SIMULATED (recalibrated observational model)",
+   "memory_classification": "NOT_SAFE_FOR_32GB"
+  },
+  {
+   "pack_gib_per_gpu": 12.75,
+   "records_per_gpu": 1024,
+   "pack_total_gib": 25.5,
+   "decode_misses_replayed": 1153,
+   "decode_compulsory_misses": 1135,
+   "decode_capacity_misses": 18,
+   "bytes_retained_gib_both_gpus": 25.5,
+   "miss_reduction_vs_8gib5": 98,
+   "delta_misses_per_extra_gib": 23.1,
+   "resident_plus_pack_hits_note": "per-GPU hits/misses in replay_details",
+   "simulated_decode_wall_s": 67.448,
+   "simulated_delta_s_vs_8gib5": -4.771,
+   "simulated_delta_pct_vs_observed_v65": -6.67,
+   "label": "SIMULATED (recalibrated observational model)",
+   "memory_classification": "NOT_SAFE_FOR_32GB"
+  }
+ ],
+ "recommended_candidate": {
+  "pack_gib_per_gpu": 10.0,
+  "records_per_gpu": 803,
+  "pack_total_gib": 20.0,
+  "decode_misses_replayed": 1200,
+  "decode_compulsory_misses": 1135,
+  "decode_capacity_misses": 65,
+  "bytes_retained_gib_both_gpus": 19.997,
+  "miss_reduction_vs_8gib5": 51,
+  "delta_misses_per_extra_gib": 34.0,
+  "resident_plus_pack_hits_note": "per-GPU hits/misses in replay_details",
+  "simulated_decode_wall_s": 69.736,
+  "simulated_delta_s_vs_8gib5": -2.483,
+  "simulated_delta_pct_vs_observed_v65": -3.5,
+  "label": "SIMULATED (recalibrated observational model)",
+  "memory_classification": "SAFE_FOR_32GB"
+ },
+ "recommended_wall_band": {
+  "improvement_s": {
+   "central": 2.48,
+   "statistical_ci95": [
+    2.35,
+    2.62
+   ]
+  },
+  "run_noise_s": 1.851,
+  "note": "SIMULATED. Run-to-run baseline spread (~1.0-1.9 s) is comparable to the central estimate; a matched A/B is the arbiter"
+ },
+ "limitations": [
+  "miss_service_ms is observational effective service, not raw disk BW",
+  "fit is trace-local: 15 decode tokens, one prompt, one host class",
+  "held-out runs share the v65 reads table (level validation only)",
+  "run-to-run spread ~1.0-1.9 s dominates small simulated deltas",
+  "continuous peak memory UNMEASURED (final + token checkpoints only)",
+  "pread capability UNKNOWN until the Kaggle package runs"
+ ]
+}

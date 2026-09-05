@@ -6,6 +6,16 @@ against the `/tmp` trace store). Status: **written and locally validated for
 bookkeeping only** — no local store exists on this Windows host, so **no
 measurements are reported here**. This protocol defines how to produce them.
 
+> **v2 audit (2026-09-04, recalibration installment):** the bench was audited
+> against the Phase G spec and passes unchanged — required depths
+> {1,2,3,4,6,8,12,16} (default `QUEUE_DEPTHS`), representative 13,369,344 B
+> reads, per-lane fds (shared-fd contrast opt-in), seq/dispersed/journal
+> patterns, coldish/warm separated with `page_cache_ground_truth: unknown`,
+> and the required outputs (aggregate MB/s, p50/p90/p99, wall, cpu,
+> requested/completed bytes, `concurrency_achieved_est`). No local
+> measurement is substituted for Kaggle. A ready-to-run command block is
+> packaged in `results/pread_kaggle_package.json` for Astra.
+
 ---
 
 ## 1. Why this measurement gates the model

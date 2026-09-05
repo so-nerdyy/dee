@@ -1,0 +1,72 @@
+{
+ "schema": "exact-staging/next-ab-v2",
+ "source_seal": "14864034a7354e0e29e11c1c09f18b0863afe6a0",
+ "label": "SIMULATED expectations; the A/B is the arbiter",
+ "one_knob": "host_pack_runtime_cap_gib_total (harness clamp at deepseek_v4_native_generate.py LRU_TOTAL_CAP_GIB); config-only",
+ "why_this_point": {
+  "chosen_gib_per_gpu": 10.0,
+  "marginal_curve": "marginal misses per extra GiB (replay): 8.5->9.0: 44, 9.0->9.5: 40, 9.5->10.0: 18, then <=22 per 0.5 GiB step and fading; 10.5+ crosses the conservative 2 GB headroom line (BORDERLINE/NOT_SAFE); 12.75 REJECTED for the 32 GB thesis",
+  "memory": "pack total 20.0 GiB leaves >=7.6 GiB to the nearest measured clean OOM (27.68 GiB) and >=4.1 GiB projected min MemAvailable"
+ },
+ "baseline_config": {
+  "host_pack_runtime_cap_gib_total": 17.0,
+  "effective_pack_gib_per_gpu": 8.5,
+  "records_per_gpu": 682
+ },
+ "candidate_config": {
+  "host_pack_runtime_cap_gib_total": 20.0,
+  "effective_pack_gib_per_gpu": 10.0,
+  "records_per_gpu": 803
+ },
+ "keep_identical": [
+  "prompt",
+  "n_tokens=16",
+  "route authority",
+  "cache_budget 3.5 GiB/GPU",
+  "source_read_lanes",
+  "source_read_queue_depth",
+  "correctness gates",
+  "reuse flag",
+  "madvise/discards off"
+ ],
+ "expected": {
+  "miss_reduction_measured_replay": 51,
+  "simulated_wall_delta": {
+   "improvement_s": {
+    "central": 2.48,
+    "statistical_ci95": [
+     2.35,
+     2.62
+    ]
+   },
+   "run_noise_s": 1.851,
+   "note": "SIMULATED. Run-to-run baseline spread (~1.0-1.9 s) is comparable to the central estimate; a matched A/B is the arbiter"
+  },
+  "hypothesis": "fewer capacity misses -> fewer 13.37 MB SSD reads -> shorter decode wall"
+ },
+ "oom_risk": {
+  "class": "SAFE_FOR_32GB",
+  "projected_total_decimal_gb": 29.23,
+  "watch": "memory.json per-token VmRSS/VmData + min available; abort if min available < 1.5 GiB"
+ },
+ "required_live_metrics": [
+  "decode_wall_s",
+  "decode_tokens_per_second",
+  "total_wall_seconds",
+  "VmHWM/VmRSS + per-token memory checkpoints",
+  "host_pack entries/bytes/hits/misses/evictions per GPU",
+  "ssd_reads (storage_requests) per step",
+  "h2d_bytes per step",
+  "all sealed correctness gates",
+  "run hashes (source/config/journal)"
+ ],
+ "success_criteria": {
+  "correctness": "ACCEPT_CORRECTNESS on both arms; identical ids+text",
+  "performance": "candidate decode wall < baseline decode wall by more than the baseline run spread (>=1.0 s), replicated in a second matched pair; performance acceptance only under formal campaign rules"
+ },
+ "falsifies_host_pack_hypothesis": [
+  "pack hits rise / misses fall as replayed, but decode wall does not improve beyond run noise in two matched pairs",
+  "or: process memory exceeds the projected envelope / approaches OOM",
+  "or: correctness gates fail (any divergence -> stop)"
+ ]
+}

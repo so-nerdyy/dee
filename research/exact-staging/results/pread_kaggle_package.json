@@ -1,0 +1,22 @@
+{
+ "schema": "exact-staging/pread-kaggle-package-v1",
+ "status": "READY_FOR_ASTRA (not measurable locally; local SSD != Kaggle)",
+ "bench": "tools/bench_expert_pread.py (audited: per-lane fds, depths 1-16, seq/dispersed/journal patterns, coldish/warm separated, concurrency_achieved_est, cpu_s, no shared-fd by default)",
+ "store": "<DEE4_TRACE_PATH> on the Kaggle host (experts.dee4 trace store)",
+ "record_bytes": 13369344,
+ "command": "python tools/bench_expert_pread.py --store $DEE4_TRACE_PATH --records 96 --depths 1 2 3 4 6 8 12 16 --patterns seq dispersed journal --journal $OUT/routed_experts.jsonl --journal-meta $OUT/dee4-metadata.json --repeat 2 --shared-fd-variant --label kaggle-2xt4 --out $OUT/pread_capability.json",
+ "outputs": [
+  "aggregate_mb_s",
+  "p50_ms",
+  "p90_ms",
+  "p99_ms",
+  "wall_s",
+  "cpu_s",
+  "bytes_requested",
+  "bytes_completed",
+  "concurrency_achieved_est",
+  "short_or_empty_reads"
+ ],
+ "ingestion": "research/exact-critical-path (ssd_aggregate_mb_s uncertainty band replaces the 320-459 MB/s fit band; pins the -x% storage-floor position)",
+ "why": "the single most valuable missing measurement: true concurrent pread capability of the trace store bounds every storage-side decision remaining"
+}
