@@ -21,11 +21,18 @@ stays false for DS9.
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Any, Optional
 
 import numpy as np
 import torch
+
+# Host/sync profiler (research/route-pipeline, profiling-only): set
+# DEE_HOST_PROFILE=1 to record per-layer host-wait spans as JSON. Default
+# off: the only added cost is one flag check per forward, and no execution,
+# synchronization, or arithmetic changes in either mode.
+_HOST_PROFILE = os.environ.get("DEE_HOST_PROFILE") == "1"
 
 from scripts import deepseek_v4_expert_reference as ds7
 from scripts import deepseek_v4_layer_reference as layer_ref
@@ -277,6 +284,8 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
         self._native_raw_output: Optional[torch.Tensor] = None
         self._native_moe_output: Optional[torch.Tensor] = None
         self._native_route_ids_host: Optional[torch.Tensor] = None
+        # Host/sync profiler rows (only appended when _HOST_PROFILE is set).
+        self.host_profile_rows: list = []
         # Device-resident shared-expert payload (materialized lazily on the
         # first forward; the provider hands back CPU FP16 tensors).
         self._shared_dev: Optional[dict[str, torch.Tensor]] = None
@@ -439,7 +448,17 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
                 ids_shape, dtype=torch.int32, device="cpu",
                 pin_memory=bool(ids.is_cuda))
         ids_host_tensor = self._native_route_ids_host
+        # Host/sync profiler: split the route-D2H section into copy submit /
+        # wait start / wait end WITHOUT changing it. All timers are host
+        # perf_counter reads; the sync itself is untouched.
+        hp = {"layer": self.layer_id,
+              "ids_bytes": int(ids_host_tensor.numel() * 4),
+              "route_d2h_provenance": "HOST_WALL"} if _HOST_PROFILE else None
+        if hp is not None:
+            hp["copy_submit_t"] = time.perf_counter()
         ids_host_tensor.copy_(ids.detach(), non_blocking=bool(ids.is_cuda))
+        if hp is not None:
+            hp["wait_start_t"] = time.perf_counter()
         if ids.is_cuda:
             # The scheduler consumes the host array synchronously. This also
             # orders the preceding FP32->FP16 hidden copy before the native
@@ -447,6 +466,10 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
             torch.cuda.current_stream(ids.device).synchronize()
             self.stats["host_synchronizations"] += 1
             self.stats["route_id_host_synchronizations"] += 1
+        if hp is not None:
+            hp["wait_end_t"] = time.perf_counter()
+            hp["route_d2h_host_wait_ms"] = (
+                hp["wait_end_t"] - hp["wait_start_t"]) * 1000.0
         ids_host = ids_host_tensor.numpy()
         self.stats["route_id_d2h_copies"] += 1
         self.stats["route_id_d2h_bytes"] += int(ids_host_tensor.numel() * 4)
@@ -458,6 +481,8 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
         ok = bool(batch_device(
             self.layer_id, hidden_fp16.data_ptr(), n, ids_host, cfg.topk,
             raw.data_ptr()))
+        if hp is not None:
+            hp["native_call_wall_ms"] = (time.perf_counter() - t0) * 1000.0
         self.stats["native_fwd_ms"] += (time.perf_counter() - t0) * 1000.0
         self.stats["native_calls"] += 1
         self.stats["native_batch_calls"] += 1
@@ -484,14 +509,70 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
         weights_f32 = weights if weights.dtype == torch.float32 else weights.float()
         # Preserve the established rank-order FP32 reduction instead of using
         # an opaque reduction kernel that might reorder the top-K summation.
+        if hp is not None:
+            hp["combine_start_t"] = time.perf_counter()
         for rank in range(cfg.topk):
             moe.addcmul_(
                 raw[:, rank, :], weights_f32[:, rank].unsqueeze(1))
+        if hp is not None:
+            hp["combine_ms"] = (
+                time.perf_counter() - hp.pop("combine_start_t")) * 1000.0
+            hp["combine_provenance"] = "HOST_WALL"
+            # Deferred CUDA events around shared work: recorded on the torch
+            # stream, never synchronized here (elapsed read at dump time, so
+            # measurement adds no pipeline perturbation).
+            try:
+                hp["shared_start_event"] = torch.cuda.Event(enable_timing=True)
+                hp["shared_start_event"].record(torch.cuda.current_stream(self.device))
+            except Exception:
+                hp["shared_start_event"] = None
         self._profile_ffn_mark()
 
         shared_out = self._shared_forward(xf, hidden_fp16)
+        if hp is not None:
+            try:
+                shared_end = torch.cuda.Event(enable_timing=True)
+                shared_end.record(torch.cuda.current_stream(self.device))
+                hp["shared_end_event"] = shared_end
+            except Exception:
+                hp["shared_end_event"] = None
+            hp["shared_host_wall_ms"] = None  # resolved at dump (see below)
         self._profile_ffn_mark()
+        if hp is not None:
+            hp["device"] = str(self.device)
+            hp["token_rows"] = int(n)
+            self.host_profile_rows.append(hp)
         return moe + shared_out, shared_out
+
+    def dump_host_profile(self, path: str) -> str:
+        """Write accumulated per-layer host-wait rows as JSON. Resolves
+        deferred shared-expert CUDA-event intervals WITHOUT adding
+        synchronization: elapsed_time reads already-recorded events. Rows
+        whose events never completed are marked UNKNOWN rather than waited on.
+        Returns the path written."""
+        import json as _json
+        out = []
+        for row in self.host_profile_rows:
+            row = dict(row)
+            start, end = row.pop("shared_start_event", None), row.pop("shared_end_event", None)
+            if start is not None and end is not None:
+                try:
+                    if end.query() and start.query():
+                        row["shared_device_ms"] = float(start.elapsed_time(end))
+                        row["shared_device_provenance"] = "CUDA_EVENT"
+                    else:
+                        row["shared_device_ms"] = None
+                        row["shared_device_provenance"] = "UNKNOWN"
+                except Exception:
+                    row["shared_device_ms"] = None
+                    row["shared_device_provenance"] = "UNKNOWN"
+            else:
+                row["shared_device_ms"] = None
+                row["shared_device_provenance"] = "UNKNOWN"
+            out.append(row)
+        with open(path, "w", encoding="utf-8") as fh:
+            _json.dump({"records": out}, fh, indent=2)
+        return path
 
     def _shared_forward(self, xf: torch.Tensor,
                         hidden_fp16: Optional[torch.Tensor] = None) -> torch.Tensor:

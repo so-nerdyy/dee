@@ -332,11 +332,22 @@ public:
                            size_t bytes = 0, uint64_t transfer_id = 0,
                            size_t queue_depth = 0, size_t staging_slot = 0);
     void note_cpu_timeline_interval(CpuTimelineKind kind, TimePoint begin, TimePoint end,
-                                    int token = -1, int logical_layer = -1,
-                                    int expert = -1, size_t bytes = 0,
-                                    uint64_t transfer_id = 0,
-                                    size_t queue_depth = 0,
-                                    size_t staging_slot = 0);
+                                     int token = -1, int logical_layer = -1,
+                                     int expert = -1, size_t bytes = 0,
+                                     uint64_t transfer_id = 0,
+                                     size_t queue_depth = 0,
+                                     size_t staging_slot = 0);
+
+    // Host/sync profiler: no-ops unless enabled. host_begin returns an
+    // invalid ticket when disabled; host_end ignores invalid tickets.
+    void set_host_layer_context(int token, int layer, int device_id);
+    HostSpanTicket host_begin(HostSpan span);
+    void host_end(HostSpanTicket ticket);
+    void host_counter(size_t slot, uint64_t value);
+    void emit_host_layer_record();
+    const std::vector<HostLayerRecord>& host_layer_records() const;
+    std::string host_layer_records_json() const;
+    std::string host_layer_records_csv() const;
 
 #ifdef DEE_CUDA
     bool begin_cuda_timeline(void* compute_stream, void* transfer_stream);
@@ -400,6 +411,14 @@ private:
     std::vector<std::vector<uint64_t>> predictions_;
     uint64_t timing_events_dropped_ = 0;
 
+    // Host/sync profiler state (all inert unless enabled_).
+    int host_token_ = -1;
+    int host_layer_ = -1;
+    int host_device_ = -1;
+    HostLayerRecord host_current_{};
+    bool host_current_open_ = false;
+    std::vector<HostLayerRecord> host_records_;
+
 #ifdef DEE_CUDA
     struct PendingCudaSample {
         GpuStage stage = GpuStage::H2D;
@@ -452,7 +471,94 @@ const char* host_wait_reason_name(HostWaitReason reason);
 const char* cpu_timeline_kind_name(CpuTimelineKind kind);
 const char* idle_gap_category_name(IdleGapCategory category);
 const char* readiness_wait_category_name(ReadinessWaitCategory category);
+const char* host_span_name(HostSpan span);
+bool host_span_nested(HostSpan span);  // true: sub-span, excluded from closure sums
+
+// RAII host-span guard: begins in ctor, ends in dtor (early-return safe).
+// Zero behavior change: two no-op calls when the profiler is disabled.
+class HostSpanGuard {
+ public:
+    HostSpanGuard(StageProfiler* profiler, HostSpan span)
+        : profiler_(profiler), ticket_{} {
+        if (profiler_) ticket_ = profiler_->host_begin(span);
+    }
+    ~HostSpanGuard() {
+        if (profiler_) profiler_->host_end(ticket_);
+    }
+    HostSpanGuard(const HostSpanGuard&) = delete;
+    HostSpanGuard& operator=(const HostSpanGuard&) = delete;
+
+ private:
+    StageProfiler* profiler_;
+    HostSpanTicket ticket_;
+};
+
+// Layer-scope guard: opens the per-layer host record in ctor, emits it in
+// dtor (covers every return path). No-ops entirely when disabled.
+class HostLayerScope {
+ public:
+    HostLayerScope(StageProfiler* profiler, int token, int layer, int device)
+        : profiler_(profiler) {
+        if (profiler_) profiler_->set_host_layer_context(token, layer, device);
+    }
+    ~HostLayerScope() {
+        if (profiler_) profiler_->emit_host_layer_record();
+    }
+    HostLayerScope(const HostLayerScope&) = delete;
+    HostLayerScope& operator=(const HostLayerScope&) = delete;
+
+ private:
+    StageProfiler* profiler_;
+};
 std::string stage_profile_json(const StageProfile& profile, bool include_trace);
 std::string cuda_timeline_json(const StageProfile& profile);
+
+// ---- Host/sync profiler (research/route-pipeline, profiling-only) ----
+// Additive, default-off instrumentation that decomposes per-layer host wall
+// into non-overlapping (or explicitly NESTED) spans. Observes only: no CUDA
+// calls, no sync insertion/removal, no reordering, no arithmetic. Every
+// method is a no-op unless the profiler is enabled via configure().
+enum class HostSpan : size_t {
+    LayerWall,          // whole native layer call, inclusive (NESTED parent)
+    NativeCallWall,     // moe_forward_batch_device_impl body (NESTED parent)
+    SourceLookupWait,   // host-pack lookup + source-read wait
+    FillWait,           // fill/reservation wait
+    StageEnqueueWait,   // H2D enqueue (host submission, not device time)
+    ReadinessWait,      // wait_on_stream + pin (host-side wait)
+    DecodeWait,         // packed->FP16 decode launches (host span)
+    ExpertComputeWait,  // GEMM/activation dispatch (host span)
+    GatherScatterWait,  // D2D gather/scatter dispatch (host span)
+    NativeOutputSync,   // TIMES the existing final sync; never adds one
+    SharedExpert,       // torch-side shared expert (Python records this)
+    Combine,            // host combine (Python records this)
+    Orchestration,      // Python orchestration between layers
+    Handoff,            // cross-GPU handoff at layer 21/22
+    Count
+};
+
+// Provenance of one span sample (see TIMING_SCHEMA.md).
+enum class SpanProvenance : uint8_t {
+    HostWall,   // steady_clock delta on host
+    CudaEvent,  // device interval from existing CUDA events
+    Counter,    // byte/count telemetry, not time
+    Derived,    // computed from other spans (never added to wall)
+    Unknown,    // explicitly unmeasured
+    Nested      // sub-span of an inclusive parent; excluded from closure sums
+};
+
+struct HostSpanTicket {
+    bool valid = false;
+    HostSpan span = HostSpan::LayerWall;
+    StageProfiler::TimePoint begin{};
+};
+
+struct HostLayerRecord {
+    int token = -1;
+    int layer = -1;
+    int device_id = -1;
+    std::array<double, static_cast<size_t>(HostSpan::Count)> ms{};
+    std::array<uint64_t, 4> counters{};  // ids_bytes, copies, syncs, events
+    bool complete = false;
+};
 
 }  // namespace dee

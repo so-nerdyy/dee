@@ -71,3 +71,56 @@ in the profile (torch path → UNKNOWN); individual sync costs are UNKNOWN
   worker in this shared worktree: `legal_overlap.py`, `shared_reorder.py`)
   has 1 failure in THEIR work-in-progress; left completely untouched, not
   committed, unrelated to this track (no shared imports).
+
+---
+
+# Host/sync profiler installment (MUSE)
+
+Profiling-only: C++ HostSpan API + engine markers (RAII, default-off),
+`DEE_HOST_PROFILE=1` Python rows, schema/closure/decision engine
+(`host_profiler.py`), Kaggle matched-pair pack. No sync removed, no
+reorder, no arithmetic/routing change, no staging/overlap/cache/tolerance
+change. `research/t4-kernel-next` and Flash's branch untouched.
+
+## The 10 required answers
+
+1. **Directly measurable now**: route-D2H split (copy submit/wait
+   start/wait end + bytes/copies), native-call wall, source/fill/enqueue/
+   readiness/decode/compute/gather-scatter host spans, per-layer output-sync
+   wait, shared host wall (+CUDA-event interval where completable), combine,
+   orchestration/handoff (schema-reserved, caller-wired).
+2. **Route-D2H separation**: copy-submit timestamp splits submission from
+   waiting; the wait span covers sync exit minus entry. Attribution of "how
+   much was unrelated work" needs the event timeline alongside (reported,
+   not subtracted) — the narrowing decision uses the copy floor + timeline.
+3. **Yes**: `NativeOutputSync` wraps the existing final sync per
+   layer/token; removal/narrowing is NOT done here.
+4. **Yes, without perturbation**: host wall needs no sync; device interval
+   uses deferred record-only events with elapsed resolved at dump;
+   incomplete events go UNKNOWN (never waited on). Any future sync-added
+   measurement must be labeled PROFILE_PERTURBING.
+5. **Workers carry no wall timers** — only the calling thread's waits are
+   timed (byte counters + CUDA events elsewhere); nested spans are excluded
+   from closure sums by rule, enforced in code and tests.
+6. **Potentially all of it**: schema covers every known wait class; honest
+   closure target is 0.85 or better, unknown carried explicitly, never
+   force-filled.
+7. **Overhead**: one branch per marker + two RAII objects per native call;
+   one flag check per Python forward; zero added syscalls/CUDA/syncs.
+   Residual perturbation UNKNOWN until the matched off/on Kaggle pair runs.
+8. **Exact run**: `kaggle_profile_pack.py --run` with the canonical decode
+   command + prompt hash + tokens (2xT4/source/gates/denylist verified,
+   matched off/on, four artifacts out). See KAGGLE_PROFILE_PROTOCOL.md.
+9. **Promote B** iff closure is 0.85 or better AND measured shared fraction
+   is 0.05 or better with legal idle overlap (runner case-B `c` supporting).
+10. **Promote C/D2H** iff closure is 0.85 or better AND output-sync (resp.
+    route-D2H excess over copy floor) fraction is 0.05 (resp. 0.02) or
+    better. Thresholds are explicit parameters, not verdicts.
+
+## Verification
+
+- `tests/test_host_sync_profiler.py` — 17 passed: default-off (C++ member,
+  EngineConfig, runtime Python flag), diff-scan proving instrumentation-only
+  engine/candidate changes, nesting rules, UNKNOWN-safe closure, malformed
+  fails closed, attribution, hold-by-default + evidence-gated promotion.
+- Prior suites untouched and green (`test_route_pipeline*.py`).

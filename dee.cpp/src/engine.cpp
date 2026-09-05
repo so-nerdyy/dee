@@ -760,6 +760,13 @@ bool Engine::moe_forward_batch_device_impl(
     if (!d_h_in || !h_expert_ids || !d_experts_out || tokens <= 0 || topk <= 0 ||
         topk > cfg_.topk) return false;
 
+    // Host/sync profiler scopes (profiling-only): no-ops unless enabled.
+    // No CUDA calls, no reordering, no behavior change.
+    StageProfiler* host_prof = profiler_.enabled() ? &profiler_ : nullptr;
+    HostLayerScope host_layer_scope(host_prof, current_token_, layer,
+                                    cfg_.device_id);
+    HostSpanGuard native_call_guard(host_prof, HostSpan::NativeCallWall);
+
 #ifdef DEE_CUDA
     if (!cfg_.use_cuda ||
         (cfg_.cache_dtype != DeviceCacheDType::Fp16 &&
@@ -877,12 +884,18 @@ bool Engine::moe_forward_batch_device_impl(
         const size_t last = std::min(
             active_experts.size(), first + static_cast<size_t>(cache_batch));
         prefetcher_.begin_batch();
-        if (!prepare_fp4_experts(
-                source_layer, active_experts.data() + first,
-                last - first)) return false;
-        for (size_t i = first; i < last; ++i) {
-            if (!stage_expert(layer, source_layer, active_experts[i],
-                              static_cast<int>(active_experts.size() - i))) return false;
+        {
+            HostSpanGuard fill_guard(host_prof, HostSpan::FillWait);
+            if (!prepare_fp4_experts(
+                    source_layer, active_experts.data() + first,
+                    last - first)) return false;
+        }
+        {
+            HostSpanGuard enqueue_guard(host_prof, HostSpan::StageEnqueueWait);
+            for (size_t i = first; i < last; ++i) {
+                if (!stage_expert(layer, source_layer, active_experts[i],
+                                  static_cast<int>(active_experts.size() - i))) return false;
+            }
         }
         for (size_t i = first; i < last; ++i) {
             const int expert = active_experts[i];
@@ -905,6 +918,7 @@ bool Engine::moe_forward_batch_device_impl(
                     d_h_in_half + direct_token * static_cast<size_t>(hidden_);
                 ++stats_.direct_row_gather_bypasses;
             } else {
+                HostSpanGuard gather_guard(host_prof, HostSpan::GatherScatterWait);
                 if (profiler_.enabled()) {
                     profiler_.set_cuda_context(
                         current_token_, layer, expert,
@@ -946,9 +960,13 @@ bool Engine::moe_forward_batch_device_impl(
             }
 
             // Arm device-side wait for expert weight transfer.
-            if (!prefetcher_.wait_on_stream(source_layer, expert, compute_stream_) &&
-                !prefetcher_.wait(source_layer, expert)) return false;
-            if (!cache_.pin(source_layer, expert)) return false;
+            // Host/sync profiler: times the host-side readiness wait only.
+            {
+                HostSpanGuard readiness_guard(host_prof, HostSpan::ReadinessWait);
+                if (!prefetcher_.wait_on_stream(source_layer, expert, compute_stream_) &&
+                    !prefetcher_.wait(source_layer, expert)) return false;
+                if (!cache_.pin(source_layer, expert)) return false;
+            }
 
             const void* d_blob = cache_.data(source_layer, expert);
             // The live DeepSeek model uses this device-resident batch API.
@@ -959,6 +977,7 @@ bool Engine::moe_forward_batch_device_impl(
             // produced non-finite prefill logits despite the host-API packed
             // cache regression passing.
             if (d_blob && cfg_.cache_dtype == DeviceCacheDType::Fp4E2m1) {
+                HostSpanGuard decode_guard(host_prof, HostSpan::DecodeWait);
                 d_blob = decode_fp4_cache_block_to_scratch(
                     d_blob, compute_stream_);
             }
@@ -969,12 +988,16 @@ bool Engine::moe_forward_batch_device_impl(
                 ? d_experts_out_f32 +
                     direct_position * static_cast<size_t>(hidden_)
                 : d_moe_batch_output_;
-            const bool computed = d_blob && swiglu_expert_batch_fp16_cuda(
-                cublas_handle_, d_blob, expert_input_half,
-                d_moe_batch_gate_half_, d_moe_batch_up_half_,
-                d_moe_batch_activation_half_, expert_output,
-                static_cast<int>(group_tokens), inter_, hidden_, compute_stream_,
-                profiler_.enabled() ? &profiler_ : nullptr);
+            bool computed = false;
+            {
+                HostSpanGuard compute_guard(host_prof, HostSpan::ExpertComputeWait);
+                computed = d_blob && swiglu_expert_batch_fp16_cuda(
+                    cublas_handle_, d_blob, expert_input_half,
+                    d_moe_batch_gate_half_, d_moe_batch_up_half_,
+                    d_moe_batch_activation_half_, expert_output,
+                    static_cast<int>(group_tokens), inter_, hidden_, compute_stream_,
+                    profiler_.enabled() ? &profiler_ : nullptr);
+            }
             if (!computed) {
                 cache_.unpin(source_layer, expert);
                 return false;
@@ -988,6 +1011,7 @@ bool Engine::moe_forward_batch_device_impl(
             if (direct_single_row) {
                 ++stats_.direct_row_scatter_bypasses;
             } else {
+                HostSpanGuard scatter_guard(host_prof, HostSpan::GatherScatterWait);
                 if (profiler_.enabled()) {
                     profiler_.set_cuda_context(
                         current_token_, layer, expert,
@@ -1035,6 +1059,8 @@ bool Engine::moe_forward_batch_device_impl(
     // Synchronize the compute stream so the Python caller can safely read
     // d_experts_out without needing access to the engine's internal stream.
     if (synchronize_output) {
+        // Host/sync profiler: TIMES the existing sync; adds none.
+        HostSpanGuard sync_guard(host_prof, HostSpan::NativeOutputSync);
         const auto output_sync_begin = profiler_.enabled()
             ? StageProfiler::now() : StageProfiler::TimePoint{};
         if (!DEE_CUDA_CHECK_NAMED(

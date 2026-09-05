@@ -965,6 +965,123 @@ const char* gpu_stage_name(GpuStage stage) {
     return names[static_cast<size_t>(stage)];
 }
 
+// ---- Host/sync profiler (profiling-only; no-ops unless enabled) ----
+const char* host_span_name(HostSpan span) {
+    static const char* names[] = {
+        "layer_wall", "native_call_wall", "source_lookup_wait", "fill_wait",
+        "stage_enqueue_wait", "readiness_wait", "decode_wait",
+        "expert_compute_wait", "gather_scatter_wait", "native_output_sync",
+        "shared_expert", "combine", "orchestration", "handoff"
+    };
+    return names[static_cast<size_t>(span)];
+}
+
+bool host_span_nested(HostSpan span) {
+    // Inclusive parents: excluded from closure sums (children carry the time).
+    return span == HostSpan::LayerWall || span == HostSpan::NativeCallWall;
+}
+
+void StageProfiler::set_host_layer_context(int token, int layer, int device_id) {
+    if (!enabled_) return;
+    if (host_current_open_) emit_host_layer_record();  // close any dangling record
+    host_token_ = token;
+    host_layer_ = layer;
+    host_device_ = device_id;
+    host_current_ = HostLayerRecord{};
+    host_current_.token = token;
+    host_current_.layer = layer;
+    host_current_.device_id = device_id;
+    for (size_t i = 0; i < static_cast<size_t>(HostSpan::Count); ++i) {
+        host_current_.ms[i] = std::numeric_limits<double>::quiet_NaN();
+    }
+    host_current_open_ = true;
+}
+
+HostSpanTicket StageProfiler::host_begin(HostSpan span) {
+    HostSpanTicket ticket;
+    if (!enabled_ || !host_current_open_) return ticket;
+    ticket.valid = true;
+    ticket.span = span;
+    ticket.begin = Clock::now();
+    return ticket;
+}
+
+void StageProfiler::host_end(HostSpanTicket ticket) {
+    if (!enabled_ || !ticket.valid || !host_current_open_) return;
+    const double ms =
+        std::chrono::duration<double, std::milli>(Clock::now() - ticket.begin).count();
+    size_t i = static_cast<size_t>(ticket.span);
+    double& slot = host_current_.ms[i];
+    // Accumulate repeated spans (e.g. per-expert readiness waits in one layer).
+    slot = std::isnan(slot) ? ms : slot + ms;
+}
+
+void StageProfiler::host_counter(size_t slot, uint64_t value) {
+    if (!enabled_ || !host_current_open_ || slot >= host_current_.counters.size()) return;
+    host_current_.counters[slot] += value;
+}
+
+void StageProfiler::emit_host_layer_record() {
+    if (!enabled_ || !host_current_open_) return;
+    host_current_.complete = true;
+    host_records_.push_back(host_current_);
+    host_current_open_ = false;
+}
+
+const std::vector<HostLayerRecord>& StageProfiler::host_layer_records() const {
+    return host_records_;
+}
+
+std::string StageProfiler::host_layer_records_json() const {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(6);
+    out << "{\"records\":[";
+    for (size_t r = 0; r < host_records_.size(); ++r) {
+        const HostLayerRecord& rec = host_records_[r];
+        if (r) out << ',';
+        out << "{\"token\":" << rec.token << ",\"layer\":" << rec.layer
+            << ",\"device\":" << rec.device_id << ",\"spans\":{";
+        for (size_t i = 0; i < static_cast<size_t>(HostSpan::Count); ++i) {
+            if (i) out << ',';
+            out << '\"' << host_span_name(static_cast<HostSpan>(i)) << "\":";
+            const double v = rec.ms[i];
+            if (std::isnan(v)) {
+                out << "{\"ms\":null,\"provenance\":\"UNKNOWN\"}";
+            } else {
+                out << "{\"ms\":" << v << ",\"provenance\":\""
+                    << (host_span_nested(static_cast<HostSpan>(i)) ? "NESTED" : "HOST_WALL")
+                    << "\"}";
+            }
+        }
+        out << "},\"counters\":{\"ids_bytes\":" << rec.counters[0]
+            << ",\"copies\":" << rec.counters[1]
+            << ",\"syncs\":" << rec.counters[2]
+            << ",\"events\":" << rec.counters[3] << "}}";
+    }
+    out << "]}";
+    return out.str();
+}
+
+std::string StageProfiler::host_layer_records_csv() const {
+    std::ostringstream out;
+    out << "token,layer,device";
+    for (size_t i = 0; i < static_cast<size_t>(HostSpan::Count); ++i) {
+        out << ',' << host_span_name(static_cast<HostSpan>(i)) << "_ms";
+    }
+    out << ",ids_bytes,copies,syncs,events\n";
+    out << std::fixed << std::setprecision(6);
+    for (const HostLayerRecord& rec : host_records_) {
+        out << rec.token << ',' << rec.layer << ',' << rec.device_id;
+        for (size_t i = 0; i < static_cast<size_t>(HostSpan::Count); ++i) {
+            out << ',';
+            if (!std::isnan(rec.ms[i])) out << rec.ms[i];
+        }
+        out << ',' << rec.counters[0] << ',' << rec.counters[1]
+            << ',' << rec.counters[2] << ',' << rec.counters[3] << '\n';
+    }
+    return out.str();
+}
+
 const char* request_kind_name(RequestKind kind) {
     switch (kind) {
         case RequestKind::ResidentHit: return "resident";
