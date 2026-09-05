@@ -1,0 +1,17 @@
+{
+  "id": "nivind/dee-cpp-dsv4-pack-cap-s2r-20260905",
+  "title": "dee-cpp-dsv4-pack-cap-s2r-20260905",
+  "code_file": "session-driver.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": "true",
+  "enable_gpu": "true",
+  "enable_internet": "true",
+  "dataset_sources": [
+    "nivind/deepseek-v4-flash-0731-shards"
+  ],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": [],
+  "enable_tpu": "false"
+}

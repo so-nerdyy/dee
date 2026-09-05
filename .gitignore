@@ -24,3 +24,6 @@ cmake-build-*/
 benchmark_reports/*
 !benchmark_reports/*.jsonl
 !benchmark_reports/ornith-layer0-parity-*.json
+
+# pack-cap-ab: keep code+contract, drop heavy live outputs locally
+experiment/pack-cap-ab/results/live/

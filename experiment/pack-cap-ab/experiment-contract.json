@@ -1,0 +1,118 @@
+{
+ "schema": "pack-cap-ab/experiment-contract-v1",
+ "preregistered": true,
+ "preregistered_note": "This contract was written and committed BEFORE session 1 launched. Thresholds are frozen from ce6cb81's measured-noise analysis (results/ab_noise.json: baseline MAD 0.905 s, SD 0.926 s); they must not be rewritten after seeing any result. Formal ACCEPT_PERFORMANCE remains governed by the campaign's existing acceptance policy and is NOT granted by this contract.",
+ "created_utc": "2026-09-04T00:00:00Z",
+ "branch": "experiment/pack-cap-ab",
+ "base_research_commit": "ce6cb81c9f56ec083521c05f4004e5bc336d72ab",
+ "canonical_baseline": {
+  "engine_commit": "217a33359b06a0453444a698ec52e4078b77e388",
+  "engine_source_tree": "verify_at_runtime (SOURCE_TREE pin inside harness)",
+  "embedded_source_bundle_sha256": "ac2bac46c471dcfd977835712d1d351c4e06d3195fc54727e8660adebe7d4341",
+  "equivalence_note": "The newest canonical kernel (dee-cpp-dsv4-217-compact-20260904, ran 2026-09-05) embeds a different bundle (547a236d...) that carries the SAME commit 217a3335 (verified by git bundle list-heads; same commit hash = same tree = same engine source by content addressing). This experiment uses the seal-era bundle (ac2bac46...), which also carries 217a3335. Both arms share one harness; only the cap constant differs.",
+  "base_harness_file": "base/dee-cpp-dsv4-host-reuse-217-ab-20260904.py",
+  "base_harness_sha256": "fc032f2a8b47ecb587fdf5435fba4b3781b8cf6c2233857f21e1237d38d533d5",
+  "model_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+  "model_shards": 48,
+  "checkpoint_dataset": "nivind/deepseek-v4-flash-0731-shards (mounted read-only; download disallowed by harness preflight)",
+  "n_layers": 43,
+  "n_tokens": 16,
+  "prompt": "CANONICAL_PROMPT inside the harness (ASCII-guarded, seal-identical)",
+  "correctness_gates": "harness classify_full_generation: 16/16 exact token IDs + exact decoded text + integrity + storage; ACCEPT_CORRECTNESS required",
+  "run_config_shared": {
+   "cache_dtype": "fp4",
+   "expert_store": "dee4_trace",
+   "dee4_trace_path": "/tmp/dsv4-dee4-v3-trace/metadata.json",
+   "dee4_validate_samples": 12,
+   "profile_stages": false,
+   "n_tokens": 16,
+   "source_read_lanes": 3,
+   "source_read_queue_depth": 6
+  }
+ },
+ "arms": {
+  "A": {
+   "label": "baseline cap 17.0 GiB total (8.5 GiB/GPU, 682 records/GPU)",
+   "harness": "byte-original base harness, zero modification",
+   "LRU_TOTAL_CAP_GIB": 17.0,
+   "process": "fresh OS process, own /tmp workspace"
+  },
+  "B": {
+   "label": "candidate cap 20.0 GiB total (10.0 GiB/GPU, 803 records/GPU)",
+   "harness": "base harness with EXACTLY ONE change: LRU_TOTAL_CAP_GIB 17.0 -> 20.0 (verified single occurrence, diff recorded by make_harness.py)",
+   "LRU_TOTAL_CAP_GIB": 20.0,
+   "process": "fresh OS process, own /tmp workspace"
+  }
+ },
+ "matched": {
+  "identical_across_arms": [
+   "engine source (same embedded bundle, same commit)",
+   "model revision + checkpoint dataset",
+   "prompt + n_tokens + sealed gates",
+   "cache geometry except host-pack cap",
+   "source_read_lanes=3, queue_depth=6 (UNCHANGED)",
+   "H2D behavior (UNCHANGED)",
+   "no prefetch, no Muse optimizations, no approximate codecs, no KT",
+   "kernel hardware (2x Tesla T4), image, dataset mounts",
+   "trace bank bytes (one bank built/validated in-session, reused deterministically)"
+  ],
+  "forbidden_env": "no NATIVE_* env vars may be set at arm runtime (harness preflight fails closed on them); all config flows through harness constants"
+ },
+ "sessions": {
+  "design": "two matched pairs, two notebook/kernel sessions, counterbalanced arm order, fixed BEFORE session 1",
+  "session1": {"order": ["A", "B"], "kernel_slug": "nivind/dee-cpp-dsv4-pack-cap-s1-20260905"},
+  "session2": {"order": ["B", "A"], "kernel_slug": "nivind/dee-cpp-dsv4-pack-cap-s2-20260905"},
+  "fresh_process_per_arm": true,
+  "no_inprocess_engine_mutation": true,
+  "pread_rider": "ONLY after all four arms are terminal; never before or between arms; depths 1,2,3,4,6,8,12,16"
+ },
+ "decision_rule": {
+  "correctness": "every VALID arm must be ACCEPT_CORRECTNESS; any gate failure invalidates that arm's pair; if any arm fails correctness the experiment is INVALID_EXPERIMENT unless the failure is clearly environmental (disk/hardware), which also invalidates the pair",
+  "memory": {
+   "contract": "32-GB-class envelope per ce6cb81 MEMORY_UNIT_CONTRACT; projection for arm B: 27.227 GiB total = 29.23 decimal GB, projected min MemAvailable 4.12 GiB",
+   "abort_thresholds": {
+    "min_checkpoint_mem_available_gib_below": 1.5,
+    "process_vmhwm_gib_above": 30.0,
+    "host_oom_or_kill": true
+   },
+   "on_abort": "classify PACK_CAP_MEMORY_REJECTED (candidate side) or INVALID_EXPERIMENT (baseline side)"
+  },
+  "performance": {
+   "primary_unit": "matched full decode run (per-token latencies are dependent samples, NOT replicates)",
+   "no_early_accept_after_pair_1": true,
+   "meaningful_noise_threshold_s": 0.905,
+   "meaningful_noise_source": "baseline MAD of 3 same-config seal-era baselines (ce6cb81 results/ab_noise.json); frozen",
+   "informative_positive": "delta_session1 < 0 AND delta_session2 < 0 AND mean_delta <= -0.905",
+   "null_unresolved": "anything weaker"
+  },
+  "order_effect": {
+   "test": "session 1 runs A->B; session 2 runs B->A",
+   "order_confounded_if": "exactly one pair improves AND that improving arm is the one that ran SECOND in its session",
+   "classification": "PACK_CAP_ORDER_CONFOUNDED (never a performance win)"
+  },
+  "causal_cases": {
+   "CASE_1_replay_failed": "candidate storage misses do NOT fall (misses_B >= misses_A - 10): the pack replay/model failed",
+   "CASE_2_service_model_failed": "storage misses fall by >= 30 but the wall deltas do not reach informative-positive and no order confound: the service-per-miss / critical-path model failed",
+   "CASE_3_supported": "misses fall as predicted AND both pairs improve beyond noise: hypothesis supported"
+  },
+  "final_classification_enum": [
+   "PACK_CAP_SUPPORTED",
+   "PACK_CAP_NULL",
+   "PACK_CAP_ORDER_CONFOUNDED",
+   "PACK_CAP_MEMORY_REJECTED",
+   "INVALID_EXPERIMENT",
+   "BLOCKED_LIVE_GPU"
+  ]
+ },
+ "prediction_NOT_results": {
+  "storage_miss_reduction_replay": -51,
+  "simulated_decode_improvement_s": -2.48,
+  "simulated_note": "SIMULATED (recalibrated observational model, 48.679 ms/miss, ce6cb81). These are hypotheses. The measured miss delta and wall deltas from this experiment are the actual results."
+ },
+ "telemetry_required_per_arm": {
+  "memory": ["MemTotal", "VmRSS", "VmHWM", "VmData", "min MemAvailable during decode", "host-pack requested bytes", "host-pack occupied bytes", "host-pack record count", "per-GPU pack entries", "allocation failures", "OOM/near-OOM indicators"],
+  "miss_cache": ["host-pack hits", "host-pack misses", "host-pack evictions", "storage requests", "storage bytes", "H2D bytes", "per-token misses", "per-GPU misses", "final occupancy"],
+  "timing": ["total wall", "prefill wall", "decode wall", "decode TPS", "per-token latency", "p50/p95 token latency", "storage timing", "H2D timing"]
+ },
+ "provenance_per_run": ["source SHA (engine commit + tree)", "config hash", "model revision", "checkpoint identity (shard header sha256s from preflight)", "GPU identity", "notebook/kernel identity", "timestamps"]
+}

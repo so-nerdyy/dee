@@ -1,0 +1,36 @@
+{
+  "schema": "pack-cap-ab/harness-provenance-v2",
+  "github_force_push_repair": {
+    "discovered": "2026-09-05: first dispatch failed at checkout (217a3335 no longer on GitHub; branch force-pushed to 7b137846)",
+    "repair_bundle": "bundle\\repair-217a3335-prereq-7b137846.bundle",
+    "repair_bundle_sha256": "76e1b437c6bf521d0c38d8797adf4d354a07c836fa1c92eae9328e38a11c353b",
+    "carries_commit": "217a33359b06a0453444a698ec52e4078b77e388 (bit-identical, verified by git cat-file after fresh clone + fetch)",
+    "prerequisite": "7b137846893c46b3aed2c7e322f0dbbd8d3ce0ec (current remote tip, provided by every fresh clone)",
+    "harness_lines_changed": [
+      "SOURCE_BUNDLE_SHA256 (ac2bac46... -> 76e1b437...)",
+      "SOURCE_BUNDLE_B64 (payload swap, same head refspec)",
+      "+ LRU_TOTAL_CAP_GIB on arm B ONLY"
+    ],
+    "checkout_pin_unchanged": true,
+    "fetch_refspec_unchanged": true,
+    "validation": "fresh clone of force-pushed branch + repair bundle -> checkout 217a3335 succeeded locally"
+  },
+  "arm_A": {
+    "file": "harness_arm_a_repaired.py",
+    "sha256": "5d1f862631e403433f88478137e8321ef46664bb80c63a7fb5d703282a1617df",
+    "base_file": "base\\dee-cpp-dsv4-host-reuse-217-ab-20260904.py",
+    "base_sha256": "fc032f2a8b47ecb587fdf5435fba4b3781b8cf6c2233857f21e1237d38d533d5",
+    "modifications": [
+      "SOURCE_BUNDLE_SHA256/B64 -> repair bundle (identical engine commit; GitHub force-push repair)"
+    ]
+  },
+  "arm_B": {
+    "file": "harness_arm_b_cap20.py",
+    "sha256": "a83f3fbae320bd659e9ceae67f2cddb7516a702473e8e20aa5ab74002d0acd93",
+    "modifications": [
+      "SOURCE_BUNDLE_SHA256/B64 -> repair bundle (identical engine commit; GitHub force-push repair)",
+      "LRU_TOTAL_CAP_GIB 17.0 -> 20.0 (single line)"
+    ]
+  },
+  "unified_diff": "diff --git \"a/C:\\\\Users\\\\carth\\\\Downloads\\\\dee-pack-ab\\\\experiment\\\\pack-cap-ab\\\\harness_arm_a_repaired.py\" \"b/C:\\\\Users\\\\carth\\\\Downloads\\\\dee-pack-ab\\\\experiment\\\\pack-cap-ab\\\\harness_arm_b_cap20.py\"\nindex 6a82463..93ffd7b 100644\n--- \"a/C:\\\\Users\\\\carth\\\\Downloads\\\\dee-pack-ab\\\\experiment\\\\pack-cap-ab\\\\harness_arm_a_repaired.py\"\n+++ \"b/C:\\\\Users\\\\carth\\\\Downloads\\\\dee-pack-ab\\\\experiment\\\\pack-cap-ab\\\\harness_arm_b_cap20.py\"\n@@ -1355,7 +1355,7 @@ def main() -> int:\n     # Cap the TOTAL LRU budget hard at 17 GiB (8.5 GiB/GPU, below the\n     # measured ~21 GiB death point with margin).  v15 also logs MemTotal +\n     # per-token VmRSS/VmData/VmLck so v16 can tune the exact ceiling.\n-    LRU_TOTAL_CAP_GIB = 17.0\n+    LRU_TOTAL_CAP_GIB = 20.0\n     pack_budget0 = HOST_PACK_CACHE_BYTES_GPU0\n     pack_budget1 = HOST_PACK_CACHE_BYTES_GPU1\n     if mem_avail > 0 or mem_total > 0:\n"
+}
