@@ -1,0 +1,5 @@
+{
+  "classification": "BLOCKED_LIVE_GPU",
+  "records": [],
+  "note": "no live GPU on the executing host; no timings measured or inferred"
+}

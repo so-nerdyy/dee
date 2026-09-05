@@ -124,3 +124,48 @@ change. `research/t4-kernel-next` and Flash's branch untouched.
   engine/candidate changes, nesting rules, UNKNOWN-safe closure, malformed
   fails closed, attribution, hold-by-default + evidence-gated promotion.
 - Prior suites untouched and green (`test_route_pipeline*.py`).
+
+---
+
+# Evidence-run installment (experiment/host-sync-profile, MUSE)
+
+One-command entry point `dee.cpp/experiments/route_pipeline/run_evidence.py`
+(profile-off/on validation, attribution, closure, ABC mechanics, ranking;
+exit 3 with a BLOCKED bundle when no live GPU; never invents timings).
+Executed on this host: no nvidia-smi, `torch.cuda.is_available() == False`,
+no nvcc, no Kaggle — bundle written to
+`research/route-pipeline/evidence/` with zero invented timings.
+
+## Final main classification: BLOCKED_LIVE_GPU
+
+## The 10 required answers (all honest: unmeasured without T4)
+
+1. **Accounted fraction: UNKNOWN** (no execution; closure engine tested on
+   fixtures only, target 0.85 or better on real data).
+2. **Largest measured host wait: UNKNOWN** (sealed profile shows ~67 s of
+   71 s wall outside CUDA-event device time — the gap this profiler fills).
+3. **Route-D2H wait: UNKNOWN** (split timers built; copy floor vs unrelated
+   work needs the live timeline).
+4. **Final-sync wait: UNKNOWN** (per-layer NativeOutputSync span built).
+5. **Shared expert: UNKNOWN** (deferred-event capture built; device
+   interval resolvable at dump without perturbation).
+6. **Profiler perturbation: UNKNOWN** until the matched off/on pair runs;
+   by construction one branch per marker, zero added syncs/CUDA calls.
+7. **Hidden hash staging: UNKNOWN ms** (mechanics runner ready; max
+   240.6 MB/token structural bound stands).
+8. **No candidate wins**: all UNMEASURED; rankings stay provisional.
+9. **No candidate implemented** (correctly: gates need live data) —
+   NO_OVERLAP_OPTIMIZATION_JUSTIFIED is not yet returnable either, for the
+   same reason. BLOCKED is the honest terminal state.
+10. **ONE future A/B**: after Flash's pack-cap experiment, run
+    `run_evidence.py --command <canonical decode> --prompt-hash <sha>
+    --tokens 16` on dual-T4; if closure passes and exactly one gate in
+    `candidate-ranking.json` promotes, package that single candidate's
+    matched A/B next. No gain claimed until then.
+
+## Verification (this branch)
+
+- `tests/test_run_evidence.py` — 5 passed (no-GPU probe, BLOCKED schema,
+  zero-timings invariant, live-arg gating, UNMEASURED defaults).
+- Full suite: 56 passed warning-free (this clean tree has no foreign files).
+- Evidence bundle committed with `timings_invented: 0`.

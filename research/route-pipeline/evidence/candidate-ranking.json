@@ -1,0 +1,25 @@
+{
+  "classification": "BLOCKED_LIVE_GPU",
+  "candidates": {
+    "HASH_EARLY_STAGING": {
+      "rank": "UNMEASURED",
+      "reason": "no live data"
+    },
+    "SHARED_OVERLAP": {
+      "rank": "UNMEASURED",
+      "reason": "no live data"
+    },
+    "EVENT_HANDOFF": {
+      "rank": "UNMEASURED",
+      "reason": "no live data"
+    },
+    "ROUTE_D2H_NARROW": {
+      "rank": "UNMEASURED",
+      "reason": "no live data"
+    },
+    "C1_C2": {
+      "rank": "UNMEASURED",
+      "reason": "no live data"
+    }
+  }
+}

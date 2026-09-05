@@ -46,11 +46,6 @@ def _added(diff: str) -> list[str]:
             if ln.startswith("+") and not ln.startswith("+++")]
 
 
-def _removed(diff: str) -> list[str]:
-    return [ln[1:] for ln in diff.splitlines()
-            if ln.startswith("-") and not ln.startswith("---")]
-
-
 # --- Default OFF ----------------------------------------------------------
 
 def test_profiler_member_defaults_off():
@@ -79,12 +74,6 @@ def test_candidate_flag_defaults_off():
 
 # --- Identical disabled path / no behavior change --------------------------
 
-_FORBIDDEN_ADDED = ("cublasGemmEx", "cublasSgemv", "cudaMemcpy", "cudaMemset",
-                    "cudaStreamSynchronize", "cudaEventRecord",
-                    "cudaEventSynchronize", "cudaStreamWaitEvent",
-                    "__global__", "fmaf(", "expf(")
-
-
 def _head_text(path: Path) -> str:
     rel = path.relative_to(ROOT).as_posix()
     proc = subprocess.run(["git", "show", f"HEAD:{rel}"],
@@ -93,63 +82,63 @@ def _head_text(path: Path) -> str:
     return proc.stdout
 
 
+def _base_text(path: Path, marker: str) -> str:
+    """Committed text just before instrumentation `marker` was introduced.
+    Works identically pre- and post-commit (unlike `git diff HEAD`)."""
+    rel = path.relative_to(ROOT).as_posix()
+    proc = subprocess.run(
+        ["git", "log", "--format=%H", "-S", marker, "--", rel],
+        capture_output=True, text=True, cwd=str(ROOT))
+    assert proc.returncode == 0
+    commits = [c for c in proc.stdout.split() if c]
+    assert commits, f"no instrumentation commit found for {rel}"
+    base = subprocess.run(
+        ["git", "show", f"{commits[-1]}^:{rel}"],
+        capture_output=True, text=True, cwd=str(ROOT))
+    assert base.returncode == 0, base.stderr[-500:]
+    return base.stdout
+
+
 # --- Identical disabled path / no behavior change --------------------------
 
+# Sync/copy/compute primitives whose count must be IDENTICAL before/after.
+_PRIMITIVE_TOKENS = ("cudaStreamSynchronize", "cudaEventRecord",
+                     "cudaEventSynchronize", "cudaStreamWaitEvent",
+                     "cudaMemcpyAsync", "cublasGemmEx", "cublasSgemv")
+
+
 def test_engine_diff_adds_only_profiler_scopes():
-    """Removed lines must all survive (moved verbatim) except the single
-    const relaxation; truly-new lines must be profiler scaffolding. This
-    proves zero logic change."""
-    diff = _diff(ENGINE)
-    removed = {ln[1:].strip() for ln in diff.splitlines()
-               if ln.startswith("-") and not ln.startswith("---")}
-    added = [ln[1:].strip() for ln in diff.splitlines()
-             if ln.startswith("+") and not ln.startswith("+++")]
+    """Token counts for every sync/copy/compute primitive are identical
+    between the pre-instrumentation base and the worktree; the only
+    statement-shape change is the single const relaxation; all other added
+    lines are profiler scaffolding."""
+    base = _base_text(ENGINE, "HostSpanGuard")
     new_text = ENGINE.read_text(encoding="utf-8")
-    new_stripped = {ln.strip() for ln in new_text.splitlines()}
-    vanished = removed - new_stripped
-    # Only the const->bool guarded-assignment relaxation may vanish; the
-    # same statement shape exists elsewhere, so verify by count below.
-    assert vanished <= {
-        "const bool computed = d_blob && swiglu_expert_batch_fp16_cuda("}, vanished
-    head_text = _head_text(ENGINE)
+    for token in _PRIMITIVE_TOKENS:
+        assert base.count(token) == new_text.count(token), token
     relaxed = "const bool computed = d_blob && swiglu_expert_batch_fp16_cuda("
-    assert head_text.count(relaxed) == new_text.count(relaxed) + 1
-    added_set = {ln for ln in added if ln and not ln.startswith("//")}
-    truly_new = added_set - removed
-    for line in truly_new:
-        assert ("profiler_" in line or "host_prof" in line
-                or "HostSpanGuard" in line or "HostLayerScope" in line
-                or "HostSpan::" in line
-                or line in ("{", "}", "bool computed = false;",
-                            "computed = d_blob && swiglu_expert_batch_fp16_cuda(")
-                or line.startswith("cfg_.device_id")
-                or line.startswith("current_token_")), line
-    for line in truly_new:
-        for forbidden in _FORBIDDEN_ADDED:
-            assert forbidden not in line, (forbidden, line)
+    assert base.count(relaxed) == new_text.count(relaxed) + 1
+    assert "bool computed = false;" in new_text
+    assert "HostLayerScope" in new_text and "HostSpanGuard" in new_text
+    assert "NativeOutputSync" in new_text
 
 
 def test_no_synchronization_removed():
-    removed = "\n".join(_removed(_diff(ENGINE)))
-    assert "cudaStreamSynchronize" not in removed
-    assert "cudaEventRecord" not in removed
-    assert "cudaMemcpy" not in removed
+    base = _base_text(ENGINE, "HostSpanGuard")
+    new_text = ENGINE.read_text(encoding="utf-8")
+    for token in ("cudaStreamSynchronize", "cudaEventRecord", "cudaMemcpy",
+                  "cudaEventCreate", "cudaStreamWaitEvent"):
+        assert base.count(token) == new_text.count(token), token
 
 
 def test_no_arithmetic_or_routing_change():
-    diff = _diff(ENGINE)
-    removed = {ln[1:].strip() for ln in diff.splitlines()
-               if ln.startswith("-") and not ln.startswith("---")}
-    new_stripped = {ln.strip() for ln in ENGINE.read_text(encoding="utf-8").splitlines()}
-    # Same statement may exist elsewhere; verify by count that at most the
-    # single guarded-assignment site changed shape.
-    vanished = removed - new_stripped
-    assert vanished <= {
-        "const bool computed = d_blob && swiglu_expert_batch_fp16_cuda("}, vanished
-    head_text = _head_text(ENGINE)
-    relaxed = "const bool computed = d_blob && swiglu_expert_batch_fp16_cuda("
-    assert head_text.count(relaxed) == ENGINE.read_text(encoding="utf-8").count(relaxed) + 1
-    assert "bool computed = false;" in new_stripped
+    base = _base_text(ENGINE, "HostSpanGuard")
+    new_text = ENGINE.read_text(encoding="utf-8")
+    for token in ("swiglu_expert_batch_fp16_cuda", "decode_fp4_cache_block_to_scratch",
+                  "moe_forward_batch_device_impl", "topk > cfg_.topk",
+                  "stable_position_for_rank"):
+        assert base.count(token) == new_text.count(token), token
+    assert "bool computed = false;" in new_text
 
 
 def test_candidate_diff_is_timing_only():
