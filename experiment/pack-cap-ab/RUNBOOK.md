@@ -97,7 +97,17 @@ Decision rule (frozen in the contract, never rewritten post hoc):
 Abort thresholds (pre-registered): min checkpoint MemAvailable < 1.5 GiB,
 VmHWM > 30.0 GiB, or host OOM → stop, classify per contract.
 
-## 6. Evidence retention
+## 6. Pread rider status
+
+The rider ran at the correct point (after all four arms, session 2 tail,
+contract-true ordering) but exited non-fatally with `store too small for one
+record`: the driver passed `--store <bank>/metadata.json` while the bench
+expects the multi-record bank file (e.g. `experts.dee4`). Fix for the next
+rider attempt (one line in the driver): resolve the bank's largest data file
+from `metadata.json` (or pass the bank dir's `experts.dee4` path). The A/B
+itself is unaffected — the rider is strictly post-experiment.
+
+## 7. Evidence retention
 
 Fetched kernel outputs live in `results/live/<s1,s2>/`; the dispatch log is
 `results/live/dispatch-log.jsonl` (append-only). Failed first-dispatch
