@@ -169,3 +169,54 @@ no nvcc, no Kaggle — bundle written to
   zero-timings invariant, live-arg gating, UNMEASURED defaults).
 - Full suite: 56 passed warning-free (this clean tree has no foreign files).
 - Evidence bundle committed with `timings_invented: 0`.
+
+---
+
+# End-to-end readiness installment (experiment/host-sync-profile, MUSE)
+
+Review finding accepted: the BLOCKED classification was correct but
+`compute_closure([])` and unparsed subprocess tails meant LIVE_PIPELINE_READY
+was false. This installment closes it: `run_evidence.py` now orchestrates
+pack → pair validation → ingestion → closure → ABC → ranking → next-ab
+through one code path; `mock_campaign.py` (7 deterministic scenarios)
+exercises the identical path with fixture data. No production, tolerance,
+campaign, sealed-evidence, or `t4-kernel-next` change. No merge.
+
+## The 10 required answers
+
+1. **Accounted fraction: UNKNOWN live** (no T4 here); the closure engine is
+   proven on fixtures (scenario 1: 0.99; scenario 5: 0.33 with
+   PROFILE_INCOMPLETE, never force-filled).
+2. **Largest measured host wait: UNKNOWN live** (sealed gap stands: ~67 s
+   of 71 s outside device events).
+3. **Route-D2H wait: UNKNOWN live** (split timers + copy floor ready).
+4. **Final-sync wait: UNKNOWN live** (per-layer span ready).
+5. **Shared expert: UNKNOWN live** (deferred-event capture ready).
+6. **Perturbation: UNKNOWN live** (matched off/on + perturbation fraction
+   wired; by construction one branch per marker, zero added syncs).
+7. **Hidden hash staging: UNKNOWN ms live** (mechanics runner ready).
+8. **No candidate wins**: all UNMEASURED on real data; mock matrix promotes
+   exactly the designed winner per scenario (1→EVENT, 2→SHARED, 3→D2H,
+   4→none, 5→incomplete-hold).
+9. **Nothing implemented** (correctly: gates need live data).
+10. **ONE future A/B**: `run_evidence.py --command <canonical decode>
+    --prompt-hash <sha> --tokens 16` on dual-T4 after Flash's pack-cap
+    experiment (dry-run first); the emitted `next-ab.json` then names the
+    single candidate, mechanism, files, telemetry, gates, and replication.
+
+## Final main classification: BLOCKED_LIVE_GPU
+## LIVE_PIPELINE_READY = true
+
+The two coexist by definition: the pipeline is proven (mock E2E green,
+artifacts populated, ranking derived, malformed fails closed,
+host-independent tests, dry-run works, resume tested); the GPU is absent.
+
+## Verification (this branch)
+
+- Full suite: 84 passed warning-free (`test_mock_campaign_e2e` 7
+  scenarios, `test_profile_ingestion` 12, `test_resume` 4,
+  `test_run_evidence` 12 incl. mocked env matrix, prior suites green).
+- `compute_closure([])` placeholder is GONE (pack assembles real records;
+  grep-verifiable).
+- Dry-run verified locally (source/markers/modules/schemas pass; GPU and
+  command checks honestly fail with exit 2).

@@ -150,7 +150,7 @@ def test_candidate_diff_is_timing_only():
             "perf_counter", "_HOST_PROFILE", "host_profile", "hp[", "hp =",
             "if hp ", "hp is not None", "shared_start_event", "shared_end_event", "dump_host_profile",
             "import os", "import json as _json", "device", "token_rows",
-            "copy_submit_t", "wait_start_t", "wait_end_t", "ids_bytes",
+            "token", "copy_submit_t", "wait_start_t", "wait_end_t", "ids_bytes",
             "route_d2h", "native_call_wall", "combine_", "shared_host_wall",
             "provenance", "rows", "open(", "elapsed_time", "Event(",
             "current_stream", "query", ".record(",

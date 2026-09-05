@@ -1,7 +1,30 @@
 # Kaggle profile protocol (exact run the root should perform)
 
-Runner: `dee.cpp/experiments/route_pipeline/kaggle_profile_pack.py`.
+One command (T4 host, campaign checkout):
+
+    python3 dee.cpp/experiments/route_pipeline/run_evidence.py \
+        --out evidence/ --command "python3 <canonical_decode.py> ..." \
+        --prompt-hash <sha256> --tokens 16 --reps 5
+
+Optional pre-flight (no model execution):
+
+    python3 dee.cpp/experiments/route_pipeline/run_evidence.py --dry-run-live \
+        --out evidence/ --command "python3 <canonical_decode.py> ..."
+
+Runner: `run_evidence.py` orchestrates `kaggle_profile_pack.py` (matched
+off/on + ingestion) and `kaggle_runner_abc.py` (or `--mock-abc`).
 Do NOT launch Kaggle from here; run where the campaign checkout + 2xT4 live.
+
+## Canonical command contract (required)
+
+The command MUST accept `--out <dir> [--profile-stages]` and write
+`profile-run/{result.json, host-profile.jsonl, stage-profile.json,
+correctness.json}` there (see MOCK_CAMPAIGN_PROTOCOL.md; the mock
+implements exactly this). Required producer call sites (profiling-only):
+
+1. `host_layer_records_json()` → `stage-profile.json` under
+   `host_layer_records`.
+2. `dump_host_profile()` rows → `host-profile.jsonl`.
 
 ## Preconditions (refuse otherwise)
 

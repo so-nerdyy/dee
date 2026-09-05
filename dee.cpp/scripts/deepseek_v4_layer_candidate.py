@@ -452,6 +452,7 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
         # wait start / wait end WITHOUT changing it. All timers are host
         # perf_counter reads; the sync itself is untouched.
         hp = {"layer": self.layer_id,
+              "token": int(getattr(self, "_profile_start_pos", -1)),
               "ids_bytes": int(ids_host_tensor.numel() * 4),
               "route_d2h_provenance": "HOST_WALL"} if _HOST_PROFILE else None
         if hp is not None:
