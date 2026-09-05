@@ -1,0 +1,200 @@
+{
+ "schema": "exact-staging/ab-power-plan-v1",
+ "inputs": {
+  "baseline_mean_s": 72.281,
+  "baseline_sd_s": 0.926,
+  "paired_delta_sd_s_exploratory": 0.89,
+  "labels": [
+   "DERIVED",
+   "EXPLORATORY_STATISTIC (paired sigma, n=2)"
+  ]
+ },
+ "pairs_required_table": [
+  {
+   "sigma_d_s": 0.89,
+   "sigma_source": "paired_delta_sd_exploratory_n2",
+   "effect": "1_pct",
+   "effect_s": 0.723,
+   "pairs_direction_rule_p90": "UNATTAINABLE (<=8 pairs; single-pair direction probability < 0.90)",
+   "pairs_mean_rule_z2": 7,
+   "snr_single_pair": 0.81,
+   "labels": [
+    "DERIVED (rules)",
+    "EXPLORATORY_STATISTIC (sigma)"
+   ]
+  },
+  {
+   "sigma_d_s": 0.89,
+   "sigma_source": "paired_delta_sd_exploratory_n2",
+   "effect": "2_pct",
+   "effect_s": 1.446,
+   "pairs_direction_rule_p90": 1,
+   "pairs_mean_rule_z2": 2,
+   "snr_single_pair": 1.62,
+   "labels": [
+    "DERIVED (rules)",
+    "EXPLORATORY_STATISTIC (sigma)"
+   ]
+  },
+  {
+   "sigma_d_s": 0.89,
+   "sigma_source": "paired_delta_sd_exploratory_n2",
+   "effect": "3_pct",
+   "effect_s": 2.168,
+   "pairs_direction_rule_p90": 1,
+   "pairs_mean_rule_z2": 1,
+   "snr_single_pair": 2.44,
+   "labels": [
+    "DERIVED (rules)",
+    "EXPLORATORY_STATISTIC (sigma)"
+   ]
+  },
+  {
+   "sigma_d_s": 0.89,
+   "sigma_source": "paired_delta_sd_exploratory_n2",
+   "effect": "5_pct",
+   "effect_s": 3.614,
+   "pairs_direction_rule_p90": 1,
+   "pairs_mean_rule_z2": 1,
+   "snr_single_pair": 4.06,
+   "labels": [
+    "DERIVED (rules)",
+    "EXPLORATORY_STATISTIC (sigma)"
+   ]
+  },
+  {
+   "sigma_d_s": 0.926,
+   "sigma_source": "between_notebook_sd_conservative",
+   "effect": "1_pct",
+   "effect_s": 0.723,
+   "pairs_direction_rule_p90": "UNATTAINABLE (<=8 pairs; single-pair direction probability < 0.90)",
+   "pairs_mean_rule_z2": 7,
+   "snr_single_pair": 0.78,
+   "labels": [
+    "DERIVED (rules)",
+    "EXPLORATORY_STATISTIC (sigma)"
+   ]
+  },
+  {
+   "sigma_d_s": 0.926,
+   "sigma_source": "between_notebook_sd_conservative",
+   "effect": "2_pct",
+   "effect_s": 1.446,
+   "pairs_direction_rule_p90": 1,
+   "pairs_mean_rule_z2": 2,
+   "snr_single_pair": 1.56,
+   "labels": [
+    "DERIVED (rules)",
+    "EXPLORATORY_STATISTIC (sigma)"
+   ]
+  },
+  {
+   "sigma_d_s": 0.926,
+   "sigma_source": "between_notebook_sd_conservative",
+   "effect": "3_pct",
+   "effect_s": 2.168,
+   "pairs_direction_rule_p90": 1,
+   "pairs_mean_rule_z2": 1,
+   "snr_single_pair": 2.34,
+   "labels": [
+    "DERIVED (rules)",
+    "EXPLORATORY_STATISTIC (sigma)"
+   ]
+  },
+  {
+   "sigma_d_s": 0.926,
+   "sigma_source": "between_notebook_sd_conservative",
+   "effect": "5_pct",
+   "effect_s": 3.614,
+   "pairs_direction_rule_p90": 1,
+   "pairs_mean_rule_z2": 1,
+   "snr_single_pair": 3.9,
+   "labels": [
+    "DERIVED (rules)",
+    "EXPLORATORY_STATISTIC (sigma)"
+   ]
+  }
+ ],
+ "smallest_detectable_effect": {
+  "definition": "effect with SNR>=1 vs conservative sigma (single pair, direction-only)",
+  "s_single_pair_direction_only_s": 0.926,
+  "s_single_pair_direction_only_pct": 1.28,
+  "s_two_pairs_direction_p90_s": 1.511,
+  "s_two_pairs_direction_p90_pct": 2.09,
+  "note": "with the pre-registered 2-pair design, an effect of ~1.6x sigma (~2.1%) is the practical floor for a clean directional read; 1% effects are UNATTAINABLE under the direction rule at any pair count <=8 and need the interleaved-session strategy first (within-session SD is currently UNKNOWN)"
+ },
+ "strategies": [
+  {
+   "strategy": "more matched pairs",
+   "cost": "2 Kaggle runs per pair",
+   "when": "always; it is the only lever that scales evidence without changing the workload",
+   "quantified": "see pairs table"
+  },
+  {
+   "strategy": "interleaved baseline/candidate in ONE notebook session (A/B/A/B or A/B)",
+   "cost": "same total runs; removes between-notebook offset from the paired delta",
+   "when": "highest-value structural change: between-notebook SD (~0.93 s) is the dominant noise term and pairing within a session should collapse it",
+   "blocker": "within-session SD is UNKNOWN until measured once (BLOCKED_BY_MISSING_MEASUREMENT)",
+   "recommendation": "measure once in the next A/B by logging both arms from one session if the harness permits"
+  },
+  {
+   "strategy": "longer decode",
+   "quantified": {
+    "mechanical_model": "sigma_wall/T ~ sigma_rel / sqrt(n_eff); n_eff = n(1-rho1)/(1+rho1) (first-order correction)",
+    "per_token_walls_n": 15,
+    "lag1_autocorr_mean": 0.488,
+    "effective_independent_tokens_15": 5,
+    "longer_decode_example": {
+     "tokens": 64,
+     "n_eff_if_same_rho": 22,
+     "expected_rel_sd_reduction_vs_15tok": 0.477,
+     "label": "SIMULATED (mechanical model; UNVALIDATED)",
+     "caveat": "longer generation changes the recurrence/miss mix and therefore the effect itself; direct comparison to the 15-token effect is then INVALID. Also invalidates replay-validated counter comparability."
+    }
+   },
+   "when": "only as a SEPARATE experiment; do not mix with 15-token comparisons"
+  },
+  {
+   "strategy": "paired notebooks (both arms in notebook 1, repeat in notebook 2)",
+   "cost": "4 runs",
+   "when": "this is exactly the host-reuse design; it works and should be the default replication shape"
+  },
+  {
+   "strategy": "repeated same-notebook arms",
+   "cost": ">=4 runs in one session",
+   "when": "cheapest way to estimate within-session SD; add one repeat arm if a session is cheap to extend"
+  }
+ ],
+ "pack_cap_experiment_plan": {
+  "predicted_effect_s": 2.483,
+  "label": "SIMULATED (recalibrated model; the A/B is the arbiter)",
+  "is_one_pair_informative": {
+   "answer": true,
+   "snr_vs_paired_sigma": 2.79,
+   "snr_vs_between_sigma": 2.68,
+   "note": "IF the simulated ~2.5 s holds, one pair is informative (SNR ~2.7-2.8) and two pairs (pre-budgeted) give direction consistency >=97% and a mean-rule pass. The risk is not power but EFFECT REALITY: the marginal misses removed at a larger budget are the easiest ones, so realized service-per-avoided-miss may differ from the global 48.7 ms marginal"
+  },
+  "pairs_budgeted_upfront": 2,
+  "is_15_tokens_enough": {
+   "answer": true,
+   "reason": "predicted effect ~2.5 s exceeds even the conservative between-notebook SD (~0.93 s) by ~2.7x; per-token resolution is not needed",
+   "caveat": "15 tokens is also what the replay counters validate; changing length would desync the comparison"
+  },
+  "would_longer_decode_help": {
+   "answer": "not for THIS hypothesis",
+   "reason": "pack-miss savings scale with the miss stream, not with token count alone; a longer run adds prefill and changes recurrence mix, invalidating counter matching"
+  },
+  "stopping_rule_preregistered": {
+   "budget": "2 matched pairs, both run regardless of pair-1 outcome unless FUTILITY fires",
+   "futility_after_pair_1": "STOP if candidate wall > baseline wall + 1 baseline SD (~0.93 s) \u2014 the hypothesis predicted an improvement; a slower candidate is an obvious null",
+   "no_early_accept": "never stop after pair 1 on a favorable result; pair 2 is mandatory replication",
+   "after_pair_2": "informative-positive iff both deltas negative AND mean delta > baseline MAD (~0.905 s); otherwise UNRESOLVED (not evidence of absence)",
+   "no_post_hoc_stopping": "this rule is fixed before the first run; no result-driven re-interpretation"
+  },
+  "effect_warranting_formal_acceptance": {
+   "threshold": "both pairs improve AND mean delta >= 2x baseline SD (~1.85 s) AND correctness gates pass on all arms",
+   "then": "hand to the campaign's formal acceptance flow (this package does not grant acceptance)"
+  }
+ },
+ "advisory_only": "does not modify formal acceptance rules; no TPS claims; sigma estimates are n<=3 statistics"
+}

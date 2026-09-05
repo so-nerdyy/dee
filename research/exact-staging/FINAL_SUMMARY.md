@@ -1,10 +1,34 @@
-# FINAL_SUMMARY.md — recalibration + host-pack frontier (v2)
+# FINAL_SUMMARY.md — recalibration + host-pack frontier + memory contract + A/B statistics
 
 Branch: `research/exact-staging` (worktree `../dee-staging`) · Date: 2026-09-04
 Inputs: seal `14864034a7354e0e29e11c1c09f18b0863afe6a0` (sha256-gated), sealed
 v65, causality audit (this branch), Muse `research/route-pipeline` (read-only).
-Pipeline: `python research/exact-staging/recalibrate_model.py`.
-Labels: **[M]** measured · **[S]** simulated · **[T]** theoretical ceiling.
+Pipeline: `python research/exact-staging/recalibrate_model.py` (regenerates all
+results JSON/CSV **and** the sentinel-marked markdown tables — JSON is the
+single source of truth per MEMORY_UNIT_CONTRACT.md).
+Labels: **[M]** measured · **[S]** simulated · **[T]** theoretical ceiling ·
+**[E]** exploratory statistic.
+
+## Memory-contract revision (this installment)
+
+The previous revision's MEMORY_BUDGET.md table was a hand-maintained artifact
+that disagreed with `results/memory_frontier.json` (10.0 GiB/GPU shown as
+31.36 GB / 0.64 GB headroom vs the JSON's 29.23 GB / 2.77 GB): the table had
+silently folded the 2.0-unit safety headroom into projected totals with a
+stale conversion. Fixed structurally, not by re-typing numbers:
+
+- `MEMORY_UNIT_CONTRACT.md` defines units (GiB vs decimal GB, never an
+  unqualified "GB"), the detected-vs-nominal host distinction, and TWO
+  authoritative safety systems: `MEASURED_HOST_MEMTOTAL` (31.35 GiB, for
+  host-execution decisions) and `STRICT_32_DECIMAL_GB` (the project thesis,
+  as a portable envelope). Row classification = conservative intersection.
+- Markdown tables are now **generated from the JSON** between sentinel
+  markers; tests render-and-compare every row, so any future unit or
+  formula mismatch fails CI (a regression test reproduces the fcc8ca2 bug).
+- The finer grid exposed one nuance the old table hid: 10.5–11.0 GiB/GPU
+  are SAFE on measured MemTotal but BORDERLINE under the strict 32-decimal-
+  GB contract. **10.0 GiB/GPU remains the largest budget SAFE under BOTH**,
+  so the recommendation is unchanged after correction.
 
 ## The 10 answers
 
@@ -33,9 +57,12 @@ Labels: **[M]** measured · **[S]** simulated · **[T]** theoretical ceiling.
 
 4. **Safest pack budget under a real 32 GB TOTAL limit?** Projected envelope
    (measured non-pack 5.82 GiB + system 0.91 + 0.5 unknown allowance):
-   **9.5 GiB/GPU** is the risk-balanced SAFE default (30.23 GB projected,
-   1.77 GB headroom, 5.12 GiB min-available, 8.68 GiB OOM margin); **10.0
-   GiB/GPU** is the largest SAFE point (31.36 GB, all gates pass). **[M
+   **9.5 GiB/GPU** is the risk-balanced SAFE default (26.227 GiB = 28.16
+   decimal GB projected; headroom 5.12 GiB to measured MemTotal / 3.84
+   decimal GB to the strict contract; 8.68 GiB OOM margin); **10.0 GiB/GPU**
+   is the largest SAFE point under BOTH systems (27.227 GiB = 29.23 decimal
+   GB; headroom 4.12 GiB / 2.77 decimal GB; all gates pass). 10.5–11.0 are
+   SAFE on measured MemTotal but BORDERLINE on the strict contract. **[M
    anchors, S projection]**
 
 5. **SSD reads removed by that budget?** Replay (validated ≤2/step vs
@@ -51,15 +78,27 @@ Labels: **[M]** measured · **[S]** simulated · **[T]** theoretical ceiling.
    ~1.0–1.9 s). These are hypotheses for the A/B, not results. **[S]**
 
 8. **Is 12.75 GiB/GPU safe for the 32 GB thesis?** **NO.** Projected
-   37.71 GB (+5.71 over) and within 2.2 GiB of the nearest clean measured
-   OOM (27.68 GiB pack total). REJECTED for the main thesis; acceptable
-   only on 48/64 GB hosts. **[M ledger + S projection]**
+   32.727 GiB = 35.14 decimal GB (+3.14 over the strict contract), projected
+   min-available **negative** (−1.38 GiB), and within 2.18 GiB of the
+   nearest clean measured OOM (27.68 GiB pack total). REJECTED for the main
+   thesis; acceptable only on 48/64 GB hosts. (The previously quoted 37.71
+   GB came from the buggy table; the corrected projection is 35.14 GB —
+   still decisively over.) **[M ledger + S projection]**
 
 9. **The one A/B Astra should run next?** `next_ab.json` /
    LIVE_AB_V2_PROTOCOL.md: **`LRU_TOTAL_CAP_GIB` 17.0 → 20.0** (10.0 GiB/GPU;
-   drop to the 19.0-cap variant if memory telemetry looks tight), matched
-   pair + one replication, metrics and pre-registered criteria in the
-   protocol. **[S expectation, M design]**
+   drop to the 19.0-cap variant if memory telemetry looks tight),
+   **exactly 2 matched pairs, pre-registered** (futility: abort after pair 1
+   if the candidate is >0.93 s slower; no early accept; informative-positive
+   = both deltas negative AND mean ≥ 0.905 s MAD). Measured noise context
+   **[M]**: same-config baseline SD 0.926 s, spread 1.851 s; the reuse A/B's
+   measured −1.30 s mean delta had SNR 1.4 — an unpaired read would likely
+   have misjudged it. Smallest detectable effect with this design: ~1.3%
+   (single pair, direction-only) / ~2.1% (2-pair rule); 1% effects are
+   UNATTAINABLE without the interleaved-session strategy (within-session SD
+   currently UNKNOWN). 15 tokens: yes — predicted 2.48 s effect ≈ 2.7× SD;
+   longer decode is a separate experiment (changes the route workload).
+   **[S expectation, M noise, E sigma, M design]**
 
 10. **What would falsify the host-pack hypothesis?** Pack misses fall
     exactly as replayed while decode wall stays flat beyond run noise in
@@ -79,10 +118,13 @@ measurements that would most change the picture.
 
 ## Verification & provenance
 
-- 14 existing tests + 11 new (see `tests/`): replay accounting, budget
-  arithmetic, UNKNOWN-safe memory, no-future-lookahead, seal ingestion,
-  predicted-vs-observed labeling — all green.
+- Existing suite + new coverage (see `tests/`): replay accounting, budget
+  arithmetic, UNKNOWN-safe memory accounting, unit-contract linting (no
+  unqualified-`GB` fields in any emitted JSON), markdown-vs-JSON row-by-row
+  consistency (regression test reproduces the fcc8ca2 bug), no-future-
+  lookahead, seal ingestion, A/B statistics on synthetic data, planner
+  monotonicity, predicted-vs-observed labeling — all green.
 - Seal inputs hash-verified at run time (`recalibrate_model.py` fails
-  closed on any mismatch).
+  closed on any mismatch); A/B evidence traceable to the same seal.
 - Nothing merged; no sealed evidence modified; no production runtime
   changed; Muse's branch untouched; performance acceptance stays FALSE.

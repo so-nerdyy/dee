@@ -22,14 +22,33 @@
   "oom_confounded": "v11 26.0 GiB + madvise DONTNEED re-fault thrash"
  },
  "rules": {
-  "headroom_required_gib": 2.0,
-  "projection": "2*budget + nonpack_hwm_max + system_rest + unmeasured_growth"
+  "headroom_required": 2.0,
+  "headroom_unit": "the safety system's own unit (GiB for measured MemTotal, decimal GB for the strict contract)",
+  "projection": "2*budget + nonpack_hwm_max + system_rest + unmeasured_growth",
+  "field_naming": "every memory field carries its unit (_gib / _decimal_gb); unqualified 'GB' fields are banned and linted by tests"
  },
+ "unit_contract": {
+  "authoritative_for_host_execution": "MEASURED_HOST_MEMTOTAL",
+  "systems": {
+   "MEASURED_HOST_MEMTOTAL": {
+    "limit_gib": 31.35,
+    "source": "MemTotal (system_final_gib), all 5 seal runs"
+   },
+   "STRICT_32_DECIMAL_GB": {
+    "limit_decimal_gb": 32.0,
+    "source": "project thesis: ~32 GB total host RAM, nominal host class"
+   }
+  },
+  "combined_classification": "worst of the two systems (conservative intersection)",
+  "identity_note": "headroom_gib_to_measured_memtotal == projected_min_MemAvailable_gib by construction (MemTotal - projection)"
+ },
+ "recommendation_policy": "largest budget SAFE under BOTH systems",
  "rows": [
   {
    "pack_gib_per_gpu": 8.5,
    "records_per_gpu": 682,
    "pack_total_gib": 17.0,
+   "projected_nonpack_gib": 7.227,
    "measured_nonpack_hwm_gib": 5.817,
    "system_rest_gib": 0.91,
    "unmeasured_growth_allowance_gib": 0.5,
@@ -40,18 +59,22 @@
    ],
    "projected_total_gib": 24.227,
    "projected_total_decimal_gb": 26.01,
+   "headroom_gib_to_measured_memtotal": 7.12,
+   "headroom_decimal_gb_to_strict_contract": 5.99,
    "projected_min_MemAvailable_gib": 7.12,
-   "headroom_to_32gb_decimal": 5.99,
    "margin_to_nearest_oom_observation_gib": 10.68,
+   "classification_measured_host_memtotal": "SAFE_FOR_32GB",
+   "classification_strict_32_decimal_gb": "SAFE_FOR_32GB",
    "classification": "SAFE_FOR_32GB",
    "classification_reasons": [
-    "headroom 5.99 GB >= 2.0 GB; min-available 7.12 GiB >= 2.0 GiB; OOM margin 10.68 GiB"
+    "SAFE under both systems: min-available 7.12 GiB; OOM margin 10.68 GiB"
    ]
   },
   {
    "pack_gib_per_gpu": 9.0,
    "records_per_gpu": 722,
    "pack_total_gib": 18.0,
+   "projected_nonpack_gib": 7.227,
    "measured_nonpack_hwm_gib": 5.817,
    "system_rest_gib": 0.91,
    "unmeasured_growth_allowance_gib": 0.5,
@@ -62,18 +85,22 @@
    ],
    "projected_total_gib": 25.227,
    "projected_total_decimal_gb": 27.09,
+   "headroom_gib_to_measured_memtotal": 6.12,
+   "headroom_decimal_gb_to_strict_contract": 4.91,
    "projected_min_MemAvailable_gib": 6.12,
-   "headroom_to_32gb_decimal": 4.91,
    "margin_to_nearest_oom_observation_gib": 9.68,
+   "classification_measured_host_memtotal": "SAFE_FOR_32GB",
+   "classification_strict_32_decimal_gb": "SAFE_FOR_32GB",
    "classification": "SAFE_FOR_32GB",
    "classification_reasons": [
-    "headroom 4.91 GB >= 2.0 GB; min-available 6.12 GiB >= 2.0 GiB; OOM margin 9.68 GiB"
+    "SAFE under both systems: min-available 6.12 GiB; OOM margin 9.68 GiB"
    ]
   },
   {
    "pack_gib_per_gpu": 9.5,
    "records_per_gpu": 762,
    "pack_total_gib": 19.0,
+   "projected_nonpack_gib": 7.227,
    "measured_nonpack_hwm_gib": 5.817,
    "system_rest_gib": 0.91,
    "unmeasured_growth_allowance_gib": 0.5,
@@ -84,18 +111,22 @@
    ],
    "projected_total_gib": 26.227,
    "projected_total_decimal_gb": 28.16,
+   "headroom_gib_to_measured_memtotal": 5.12,
+   "headroom_decimal_gb_to_strict_contract": 3.84,
    "projected_min_MemAvailable_gib": 5.12,
-   "headroom_to_32gb_decimal": 3.84,
    "margin_to_nearest_oom_observation_gib": 8.68,
+   "classification_measured_host_memtotal": "SAFE_FOR_32GB",
+   "classification_strict_32_decimal_gb": "SAFE_FOR_32GB",
    "classification": "SAFE_FOR_32GB",
    "classification_reasons": [
-    "headroom 3.84 GB >= 2.0 GB; min-available 5.12 GiB >= 2.0 GiB; OOM margin 8.68 GiB"
+    "SAFE under both systems: min-available 5.12 GiB; OOM margin 8.68 GiB"
    ]
   },
   {
    "pack_gib_per_gpu": 10.0,
    "records_per_gpu": 803,
    "pack_total_gib": 20.0,
+   "projected_nonpack_gib": 7.227,
    "measured_nonpack_hwm_gib": 5.817,
    "system_rest_gib": 0.91,
    "unmeasured_growth_allowance_gib": 0.5,
@@ -106,18 +137,22 @@
    ],
    "projected_total_gib": 27.227,
    "projected_total_decimal_gb": 29.23,
+   "headroom_gib_to_measured_memtotal": 4.12,
+   "headroom_decimal_gb_to_strict_contract": 2.77,
    "projected_min_MemAvailable_gib": 4.12,
-   "headroom_to_32gb_decimal": 2.77,
    "margin_to_nearest_oom_observation_gib": 7.68,
+   "classification_measured_host_memtotal": "SAFE_FOR_32GB",
+   "classification_strict_32_decimal_gb": "SAFE_FOR_32GB",
    "classification": "SAFE_FOR_32GB",
    "classification_reasons": [
-    "headroom 2.77 GB >= 2.0 GB; min-available 4.12 GiB >= 2.0 GiB; OOM margin 7.68 GiB"
+    "SAFE under both systems: min-available 4.12 GiB; OOM margin 7.68 GiB"
    ]
   },
   {
    "pack_gib_per_gpu": 10.5,
    "records_per_gpu": 843,
    "pack_total_gib": 21.0,
+   "projected_nonpack_gib": 7.227,
    "measured_nonpack_hwm_gib": 5.817,
    "system_rest_gib": 0.91,
    "unmeasured_growth_allowance_gib": 0.5,
@@ -128,18 +163,23 @@
    ],
    "projected_total_gib": 28.227,
    "projected_total_decimal_gb": 30.31,
+   "headroom_gib_to_measured_memtotal": 3.12,
+   "headroom_decimal_gb_to_strict_contract": 1.69,
    "projected_min_MemAvailable_gib": 3.12,
-   "headroom_to_32gb_decimal": 1.69,
    "margin_to_nearest_oom_observation_gib": 6.68,
+   "classification_measured_host_memtotal": "SAFE_FOR_32GB",
+   "classification_strict_32_decimal_gb": "BORDERLINE_FOR_32GB",
    "classification": "BORDERLINE_FOR_32GB",
    "classification_reasons": [
-    "fits arithmetic but headroom 1.69 GB < required 2.0 GB"
+    "headroom 3.12 GiB (measured MemTotal) >= 2.0 GiB (measured MemTotal)",
+    "headroom 1.69 decimal GB (strict contract) < required 2.0 decimal GB (strict contract)"
    ]
   },
   {
    "pack_gib_per_gpu": 10.75,
    "records_per_gpu": 863,
    "pack_total_gib": 21.5,
+   "projected_nonpack_gib": 7.227,
    "measured_nonpack_hwm_gib": 5.817,
    "system_rest_gib": 0.91,
    "unmeasured_growth_allowance_gib": 0.5,
@@ -150,18 +190,23 @@
    ],
    "projected_total_gib": 28.727,
    "projected_total_decimal_gb": 30.85,
+   "headroom_gib_to_measured_memtotal": 2.62,
+   "headroom_decimal_gb_to_strict_contract": 1.15,
    "projected_min_MemAvailable_gib": 2.62,
-   "headroom_to_32gb_decimal": 1.15,
    "margin_to_nearest_oom_observation_gib": 6.18,
+   "classification_measured_host_memtotal": "SAFE_FOR_32GB",
+   "classification_strict_32_decimal_gb": "BORDERLINE_FOR_32GB",
    "classification": "BORDERLINE_FOR_32GB",
    "classification_reasons": [
-    "fits arithmetic but headroom 1.15 GB < required 2.0 GB"
+    "headroom 2.62 GiB (measured MemTotal) >= 2.0 GiB (measured MemTotal)",
+    "headroom 1.15 decimal GB (strict contract) < required 2.0 decimal GB (strict contract)"
    ]
   },
   {
    "pack_gib_per_gpu": 11.0,
    "records_per_gpu": 883,
    "pack_total_gib": 22.0,
+   "projected_nonpack_gib": 7.227,
    "measured_nonpack_hwm_gib": 5.817,
    "system_rest_gib": 0.91,
    "unmeasured_growth_allowance_gib": 0.5,
@@ -172,18 +217,23 @@
    ],
    "projected_total_gib": 29.227,
    "projected_total_decimal_gb": 31.38,
+   "headroom_gib_to_measured_memtotal": 2.12,
+   "headroom_decimal_gb_to_strict_contract": 0.62,
    "projected_min_MemAvailable_gib": 2.12,
-   "headroom_to_32gb_decimal": 0.62,
    "margin_to_nearest_oom_observation_gib": 5.68,
+   "classification_measured_host_memtotal": "SAFE_FOR_32GB",
+   "classification_strict_32_decimal_gb": "BORDERLINE_FOR_32GB",
    "classification": "BORDERLINE_FOR_32GB",
    "classification_reasons": [
-    "fits arithmetic but headroom 0.62 GB < required 2.0 GB"
+    "headroom 2.12 GiB (measured MemTotal) >= 2.0 GiB (measured MemTotal)",
+    "headroom 0.62 decimal GB (strict contract) < required 2.0 decimal GB (strict contract)"
    ]
   },
   {
    "pack_gib_per_gpu": 11.25,
    "records_per_gpu": 903,
    "pack_total_gib": 22.5,
+   "projected_nonpack_gib": 7.227,
    "measured_nonpack_hwm_gib": 5.817,
    "system_rest_gib": 0.91,
    "unmeasured_growth_allowance_gib": 0.5,
@@ -194,19 +244,24 @@
    ],
    "projected_total_gib": 29.727,
    "projected_total_decimal_gb": 31.92,
+   "headroom_gib_to_measured_memtotal": 1.62,
+   "headroom_decimal_gb_to_strict_contract": 0.08,
    "projected_min_MemAvailable_gib": 1.62,
-   "headroom_to_32gb_decimal": 0.08,
    "margin_to_nearest_oom_observation_gib": 5.18,
+   "classification_measured_host_memtotal": "BORDERLINE_FOR_32GB",
+   "classification_strict_32_decimal_gb": "BORDERLINE_FOR_32GB",
    "classification": "BORDERLINE_FOR_32GB",
    "classification_reasons": [
-    "fits arithmetic but headroom 0.08 GB < required 2.0 GB",
-    "projected minimum MemAvailable 1.62 GiB < 2.0 GiB"
+    "headroom 1.62 GiB (measured MemTotal) < required 2.0 GiB (measured MemTotal)",
+    "projected minimum MemAvailable 1.62 GiB < 2.0 GiB",
+    "headroom 0.08 decimal GB (strict contract) < required 2.0 decimal GB (strict contract)"
    ]
   },
   {
    "pack_gib_per_gpu": 11.5,
    "records_per_gpu": 923,
    "pack_total_gib": 23.0,
+   "projected_nonpack_gib": 7.227,
    "measured_nonpack_hwm_gib": 5.817,
    "system_rest_gib": 0.91,
    "unmeasured_growth_allowance_gib": 0.5,
@@ -217,19 +272,24 @@
    ],
    "projected_total_gib": 30.227,
    "projected_total_decimal_gb": 32.46,
+   "headroom_gib_to_measured_memtotal": 1.12,
+   "headroom_decimal_gb_to_strict_contract": -0.46,
    "projected_min_MemAvailable_gib": 1.12,
-   "headroom_to_32gb_decimal": -0.46,
    "margin_to_nearest_oom_observation_gib": 4.68,
+   "classification_measured_host_memtotal": "BORDERLINE_FOR_32GB",
+   "classification_strict_32_decimal_gb": "NOT_SAFE_FOR_32GB",
    "classification": "NOT_SAFE_FOR_32GB",
    "classification_reasons": [
-    "projected total 32.46 GB > 32.0 GB limit",
-    "projected minimum MemAvailable 1.12 GiB < 2.0 GiB"
+    "headroom 1.12 GiB (measured MemTotal) < required 2.0 GiB (measured MemTotal)",
+    "projected minimum MemAvailable 1.12 GiB < 2.0 GiB",
+    "projected total exceeds the decimal GB (strict contract) limit"
    ]
   },
   {
    "pack_gib_per_gpu": 12.0,
    "records_per_gpu": 963,
    "pack_total_gib": 24.0,
+   "projected_nonpack_gib": 7.227,
    "measured_nonpack_hwm_gib": 5.817,
    "system_rest_gib": 0.91,
    "unmeasured_growth_allowance_gib": 0.5,
@@ -240,19 +300,24 @@
    ],
    "projected_total_gib": 31.227,
    "projected_total_decimal_gb": 33.53,
+   "headroom_gib_to_measured_memtotal": 0.12,
+   "headroom_decimal_gb_to_strict_contract": -1.53,
    "projected_min_MemAvailable_gib": 0.12,
-   "headroom_to_32gb_decimal": -1.53,
    "margin_to_nearest_oom_observation_gib": 3.68,
+   "classification_measured_host_memtotal": "BORDERLINE_FOR_32GB",
+   "classification_strict_32_decimal_gb": "NOT_SAFE_FOR_32GB",
    "classification": "NOT_SAFE_FOR_32GB",
    "classification_reasons": [
-    "projected total 33.53 GB > 32.0 GB limit",
-    "projected minimum MemAvailable 0.12 GiB < 2.0 GiB"
+    "headroom 0.12 GiB (measured MemTotal) < required 2.0 GiB (measured MemTotal)",
+    "projected minimum MemAvailable 0.12 GiB < 2.0 GiB",
+    "projected total exceeds the decimal GB (strict contract) limit"
    ]
   },
   {
    "pack_gib_per_gpu": 12.25,
    "records_per_gpu": 983,
    "pack_total_gib": 24.5,
+   "projected_nonpack_gib": 7.227,
    "measured_nonpack_hwm_gib": 5.817,
    "system_rest_gib": 0.91,
    "unmeasured_growth_allowance_gib": 0.5,
@@ -263,19 +328,24 @@
    ],
    "projected_total_gib": 31.727,
    "projected_total_decimal_gb": 34.07,
+   "headroom_gib_to_measured_memtotal": -0.38,
+   "headroom_decimal_gb_to_strict_contract": -2.07,
    "projected_min_MemAvailable_gib": -0.38,
-   "headroom_to_32gb_decimal": -2.07,
    "margin_to_nearest_oom_observation_gib": 3.18,
+   "classification_measured_host_memtotal": "NOT_SAFE_FOR_32GB",
+   "classification_strict_32_decimal_gb": "NOT_SAFE_FOR_32GB",
    "classification": "NOT_SAFE_FOR_32GB",
    "classification_reasons": [
-    "projected total 34.07 GB > 32.0 GB limit",
-    "projected minimum MemAvailable -0.38 GiB < 2.0 GiB"
+    "projected total exceeds the GiB (measured MemTotal) limit",
+    "projected minimum MemAvailable -0.38 GiB < 2.0 GiB",
+    "projected total exceeds the decimal GB (strict contract) limit"
    ]
   },
   {
    "pack_gib_per_gpu": 12.75,
    "records_per_gpu": 1024,
    "pack_total_gib": 25.5,
+   "projected_nonpack_gib": 7.227,
    "measured_nonpack_hwm_gib": 5.817,
    "system_rest_gib": 0.91,
    "unmeasured_growth_allowance_gib": 0.5,
@@ -286,13 +356,17 @@
    ],
    "projected_total_gib": 32.727,
    "projected_total_decimal_gb": 35.14,
+   "headroom_gib_to_measured_memtotal": -1.38,
+   "headroom_decimal_gb_to_strict_contract": -3.14,
    "projected_min_MemAvailable_gib": -1.38,
-   "headroom_to_32gb_decimal": -3.14,
    "margin_to_nearest_oom_observation_gib": 2.18,
+   "classification_measured_host_memtotal": "NOT_SAFE_FOR_32GB",
+   "classification_strict_32_decimal_gb": "NOT_SAFE_FOR_32GB",
    "classification": "NOT_SAFE_FOR_32GB",
    "classification_reasons": [
-    "projected total 35.14 GB > 32.0 GB limit",
-    "projected minimum MemAvailable -1.38 GiB < 2.0 GiB"
+    "projected total exceeds the GiB (measured MemTotal) limit",
+    "projected minimum MemAvailable -1.38 GiB < 2.0 GiB",
+    "projected total exceeds the decimal GB (strict contract) limit"
    ]
   }
  ],

@@ -68,5 +68,28 @@
   "pack hits rise / misses fall as replayed, but decode wall does not improve beyond run noise in two matched pairs",
   "or: process memory exceeds the projected envelope / approaches OOM",
   "or: correctness gates fail (any divergence -> stop)"
- ]
+ ],
+ "analysis_plan": {
+  "sources": [
+   "results/ab_noise.json",
+   "results/ab_power_plan.json"
+  ],
+  "tools": [
+   "tools/analyze_matched_ab.py",
+   "tools/plan_ab_power.py"
+  ],
+  "measured_noise": {
+   "baseline_sd_s": 0.926,
+   "baseline_mad_s": 0.905,
+   "note": "three same-config baselines (v65, ab_baseline, rep_baseline); paired reuse deltas sit inside this spread"
+  },
+  "n_pairs_budgeted_upfront": 2,
+  "stopping_rule_preregistered": {
+   "futility": "abort after pair 1 if the candidate decode wall EXCEEDS its baseline by more than the measured baseline SD (~0.93 s) \u2014 a null or negative result stops the experiment",
+   "no_early_accept": "never stop early on a favorable result; both pre-budgeted pairs are required",
+   "informative": "both pairs improve AND |mean delta| > baseline MAD (~0.905 s); otherwise treat as unresolved",
+   "formal_acceptance": "only under the campaign's own rules; this plan does not loosen them"
+  },
+  "decode_length": "keep n_tokens=16: it matches the replay-validated route workload and the sealed counters; longer generations change the recurrence mix and are a separate experiment (see ab_power_plan.json)"
+ }
 }

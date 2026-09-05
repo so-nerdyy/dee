@@ -61,10 +61,14 @@ Falsifies the host-pack hypothesis:
 - pack misses fall as replayed but decode wall does not improve beyond
   run noise in two matched pairs (⇒ `miss_service_ms` is not wall
   service on this path), OR
-- memory exceeds the projected envelope (projected total 31.36 GB;
-  abort if min checkpoint available < 1.5 GiB), OR
+- memory exceeds the projected envelope (projected total 27.227 GiB =
+  29.23 decimal GB at the 10.0 GiB/GPU candidate — see the generated table
+  in MEMORY_BUDGET.md; abort if min checkpoint available < 1.5 GiB), OR
 - any correctness divergence (stop immediately).
 
-One matched pair suffices to distinguish direction; the second pair
-(confirmed by the seal precedent: original + replication) establishes
-robustness. Do not launch further A/Bs before this one seals.
+Pair count and stopping are **pre-registered** in AB_EXPERIMENT_DESIGN.md:
+run exactly 2 matched pairs; futility (abort after pair 1) if the candidate
+wall exceeds its baseline by more than the measured baseline SD (0.926 s);
+no early accept on a favorable pair 1. Success statistics (both deltas
+negative AND mean delta ≥ baseline MAD 0.905 s) come from
+`results/ab_noise.json` methodology.

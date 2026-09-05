@@ -1,0 +1,177 @@
+{
+ "schema": "exact-staging/ab-noise-v1",
+ "source_seal": "14864034a7354e0e29e11c1c09f18b0863afe6a0",
+ "runs": {
+  "ab_baseline": {
+   "decode_wall_s": 71.362,
+   "group": "exact-on-demand-6lane-noreuse",
+   "profiling_perturbation": false,
+   "provenance": "seal 14864034a7354e0e29e11c1c09f18b0863afe6a0 (derived_per_step_decode.json)"
+  },
+  "ab_candidate": {
+   "decode_wall_s": 70.691,
+   "group": "exact-on-demand-6lane-reuse",
+   "profiling_perturbation": false,
+   "provenance": "seal 14864034a7354e0e29e11c1c09f18b0863afe6a0 (derived_per_step_decode.json)"
+  },
+  "profiled_candidate": {
+   "decode_wall_s": 71.179,
+   "group": "exact-on-demand-6lane-reuse",
+   "profiling_perturbation": true,
+   "provenance": "seal 14864034a7354e0e29e11c1c09f18b0863afe6a0 (derived_per_step_decode.json)"
+  },
+  "rep_baseline": {
+   "decode_wall_s": 73.213,
+   "group": "exact-on-demand-6lane-noreuse",
+   "profiling_perturbation": false,
+   "provenance": "seal 14864034a7354e0e29e11c1c09f18b0863afe6a0 (derived_per_step_decode.json)"
+  },
+  "rep_candidate": {
+   "decode_wall_s": 71.284,
+   "group": "exact-on-demand-6lane-reuse",
+   "profiling_perturbation": false,
+   "provenance": "seal 14864034a7354e0e29e11c1c09f18b0863afe6a0 (derived_per_step_decode.json)"
+  },
+  "v63_3lane": {
+   "decode_wall_s": 71.315,
+   "group": "exact-3lane-era (per EVIDENCE_INVENTORY @2db0fde)",
+   "profiling_perturbation": false,
+   "provenance": "C:\\Users\\carth\\Downloads\\dynamic_expert_eviction\\dee.cpp\\tmp\\v63-terminal-fetch-20260903T0048Z\\profile.json sha256=2156fd535fcd3b88a0b0406189060db1854bfd8dd775002e13817b8220e2cd81"
+  },
+  "v64_3lane": {
+   "decode_wall_s": 71.804,
+   "group": "exact-3lane-era (per EVIDENCE_INVENTORY @2db0fde)",
+   "profiling_perturbation": false,
+   "provenance": "C:\\Users\\carth\\Downloads\\dynamic_expert_eviction\\dee.cpp\\tmp\\v64-terminal-fetch-20260903T0120Z\\profile.json sha256=ceab9de80bccc47b6774be1544ee5ca706be737540c4c08a156d073fc4f3a4c0"
+  },
+  "v65_sealed": {
+   "decode_wall_s": 72.267,
+   "group": "exact-on-demand-6lane-noreuse",
+   "profiling_perturbation": false,
+   "provenance": "seal 14864034a7354e0e29e11c1c09f18b0863afe6a0 (derived_per_step_decode.json)"
+  }
+ },
+ "baseline_variance": {
+  "group": "exact-on-demand-6lane-noreuse",
+  "n_runs": 3,
+  "walls_s": [
+   71.362,
+   73.213,
+   72.267
+  ],
+  "mean_s": 72.281,
+  "median_s": 72.267,
+  "sd_s": 0.926,
+  "mad_s": 0.905,
+  "spread_s": 1.851,
+  "labels": [
+   "MEASURED (walls)",
+   "DERIVED (summary stats)"
+  ],
+  "between_notebook_sd_s": 0.926,
+  "within_notebook_sd_s": "UNKNOWN (no same-config repeats within one notebook; BLOCKED_BY_MISSING_MEASUREMENT)"
+ },
+ "paired_ab_effect": {
+  "n_pairs": 2,
+  "pairs": [
+   {
+    "pair_id": "reuse-original",
+    "baseline_run": "ab_baseline",
+    "baseline_s": 71.362,
+    "candidate_run": "ab_candidate",
+    "candidate_s": 70.691,
+    "delta_s": -0.671,
+    "delta_pct": -0.94,
+    "correctness": "both arms ACCEPT_CORRECTNESS (seal)",
+    "labels": [
+     "MEASURED (walls)",
+     "DERIVED (delta)"
+    ]
+   },
+   {
+    "pair_id": "reuse-replication",
+    "baseline_run": "rep_baseline",
+    "baseline_s": 73.213,
+    "candidate_run": "rep_candidate",
+    "candidate_s": 71.284,
+    "delta_s": -1.929,
+    "delta_pct": -2.63,
+    "correctness": "both arms ACCEPT_CORRECTNESS (seal)",
+    "labels": [
+     "MEASURED (walls)",
+     "DERIVED (delta)"
+    ]
+   }
+  ],
+  "mean_delta_s": -1.3,
+  "median_delta_s": -1.3,
+  "mean_delta_pct": -1.8,
+  "direction_consistent": true,
+  "sign_consistency": "2/2 negative",
+  "labels": [
+   "DERIVED (deltas)",
+   "EXPLORATORY_STATISTIC (summary: n=2)"
+  ]
+ },
+ "bootstrap_ci": {
+  "ci95_mean_delta_s": [
+   -1.929,
+   -0.671
+  ],
+  "iters": 10000,
+  "seed": 20260904,
+  "label": "EXPLORATORY_STATISTIC",
+  "caveat": "n=2 pairs; bootstrap resamples 2 values, so the interval is degenerate/overconfident \u2014 direction only"
+ },
+ "per_token_paired": {
+  "reuse-original": {
+   "n_tokens": 15,
+   "mean_delta_ms": -44.7,
+   "median_delta_ms": -30.8,
+   "tokens_improved": "12/15",
+   "lag1_autocorr_baseline": 0.485,
+   "lag1_autocorr_candidate": 0.516,
+   "dependence_caveat": "per-token walls are serially dependent (autocorrelated route mix); the 15 token walls of one run are ONE replicate each, so per-token sign counts are descriptive, not a test",
+   "label": "EXPLORATORY_STATISTIC"
+  },
+  "reuse-replication": {
+   "n_tokens": 15,
+   "mean_delta_ms": -128.7,
+   "median_delta_ms": -94.2,
+   "tokens_improved": "15/15",
+   "lag1_autocorr_baseline": 0.492,
+   "lag1_autocorr_candidate": 0.514,
+   "dependence_caveat": "per-token walls are serially dependent (autocorrelated route mix); the 15 token walls of one run are ONE replicate each, so per-token sign counts are descriptive, not a test",
+   "label": "EXPLORATORY_STATISTIC"
+  }
+ },
+ "profiling_perturbation": {
+  "rep_candidate_unprofiled_s": 71.284,
+  "profiled_candidate_s": 71.179,
+  "delta_s": -0.105,
+  "note": "stage profiling perturbation at decode level appears small but the two runs differ in notebook session too; treat as EXPLORATORY bound only",
+  "label": "EXPLORATORY_STATISTIC"
+ },
+ "signal_to_noise_reuse_effect": {
+  "snr_mean_delta_over_baseline_sd": 1.4,
+  "verdict": "suggestive; requires matched pairs + replication",
+  "label": "DERIVED"
+ },
+ "lane_era_context": {
+  "note": "v63/v64 (3-lane era) vs v65/host-reuse (6-lane) are DIFFERENT configs; included for context only, excluded from baseline variance",
+  "walls_s": {
+   "v63_3lane": 71.315,
+   "v64_3lane": 71.804
+  }
+ },
+ "key_numbers_for_planning": {
+  "baseline_sd_s": 0.926,
+  "baseline_mad_s": 0.905,
+  "baseline_spread_s": 1.851,
+  "observed_reuse_mean_delta_s": -1.3,
+  "labels": [
+   "DERIVED"
+  ]
+ },
+ "claim_rules": "no TPS claims; no acceptance claims; measured vs exploratory labels enforced per field"
+}

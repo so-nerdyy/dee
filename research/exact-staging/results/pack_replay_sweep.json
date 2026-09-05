@@ -46,21 +46,21 @@
       "delta_vs_observed_pct": -0.07
     },
     {
-      "budget_records": 723,
-      "budget_gib_per_gpu": 9.0,
+      "budget_records": 722,
+      "budget_gib_per_gpu": 8.99,
       "decode_storage_misses": 1229,
       "per_device": {
         "cuda:0": {
           "misses": 1370,
           "hits": 1243,
-          "evictions": 647,
+          "evictions": 648,
           "decode_misses": 737,
           "distinct_records": 1297
         },
         "cuda:1": {
           "misses": 1088,
           "hits": 1398,
-          "evictions": 365,
+          "evictions": 366,
           "decode_misses": 492,
           "distinct_records": 1067
         }
@@ -128,21 +128,21 @@
       "delta_vs_observed_pct": -2.9
     },
     {
-      "budget_records": 802,
-      "budget_gib_per_gpu": 9.99,
+      "budget_records": 803,
+      "budget_gib_per_gpu": 10.0,
       "decode_storage_misses": 1200,
       "per_device": {
         "cuda:0": {
           "misses": 1348,
           "hits": 1265,
-          "evictions": 546,
+          "evictions": 545,
           "decode_misses": 715,
           "distinct_records": 1297
         },
         "cuda:1": {
           "misses": 1081,
           "hits": 1405,
-          "evictions": 279,
+          "evictions": 278,
           "decode_misses": 485,
           "distinct_records": 1067
         }
@@ -208,6 +208,293 @@
       "simulated_decode_wall_s": 69.200431,
       "delta_vs_sim_baseline_pct": -4.24,
       "delta_vs_observed_pct": -4.24
+    },
+    {
+      "budget_records": 863,
+      "budget_gib_per_gpu": 10.75,
+      "decode_storage_misses": 1186,
+      "per_device": {
+        "cuda:0": {
+          "misses": 1339,
+          "hits": 1274,
+          "evictions": 476,
+          "decode_misses": 706,
+          "distinct_records": 1297
+        },
+        "cuda:1": {
+          "misses": 1076,
+          "hits": 1410,
+          "evictions": 213,
+          "decode_misses": 480,
+          "distinct_records": 1067
+        }
+      },
+      "decode_per_step_reads": {
+        "1": 96,
+        "2": 68,
+        "3": 72,
+        "4": 106,
+        "5": 119,
+        "6": 112,
+        "7": 88,
+        "8": 78,
+        "9": 49,
+        "10": 61,
+        "11": 72,
+        "12": 58,
+        "13": 65,
+        "14": 84,
+        "15": 58
+      },
+      "simulated_decode_wall_s": 69.054394,
+      "delta_vs_sim_baseline_pct": -4.45,
+      "delta_vs_observed_pct": -4.45
+    },
+    {
+      "budget_records": 883,
+      "budget_gib_per_gpu": 10.99,
+      "decode_storage_misses": 1184,
+      "per_device": {
+        "cuda:0": {
+          "misses": 1339,
+          "hits": 1274,
+          "evictions": 456,
+          "decode_misses": 706,
+          "distinct_records": 1297
+        },
+        "cuda:1": {
+          "misses": 1074,
+          "hits": 1412,
+          "evictions": 191,
+          "decode_misses": 478,
+          "distinct_records": 1067
+        }
+      },
+      "decode_per_step_reads": {
+        "1": 96,
+        "2": 68,
+        "3": 72,
+        "4": 106,
+        "5": 119,
+        "6": 112,
+        "7": 88,
+        "8": 78,
+        "9": 49,
+        "10": 61,
+        "11": 71,
+        "12": 57,
+        "13": 65,
+        "14": 84,
+        "15": 58
+      },
+      "simulated_decode_wall_s": 68.957036,
+      "delta_vs_sim_baseline_pct": -4.58,
+      "delta_vs_observed_pct": -4.58
+    },
+    {
+      "budget_records": 903,
+      "budget_gib_per_gpu": 11.24,
+      "decode_storage_misses": 1179,
+      "per_device": {
+        "cuda:0": {
+          "misses": 1334,
+          "hits": 1279,
+          "evictions": 431,
+          "decode_misses": 701,
+          "distinct_records": 1297
+        },
+        "cuda:1": {
+          "misses": 1074,
+          "hits": 1412,
+          "evictions": 171,
+          "decode_misses": 478,
+          "distinct_records": 1067
+        }
+      },
+      "decode_per_step_reads": {
+        "1": 96,
+        "2": 68,
+        "3": 72,
+        "4": 106,
+        "5": 119,
+        "6": 112,
+        "7": 88,
+        "8": 78,
+        "9": 49,
+        "10": 61,
+        "11": 71,
+        "12": 57,
+        "13": 64,
+        "14": 83,
+        "15": 55
+      },
+      "simulated_decode_wall_s": 68.71364100000001,
+      "delta_vs_sim_baseline_pct": -4.92,
+      "delta_vs_observed_pct": -4.92
+    },
+    {
+      "budget_records": 923,
+      "budget_gib_per_gpu": 11.49,
+      "decode_storage_misses": 1177,
+      "per_device": {
+        "cuda:0": {
+          "misses": 1333,
+          "hits": 1280,
+          "evictions": 410,
+          "decode_misses": 700,
+          "distinct_records": 1297
+        },
+        "cuda:1": {
+          "misses": 1073,
+          "hits": 1413,
+          "evictions": 150,
+          "decode_misses": 477,
+          "distinct_records": 1067
+        }
+      },
+      "decode_per_step_reads": {
+        "1": 96,
+        "2": 68,
+        "3": 72,
+        "4": 106,
+        "5": 119,
+        "6": 112,
+        "7": 87,
+        "8": 78,
+        "9": 49,
+        "10": 60,
+        "11": 71,
+        "12": 57,
+        "13": 64,
+        "14": 83,
+        "15": 55
+      },
+      "simulated_decode_wall_s": 68.616283,
+      "delta_vs_sim_baseline_pct": -5.05,
+      "delta_vs_observed_pct": -5.05
+    },
+    {
+      "budget_records": 963,
+      "budget_gib_per_gpu": 11.99,
+      "decode_storage_misses": 1163,
+      "per_device": {
+        "cuda:0": {
+          "misses": 1323,
+          "hits": 1290,
+          "evictions": 360,
+          "decode_misses": 690,
+          "distinct_records": 1297
+        },
+        "cuda:1": {
+          "misses": 1069,
+          "hits": 1417,
+          "evictions": 106,
+          "decode_misses": 473,
+          "distinct_records": 1067
+        }
+      },
+      "decode_per_step_reads": {
+        "1": 96,
+        "2": 68,
+        "3": 72,
+        "4": 106,
+        "5": 119,
+        "6": 112,
+        "7": 86,
+        "8": 74,
+        "9": 49,
+        "10": 58,
+        "11": 68,
+        "12": 57,
+        "13": 64,
+        "14": 79,
+        "15": 55
+      },
+      "simulated_decode_wall_s": 67.934777,
+      "delta_vs_sim_baseline_pct": -6.0,
+      "delta_vs_observed_pct": -5.99
+    },
+    {
+      "budget_records": 983,
+      "budget_gib_per_gpu": 12.24,
+      "decode_storage_misses": 1159,
+      "per_device": {
+        "cuda:0": {
+          "misses": 1320,
+          "hits": 1293,
+          "evictions": 337,
+          "decode_misses": 687,
+          "distinct_records": 1297
+        },
+        "cuda:1": {
+          "misses": 1068,
+          "hits": 1418,
+          "evictions": 85,
+          "decode_misses": 472,
+          "distinct_records": 1067
+        }
+      },
+      "decode_per_step_reads": {
+        "1": 96,
+        "2": 68,
+        "3": 72,
+        "4": 106,
+        "5": 119,
+        "6": 112,
+        "7": 86,
+        "8": 73,
+        "9": 49,
+        "10": 56,
+        "11": 68,
+        "12": 57,
+        "13": 64,
+        "14": 78,
+        "15": 55
+      },
+      "simulated_decode_wall_s": 67.740061,
+      "delta_vs_sim_baseline_pct": -6.26,
+      "delta_vs_observed_pct": -6.26
+    },
+    {
+      "budget_records": 1024,
+      "budget_gib_per_gpu": 12.75,
+      "decode_storage_misses": 1153,
+      "per_device": {
+        "cuda:0": {
+          "misses": 1315,
+          "hits": 1298,
+          "evictions": 291,
+          "decode_misses": 682,
+          "distinct_records": 1297
+        },
+        "cuda:1": {
+          "misses": 1067,
+          "hits": 1419,
+          "evictions": 43,
+          "decode_misses": 471,
+          "distinct_records": 1067
+        }
+      },
+      "decode_per_step_reads": {
+        "1": 96,
+        "2": 68,
+        "3": 72,
+        "4": 106,
+        "5": 119,
+        "6": 112,
+        "7": 86,
+        "8": 73,
+        "9": 49,
+        "10": 56,
+        "11": 66,
+        "12": 57,
+        "13": 62,
+        "14": 76,
+        "15": 55
+      },
+      "simulated_decode_wall_s": 67.447987,
+      "delta_vs_sim_baseline_pct": -6.67,
+      "delta_vs_observed_pct": -6.67
     }
   ]
 }

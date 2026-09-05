@@ -48,8 +48,10 @@ def main() -> None:
     ap.add_argument("--journal", type=Path, required=True,
                     help="sealed routed_experts.jsonl (read-only)")
     ap.add_argument("--budgets", type=int, nargs="+",
-                    default=[682, 762, 843, 883, 923, 963, 1024],
-                    help="pack capacity in records (682 = sealed 8.5 GiB)")
+                    default=[682, 722, 762, 803, 843, 863, 883, 903, 923,
+                             963, 983, 1024],
+                    help="pack capacity in records (682 = sealed 8.5 GiB; "
+                         "default mirrors recalibrate_model.BUDGETS_GIB)")
     ap.add_argument("--out", type=Path, default=HERE / "results")
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)

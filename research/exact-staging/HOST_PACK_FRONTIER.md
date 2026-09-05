@@ -1,6 +1,6 @@
 # HOST_PACK_FRONTIER.md — replay-validated miss frontier and marginal returns
 
-Branch: `research/exact-staging` · Date: 2026-09-04
+Branch: `research/exact-staging` · Date: 2026-09-04 (unit-contract revision)
 Machine-readable: `results/host_pack_frontier.csv`, `results/recalibrated_model.json`
 (`frontier`, `replay_validation`), raw replay tables in
 `results/pack_replay_sweep.json` (regenerable via `run_pack_sweep.py`).
@@ -26,20 +26,28 @@ capped by `LRU_TOTAL_CAP_GIB=17.0` from a 12.87 GiB/GPU request.
 Decode compulsory floor (infinite budget): **1,135 misses** — a record's
 first decode-phase demand. Everything above that is capacity miss.
 Per-budget (miss table = replay; wall = **SIMULATED** with the recalibrated
-model; memory classes from MEMORY_BUDGET.md):
+model; classes per MEMORY_UNIT_CONTRACT.md, generated from
+`results/recalibrated_model.json`):
 
-| GiB/GPU | records | misses | compulsory | capacity | Δmiss/GiB | sim wall (s) | Δwall vs v65 (s) | class |
-|---|---|---|---|---|---|---|---|---|
-| 8.5 | 682 | 1251 | 1135 | 116 | — | 72.22 | −0.05 | SAFE |
-| 9.0 | 722 | 1229 | 1135 | 94 | 44.0 | 71.15 | −1.12 | SAFE |
-| 9.5 | 762 | 1209 | 1135 | 74 | 42.0 | 70.17 | −2.09 | SAFE |
-| 10.0 | 803 | 1200 | 1135 | 65 | 34.0 | 69.74 | −2.53 | SAFE |
-| 10.5 | 843 | 1189 | 1135 | 54 | 31.0 | 69.20 | −3.07 | BORDERLINE |
-| 11.0 | 883 | 1184 | 1135 | 49 | 26.8 | 68.96 | −3.31 | BORDERLINE |
-| 11.5 | 923 | 1177 | 1135 | 42 | 24.7 | 68.62 | −3.65 | NOT_SAFE |
-| 12.75 | 1024 | 1153 | 1135 | 18 | 23.1 | 67.45 | −4.82 | NOT_SAFE |
+<!-- BEGIN GENERATED:frontier-table -->
+| GiB/GPU | records | misses | compulsory | capacity | Δmiss/GiB | sim wall (s, SIMULATED) | Δwall vs v65 (s, SIMULATED) | class (measured MemTotal) | class (strict contract) |
+|---|---|---|---|---|---|---|---|---|---|
+| 8.5 | 682 | 1251 | 1135 | 116 | 0.0 | 72.219 | 0.0 | SAFE | SAFE |
+| 9.0 | 722 | 1229 | 1135 | 94 | 44.0 | 71.148 | -1.071 | SAFE | SAFE |
+| 9.5 | 762 | 1209 | 1135 | 74 | 42.0 | 70.174 | -2.045 | SAFE | SAFE |
+| 10.0 | 803 | 1200 | 1135 | 65 | 34.0 | 69.736 | -2.483 | SAFE | SAFE |
+| 10.5 | 843 | 1189 | 1135 | 54 | 31.0 | 69.2 | -3.018 | SAFE | BORDERLINE |
+| 10.75 | 863 | 1186 | 1135 | 51 | 28.9 | 69.054 | -3.164 | SAFE | BORDERLINE |
+| 11.0 | 883 | 1184 | 1135 | 49 | 26.8 | 68.957 | -3.261 | SAFE | BORDERLINE |
+| 11.25 | 903 | 1179 | 1135 | 44 | 26.2 | 68.714 | -3.505 | BORDERLINE | BORDERLINE |
+| 11.5 | 923 | 1177 | 1135 | 42 | 24.7 | 68.616 | -3.602 | BORDERLINE | NOT_SAFE |
+| 12.0 | 963 | 1163 | 1135 | 28 | 25.1 | 67.935 | -4.284 | BORDERLINE | NOT_SAFE |
+| 12.25 | 983 | 1159 | 1135 | 24 | 24.5 | 67.74 | -4.478 | NOT_SAFE | NOT_SAFE |
+| 12.75 | 1024 | 1153 | 1135 | 18 | 23.1 | 67.448 | -4.771 | NOT_SAFE | NOT_SAFE |
+<!-- END GENERATED:frontier-table -->
 
-(intermediate 10.75/11.25/12.0/12.25 rows in the CSV)
+(intermediate 10.75/11.25/12.0/12.25 rows in the CSV; Δmiss/GiB is relative
+to 8.5, so the 8.5 row shows 0.0)
 
 Reading the marginal column: the curve is steepest from 8.5→9.5 GiB/GPU
 (~42–44 misses/GiB), halves by 10.0 (34), and decays to ~23/GiB at 12.75
@@ -50,11 +58,13 @@ above 8.5 buy 3× more than the last 2.**
 
 - The offline floor (1,135) needs the full 2×16.15 GiB working set —
   unreachable in the 32 GB thesis (12.75 GiB/GPU still leaves 18 capacity
-  misses and costs 5.7 GB over budget).
+  misses and costs 5.7 decimal GB over the strict contract).
 - Within SAFE territory (≤10.0 GiB/GPU), capacity misses fall 116→65
   (−44%); going to 12.75 would only cut the remaining 65→18 while leaving
   the envelope.
 - Every wall delta above is SIMULATED under the recalibrated observational
   model (`wall = 754.74 ms + 48.679 ms × misses`, R²=0.979; held-out error
   ≤2.3%); run-to-run spread of the same config is ~1.0–1.9 s, so deltas
-  under ~2 s require a matched A/B to confirm. No TPS claims.
+  under ~2 s require a matched A/B to confirm (see AB_NOISE_ANALYSIS.md and
+  AB_EXPERIMENT_DESIGN.md for the statistics and the pre-registered plan).
+  No TPS claims.

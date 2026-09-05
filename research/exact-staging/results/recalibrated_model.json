@@ -236,7 +236,9 @@
    "simulated_delta_s_vs_8gib5": 0.0,
    "simulated_delta_pct_vs_observed_v65": -0.07,
    "label": "SIMULATED (recalibrated observational model)",
-   "memory_classification": "SAFE_FOR_32GB"
+   "memory_classification": "SAFE_FOR_32GB",
+   "memory_class_measured_memtotal": "SAFE_FOR_32GB",
+   "memory_class_strict_contract": "SAFE_FOR_32GB"
   },
   {
    "pack_gib_per_gpu": 9.0,
@@ -253,7 +255,9 @@
    "simulated_delta_s_vs_8gib5": -1.071,
    "simulated_delta_pct_vs_observed_v65": -1.55,
    "label": "SIMULATED (recalibrated observational model)",
-   "memory_classification": "SAFE_FOR_32GB"
+   "memory_classification": "SAFE_FOR_32GB",
+   "memory_class_measured_memtotal": "SAFE_FOR_32GB",
+   "memory_class_strict_contract": "SAFE_FOR_32GB"
   },
   {
    "pack_gib_per_gpu": 9.5,
@@ -270,7 +274,9 @@
    "simulated_delta_s_vs_8gib5": -2.045,
    "simulated_delta_pct_vs_observed_v65": -2.9,
    "label": "SIMULATED (recalibrated observational model)",
-   "memory_classification": "SAFE_FOR_32GB"
+   "memory_classification": "SAFE_FOR_32GB",
+   "memory_class_measured_memtotal": "SAFE_FOR_32GB",
+   "memory_class_strict_contract": "SAFE_FOR_32GB"
   },
   {
    "pack_gib_per_gpu": 10.0,
@@ -287,7 +293,9 @@
    "simulated_delta_s_vs_8gib5": -2.483,
    "simulated_delta_pct_vs_observed_v65": -3.5,
    "label": "SIMULATED (recalibrated observational model)",
-   "memory_classification": "SAFE_FOR_32GB"
+   "memory_classification": "SAFE_FOR_32GB",
+   "memory_class_measured_memtotal": "SAFE_FOR_32GB",
+   "memory_class_strict_contract": "SAFE_FOR_32GB"
   },
   {
    "pack_gib_per_gpu": 10.5,
@@ -304,7 +312,9 @@
    "simulated_delta_s_vs_8gib5": -3.018,
    "simulated_delta_pct_vs_observed_v65": -4.24,
    "label": "SIMULATED (recalibrated observational model)",
-   "memory_classification": "BORDERLINE_FOR_32GB"
+   "memory_classification": "BORDERLINE_FOR_32GB",
+   "memory_class_measured_memtotal": "SAFE_FOR_32GB",
+   "memory_class_strict_contract": "BORDERLINE_FOR_32GB"
   },
   {
    "pack_gib_per_gpu": 10.75,
@@ -321,7 +331,9 @@
    "simulated_delta_s_vs_8gib5": -3.164,
    "simulated_delta_pct_vs_observed_v65": -4.45,
    "label": "SIMULATED (recalibrated observational model)",
-   "memory_classification": "BORDERLINE_FOR_32GB"
+   "memory_classification": "BORDERLINE_FOR_32GB",
+   "memory_class_measured_memtotal": "SAFE_FOR_32GB",
+   "memory_class_strict_contract": "BORDERLINE_FOR_32GB"
   },
   {
    "pack_gib_per_gpu": 11.0,
@@ -338,7 +350,9 @@
    "simulated_delta_s_vs_8gib5": -3.261,
    "simulated_delta_pct_vs_observed_v65": -4.58,
    "label": "SIMULATED (recalibrated observational model)",
-   "memory_classification": "BORDERLINE_FOR_32GB"
+   "memory_classification": "BORDERLINE_FOR_32GB",
+   "memory_class_measured_memtotal": "SAFE_FOR_32GB",
+   "memory_class_strict_contract": "BORDERLINE_FOR_32GB"
   },
   {
    "pack_gib_per_gpu": 11.25,
@@ -355,7 +369,9 @@
    "simulated_delta_s_vs_8gib5": -3.505,
    "simulated_delta_pct_vs_observed_v65": -4.92,
    "label": "SIMULATED (recalibrated observational model)",
-   "memory_classification": "BORDERLINE_FOR_32GB"
+   "memory_classification": "BORDERLINE_FOR_32GB",
+   "memory_class_measured_memtotal": "BORDERLINE_FOR_32GB",
+   "memory_class_strict_contract": "BORDERLINE_FOR_32GB"
   },
   {
    "pack_gib_per_gpu": 11.5,
@@ -372,7 +388,9 @@
    "simulated_delta_s_vs_8gib5": -3.602,
    "simulated_delta_pct_vs_observed_v65": -5.05,
    "label": "SIMULATED (recalibrated observational model)",
-   "memory_classification": "NOT_SAFE_FOR_32GB"
+   "memory_classification": "NOT_SAFE_FOR_32GB",
+   "memory_class_measured_memtotal": "BORDERLINE_FOR_32GB",
+   "memory_class_strict_contract": "NOT_SAFE_FOR_32GB"
   },
   {
    "pack_gib_per_gpu": 12.0,
@@ -389,7 +407,9 @@
    "simulated_delta_s_vs_8gib5": -4.284,
    "simulated_delta_pct_vs_observed_v65": -5.99,
    "label": "SIMULATED (recalibrated observational model)",
-   "memory_classification": "NOT_SAFE_FOR_32GB"
+   "memory_classification": "NOT_SAFE_FOR_32GB",
+   "memory_class_measured_memtotal": "BORDERLINE_FOR_32GB",
+   "memory_class_strict_contract": "NOT_SAFE_FOR_32GB"
   },
   {
    "pack_gib_per_gpu": 12.25,
@@ -406,7 +426,9 @@
    "simulated_delta_s_vs_8gib5": -4.478,
    "simulated_delta_pct_vs_observed_v65": -6.26,
    "label": "SIMULATED (recalibrated observational model)",
-   "memory_classification": "NOT_SAFE_FOR_32GB"
+   "memory_classification": "NOT_SAFE_FOR_32GB",
+   "memory_class_measured_memtotal": "NOT_SAFE_FOR_32GB",
+   "memory_class_strict_contract": "NOT_SAFE_FOR_32GB"
   },
   {
    "pack_gib_per_gpu": 12.75,
@@ -423,7 +445,9 @@
    "simulated_delta_s_vs_8gib5": -4.771,
    "simulated_delta_pct_vs_observed_v65": -6.67,
    "label": "SIMULATED (recalibrated observational model)",
-   "memory_classification": "NOT_SAFE_FOR_32GB"
+   "memory_classification": "NOT_SAFE_FOR_32GB",
+   "memory_class_measured_memtotal": "NOT_SAFE_FOR_32GB",
+   "memory_class_strict_contract": "NOT_SAFE_FOR_32GB"
   }
  ],
  "recommended_candidate": {
@@ -441,7 +465,9 @@
   "simulated_delta_s_vs_8gib5": -2.483,
   "simulated_delta_pct_vs_observed_v65": -3.5,
   "label": "SIMULATED (recalibrated observational model)",
-  "memory_classification": "SAFE_FOR_32GB"
+  "memory_classification": "SAFE_FOR_32GB",
+  "memory_class_measured_memtotal": "SAFE_FOR_32GB",
+  "memory_class_strict_contract": "SAFE_FOR_32GB"
  },
  "recommended_wall_band": {
   "improvement_s": {

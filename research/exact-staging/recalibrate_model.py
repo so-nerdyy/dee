@@ -103,9 +103,12 @@ BUDGETS_GIB = [8.5, 9.0, 9.5, 10.0, 10.5, 10.75, 11.0, 11.25, 11.5,
 NONPACK_HWM_GIB = 5.817          # max over the 5 seal runs (VmHWM - pack occupied)
 SYSTEM_REST_GIB = 0.91           # MemTotal - process - min-checkpoint-available
 UNMEASURED_GROWTH_GIB = 0.5      # unk: allocator/page-cache growth at larger pack
-SAFETY_HEADROOM_GIB = 2.0        # required free headroom for SAFE
-LIMIT_DECIMAL_GB = 32.0          # the project's total-host-RAM thesis, decimal GB
-LIMIT_GIB = LIMIT_DECIMAL_GB * GB / GIB   # 29.80 GiB
+SAFETY_HEADROOM = 2.0            # required free headroom (in each system's own unit)
+# Two authoritative safety systems (MEMORY_UNIT_CONTRACT.md — the single
+# definition; tests lint every memory field for an explicit unit suffix):
+LIMIT_DECIMAL_GB = 32.0          # STRICT_32_DECIMAL_GB: the project thesis envelope
+MEMTOTAL_GIB_MEASURED = 31.35    # MEASURED_HOST_MEMTOTAL: measured Kaggle 2xT4 host
+LIMIT_GIB = LIMIT_DECIMAL_GB * GB / GIB   # 29.80 GiB (reference only)
 # Empirical OOM ledger (harness header comments, v8/v9/v11-era):
 OOM_LEDGER = {
     "survived_pack_total_gib": 25.74,   # v8: 12.87+12.87, no madvise
@@ -318,38 +321,74 @@ def audit_old_model(model: dict, derived: dict) -> dict:
 
 
 def memory_envelope(budget_gib: float) -> dict:
-    """Conservative TOTAL host-memory envelope + safety classification."""
+    """Conservative TOTAL host-memory envelope + safety classification.
+
+    Two authoritative safety systems (see MEMORY_UNIT_CONTRACT.md):
+      MEASURED_HOST_MEMTOTAL  host-execution safety on the measured Kaggle 2xT4
+                              host (MemTotal 31.35 GiB in all 5 seal runs)
+      STRICT_32_DECIMAL_GB    the project's "~32 GB total host RAM" thesis as a
+                              hard 32.0 decimal GB envelope (nominal host class)
+    `classification` is the CONSERVATIVE intersection (worst of the two).
+    Every memory field carries its unit in its name; unqualified "GB" fields
+    are banned and linted by tests.
+    """
     total_pack = 2 * budget_gib
-    projected_gib = total_pack + NONPACK_HWM_GIB + SYSTEM_REST_GIB + UNMEASURED_GROWTH_GIB
+    projected_gib = (total_pack + NONPACK_HWM_GIB + SYSTEM_REST_GIB
+                     + UNMEASURED_GROWTH_GIB)
     projected_gb = projected_gib * GIB / GB
-    available_min_gib = 31.35 - projected_gib     # vs measured MemTotal 31.35 GiB
-    headroom_gb = LIMIT_DECIMAL_GB - projected_gb
+    # Identity: under this projection, headroom to MemTotal IS the projected
+    # minimum MemAvailable (MemTotal - projected). Both are reported.
+    headroom_gib_memtotal = MEMTOTAL_GIB_MEASURED - projected_gib
+    min_avail_gib = headroom_gib_memtotal
+    headroom_gb_strict = LIMIT_DECIMAL_GB - projected_gb
     oom_margin_gib = OOM_LEDGER["oom_pack_total_gib"] - total_pack
-    reasons = []
-    if projected_gb + SAFETY_HEADROOM_GIB <= LIMIT_DECIMAL_GB:
-        cls = "SAFE_FOR_32GB"
-    elif projected_gb <= LIMIT_DECIMAL_GB:
-        cls = "BORDERLINE_FOR_32GB"
-        reasons.append(f"fits arithmetic but headroom {round(headroom_gb, 2)} GB "
-                       f"< required {SAFETY_HEADROOM_GIB} GB")
+
+    def cls_for(headroom: float, fits: bool, unit: str) -> tuple[str, list]:
+        if not fits:
+            return "NOT_SAFE_FOR_32GB", [
+                f"projected total exceeds the {unit} limit"]
+        if headroom < SAFETY_HEADROOM:
+            return "BORDERLINE_FOR_32GB", [
+                f"headroom {round(headroom, 2)} {unit} < required "
+                f"{SAFETY_HEADROOM} {unit}"]
+        return "SAFE_FOR_32GB", [
+            f"headroom {round(headroom, 2)} {unit} >= {SAFETY_HEADROOM} {unit}"]
+
+    c_meas, r_meas = cls_for(headroom_gib_memtotal,
+                             projected_gib <= MEMTOTAL_GIB_MEASURED,
+                             "GiB (measured MemTotal)")
+    c_str, r_str = cls_for(headroom_gb_strict,
+                           projected_gb <= LIMIT_DECIMAL_GB,
+                           "decimal GB (strict contract)")
+    # Measured-host physical gates (apply to BOTH systems):
+    if min_avail_gib < SAFETY_HEADROOM:
+        r_meas.append(f"projected minimum MemAvailable {round(min_avail_gib, 2)} "
+                      f"GiB < {SAFETY_HEADROOM} GiB")
+        if c_meas == "SAFE_FOR_32GB":
+            c_meas = "BORDERLINE_FOR_32GB"
+    if oom_margin_gib < SAFETY_HEADROOM:
+        note = (f"pack total within {round(oom_margin_gib, 2)} GiB of the "
+                "nearest clean OOM observation (27.68 GiB)")
+        r_meas.append(note)
+        r_str.append(note)
+        if c_meas == "SAFE_FOR_32GB":
+            c_meas = "BORDERLINE_FOR_32GB"
+        if c_str == "SAFE_FOR_32GB":
+            c_str = "BORDERLINE_FOR_32GB"
+    order = {"SAFE_FOR_32GB": 0, "BORDERLINE_FOR_32GB": 1, "NOT_SAFE_FOR_32GB": 2}
+    combined = max((c_meas, c_str), key=lambda c: order[c])
+    if combined == "SAFE_FOR_32GB":
+        reasons = [f"SAFE under both systems: min-available "
+                   f"{round(min_avail_gib, 2)} GiB; OOM margin "
+                   f"{round(oom_margin_gib, 2)} GiB"]
     else:
-        cls = "NOT_SAFE_FOR_32GB"
-        reasons.append(f"projected total {round(projected_gb, 2)} GB > "
-                       f"{LIMIT_DECIMAL_GB} GB limit")
-    if oom_margin_gib < 2.0:
-        reasons.append(f"pack total within {round(oom_margin_gib, 2)} GiB of the "
-                       "nearest clean OOM observation (27.68 GiB)")
-        if cls == "SAFE_FOR_32GB":
-            cls = "BORDERLINE_FOR_32GB"
-    if available_min_gib < SAFETY_HEADROOM_GIB:
-        reasons.append(f"projected minimum MemAvailable {round(available_min_gib, 2)} "
-                       f"GiB < {SAFETY_HEADROOM_GIB} GiB")
-        if cls == "SAFE_FOR_32GB":
-            cls = "BORDERLINE_FOR_32GB"
+        reasons = r_meas + ([] if r_str == r_meas else r_str)
     return {
         "pack_gib_per_gpu": budget_gib,
         "records_per_gpu": math.floor(budget_gib * GIB / RECORD_BYTES),
         "pack_total_gib": round(total_pack, 3),
+        "projected_nonpack_gib": round(
+            NONPACK_HWM_GIB + SYSTEM_REST_GIB + UNMEASURED_GROWTH_GIB, 3),
         "measured_nonpack_hwm_gib": NONPACK_HWM_GIB,
         "system_rest_gib": SYSTEM_REST_GIB,
         "unmeasured_growth_allowance_gib": UNMEASURED_GROWTH_GIB,
@@ -360,16 +399,116 @@ def memory_envelope(budget_gib: float) -> dict:
         ],
         "projected_total_gib": round(projected_gib, 3),
         "projected_total_decimal_gb": round(projected_gb, 2),
-        "projected_min_MemAvailable_gib": round(available_min_gib, 2),
-        "headroom_to_32gb_decimal": round(headroom_gb, 2),
+        "headroom_gib_to_measured_memtotal": round(headroom_gib_memtotal, 2),
+        "headroom_decimal_gb_to_strict_contract": round(headroom_gb_strict, 2),
+        "projected_min_MemAvailable_gib": round(min_avail_gib, 2),
         "margin_to_nearest_oom_observation_gib": round(oom_margin_gib, 2),
-        "classification": cls,
-        "classification_reasons": reasons or [
-            f"headroom {round(headroom_gb, 2)} GB >= {SAFETY_HEADROOM_GIB} GB; "
-            f"min-available {round(available_min_gib, 2)} GiB >= "
-            f"{SAFETY_HEADROOM_GIB} GiB; OOM margin "
-            f"{round(oom_margin_gib, 2)} GiB"],
+        "classification_measured_host_memtotal": c_meas,
+        "classification_strict_32_decimal_gb": c_str,
+        "classification": combined,
+        "classification_reasons": reasons,
     }
+
+
+def _baseline_stats() -> dict:
+    """Spread of the three same-config baseline decode walls (MEASURED)."""
+    import statistics
+    walls = [MEASURED[k] for k in ("v65_sealed", "ab_baseline", "rep_baseline")]
+    med = statistics.median(walls)
+    mean = sum(walls) / len(walls)
+    return {
+        "walls_s": walls,
+        "mean_s": round(mean, 3),
+        "median_s": round(med, 3),
+        "sd_s": round(math.sqrt(sum((x - mean) ** 2 for x in walls)
+                                / (len(walls) - 1)), 3),
+        "mad_s": round(statistics.median([abs(x - med) for x in walls]), 3),
+        "spread_s": round(max(walls) - min(walls), 3),
+    }
+
+
+def _baseline_sd() -> float:
+    return _baseline_stats()["sd_s"]
+
+
+def _baseline_mad() -> float:
+    return _baseline_stats()["mad_s"]
+
+
+# ------------------------------------------------------------- markdown -----
+# Single source of truth: results JSON. Markdown tables are GENERATED between
+# sentinels; tests compare every rendered row against the JSON so a hand-edited
+# table (the fcc8ca2 MEMORY_BUDGET.md bug) fails CI.
+
+def _replace_generated_block(md_path: Path, name: str, block: str) -> None:
+    text = md_path.read_text(encoding="utf-8")
+    begin = f"<!-- BEGIN GENERATED:{name} -->"
+    end = f"<!-- END GENERATED:{name} -->"
+    if begin not in text or end not in text:
+        raise SystemExit(f"generated-block markers missing in {md_path} ({name})")
+    i = text.index(begin) + len(begin)
+    j = text.index(end)
+    md_path.write_text(text[:i] + "\n" + block.strip("\n") + "\n" + text[j:],
+                       encoding="utf-8")
+
+
+def _short_cls(c: str) -> str:
+    return {"SAFE_FOR_32GB": "SAFE", "BORDERLINE_FOR_32GB": "BORDERLINE",
+            "NOT_SAFE_FOR_32GB": "NOT_SAFE"}.get(c, c)
+
+
+def render_memory_table_md(mf: dict) -> str:
+    lines = [
+        "| Budget GiB/GPU | Pack total GiB | Projected total GiB | "
+        "Projected total decimal GB | Headroom GiB to measured MemTotal (31.35) | "
+        "Headroom decimal GB to strict 32 GB contract | Projected min "
+        "MemAvailable GiB | OOM margin GiB | Class (measured MemTotal) | "
+        "Class (strict 32 decimal GB) | Combined class |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for r in mf["rows"]:
+        lines.append(
+            f"| {r['pack_gib_per_gpu']} | {r['pack_total_gib']} | "
+            f"{r['projected_total_gib']} | {r['projected_total_decimal_gb']} | "
+            f"{r['headroom_gib_to_measured_memtotal']} | "
+            f"{r['headroom_decimal_gb_to_strict_contract']} | "
+            f"{r['projected_min_MemAvailable_gib']} | "
+            f"{r['margin_to_nearest_oom_observation_gib']} | "
+            f"{_short_cls(r['classification_measured_host_memtotal'])} | "
+            f"{_short_cls(r['classification_strict_32_decimal_gb'])} | "
+            f"{_short_cls(r['classification'])} |")
+    return "\n".join(lines)
+
+
+def render_frontier_table_md(frontier: list) -> str:
+    lines = [
+        "| GiB/GPU | records | misses | compulsory | capacity | Δmiss/GiB | "
+        "sim wall (s, SIMULATED) | Δwall vs v65 (s, SIMULATED) | "
+        "class (measured MemTotal) | class (strict contract) |",
+        "|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for r in frontier:
+        lines.append(
+            f"| {r['pack_gib_per_gpu']} | {r['records_per_gpu']} | "
+            f"{r['decode_misses_replayed']} | {r['decode_compulsory_misses']} | "
+            f"{r['decode_capacity_misses']} | "
+            f"{r['delta_misses_per_extra_gib']} | "
+            f"{r['simulated_decode_wall_s']} | "
+            f"{r['simulated_delta_s_vs_8gib5']} | "
+            f"{_short_cls(r['memory_class_measured_memtotal'])} | "
+            f"{_short_cls(r['memory_class_strict_contract'])} |")
+    return "\n".join(lines)
+
+
+def render_generated_blocks(out: Path) -> list:
+    """Regenerate sentinel-marked markdown tables FROM the written JSON."""
+    mf = json.loads((out / "memory_frontier.json").read_text())
+    result = json.loads((out / "recalibrated_model.json").read_text())
+    _replace_generated_block(HERE / "MEMORY_BUDGET.md", "memory-table",
+                             render_memory_table_md(mf))
+    _replace_generated_block(HERE / "HOST_PACK_FRONTIER.md", "frontier-table",
+                             render_frontier_table_md(result["frontier"]))
+    return ["MEMORY_BUDGET.md:memory-table", "HOST_PACK_FRONTIER.md:frontier-table"]
 
 
 def main() -> None:
@@ -379,9 +518,14 @@ def main() -> None:
     ap.add_argument("--journal-v65", type=Path, default=None)
     ap.add_argument("--journal-profiled", type=Path, default=None)
     ap.add_argument("--out", type=Path, default=HERE / "results")
+    ap.add_argument("--no-render-md", action="store_true",
+                    help="skip regenerating the sentinel-marked markdown tables")
     args = ap.parse_args()
     out = args.out
     out.mkdir(parents=True, exist_ok=True)
+    # Markdown is rendered ONLY for the official results dir, so test runs
+    # with --out tmp never mutate the repo docs.
+    render_md = (not args.no_render_md) and out.resolve() == (HERE / "results").resolve()
 
     hashes = {} if args.skip_hash_gate else verify_seal_inputs()
     derived = load_derived()
@@ -456,15 +600,24 @@ def main() -> None:
                 100 * (wall_s / MEASURED["v65_sealed"] - 1), 2),
             "label": "SIMULATED (recalibrated observational model)",
             "memory_classification": mem["classification"],
+            "memory_class_measured_memtotal":
+                mem["classification_measured_host_memtotal"],
+            "memory_class_strict_contract":
+                mem["classification_strict_32_decimal_gb"],
         }
         frontier.append(row)
         csv_rows.append([b, cap, rp["decode_storage_misses_total"], compulsory,
                          row["decode_capacity_misses"], d_miss,
                          row["delta_misses_per_extra_gib"], round(wall_s, 3),
                          round(wall_s - MEASURED["v65_sealed"], 3),
+                         mem["projected_total_gib"],
                          mem["projected_total_decimal_gb"],
+                         mem["headroom_gib_to_measured_memtotal"],
+                         mem["headroom_decimal_gb_to_strict_contract"],
                          mem["projected_min_MemAvailable_gib"],
-                         mem["classification"]])
+                         mem["classification"],
+                         mem["classification_measured_host_memtotal"],
+                         mem["classification_strict_32_decimal_gb"]])
 
     # uncertainty band on the recommended wall effect (improvement = positive):
     def band(d_miss: float) -> dict:
@@ -500,9 +653,32 @@ def main() -> None:
         },
         "oom_ledger_measured": OOM_LEDGER,
         "rules": {
-            "headroom_required_gib": SAFETY_HEADROOM_GIB,
+            "headroom_required": SAFETY_HEADROOM,
+            "headroom_unit": "the safety system's own unit (GiB for measured "
+                            "MemTotal, decimal GB for the strict contract)",
             "projection": "2*budget + nonpack_hwm_max + system_rest + unmeasured_growth",
+            "field_naming": "every memory field carries its unit (_gib / "
+                            "_decimal_gb); unqualified 'GB' fields are banned "
+                            "and linted by tests",
         },
+        "unit_contract": {
+            "authoritative_for_host_execution": "MEASURED_HOST_MEMTOTAL",
+            "systems": {
+                "MEASURED_HOST_MEMTOTAL": {
+                    "limit_gib": MEMTOTAL_GIB_MEASURED,
+                    "source": "MemTotal (system_final_gib), all 5 seal runs"},
+                "STRICT_32_DECIMAL_GB": {
+                    "limit_decimal_gb": LIMIT_DECIMAL_GB,
+                    "source": "project thesis: ~32 GB total host RAM, "
+                              "nominal host class"},
+            },
+            "combined_classification": "worst of the two systems (conservative "
+                                       "intersection)",
+            "identity_note": "headroom_gib_to_measured_memtotal == "
+                             "projected_min_MemAvailable_gib by construction "
+                             "(MemTotal - projection)",
+        },
+        "recommendation_policy": "largest budget SAFE under BOTH systems",
         "rows": [memory_envelope(b) for b in BUDGETS_GIB],
         "recommended": recommended["pack_gib_per_gpu"],
     }
@@ -575,6 +751,33 @@ def main() -> None:
             "or: process memory exceeds the projected envelope / approaches OOM",
             "or: correctness gates fail (any divergence -> stop)",
         ],
+        "analysis_plan": {
+            "sources": ["results/ab_noise.json", "results/ab_power_plan.json"],
+            "tools": ["tools/analyze_matched_ab.py", "tools/plan_ab_power.py"],
+            "measured_noise": {
+                "baseline_sd_s": round(_baseline_sd(), 3),
+                "baseline_mad_s": round(_baseline_mad(), 3),
+                "note": "three same-config baselines (v65, ab_baseline, "
+                        "rep_baseline); paired reuse deltas sit inside this spread",
+            },
+            "n_pairs_budgeted_upfront": 2,
+            "stopping_rule_preregistered": {
+                "futility": "abort after pair 1 if the candidate decode wall "
+                            "EXCEEDS its baseline by more than the measured "
+                            "baseline SD (~0.93 s) — a null or negative result "
+                            "stops the experiment",
+                "no_early_accept": "never stop early on a favorable result; "
+                                   "both pre-budgeted pairs are required",
+                "informative": "both pairs improve AND |mean delta| > baseline "
+                               "MAD (~0.905 s); otherwise treat as unresolved",
+                "formal_acceptance": "only under the campaign's own rules; this "
+                                     "plan does not loosen them",
+            },
+            "decode_length": "keep n_tokens=16: it matches the replay-validated "
+                             "route workload and the sealed counters; longer "
+                             "generations change the recurrence mix and are a "
+                             "separate experiment (see ab_power_plan.json)",
+        },
         "label": "SIMULATED expectations; the A/B is the arbiter",
     }
 
@@ -636,11 +839,19 @@ def main() -> None:
     (out / "memory_frontier.json").write_text(json.dumps(memory_frontier, indent=1) + "\n")
     (out / "next_ab.json").write_text(json.dumps(next_ab, indent=1) + "\n")
     (out / "pread_kaggle_package.json").write_text(json.dumps(pread_pkg, indent=1) + "\n")
+    if render_md:
+        rendered = render_generated_blocks(out)
+    else:
+        rendered = []
     with (out / "host_pack_frontier.csv").open("w") as fh:
         fh.write("pack_gib_per_gpu,records_per_gpu,decode_misses,decode_compulsory,"
                  "decode_capacity,miss_reduction_vs_8gib5,"
                  "delta_misses_per_extra_gib,simulated_wall_s,simulated_delta_s_vs_v65,"
-                 "projected_total_decimal_gb,projected_min_available_gib,memory_class\n")
+                 "projected_total_gib,projected_total_decimal_gb,"
+                 "headroom_gib_to_measured_memtotal,"
+                 "headroom_decimal_gb_to_strict_contract,"
+                 "projected_min_available_gib,memory_class_combined,"
+                 "memory_class_measured_memtotal,memory_class_strict_contract\n")
         for r in csv_rows:
             fh.write(",".join(str(x) for x in r) + "\n")
 
@@ -657,6 +868,17 @@ def main() -> None:
         "recommended": {"gib": recommended["pack_gib_per_gpu"],
                         "misses_saved": recommended["miss_reduction_vs_8gib5"],
                         "sim_band": rec_band},
+        "memory_systems": {
+            "measured_memtotal_safe_max_gib_per_gpu": max(
+                (r["pack_gib_per_gpu"] for r in memory_frontier["rows"]
+                 if r["classification_measured_host_memtotal"] == "SAFE_FOR_32GB"),
+                default=None),
+            "strict_contract_safe_max_gib_per_gpu": max(
+                (r["pack_gib_per_gpu"] for r in memory_frontier["rows"]
+                 if r["classification_strict_32_decimal_gb"] == "SAFE_FOR_32GB"),
+                default=None),
+        },
+        "rendered_md_blocks": rendered,
     }, indent=1))
 
 
