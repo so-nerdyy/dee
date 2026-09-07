@@ -12,6 +12,7 @@
   "rule_ids": [
     "run-id",
     "profile-guard",
+    "profile-env",
     "emission"
   ],
   "kernel_id": "nivind/dee-cpp-host-sync-profile-20260905"

@@ -47,7 +47,7 @@ HASH_READS = 18
 
 ARMS = (
     {"name": "OFF1", "env": {}},
-    {"name": "ON", "env": {"NATIVE_PROFILE": "1", "DEE_HOST_PROFILE": "1",
+    {"name": "ON", "env": {"DEE_HOST_PROFILE": "1",
                            "HOST_SYNC_EMIT": "1", "HOST_SYNC_PROFILE_ARM": "1",
                            "HOST_SYNC_PATCH_PATH": "__PATCH_PATH__"}},
     {"name": "OFF2", "env": {}},
@@ -204,6 +204,7 @@ def run_arm(name: str, env_extra: dict, variant: Path, patch_path: Path,
                       for a, b in hp))
     return {"arm": name, "exit_code": rc, "wall_s": round(wall, 1),
             "evidence_files": copied, "workspace": str(work_root),
+            "arm_env_keys": sorted(env_extra),
             "lru_cap_logged": [float(v) for v in lru],
             "host_pack_logged": [[float(a), float(b)] for a, b in hp],
             "cap_check_ok": cap_ok,

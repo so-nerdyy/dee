@@ -56,7 +56,16 @@ RULES = [
      "or EXPERT_STORE_BACKEND != \"dee4_trace\" or (PROFILE_STAGES "
      "and os.environ.get(\"HOST_SYNC_PROFILE_ARM\", \"0\") != \"1\") "
      "or DIAGNOSTICS",
-     "allow NATIVE_PROFILE=1 only when the profile arm env is set"),
+     "allow profiler flags only when the profile arm env is set"),
+    ("profile-env",
+     "    if not os.environ.get(\"NATIVE_PROFILE\"):\n"
+     "        PROFILE_STAGES = bool(cfg.get(\"profile_stages\", PROFILE_STAGES))",
+     "    if not os.environ.get(\"NATIVE_PROFILE\"):\n"
+     "        PROFILE_STAGES = bool(cfg.get(\"profile_stages\", PROFILE_STAGES))\n"
+     "    if os.environ.get(\"HOST_SYNC_PROFILE_ARM\", \"0\") == \"1\":\n"
+     "        PROFILE_STAGES = True",
+     "enable profiler flags without any NATIVE_* override (the sealed "
+     "preflight forbids NATIVE_* env)"),
     ("emission",
      '        result["model_cuda_stage_profile"] = model.cuda_stage_profile()',
      '        result["model_cuda_stage_profile"] = model.cuda_stage_profile()\n'
@@ -66,7 +75,9 @@ RULES = [
 
 
 def apply_variant(arm_bytes: bytes) -> tuple[bytes, list[str]]:
-    text = arm_bytes.decode("utf-8")
+    # Sealed bytes carry CRLF; normalize to LF (Linux execution target).
+    # Anchors are single- or multi-line exact matches after normalization.
+    text = arm_bytes.decode("utf-8").replace("\r\n", "\n")
     applied = []
     for rule_id, old, new, _why in RULES:
         count = text.count(old)

@@ -156,7 +156,7 @@ def test_variant_builds_from_sealed_bytes(tmp_path):
     sealed = base64.b64decode(m.group(1))
     assert hashlib.sha256(sealed).hexdigest() == SEALED_ARM_SHA
     variant, applied = apply_variant(sealed)
-    assert applied == ["run-id", "profile-guard", "emission"]
+    assert applied == ["run-id", "profile-guard", "profile-env", "emission"]
     ast.parse(variant.decode("utf-8"))  # variant compiles
     assert b"HOST_SYNC_EMIT" in variant and b"host_layer_records_json" in variant
     # OFF-arm default path unchanged: no profiler env referenced unconditionally.
