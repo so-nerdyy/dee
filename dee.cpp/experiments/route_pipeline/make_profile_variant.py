@@ -66,6 +66,37 @@ RULES = [
      "        PROFILE_STAGES = True",
      "enable profiler flags without any NATIVE_* override (the sealed "
      "preflight forbids NATIVE_* env)"),
+    ("patch-apply",
+     "    log(f\"pinned commit {head}\")",
+     "    log(f\"pinned commit {head}\")\n"
+     "    _hspp = os.environ.get(\"HOST_SYNC_PATCH_PATH\", \"\")\n"
+     "    _hsha = os.environ.get(\"HOST_SYNC_PATCH_SHA256\", \"\")\n"
+     "    if _hspp:\n"
+     "        _praw = Path(_hspp).read_bytes()\n"
+     "        if hashlib.sha256(_praw).hexdigest() != _hsha:\n"
+     "            raise RuntimeError(\"profiler patch sha mismatch\")\n"
+     "        _chk = subprocess.run([\"git\", \"-C\", str(ROOT), \"apply\", \"--check\",\n"
+     "                               str(_hspp)], capture_output=True, text=True)\n"
+     "        if _chk.returncode != 0:\n"
+     "            raise RuntimeError(\"profiler patch does not apply: \"\n"
+     "                               + _chk.stderr[-2000:])\n"
+     "        run([\"git\", \"-C\", str(ROOT), \"apply\", str(_hspp)])\n"
+     "        _stat = subprocess.run([\"git\", \"-C\", str(ROOT), \"diff\", \"--name-only\"],\n"
+     "                               capture_output=True, text=True).stdout\n"
+     "        _files = sorted(_stat.split())\n"
+     "        if _files != sorted([\"dee.cpp/include/dee/engine.h\",\n"
+     "                             \"dee.cpp/include/dee/profiling.h\",\n"
+     "                             \"dee.cpp/pydee/pydee.cpp\",\n"
+     "                             \"dee.cpp/scripts/deepseek_v4_layer_candidate.py\",\n"
+     "                             \"dee.cpp/src/engine.cpp\",\n"
+     "                             \"dee.cpp/src/profiling.cpp\"]):\n"
+     "            raise RuntimeError(\"profiler patch touched unexpected files: \"\n"
+     "                               + repr(_files))\n"
+     "        log(\"profiler patch applied; 6 files, additive (see source-identity-proof)\")\n"
+     "        (WORK / \"source-identity-proof.txt\").write_text(\n"
+     "            f\"base=217a333 patch_sha={_hsha}\\n\" + \"\\n\".join(_files) + \"\\n\")",
+     "apply the sha-pinned profiler patch to the verified clone (ON arm "
+     "only; OFF arms have no HOST_SYNC_PATCH_PATH and stay pristine)"),
     ("emission",
      '        result["model_cuda_stage_profile"] = model.cuda_stage_profile()',
      '        result["model_cuda_stage_profile"] = model.cuda_stage_profile()\n'

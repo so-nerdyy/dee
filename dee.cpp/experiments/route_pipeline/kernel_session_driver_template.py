@@ -50,7 +50,8 @@ ARMS = (
     {"name": "OFF1", "env": {}},
     {"name": "ON", "env": {"DEE_HOST_PROFILE": "1",
                            "HOST_SYNC_EMIT": "1", "HOST_SYNC_PROFILE_ARM": "1",
-                           "HOST_SYNC_PATCH_PATH": "__PATCH_PATH__"}},
+                           "HOST_SYNC_PATCH_PATH": "__PATCH_PATH__",
+                           "HOST_SYNC_PATCH_SHA256": "__PATCH_SHA__"}},
     {"name": "OFF2", "env": {}},
 )
 
@@ -175,7 +176,13 @@ def run_arm(name: str, env_extra: dict, variant: Path, patch_path: Path,
                 "HOST_SYNC_PATCH_PATH"):
             del env[key]
     for key, value in env_extra.items():
-        env[key] = str(patch_path) if value == "__PATCH_PATH__" else value
+        if value == "__PATCH_PATH__":
+            env[key] = str(patch_path)
+        elif value == "__PATCH_SHA__":
+            env[key] = hashlib.sha256(
+                patch_path.read_bytes()).hexdigest()
+        else:
+            env[key] = value
     env.setdefault("PYTHONUNBUFFERED", "1")
     mem_before = _mem_snapshot()
     stdout_path = work_root / "arm-stdout.live.log"

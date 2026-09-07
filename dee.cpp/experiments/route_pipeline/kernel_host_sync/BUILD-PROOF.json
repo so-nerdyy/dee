@@ -13,10 +13,11 @@
     "run-id",
     "profile-guard",
     "profile-env",
+    "patch-apply",
     "emission"
   ],
-  "rules_sha256": "bc87645b326827df8603c1e30dbbd8de5245583d5122b7d30d754e109d6e52c9",
-  "driver_build_id": "e3065e9341dc-20260907T222342Z",
-  "driver_sha256": "fde25e218dcf9c40f109e6905a285032533b41d46f6d26070f61c30f1e9e0d74",
+  "rules_sha256": "71cf026289b304da067480470338b5873eca6590b9f75b2bdc854217f2081c1e",
+  "driver_build_id": "0409a9495d0b-20260907T232049Z",
+  "driver_sha256": "500f149d83b2591611a902175088b9c792116fd0931d935f8dec31e962638894",
   "kernel_id": "nivind/dee-cpp-host-sync-profile-20260905"
 }

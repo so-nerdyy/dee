@@ -156,7 +156,8 @@ def test_variant_builds_from_sealed_bytes(tmp_path):
     sealed = base64.b64decode(m.group(1))
     assert hashlib.sha256(sealed).hexdigest() == SEALED_ARM_SHA
     variant, applied = apply_variant(sealed)
-    assert applied == ["run-id", "profile-guard", "profile-env", "emission"]
+    assert applied == ["run-id", "profile-guard", "profile-env",
+                       "patch-apply", "emission"]
     ast.parse(variant.decode("utf-8"))  # variant compiles
     assert b"HOST_SYNC_EMIT" in variant and b"host_layer_records_json" in variant
     # OFF-arm default path unchanged: no profiler env referenced unconditionally.
@@ -186,5 +187,6 @@ def test_built_driver_normalizes_crlf_like_module():
     sealed = base64.b64decode(m.group(1))
     assert sealed.count(b"\r\n") > 1000  # sealed bytes are natively CRLF
     variant, applied = apply_variant(sealed)
-    assert applied == ["run-id", "profile-guard", "profile-env", "emission"]
+    assert applied == ["run-id", "profile-guard", "profile-env",
+                       "patch-apply", "emission"]
     ast.parse(variant.decode("utf-8"))
