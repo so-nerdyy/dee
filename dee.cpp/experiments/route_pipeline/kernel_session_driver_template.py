@@ -39,6 +39,9 @@ ENGINE_COMMIT = "217a33359b06a0453444a698ec52e4078b77e388"
 MODEL_REV = "9e165c30e2704aec5d9d593cce3eebd58bbef1cb"
 TRACE_BANK = "/tmp/dsv4-dee4-v3-trace"
 WORK = Path("/kaggle/working")
+# Per-arm collection lives OUTSIDE WORK (the variant writes evidence into
+# WORK; collecting inside WORK would trip the empty-at-start guard).
+OUTBASE = Path("/tmp/host-sync-kernel/out")
 EXPERT_BYTES = 13369344
 HASH_READS = 18
 
@@ -428,7 +431,7 @@ def main() -> int:
     for i, name in enumerate(order):
         if i > 0:
             clean_between_arms()
-        out_dir = WORK / f"profile-{name.lower()}"
+        out_dir = OUTBASE / f"profile-{name.lower()}"
         rec = run_arm(name, arm_envs[name], variant, patch_path, out_dir)
         rec["evidence"] = parse_result(out_dir)
         session["arms"][name] = rec
@@ -437,7 +440,7 @@ def main() -> int:
     conv = {}
     for name in order:
         key = {"OFF1": "off", "ON": "on", "OFF2": "off2"}[name]
-        conv[key] = to_profile_run(WORK / f"profile-{name.lower()}",
+        conv[key] = to_profile_run(OUTBASE / f"profile-{name.lower()}",
                                    WORK / f"profile-run-{key}", prompt_hash,
                                    profiling=(name == "ON"))
     session["conversion"] = conv
@@ -448,6 +451,16 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         session["abc"] = {"status": f"error: {exc}"}
     (WORK / "session-summary.json").write_text(json.dumps(session, indent=2))
+    # Publish per-arm evidence into WORK (Kaggle snapshots /kaggle/working).
+    for name in order:
+        src = OUTBASE / f"profile-{name.lower()}"
+        dst = WORK / f"profile-{name.lower()}"
+        if src.is_dir():
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+    for sub in ("profile-run-off", "profile-run-on", "profile-run-off2"):
+        src = WORK / sub
+        if not src.is_dir():
+            log(f"note: {sub} absent")
     return 0
 
 
