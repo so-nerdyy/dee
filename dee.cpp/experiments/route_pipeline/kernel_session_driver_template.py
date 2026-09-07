@@ -71,14 +71,20 @@ def dry_run_gate() -> dict:
             raise RuntimeError(f"need exactly 2x SM75 T4, saw: {rows}")
         mounts = [p for p in Path("/kaggle/input").iterdir()] if \
             Path("/kaggle/input").is_dir() else []
-        shards = []
-        for m in mounts:
-            shards = sorted((m).glob("model-*-of-00048.safetensors"))
-            if len(shards) == 48:
-                break
+        # Canonical mount (mirrors the sealed harness DATASET_DIR).
+        shard_dir = Path("/kaggle/input/datasets/nivind/deepseek-v4-flash-0731-shards")
+        shards = sorted(shard_dir.glob("model-*-of-00048.safetensors")) \
+            if shard_dir.is_dir() else []
+        if len(shards) != 48:
+            # Fallback: recursive search under every input mount.
+            for m in mounts:
+                shards = sorted(m.rglob("model-*-of-00048.safetensors"))
+                if len(shards) == 48:
+                    shard_dir = shards[0].parent
+                    break
         if len(shards) != 48:
             raise RuntimeError("48-shard dataset mount absent")
-        report["dataset"] = str(shards[0].parent)
+        report["dataset"] = str(shard_dir)
         free_tmp = shutil.disk_usage("/tmp").free
         if free_tmp < 45 * (1 << 30):
             raise RuntimeError(f"/tmp free {free_tmp} < 45 GiB")
