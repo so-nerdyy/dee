@@ -168,3 +168,23 @@ def test_driver_dry_run_gate_logic():
     for token in ("2x SM75", "48-shard", "/tmp", "DRY-RUN", "FAIL_CLOSED",
                   "ABC", "profile-run", "ARMS", "OFF1", "OFF2"):
         assert token.lower() in src.lower(), token
+
+
+def test_built_driver_normalizes_crlf_like_module():
+    """Regression for the v5 live failure: the built driver's inline copy
+    must carry the same CRLF normalization as the audited module, and the
+    module must accept CRLF sealed bytes."""
+    from make_profile_variant import apply_variant
+    src = _driver_source()
+    assert '.replace("\\r\\n", "\\n")' in src
+    commit = "45b2a1659d0226c15ceb8821f104b1684798be4f"
+    path = "experiment/pack-cap-ab/kernels/session1/session-driver.py"
+    proc = subprocess.run(["git", "show", f"{commit}:{path}"],
+                          capture_output=True, cwd=str(ROOT))
+    m = re.search(r'ARM_A_B64 = "([A-Za-z0-9+/=]+)"',
+                  proc.stdout.decode("utf-8"))
+    sealed = base64.b64decode(m.group(1))
+    assert sealed.count(b"\r\n") > 1000  # sealed bytes are natively CRLF
+    variant, applied = apply_variant(sealed)
+    assert applied == ["run-id", "profile-guard", "profile-env", "emission"]
+    ast.parse(variant.decode("utf-8"))

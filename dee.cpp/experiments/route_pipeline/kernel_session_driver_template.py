@@ -2,8 +2,8 @@
 """Kernel session driver template for the host-sync profile run.
 
 Built by build_kernel.py, which fills @@PROFILER_PATCH_B64@@,
-@@PROFILER_PATCH_SHA256@@ and @@VARIANT_RULES_JSON@@ (rules audited in
-make_profile_variant.py). The driver itself is generic orchestration.
+@@PROFILER_PATCH_SHA256@@, @@VARIANT_RULES_B64@@, @@VARIANT_RULES_SHA256@@
+and @@DRIVER_BUILD_ID@@ (rules audited in make_profile_variant.py). The driver itself is generic orchestration.
 
 Sequence: dry-run gate -> fetch sealed arm-A (sha-pinned) -> build variant
 -> for each arm (OFF1, ON, OFF2): clean workspace, run variant subprocess
@@ -29,6 +29,7 @@ PROFILER_PATCH_B64 = "@@PROFILER_PATCH_B64@@"
 PROFILER_PATCH_SHA256 = "@@PROFILER_PATCH_SHA256@@"
 VARIANT_RULES_B64 = "@@VARIANT_RULES_B64@@"
 VARIANT_RULES_SHA256 = "@@VARIANT_RULES_SHA256@@"
+DRIVER_BUILD_ID = "@@DRIVER_BUILD_ID@@"
 
 SEALED_ARM_URL = ("https://raw.githubusercontent.com/so-nerdyy/dee/"
                   "45b2a1659d0226c15ceb8821f104b1684798be4f/"
@@ -127,7 +128,8 @@ def build_variant(arm_bytes: bytes, workdir: Path) -> tuple[Path, dict]:
     if sha256_bytes(rules_raw) != VARIANT_RULES_SHA256:
         raise RuntimeError("embedded variant-rules sha mismatch")
     rules = json.loads(rules_raw.decode("utf-8"))
-    text = arm_bytes.decode("utf-8")
+    # Sealed bytes carry CRLF; normalize to LF (Linux execution target).
+    text = arm_bytes.decode("utf-8").replace("\r\n", "\n")
     applied = []
     for rule in rules:
         old, new = rule["old"], rule["new"]
@@ -414,7 +416,10 @@ PROMPT_TEXT = "Who is Alan Turing?"
 def main() -> int:
     workdir = Path("/tmp/host-sync-kernel")
     workdir.mkdir(parents=True, exist_ok=True)
-    session = {"session": "host-sync-profile", "arms": {}}
+    log(f"driver build: {DRIVER_BUILD_ID} "
+        f"patch={PROFILER_PATCH_SHA256[:12]} rules={VARIANT_RULES_SHA256[:12]}")
+    session = {"session": "host-sync-profile", "arms": {},
+               "driver_build": DRIVER_BUILD_ID}
     gate = dry_run_gate()
     session["dry_run_gate"] = gate
     if gate["status"] != "PASS":

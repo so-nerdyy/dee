@@ -67,9 +67,15 @@ def main() -> int:
     rules_json = json.dumps([{"id": r[0], "old": r[1], "new": r[2], "why": r[3]}
                              for r in RULES], indent=2).encode("utf-8")
     rules_sha = hashlib.sha256(rules_json).hexdigest()
+    head = subprocess.run(["git", "rev-parse", "--short=12", "HEAD"],
+                          capture_output=True, text=True,
+                          cwd=str(ROOT)).stdout.strip()
+    import time as _time
+    build_id = f"{head}-{_time.strftime('%Y%m%dT%H%M%SZ', _time.gmtime())}"
     template = (HERE / "kernel_session_driver_template.py").read_text(encoding="utf-8")
     for placeholder in ("@@PROFILER_PATCH_B64@@", "@@PROFILER_PATCH_SHA256@@",
-                        "@@VARIANT_RULES_B64@@", "@@VARIANT_RULES_SHA256@@"):
+                        "@@VARIANT_RULES_B64@@", "@@VARIANT_RULES_SHA256@@",
+                        "@@DRIVER_BUILD_ID@@"):
         if placeholder not in template:
             raise RuntimeError(f"template missing {placeholder}")
     driver = template.replace(
@@ -78,9 +84,17 @@ def main() -> int:
         "@@PROFILER_PATCH_SHA256@@", patch_sha).replace(
         "@@VARIANT_RULES_B64@@",
         base64.b64encode(rules_json).decode("ascii")).replace(
-        "@@VARIANT_RULES_SHA256@@", rules_sha)
+        "@@VARIANT_RULES_SHA256@@", rules_sha).replace(
+        "@@DRIVER_BUILD_ID@@", build_id)
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "session-driver.py").write_text(driver, encoding="utf-8")
+    import re as _re
+    # Unified-diff hunk headers (@@ -a,b +c,d @@) contain lowercase/digits
+    # and never match; any ALL-CAPS @@TOKEN@@ left is an unfilled
+    # placeholder and fails the build.
+    leftover = sorted(set(_re.findall(r"@@[A-Z_]+@@", driver)))
+    if leftover:
+        raise RuntimeError(f"unfilled placeholders: {leftover}")
     (args.out / "kernel-metadata.json").write_text(json.dumps({
         "id": KERNEL_ID,
         "title": "dee-cpp-host-sync-profile-20260905",
@@ -96,11 +110,17 @@ def main() -> int:
         "model_sources": [],
         "enable_tpu": "false",
     }, indent=2), encoding="utf-8")
+    driver_path = args.out / "session-driver.py"
+    driver_sha = (hashlib.sha256(driver_path.read_bytes()).hexdigest()
+                  if driver_path.is_file() else None)
     (args.out / "BUILD-PROOF.json").write_text(json.dumps({
         "profiler_patch_sha256": patch_sha,
         "profiler_patch_base": git_base(),
         "profiler_files": list(PROFILER_FILES),
         "rule_ids": [r[0] for r in RULES],
+        "rules_sha256": rules_sha,
+        "driver_build_id": build_id,
+        "driver_sha256": driver_sha,
         "kernel_id": KERNEL_ID,
     }, indent=2), encoding="utf-8")
     print(f"kernel dir: {args.out}")
