@@ -228,6 +228,9 @@ public:
     void set_external_token(int token) { current_token_ = token; }
     std::string external_profile_json(double total_wall_ms);
     std::string external_timeline_json(double total_wall_ms);
+    // Host/sync profiler readout (profiling-only; empty unless enabled).
+    std::string host_layer_records_json();
+    std::string host_layer_records_csv();
 
     // Expose for tests: run a single layer's MoE on caller-provided hidden,
     // write the new hidden to `h_out` (length hidden_).

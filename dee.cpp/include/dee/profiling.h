@@ -332,11 +332,11 @@ public:
                            size_t bytes = 0, uint64_t transfer_id = 0,
                            size_t queue_depth = 0, size_t staging_slot = 0);
     void note_cpu_timeline_interval(CpuTimelineKind kind, TimePoint begin, TimePoint end,
-                                     int token = -1, int logical_layer = -1,
-                                     int expert = -1, size_t bytes = 0,
-                                     uint64_t transfer_id = 0,
-                                     size_t queue_depth = 0,
-                                     size_t staging_slot = 0);
+                                    int token = -1, int logical_layer = -1,
+                                    int expert = -1, size_t bytes = 0,
+                                    uint64_t transfer_id = 0,
+                                    size_t queue_depth = 0,
+                                    size_t staging_slot = 0);
 
     // Host/sync profiler: no-ops unless enabled. host_begin returns an
     // invalid ticket when disabled; host_end ignores invalid tickets.

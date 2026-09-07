@@ -2251,6 +2251,15 @@ std::string Engine::external_timeline_json(double total_wall_ms) {
     return cuda_timeline_json(external_profile_snapshot(total_wall_ms));
 }
 
+// Host/sync profiler readout (profiling-only; empty unless enabled).
+std::string Engine::host_layer_records_json() {
+    return profiler_.host_layer_records_json();
+}
+
+std::string Engine::host_layer_records_csv() {
+    return profiler_.host_layer_records_csv();
+}
+
 const float* Engine::get_router_weights(int source_layer) {
     auto found = router_weights_.find(source_layer);
     if (found != router_weights_.end()) return found->second.data();

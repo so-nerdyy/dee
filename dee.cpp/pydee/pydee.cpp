@@ -192,6 +192,10 @@ PYBIND11_MODULE(pydee_core, m) {
         .def("external_timeline_json", &dee::Engine::external_timeline_json,
              py::arg("total_wall_ms"),
              "Return the bounded CUDA/host timeline as Chrome trace JSON.")
+        .def("host_layer_records_json", &dee::Engine::host_layer_records_json,
+             "Return per-layer host/sync profiler records (profiling-only).")
+        .def("host_layer_records_csv", &dee::Engine::host_layer_records_csv,
+             "Return per-layer host/sync profiler records as CSV.")
         .def("route_topk", [](
                 dee::Engine& self,
                 int layer,

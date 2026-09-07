@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""Build the host-sync profile Kaggle kernel directory.
+
+Regenerates the profiler patch from this branch, embeds it (base64 +
+sha256) plus the audited variant RULES into the session-driver template,
+and writes kernel-metadata.json. The generated kernel dir is committed for
+audit so the exact pushed bytes are reviewable.
+
+Usage:
+    python3 build_kernel.py --out dee.cpp/experiments/route_pipeline/kernel_host_sync
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent.parent.parent
+KERNEL_ID = "nivind/dee-cpp-host-sync-profile-20260905"
+DATASET = "nivind/deepseek-v4-flash-0731-shards"
+
+PROFILER_FILES = (
+    "dee.cpp/src/engine.cpp",
+    "dee.cpp/include/dee/engine.h",
+    "dee.cpp/include/dee/profiling.h",
+    "dee.cpp/src/profiling.cpp",
+    "dee.cpp/pydee/pydee.cpp",
+    "dee.cpp/scripts/deepseek_v4_layer_candidate.py",
+)
+
+
+def git_base() -> str:
+    proc = subprocess.run(["git", "merge-base", "HEAD", "217a333"],
+                          capture_output=True, text=True, cwd=str(ROOT))
+    if proc.returncode != 0:
+        raise RuntimeError("cannot determine merge-base with 217a333")
+    return proc.stdout.strip()
+
+
+def profiler_patch() -> bytes:
+    base = git_base()
+    proc = subprocess.run(["git", "diff", base, "--", *PROFILER_FILES],
+                          capture_output=True, cwd=str(ROOT))
+    if proc.returncode != 0:
+        raise RuntimeError("git diff failed")
+    return proc.stdout
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--out", type=Path, required=True)
+    args = parser.parse_args()
+
+    sys.path.insert(0, str(HERE))
+    from make_profile_variant import RULES  # noqa: E402
+
+    patch = profiler_patch()
+    if not patch.strip():
+        raise RuntimeError("empty profiler patch; nothing to embed")
+    patch_sha = hashlib.sha256(patch).hexdigest()
+    template = (HERE / "kernel_session_driver_template.py").read_text(encoding="utf-8")
+    for placeholder in ("@@PROFILER_PATCH_B64@@", "@@PROFILER_PATCH_SHA256@@",
+                        "@@VARIANT_RULES_JSON@@"):
+        if placeholder not in template:
+            raise RuntimeError(f"template missing {placeholder}")
+    driver = template.replace(
+        "@@PROFILER_PATCH_B64@@",
+        base64.b64encode(patch).decode("ascii")).replace(
+        "@@PROFILER_PATCH_SHA256@@", patch_sha).replace(
+        "@@VARIANT_RULES_JSON@@",
+        json.dumps([{"id": r[0], "old": r[1], "new": r[2], "why": r[3]}
+                    for r in RULES], indent=2))
+    args.out.mkdir(parents=True, exist_ok=True)
+    (args.out / "session-driver.py").write_text(driver, encoding="utf-8")
+    (args.out / "kernel-metadata.json").write_text(json.dumps({
+        "id": KERNEL_ID,
+        "title": "dee-cpp-host-sync-profile-20260905",
+        "code_file": "session-driver.py",
+        "language": "python",
+        "kernel_type": "script",
+        "is_private": "true",
+        "enable_gpu": "true",
+        "enable_internet": "true",
+        "dataset_sources": [DATASET],
+        "competition_sources": [],
+        "kernel_sources": [],
+        "model_sources": [],
+        "enable_tpu": "false",
+    }, indent=2), encoding="utf-8")
+    (args.out / "BUILD-PROOF.json").write_text(json.dumps({
+        "profiler_patch_sha256": patch_sha,
+        "profiler_patch_base": git_base(),
+        "profiler_files": list(PROFILER_FILES),
+        "rule_ids": [r[0] for r in RULES],
+        "kernel_id": KERNEL_ID,
+    }, indent=2), encoding="utf-8")
+    print(f"kernel dir: {args.out}")
+    print(f"patch sha: {patch_sha}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

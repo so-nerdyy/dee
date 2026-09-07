@@ -1,0 +1,18 @@
+{
+  "profiler_patch_sha256": "4e52df03dfe0b552a4a5754d1ceafd4414339f22be8e7650f00253a76c077d0c",
+  "profiler_patch_base": "9c16529d48a2b7d02cc0830ed0ad8ef2e5c7c592",
+  "profiler_files": [
+    "dee.cpp/src/engine.cpp",
+    "dee.cpp/include/dee/engine.h",
+    "dee.cpp/include/dee/profiling.h",
+    "dee.cpp/src/profiling.cpp",
+    "dee.cpp/pydee/pydee.cpp",
+    "dee.cpp/scripts/deepseek_v4_layer_candidate.py"
+  ],
+  "rule_ids": [
+    "run-id",
+    "profile-guard",
+    "emission"
+  ],
+  "kernel_id": "nivind/dee-cpp-host-sync-profile-20260905"
+}
