@@ -129,14 +129,19 @@ def test_patch_touches_only_six_files():
 
 
 def test_variant_rules_match_audited_module():
+    import base64 as _b64
+    import hashlib as _hl
     from make_profile_variant import RULES, VARIANT_RUN_ID
     src = _driver_source()
-    m = re.search(r'VARIANT_RULES_JSON = """(.*?)"""', src, re.DOTALL)
-    assert m, "embedded rules JSON missing"
-    embedded = json.loads(m.group(1))
+    m = re.search("VARIANT_RULES_B64 = \"([A-Za-z0-9+/=]+)\"", src)
+    assert m, "embedded rules missing"
+    raw = _b64.b64decode(m.group(1))
+    m2 = re.search("VARIANT_RULES_SHA256 = \"([0-9a-f]{64})\"", src)
+    assert m2 and _hl.sha256(raw).hexdigest() == m2.group(1)
+    embedded = json.loads(raw.decode("utf-8"))
     assert [(r["id"], r["old"], r["new"]) for r in embedded] == [
         (rid, old, new) for rid, old, new, _why in RULES]
-    assert VARIANT_RUN_ID in src
+    assert VARIANT_RUN_ID in raw.decode("utf-8")
 
 
 def test_variant_builds_from_sealed_bytes(tmp_path):

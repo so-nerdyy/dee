@@ -27,7 +27,8 @@ from pathlib import Path
 
 PROFILER_PATCH_B64 = "@@PROFILER_PATCH_B64@@"
 PROFILER_PATCH_SHA256 = "@@PROFILER_PATCH_SHA256@@"
-VARIANT_RULES_JSON = """@@VARIANT_RULES_JSON@@"""
+VARIANT_RULES_B64 = "@@VARIANT_RULES_B64@@"
+VARIANT_RULES_SHA256 = "@@VARIANT_RULES_SHA256@@"
 
 SEALED_ARM_URL = ("https://raw.githubusercontent.com/so-nerdyy/dee/"
                   "45b2a1659d0226c15ceb8821f104b1684798be4f/"
@@ -119,7 +120,10 @@ def fetch_sealed_arm(workdir: Path) -> bytes:
 
 
 def build_variant(arm_bytes: bytes, workdir: Path) -> tuple[Path, dict]:
-    rules = json.loads(VARIANT_RULES_JSON)
+    rules_raw = base64.b64decode(VARIANT_RULES_B64)
+    if sha256_bytes(rules_raw) != VARIANT_RULES_SHA256:
+        raise RuntimeError("embedded variant-rules sha mismatch")
+    rules = json.loads(rules_raw.decode("utf-8"))
     text = arm_bytes.decode("utf-8")
     applied = []
     for rule in rules:

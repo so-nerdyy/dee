@@ -64,18 +64,21 @@ def main() -> int:
     if not patch.strip():
         raise RuntimeError("empty profiler patch; nothing to embed")
     patch_sha = hashlib.sha256(patch).hexdigest()
+    rules_json = json.dumps([{"id": r[0], "old": r[1], "new": r[2], "why": r[3]}
+                             for r in RULES], indent=2).encode("utf-8")
+    rules_sha = hashlib.sha256(rules_json).hexdigest()
     template = (HERE / "kernel_session_driver_template.py").read_text(encoding="utf-8")
     for placeholder in ("@@PROFILER_PATCH_B64@@", "@@PROFILER_PATCH_SHA256@@",
-                        "@@VARIANT_RULES_JSON@@"):
+                        "@@VARIANT_RULES_B64@@", "@@VARIANT_RULES_SHA256@@"):
         if placeholder not in template:
             raise RuntimeError(f"template missing {placeholder}")
     driver = template.replace(
         "@@PROFILER_PATCH_B64@@",
         base64.b64encode(patch).decode("ascii")).replace(
         "@@PROFILER_PATCH_SHA256@@", patch_sha).replace(
-        "@@VARIANT_RULES_JSON@@",
-        json.dumps([{"id": r[0], "old": r[1], "new": r[2], "why": r[3]}
-                    for r in RULES], indent=2))
+        "@@VARIANT_RULES_B64@@",
+        base64.b64encode(rules_json).decode("ascii")).replace(
+        "@@VARIANT_RULES_SHA256@@", rules_sha)
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "session-driver.py").write_text(driver, encoding="utf-8")
     (args.out / "kernel-metadata.json").write_text(json.dumps({
