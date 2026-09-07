@@ -97,15 +97,24 @@ Decision rule (frozen in the contract, never rewritten post hoc):
 Abort thresholds (pre-registered): min checkpoint MemAvailable < 1.5 GiB,
 VmHWM > 30.0 GiB, or host OOM → stop, classify per contract.
 
-## 6. Pread rider status
+## 6. Pread rider status — RESOLVED (2026-09-07)
 
-The rider ran at the correct point (after all four arms, session 2 tail,
-contract-true ordering) but exited non-fatally with `store too small for one
-record`: the driver passed `--store <bank>/metadata.json` while the bench
-expects the multi-record bank file (e.g. `experts.dee4`). Fix for the next
-rider attempt (one line in the driver): resolve the bank's largest data file
-from `metadata.json` (or pass the bank dir's `experts.dee4` path). The A/B
-itself is unaffected — the rider is strictly post-experiment.
+The session-2 rider failed harmlessly (`store too small for one record`):
+the driver had passed `--store <bank>/metadata.json` where the bench
+requires the multi-record file. FIXED (one line in `tools/session_driver.py`:
+`--store experts.dee4 --journal-meta metadata.json`; regression test
+`test_session_driver_rider_targets_experts_dee4`).
+
+A standalone rider kernel (`dee-cpp-dsv4-pread-rider-storage-only-post-a-b`,
+built by `tools/make_rider.py`, dispatched AFTER all four arms — contract-
+true) then ran the corrected measurement on the same T4 storage class:
+repair-bundle clone → checkout `217a3335` verified → v50 bank rebuilt
+(492.6 s) → bank identity validated (`data_sha256 c83462ba…` PASS) → bench
+at depths 1–16, seq+dispersed, coldish+warm passes. Results and
+interpretation: `forensics/PREAD_RIDER_RESULT.md`; raw JSON:
+`forensics/results/pread-rider.json`. Headline: cold aggregate saturates
+at ~2.9 GB/s by depth 2–4 (flat to depth 16), warm page-cache reads run
+~3.2–5.7× faster; decode only ever demanded ~470 MB/s aggregate.
 
 ## 7. Evidence retention
 

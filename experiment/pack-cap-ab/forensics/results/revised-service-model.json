@@ -1,0 +1,92 @@
+{
+ "schema": "pack-cap-ab/revised-service-model-v1",
+ "n_observations": 60,
+ "caveats": [
+  "token latencies within a run are serially dependent",
+  "4 arms only; exploratory, no inferential claim",
+  "per-request timestamps were not recorded"
+ ],
+ "predictors": {
+  "miss_count": {
+   "pearson_r": 0.9327802653883233,
+   "spearman_rho": 0.9070276381441741,
+   "ols": {
+    "slope": 0.053621976960928165,
+    "intercept_s": 0.3296204330601382,
+    "r2": 0.8700790234979107,
+    "n": 60
+   }
+  },
+  "storage_bytes_gb": {
+   "pearson_r": 0.9327802653883231,
+   "spearman_rho": 0.9070276381441741,
+   "ols": {
+    "slope": 4.010815860593322,
+    "intercept_s": 0.32962043306013733,
+    "r2": 0.8700790234979107,
+    "n": 60
+   }
+  },
+  "measured_read_batch_wall_s": {
+   "pearson_r": 0.9707022713552782,
+   "spearman_rho": 0.9714365101417061,
+   "ols": {
+    "slope": 0.38409311444301203,
+    "intercept_s": 2.076154883462813,
+    "r2": 0.9422628996142961,
+    "n": 60
+   }
+  }
+ },
+ "same_miss_count_different_wall_example": {
+  "misses": 61,
+  "observations": [
+   [
+    "s1A",
+    12,
+    3.5444169999999997
+   ],
+   [
+    "s1A",
+    15,
+    3.668648
+   ],
+   [
+    "s1B",
+    10,
+    3.650086
+   ],
+   [
+    "s2B",
+    10,
+    3.583125
+   ],
+   [
+    "s2A",
+    12,
+    3.6625949999999996
+   ],
+   [
+    "s2A",
+    15,
+    2.271868
+   ]
+  ],
+  "wall_spread_ratio": 1.61
+ },
+ "old_model_check": {
+  "form": "wall = intercept + 48.679 ms per miss (recalibrated_model.json, v65 fit)",
+  "predicted_wall_gain_from_52_fewer_misses_s": 2.531,
+  "observed_mean_B_minus_A_s": 0.0315,
+  "verdict": "REJECTED prospectively: predicted 2.53 s, observed ~0"
+ },
+ "batch_structure_arithmetic": {
+  "note": "fill batches run up to queue-depth 6 reads concurrently on 3 lanes; batch wall ~ max read in batch (p50 ~105 ms, p95 ~164 ms), so removing 1-2 reads from a multi-read batch saves ~0 wall",
+  "batches_A": {
+   "cuda0": 413,
+   "cuda1": 351
+  },
+  "reads_per_batch_A": 3.25,
+  "read_worker_overlap_percent_A": 62.2020021625705
+ }
+}

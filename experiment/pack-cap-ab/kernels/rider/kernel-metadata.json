@@ -1,0 +1,15 @@
+{
+  "id": "nivind/dee-cpp-dsv4-pread-rider-20260907",
+  "title": "DSV4 pack-cap pread rider (storage-only, post A/B)",
+  "code_file": "dee-cpp-dsv4-pread-rider-20260907.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": "true",
+  "enable_gpu": "true",
+  "dataset_sources": [
+    "nivind/deepseek-v4-flash-0731-shards"
+  ],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}

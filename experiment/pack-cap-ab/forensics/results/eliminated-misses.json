@@ -1,0 +1,907 @@
+{
+ "schema": "pack-cap-ab/eliminated-miss-ledger-v1",
+ "journal_sha256_source": "identical across all four arms (f6ec70243acbafa7..., verified in forensics; see eliminated ledger report)",
+ "budgets": {
+  "A_records_per_gpu": 682,
+  "B_records_per_gpu": 803
+ },
+ "record_bytes": 13369344,
+ "replay_validation": {
+  "cuda:0": {
+   "replay_misses_A": 1388,
+   "replay_misses_B": 1348,
+   "replay_hits_A": 1225,
+   "replay_hits_B": 1265,
+   "replay_evictions_A": 706,
+   "replay_evictions_B": 545,
+   "replay_decode_misses_A": 755,
+   "replay_decode_misses_B": 715
+  },
+  "cuda:1": {
+   "replay_misses_A": 1092,
+   "replay_misses_B": 1081,
+   "replay_hits_A": 1394,
+   "replay_hits_B": 1405,
+   "replay_evictions_A": 410,
+   "replay_evictions_B": 278,
+   "replay_decode_misses_A": 496,
+   "replay_decode_misses_B": 485
+  }
+ },
+ "counts": {
+  "A_misses_total_replay": 2480,
+  "B_misses_total_replay": 2429,
+  "eliminated_replay": 51,
+  "new_misses_in_B_replay": 0
+ },
+ "eliminated": [
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 104,
+   "start_pos": 3,
+   "forward_step": 3,
+   "layer": 0,
+   "expert": 20,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 873,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     1,
+     118
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 105,
+   "start_pos": 3,
+   "forward_step": 3,
+   "layer": 0,
+   "expert": 13,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 873,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     1,
+     215
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 106,
+   "start_pos": 3,
+   "forward_step": 3,
+   "layer": 0,
+   "expert": 96,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 873,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     1,
+     235
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 107,
+   "start_pos": 3,
+   "forward_step": 3,
+   "layer": 0,
+   "expert": 155,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 873,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     1,
+     67
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 108,
+   "start_pos": 3,
+   "forward_step": 3,
+   "layer": 0,
+   "expert": 113,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 873,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     1,
+     99
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 109,
+   "start_pos": 3,
+   "forward_step": 3,
+   "layer": 0,
+   "expert": 238,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 873,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     1,
+     199
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 145,
+   "start_pos": 4,
+   "forward_step": 4,
+   "layer": 0,
+   "expert": 44,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1017,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     2,
+     245
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 151,
+   "start_pos": 4,
+   "forward_step": 4,
+   "layer": 1,
+   "expert": 75,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 987,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     3,
+     143
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 159,
+   "start_pos": 4,
+   "forward_step": 4,
+   "layer": 2,
+   "expert": 55,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 943,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     3,
+     11
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 161,
+   "start_pos": 4,
+   "forward_step": 4,
+   "layer": 3,
+   "expert": 202,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 927,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     3,
+     232
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 217,
+   "start_pos": 5,
+   "forward_step": 5,
+   "layer": 2,
+   "expert": 241,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1059,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     6,
+     181
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 220,
+   "start_pos": 5,
+   "forward_step": 5,
+   "layer": 2,
+   "expert": 124,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1087,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     6,
+     99
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 227,
+   "start_pos": 5,
+   "forward_step": 5,
+   "layer": 4,
+   "expert": 73,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1032,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     7,
+     142
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 303,
+   "start_pos": 6,
+   "forward_step": 6,
+   "layer": 7,
+   "expert": 160,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1097,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     11,
+     18
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 308,
+   "start_pos": 6,
+   "forward_step": 6,
+   "layer": 9,
+   "expert": 46,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1064,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     11,
+     172
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 356,
+   "start_pos": 7,
+   "forward_step": 7,
+   "layer": 8,
+   "expert": 111,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1197,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     14,
+     224
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 359,
+   "start_pos": 7,
+   "forward_step": 7,
+   "layer": 9,
+   "expert": 235,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1174,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     14,
+     170
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 364,
+   "start_pos": 7,
+   "forward_step": 7,
+   "layer": 11,
+   "expert": 153,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1132,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     14,
+     151
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 370,
+   "start_pos": 7,
+   "forward_step": 7,
+   "layer": 15,
+   "expert": 242,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1073,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     15,
+     186
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 401,
+   "start_pos": 8,
+   "forward_step": 8,
+   "layer": 9,
+   "expert": 191,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1305,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     16,
+     118
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 462,
+   "start_pos": 9,
+   "forward_step": 9,
+   "layer": 15,
+   "expert": 162,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1314,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     20,
+     239
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 464,
+   "start_pos": 9,
+   "forward_step": 9,
+   "layer": 16,
+   "expert": 61,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1298,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     20,
+     200
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 469,
+   "start_pos": 9,
+   "forward_step": 9,
+   "layer": 19,
+   "expert": 190,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1257,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     20,
+     95
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 501,
+   "start_pos": 10,
+   "forward_step": 10,
+   "layer": 19,
+   "expert": 107,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1368,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     1,
+     175
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 502,
+   "start_pos": 10,
+   "forward_step": 10,
+   "layer": 21,
+   "expert": 240,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1342,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     1,
+     78
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 544,
+   "start_pos": 11,
+   "forward_step": 11,
+   "layer": 19,
+   "expert": 220,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1507,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     21,
+     109
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 545,
+   "start_pos": 11,
+   "forward_step": 11,
+   "layer": 19,
+   "expert": 38,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1522,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     0,
+     146
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 549,
+   "start_pos": 11,
+   "forward_step": 11,
+   "layer": 21,
+   "expert": 238,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1462,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     0,
+     101
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 566,
+   "start_pos": 12,
+   "forward_step": 12,
+   "layer": 2,
+   "expert": 65,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1319,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     4,
+     236
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 608,
+   "start_pos": 13,
+   "forward_step": 13,
+   "layer": 3,
+   "expert": 40,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1321,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     3,
+     173
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 609,
+   "start_pos": 13,
+   "forward_step": 13,
+   "layer": 3,
+   "expert": 228,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1320,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     3,
+     100
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 610,
+   "start_pos": 13,
+   "forward_step": 13,
+   "layer": 3,
+   "expert": 166,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1586,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     4,
+     126
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 642,
+   "start_pos": 13,
+   "forward_step": 13,
+   "layer": 18,
+   "expert": 241,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1449,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     20,
+     49
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 651,
+   "start_pos": 14,
+   "forward_step": 14,
+   "layer": 0,
+   "expert": 146,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1583,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     0,
+     42
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 654,
+   "start_pos": 14,
+   "forward_step": 14,
+   "layer": 0,
+   "expert": 16,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1321,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     1,
+     75
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 658,
+   "start_pos": 14,
+   "forward_step": 14,
+   "layer": 1,
+   "expert": 116,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1319,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     2,
+     214
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 678,
+   "start_pos": 14,
+   "forward_step": 14,
+   "layer": 8,
+   "expert": 47,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1450,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     19,
+     238
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 708,
+   "start_pos": 14,
+   "forward_step": 14,
+   "layer": 21,
+   "expert": 123,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1451,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     12,
+     56
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 711,
+   "start_pos": 15,
+   "forward_step": 15,
+   "layer": 0,
+   "expert": 132,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1320,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     13,
+     32
+    ]
+   ]
+  },
+  {
+   "device": "cuda:0",
+   "request_ordinal_decode": 734,
+   "start_pos": 15,
+   "forward_step": 15,
+   "layer": 8,
+   "expert": 28,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1450,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     2,
+     63
+    ]
+   ]
+  },
+  {
+   "device": "cuda:1",
+   "request_ordinal_decode": 103,
+   "start_pos": 4,
+   "forward_step": 4,
+   "layer": 22,
+   "expert": 13,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 964,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     23,
+     247
+    ]
+   ]
+  },
+  {
+   "device": "cuda:1",
+   "request_ordinal_decode": 104,
+   "start_pos": 4,
+   "forward_step": 4,
+   "layer": 22,
+   "expert": 203,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 972,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     23,
+     188
+    ]
+   ]
+  },
+  {
+   "device": "cuda:1",
+   "request_ordinal_decode": 108,
+   "start_pos": 4,
+   "forward_step": 4,
+   "layer": 23,
+   "expert": 188,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 954,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     23,
+     226
+    ]
+   ]
+  },
+  {
+   "device": "cuda:1",
+   "request_ordinal_decode": 155,
+   "start_pos": 5,
+   "forward_step": 5,
+   "layer": 23,
+   "expert": 25,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1081,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     26,
+     130
+    ]
+   ]
+  },
+  {
+   "device": "cuda:1",
+   "request_ordinal_decode": 271,
+   "start_pos": 7,
+   "forward_step": 7,
+   "layer": 27,
+   "expert": 218,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1226,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     31,
+     146
+    ]
+   ]
+  },
+  {
+   "device": "cuda:1",
+   "request_ordinal_decode": 345,
+   "start_pos": 9,
+   "forward_step": 9,
+   "layer": 29,
+   "expert": 29,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1430,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     35,
+     113
+    ]
+   ]
+  },
+  {
+   "device": "cuda:1",
+   "request_ordinal_decode": 348,
+   "start_pos": 9,
+   "forward_step": 9,
+   "layer": 32,
+   "expert": 90,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1380,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     35,
+     24
+    ]
+   ]
+  },
+  {
+   "device": "cuda:1",
+   "request_ordinal_decode": 372,
+   "start_pos": 10,
+   "forward_step": 10,
+   "layer": 34,
+   "expert": 12,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1463,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     36,
+     89
+    ]
+   ]
+  },
+  {
+   "device": "cuda:1",
+   "request_ordinal_decode": 403,
+   "start_pos": 11,
+   "forward_step": 11,
+   "layer": 35,
+   "expert": 158,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1560,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     38,
+     30
+    ]
+   ]
+  },
+  {
+   "device": "cuda:1",
+   "request_ordinal_decode": 410,
+   "start_pos": 11,
+   "forward_step": 11,
+   "layer": 38,
+   "expert": 22,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1498,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     38,
+     99
+    ]
+   ]
+  },
+  {
+   "device": "cuda:1",
+   "request_ordinal_decode": 475,
+   "start_pos": 14,
+   "forward_step": 14,
+   "layer": 37,
+   "expert": 171,
+   "storage_bytes": 13369344,
+   "distinct_since_prev_use": 1900,
+   "compulsory": false,
+   "evicted_to_make_room": [
+    [
+     42,
+     78
+    ]
+   ]
+  }
+ ],
+ "new_misses_in_B": []
+}

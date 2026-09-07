@@ -1,0 +1,339 @@
+{
+ "schema": "pack-cap-ab/miss-criticality-v1",
+ "evidence_basis": {
+  "per_request_timestamps": "NOT_RECORDED (stage profiling disabled in all four arms)",
+  "per_token_wall": "MEASURED (result.json per_token_accounting)",
+  "per_token_read_batch_wall": "MEASURED (source_read_wall_ms)",
+  "classification_rule": "cap effect requires same-sign B-A delta in both sessions; sign flip = position effect; |delta| <= 0.05 s treated as null"
+ },
+ "classification_legend": {
+  "CRITICAL_WAIT_CANDIDATE": "B faster than A in the same direction in BOTH sessions at this token",
+  "CANDIDATE_REGRESSION": "A faster in BOTH sessions at this token",
+  "NOT_DEMAND_BLOCKING_AT_TOKEN_GRANULARITY": "no consistent cap effect; deltas flip with position or are null",
+  "NO_ELIMINATED_MISSES": "token had no eliminated misses"
+ },
+ "per_token": [
+  {
+   "forward_step": 1,
+   "wall_s": {
+    "s1A": 5.646,
+    "s1B": 5.787,
+    "s2B": 5.614,
+    "s2A": 5.782
+   },
+   "read_batch_wall_s": {
+    "s1A": 7.91,
+    "s1B": 7.966,
+    "s2B": 7.55,
+    "s2A": 8.529
+   },
+   "delta_B_minus_A_session1_s": 0.141,
+   "delta_B_minus_A_session2_s": -0.168,
+   "eliminated_misses": 0,
+   "eliminated_bytes": 0,
+   "read_batch_wall_delta_second_minus_first_s": 0.517,
+   "token_level_criticality": "NO_ELIMINATED_MISSES"
+  },
+  {
+   "forward_step": 2,
+   "wall_s": {
+    "s1A": 4.031,
+    "s1B": 4.419,
+    "s2B": 4.592,
+    "s2A": 4.424
+   },
+   "read_batch_wall_s": {
+    "s1A": 5.113,
+    "s1B": 5.001,
+    "s2B": 5.382,
+    "s2A": 5.81
+   },
+   "delta_B_minus_A_session1_s": 0.388,
+   "delta_B_minus_A_session2_s": 0.169,
+   "eliminated_misses": 0,
+   "eliminated_bytes": 0,
+   "read_batch_wall_delta_second_minus_first_s": 0.158,
+   "token_level_criticality": "NO_ELIMINATED_MISSES"
+  },
+  {
+   "forward_step": 3,
+   "wall_s": {
+    "s1A": 4.247,
+    "s1B": 4.712,
+    "s2B": 4.314,
+    "s2A": 4.259
+   },
+   "read_batch_wall_s": {
+    "s1A": 5.436,
+    "s1B": 5.404,
+    "s2B": 4.868,
+    "s2A": 5.737
+   },
+   "delta_B_minus_A_session1_s": 0.465,
+   "delta_B_minus_A_session2_s": 0.055,
+   "eliminated_misses": 6,
+   "eliminated_bytes": 80216064,
+   "read_batch_wall_delta_second_minus_first_s": 0.418,
+   "token_level_criticality": "CANDIDATE_REGRESSION"
+  },
+  {
+   "forward_step": 4,
+   "wall_s": {
+    "s1A": 6.105,
+    "s1B": 6.239,
+    "s2B": 6.278,
+    "s2A": 6.227
+   },
+   "read_batch_wall_s": {
+    "s1A": 10.73,
+    "s1B": 8.633,
+    "s2B": 9.544,
+    "s2A": 11.44
+   },
+   "delta_B_minus_A_session1_s": 0.134,
+   "delta_B_minus_A_session2_s": 0.051,
+   "eliminated_misses": 7,
+   "eliminated_bytes": 93585408,
+   "read_batch_wall_delta_second_minus_first_s": -0.1,
+   "token_level_criticality": "CANDIDATE_REGRESSION"
+  },
+  {
+   "forward_step": 5,
+   "wall_s": {
+    "s1A": 6.828,
+    "s1B": 6.781,
+    "s2B": 7.393,
+    "s2A": 7.339
+   },
+   "read_batch_wall_s": {
+    "s1A": 13.219,
+    "s1B": 11.399,
+    "s2B": 13.556,
+    "s2A": 14.944
+   },
+   "delta_B_minus_A_session1_s": -0.047,
+   "delta_B_minus_A_session2_s": 0.054,
+   "eliminated_misses": 4,
+   "eliminated_bytes": 53477376,
+   "read_batch_wall_delta_second_minus_first_s": -0.216,
+   "token_level_criticality": "NOT_DEMAND_BLOCKING_AT_TOKEN_GRANULARITY"
+  },
+  {
+   "forward_step": 6,
+   "wall_s": {
+    "s1A": 6.145,
+    "s1B": 6.136,
+    "s2B": 6.363,
+    "s2A": 6.265
+   },
+   "read_batch_wall_s": {
+    "s1A": 11.15,
+    "s1B": 10.84,
+    "s2B": 11.749,
+    "s2A": 11.673
+   },
+   "delta_B_minus_A_session1_s": -0.008,
+   "delta_B_minus_A_session2_s": 0.098,
+   "eliminated_misses": 2,
+   "eliminated_bytes": 26738688,
+   "read_batch_wall_delta_second_minus_first_s": -0.193,
+   "token_level_criticality": "NOT_DEMAND_BLOCKING_AT_TOKEN_GRANULARITY"
+  },
+  {
+   "forward_step": 7,
+   "wall_s": {
+    "s1A": 5.26,
+    "s1B": 5.19,
+    "s2B": 5.881,
+    "s2A": 6.128
+   },
+   "read_batch_wall_s": {
+    "s1A": 8.013,
+    "s1B": 7.938,
+    "s2B": 9.787,
+    "s2A": 10.44
+   },
+   "delta_B_minus_A_session1_s": -0.07,
+   "delta_B_minus_A_session2_s": -0.247,
+   "eliminated_misses": 5,
+   "eliminated_bytes": 66846720,
+   "read_batch_wall_delta_second_minus_first_s": 0.289,
+   "token_level_criticality": "CRITICAL_WAIT_CANDIDATE"
+  },
+  {
+   "forward_step": 8,
+   "wall_s": {
+    "s1A": 4.602,
+    "s1B": 4.535,
+    "s2B": 4.839,
+    "s2A": 4.935
+   },
+   "read_batch_wall_s": {
+    "s1A": 7.138,
+    "s1B": 6.833,
+    "s2B": 7.959,
+    "s2A": 8.284
+   },
+   "delta_B_minus_A_session1_s": -0.067,
+   "delta_B_minus_A_session2_s": -0.096,
+   "eliminated_misses": 1,
+   "eliminated_bytes": 13369344,
+   "read_batch_wall_delta_second_minus_first_s": 0.01,
+   "token_level_criticality": "CRITICAL_WAIT_CANDIDATE"
+  },
+  {
+   "forward_step": 9,
+   "wall_s": {
+    "s1A": 3.433,
+    "s1B": 3.374,
+    "s2B": 3.407,
+    "s2A": 3.525
+   },
+   "read_batch_wall_s": {
+    "s1A": 3.488,
+    "s1B": 3.335,
+    "s2B": 3.343,
+    "s2A": 3.68
+   },
+   "delta_B_minus_A_session1_s": -0.059,
+   "delta_B_minus_A_session2_s": -0.118,
+   "eliminated_misses": 5,
+   "eliminated_bytes": 66846720,
+   "read_batch_wall_delta_second_minus_first_s": 0.091,
+   "token_level_criticality": "CRITICAL_WAIT_CANDIDATE"
+  },
+  {
+   "forward_step": 10,
+   "wall_s": {
+    "s1A": 3.572,
+    "s1B": 3.65,
+    "s2B": 3.583,
+    "s2A": 3.782
+   },
+   "read_batch_wall_s": {
+    "s1A": 4.191,
+    "s1B": 4.317,
+    "s2B": 4.106,
+    "s2A": 4.501
+   },
+   "delta_B_minus_A_session1_s": 0.078,
+   "delta_B_minus_A_session2_s": -0.199,
+   "eliminated_misses": 3,
+   "eliminated_bytes": 40108032,
+   "read_batch_wall_delta_second_minus_first_s": 0.26,
+   "token_level_criticality": "NOT_DEMAND_BLOCKING_AT_TOKEN_GRANULARITY"
+  },
+  {
+   "forward_step": 11,
+   "wall_s": {
+    "s1A": 4.338,
+    "s1B": 4.08,
+    "s2B": 4.35,
+    "s2A": 4.543
+   },
+   "read_batch_wall_s": {
+    "s1A": 5.883,
+    "s1B": 5.199,
+    "s2B": 5.88,
+    "s2A": 6.546
+   },
+   "delta_B_minus_A_session1_s": -0.257,
+   "delta_B_minus_A_session2_s": -0.192,
+   "eliminated_misses": 5,
+   "eliminated_bytes": 66846720,
+   "read_batch_wall_delta_second_minus_first_s": -0.009,
+   "token_level_criticality": "CRITICAL_WAIT_CANDIDATE"
+  },
+  {
+   "forward_step": 12,
+   "wall_s": {
+    "s1A": 3.544,
+    "s1B": 3.419,
+    "s2B": 3.521,
+    "s2A": 3.663
+   },
+   "read_batch_wall_s": {
+    "s1A": 4.025,
+    "s1B": 4.066,
+    "s2B": 4.217,
+    "s2A": 4.42
+   },
+   "delta_B_minus_A_session1_s": -0.125,
+   "delta_B_minus_A_session2_s": -0.142,
+   "eliminated_misses": 1,
+   "eliminated_bytes": 13369344,
+   "read_batch_wall_delta_second_minus_first_s": 0.122,
+   "token_level_criticality": "CRITICAL_WAIT_CANDIDATE"
+  },
+  {
+   "forward_step": 13,
+   "wall_s": {
+    "s1A": 4.148,
+    "s1B": 3.358,
+    "s2B": 4.24,
+    "s2A": 4.224
+   },
+   "read_batch_wall_s": {
+    "s1A": 6.038,
+    "s1B": 3.766,
+    "s2B": 6.003,
+    "s2A": 6.085
+   },
+   "delta_B_minus_A_session1_s": -0.79,
+   "delta_B_minus_A_session2_s": 0.016,
+   "eliminated_misses": 4,
+   "eliminated_bytes": 53477376,
+   "read_batch_wall_delta_second_minus_first_s": -1.095,
+   "token_level_criticality": "NOT_DEMAND_BLOCKING_AT_TOKEN_GRANULARITY"
+  },
+  {
+   "forward_step": 14,
+   "wall_s": {
+    "s1A": 5.079,
+    "s1B": 3.743,
+    "s2B": 4.844,
+    "s2A": 3.326
+   },
+   "read_batch_wall_s": {
+    "s1A": 8.411,
+    "s1B": 4.811,
+    "s2B": 7.499,
+    "s2A": 3.919
+   },
+   "delta_B_minus_A_session1_s": -1.336,
+   "delta_B_minus_A_session2_s": 1.518,
+   "eliminated_misses": 6,
+   "eliminated_bytes": 80216064,
+   "read_batch_wall_delta_second_minus_first_s": -3.59,
+   "token_level_criticality": "NOT_DEMAND_BLOCKING_AT_TOKEN_GRANULARITY"
+  },
+  {
+   "forward_step": 15,
+   "wall_s": {
+    "s1A": 3.669,
+    "s1B": 3.059,
+    "s2B": 3.699,
+    "s2A": 2.272
+   },
+   "read_batch_wall_s": {
+    "s1A": 4.661,
+    "s1B": 3.354,
+    "s2B": 4.795,
+    "s2A": 1.287
+   },
+   "delta_B_minus_A_session1_s": -0.609,
+   "delta_B_minus_A_session2_s": 1.427,
+   "eliminated_misses": 2,
+   "eliminated_bytes": 26738688,
+   "read_batch_wall_delta_second_minus_first_s": -2.408,
+   "token_level_criticality": "NOT_DEMAND_BLOCKING_AT_TOKEN_GRANULARITY"
+  }
+ ],
+ "eliminated_misses_by_classification": {
+  "NO_ELIMINATED_MISSES": 0,
+  "CANDIDATE_REGRESSION": 13,
+  "NOT_DEMAND_BLOCKING_AT_TOKEN_GRANULARITY": 21,
+  "CRITICAL_WAIT_CANDIDATE": 17
+ },
+ "per_request_note": "Every eliminated miss is classified UNKNOWN at per-request granularity (read submit/complete/demand timestamps were not recorded); the table above is the strongest token-level attribution the sealed evidence supports."
+}

@@ -305,7 +305,8 @@ def maybe_pread_rider(arm_dir: Path) -> dict:
     bench = Path("/tmp/pread-rider/bench_expert_pread.py")
     bench.parent.mkdir(parents=True, exist_ok=True)
     bench.write_bytes(raw)
-    cmd = [sys.executable, str(bench), "--store", str(store / "metadata.json"),
+    cmd = [sys.executable, str(bench), "--store", str(store / "experts.dee4"),
+           "--journal-meta", str(store / "metadata.json"),
            "--records", "96", "--out", str(WORK / "pread-rider.json")]
     log(f"pread rider: {' '.join(cmd)}")
     t0 = time.time()
