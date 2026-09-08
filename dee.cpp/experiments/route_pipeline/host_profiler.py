@@ -84,6 +84,14 @@ def validate_record(record: dict) -> dict:
         out["layer_wall_ms"] = float(wall)
     else:
         out["layer_wall_ms"] = None
+    # Pass-through detail (never summed by closure; validated as objects).
+    for key in ("extras", "counters"):
+        value = record.get(key, {})
+        if value is None:
+            value = {}
+        if not isinstance(value, dict):
+            raise SchemaError(f"{key} must be an object")
+        out[key] = dict(value)
     return out
 
 
@@ -108,6 +116,7 @@ def compute_closure(records: list[dict], decode_wall_ms: float | None = None) ->
     accounted = 0.0
     by_field: dict[str, float] = {}
     nested_detail: dict[str, float] = {}
+    extras_detail: dict[str, float] = {}
     unknown_fields = 0
     for record in records:
         rec = validate_record(record)
@@ -123,6 +132,10 @@ def compute_closure(records: list[dict], decode_wall_ms: float | None = None) ->
             if value is None:
                 continue
             nested_detail[field] = nested_detail.get(field, 0.0) + value
+        for key, value in rec.get("extras", {}).items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            extras_detail[key] = extras_detail.get(key, 0.0) + value
     wall = decode_wall_ms
     if wall is None:
         wall = accounted  # no independent wall: closure undefined, report 1.0 iff complete
@@ -134,6 +147,7 @@ def compute_closure(records: list[dict], decode_wall_ms: float | None = None) ->
             "wall_ms": round(wall, 6),
             "by_field_ms": {k: round(v, 6) for k, v in by_field.items()},
             "by_field_nested_ms": {k: round(v, 6) for k, v in nested_detail.items()},
+            "extras_detail_ms": {k: round(v, 6) for k, v in extras_detail.items()},
             "unmeasured_top_level_fields": unknown_fields,
             "nested_excluded": sorted(NESTED_IN_NATIVE_CALL),
             "forced": False}

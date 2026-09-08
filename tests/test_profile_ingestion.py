@@ -189,3 +189,46 @@ def test_next_ab_single_and_empty():
 def test_load_profile_run_rejects_missing(tmp_path):
     with pytest.raises(EvidenceError):
         load_profile_run(tmp_path)
+
+
+def test_device_coercion_and_provenance_map():
+    from evidence import _normalize_py_row, coerce_device
+    assert coerce_device(1) == 1
+    assert coerce_device("cuda:0") == 0
+    assert coerce_device(" cuda:1 ") == 1
+    with pytest.raises(EvidenceError):
+        coerce_device("tpu:0")
+    with pytest.raises(EvidenceError):
+        coerce_device(True)
+    row = {"token": 3, "layer": 5, "device": "cuda:1",
+           "route_d2h_host_wait_ms": 0.1,
+           "route_d2h_provenance": "HOST_WALL",
+           "shared_host_wall_ms": 0.5,
+           "shared_host_provenance": "HOST_WALL",
+           "combine_ms": 0.2}
+    norm = _normalize_py_row(row)
+    assert norm["device"] == 1
+    assert norm["shared_expert_ms"] == 0.5
+    assert norm["provenance"]["shared_expert_ms"] == "HOST_WALL"
+    assert norm["provenance"]["combine_ms"] == "HOST_WALL"
+
+
+def test_attribute_tokens_assigns_and_rejects():
+    from evidence import attribute_tokens
+    cpp = [{"token": -1, "layer": 0, "device": 0},
+           {"token": -1, "layer": 0, "device": 0}]
+    py = [{"token": 7, "layer": 0, "device": "cuda:0"},
+          {"token": 8, "layer": 0, "device": "cuda:0"}]
+    notes = attribute_tokens(cpp, py)
+    assert [r["token"] for r in cpp] == [7, 8]
+    assert len(notes) == 1
+    with pytest.raises(EvidenceError):
+        attribute_tokens([{"token": -1, "layer": 0, "device": 0}],
+                         [{"token": 1, "layer": 0, "device": 0},
+                          {"token": 2, "layer": 0, "device": 0}])
+    with pytest.raises(EvidenceError):
+        attribute_tokens([{"token": -1, "layer": 9, "device": 0}], py)
+    present = [{"token": 3, "layer": 0, "device": 0},
+               {"token": 4, "layer": 0, "device": 0}]
+    notes = attribute_tokens(present, py)
+    assert "no attribution needed" in notes[0]

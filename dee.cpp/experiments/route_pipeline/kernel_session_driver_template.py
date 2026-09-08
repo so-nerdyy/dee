@@ -376,23 +376,42 @@ def to_profile_run(arm_dir: Path, out_dir: Path, prompt_hash: str,
     cpp_records = []
     if hs.is_file():
         try:
-            cpp_records = json.loads(hs.read_text(encoding="utf-8"))
+            hs_data = json.loads(hs.read_text(encoding="utf-8"))
+            # host-sync-records.json is {gpu: {"records": [...]}}; flatten.
+            if isinstance(hs_data, dict):
+                for gpu_recs in hs_data.values():
+                    if isinstance(gpu_recs, dict) and isinstance(
+                            gpu_recs.get("records"), list):
+                        cpp_records.extend(gpu_recs["records"])
+                    elif isinstance(gpu_recs, list):
+                        cpp_records.extend(gpu_recs)
+            elif isinstance(hs_data, list):
+                cpp_records = hs_data
         except Exception as exc:  # noqa: BLE001
             return {"error": f"host-sync-records.json unparseable: {exc}"}
+    py_rows = []
+    for p in sorted(arm_dir.glob("host-profile-rows-l*.json")):
+        try:
+            file_data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"python rows unparseable in {p.name}: {exc}"}
+        # dump_host_profile writes {"records": [...]} per layer file; flatten.
+        if isinstance(file_data, dict) and isinstance(
+                file_data.get("records"), list):
+            py_rows.extend(file_data["records"])
+        elif isinstance(file_data, list):
+            py_rows.extend(file_data)
+        else:
+            return {"error": f"python rows bad shape in {p.name}"}
     if isinstance(cpp_records, dict):
-        merged_cpp = []
-        for gpu_recs in cpp_records.values():
-            if isinstance(gpu_recs, dict) and isinstance(
-                    gpu_recs.get("records"), list):
-                merged_cpp.extend(gpu_recs["records"])
-            elif isinstance(gpu_recs, list):
-                merged_cpp.extend(gpu_recs)
-        cpp_records = merged_cpp
+        raise RuntimeError("internal: cpp_records must be a flat list")
     out_dir.mkdir(parents=True, exist_ok=True)
+    ntoks = res.get("decode_tokens") or len(res.get("generated_token_ids", [])) or None
     (out_dir / "result.json").write_text(json.dumps({
         "status": res.get("classification") == "ACCEPT_CORRECTNESS"
         and "ok" or "arm-invalid",
-        "metrics": {"decode_wall_s": res.get("decode_wall_s"), "tokens": 16},
+        "tokens": ntoks,
+        "metrics": {"decode_wall_s": res.get("decode_wall_s"), "tokens": ntoks},
         "generated_ids": res.get("generated_token_ids"),
         "decoded_text": res.get("decoded_text"),
         "source_sha": res.get("commit"),

@@ -211,7 +211,7 @@ The two coexist by definition: the pipeline is proven (mock E2E green,
 artifacts populated, ranking derived, malformed fails closed,
 host-independent tests, dry-run works, resume tested); the GPU is absent.
 
-## Verification (this branch)
+## Verification (this branch, mock-proven stage)
 
 - Full suite: 84 passed warning-free (`test_mock_campaign_e2e` 7
   scenarios, `test_profile_ingestion` 12, `test_resume` 4,
@@ -220,3 +220,44 @@ host-independent tests, dry-run works, resume tested); the GPU is absent.
   grep-verifiable).
 - Dry-run verified locally (source/markers/modules/schemas pass; GPU and
   command checks honestly fail with exit 2).
+
+---
+
+# Live T4 profile installment (experiment/host-sync-profile, MUSE)
+
+RUN FOR REAL on dual-T4 SM75 (kernel v8, ABA OFF1/ON/OFF2, 17 GiB cap).
+Source identity: 217a333 + profiler patch aae0f41a (6 files, additive
+except one const relaxation; per-arm proof recorded). All arms
+ACCEPT_CORRECTNESS, identical IDs/text. Full numbers:
+LIVE_PROFILE_RESULTS.md; bundle: evidence-live/ (688 merged records).
+
+1. **Source identity**: 217a33359b06 + patch aae0f41a (proof in evidence).
+2. **Profile-off wall**: 71.447 s (OFF1; OFF2 68.669 s).
+3. **Profile-on wall**: 66.233 s.
+4. **Perturbation**: −5.2 s (−7.3%), ORDER-CONFOUNDED (OFF2−OFF1 −2.8 s
+   same session; prior session −5.4 s). Unresolvable below ±3–5 s noise;
+   PROFILER_PERTURBING: NO by construction.
+5. **Closure**: 0.861 decode-only (57.0/66.2 s); prefill ≈0.98 separately.
+6. **Top five**: fill 42.0 s (63%), stage-enqueue 9.4 s (14%), sync 4.9 s
+   (7%), unknown bucket 9.2 s (dense attn + orchestration + journal),
+   combine 0.14 s. Route-D2H 15 ms total.
+7. **Storage**: worker 33.2 GB/2481 req/batch-sum 91 s (overlapped, not
+   wall) vs critical fill 42.0 s; H2D ≤5.3 s concurrent; effective
+   0.74 GB/s. −52 misses ≈ 0.9 s < noise ⇒ pack-cap paradox resolved:
+   deterministic per-miss law falsified, blocking-fill mechanism confirmed.
+8. **Route-D2H**: 15.4 ms total; p50 0.022 / p95 0.035 / max 0.16 ms.
+9. **Final sync**: 4.894 s; p50 7.99 / p95 8.08 / max 8.12 ms; uniform
+   required drain; top layers ≈120 ms each.
+10. **Shared**: host UNKNOWN (instrumentation gap found live; fix
+    committed for future runs); device 308 ms decode (+24.1 s prefill).
+11. **ABC**: A hidden −98 ms (batching worse; mechanics only); B c=0.021
+    worst-case bound; C 8.5 µs vs 5.4 µs empty.
+12. **Winner**: EVENT_HANDOFF_PROMOTED per gate (7.4% ≥ 5%, closure ok).
+13. **ONE next experiment**: event-handoff-ONLY matched A/B with abort
+    criteria (abort if first-pair delta < resolution); predicted outcome
+    ≈ 0 because syncs wait on required completion with no legal host work
+    available — the A/B would confirm the model, not beat it.
+14. **Final classification**: EVENT_HANDOFF_PROMOTED (mechanical) with
+    NO_OVERLAP_OPTIMIZATION_JUSTIFIED as the live alternative the root
+    should weigh: the data says the wall is fill-throughput-bound (42 s)
+    and no A/B/C candidate reduces fill service.

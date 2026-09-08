@@ -521,7 +521,9 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
             hp["combine_provenance"] = "HOST_WALL"
             # Deferred CUDA events around shared work: recorded on the torch
             # stream, never synchronized here (elapsed read at dump time, so
-            # measurement adds no pipeline perturbation).
+            # measurement adds no pipeline perturbation). The host wall is
+            # recorded directly (clock reads only, no sync).
+            hp["shared_host_start_t"] = time.perf_counter()
             try:
                 hp["shared_start_event"] = torch.cuda.Event(enable_timing=True)
                 hp["shared_start_event"].record(torch.cuda.current_stream(self.device))
@@ -531,13 +533,15 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
 
         shared_out = self._shared_forward(xf, hidden_fp16)
         if hp is not None:
+            hp["shared_host_wall_ms"] = (
+                time.perf_counter() - hp.pop("shared_host_start_t")) * 1000.0
+            hp["shared_host_provenance"] = "HOST_WALL"
             try:
                 shared_end = torch.cuda.Event(enable_timing=True)
                 shared_end.record(torch.cuda.current_stream(self.device))
                 hp["shared_end_event"] = shared_end
             except Exception:
                 hp["shared_end_event"] = None
-            hp["shared_host_wall_ms"] = None  # resolved at dump (see below)
         self._profile_ffn_mark()
         if hp is not None:
             hp["device"] = str(self.device)

@@ -14,6 +14,8 @@ Failure taxonomy (never silent empty success):
 from __future__ import annotations
 
 import json
+import re
+from collections import defaultdict
 from pathlib import Path
 
 from host_profiler import (
@@ -133,21 +135,41 @@ _PY_FIELD_MAP = {
     "combine_ms": "combine_ms",
     "shared_host_wall_ms": "shared_expert_ms",
 }
-_PY_PROVENANCE_KEYS = ("route_d2h_provenance", "combine_provenance")
+
+# Explicit per-destination provenance keys (never borrow another field's).
+_PY_PROVENANCE_FOR = {
+    "route_d2h_host_wait_ms": ("route_d2h_host_wait_ms_provenance",
+                               "route_d2h_provenance"),
+    "native_call_wall_ms": ("native_call_wall_ms_provenance",),
+    "combine_ms": ("combine_ms_provenance",),
+    "shared_expert_ms": ("shared_host_wall_ms_provenance",
+                         "shared_expert_ms_provenance"),
+}
 
 
+def coerce_device(value) -> int:
+    """Normalize device labels: int passes through, "cuda:N" becomes N.
+    Anything else fails closed (a mismatched key would corrupt the merge)."""
+    if isinstance(value, bool):
+        raise EvidenceError(f"uncoercible device {value!r}")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        match = re.fullmatch(r"\s*cuda:(\d+)\s*", value)
+        if match:
+            return int(match.group(1))
+    raise EvidenceError(f"uncoercible device {value!r}")
 def _normalize_py_row(row: dict) -> dict:
     if "layer" not in row:
         raise EvidenceError("Python row needs layer")
     out: dict = {"token": row.get("token", -1), "layer": row["layer"],
-                 "device": row.get("device", -1),
+                 "device": coerce_device(row.get("device", -1)),
                  "provenance": {}, "extras": {}}
     for src, dst in _PY_FIELD_MAP.items():
         if src in row and row[src] is not None:
             out[dst] = row[src]
             label = "HOST_WALL"
-            for cand in (src + "_provenance", dst + "_provenance",
-                         *_PY_PROVENANCE_KEYS):
+            for cand in _PY_PROVENANCE_FOR[dst]:
                 if cand in row and isinstance(row[cand], str):
                     label = row[cand]
                     break
@@ -159,6 +181,57 @@ def _normalize_py_row(row: dict) -> dict:
     if "ids_bytes" in row:
         out["counters"] = {"ids_bytes": row["ids_bytes"]}
     return out
+
+
+def attribute_tokens(cpp_records: list[dict], py_rows: list[dict]) -> list[str]:
+    """Assign tokens to C++ records that lack them (token < 0 or missing).
+
+    Method: group both sides by (layer, device-after-coercion); both sides
+    are per-call logs in temporal order, so C++[i] and Python[i] are the
+    same call. Requires: identical key sets, equal lengths per group, and
+    unique Python tokens per group. Anything else raises EvidenceError
+    (no guessing). Records already carrying tokens are verified
+    duplicate-free and left untouched.
+    """
+    notes: list[str] = []
+    needy = [r for r in cpp_records if not isinstance(r.get("token"), int)
+             or r.get("token", -1) < 0]
+    if not needy:
+        seen: set = set()
+        for rec in cpp_records:
+            key = (rec.get("token"), rec.get("layer"), rec.get("device"))
+            if key in seen:
+                raise EvidenceError(f"duplicate C++ record for {key}")
+            seen.add(key)
+        return ["C++ tokens present; verified unique, no attribution needed"]
+    py_by_key: dict = defaultdict(list)
+    for row in py_rows:
+        if "layer" not in row:
+            raise EvidenceError("Python row needs layer for attribution")
+        py_by_key[(row["layer"], coerce_device(row.get("device", -1)))].append(row)
+    cpp_by_key: dict = defaultdict(list)
+    for rec in needy:
+        cpp_by_key[(rec.get("layer"), rec.get("device", -1))].append(rec)
+    if set(py_by_key) != set(cpp_by_key):
+        raise EvidenceError(
+            f"attribution key mismatch: python {sorted(py_by_key)} vs "
+            f"C++ {sorted(cpp_by_key)}")
+    for key in sorted(py_by_key):
+        plist, clist = py_by_key[key], cpp_by_key[key]
+        if len(plist) != len(clist):
+            raise EvidenceError(
+                f"attribution count mismatch at {key}: "
+                f"{len(clist)} C++ vs {len(plist)} python rows")
+        ptoks = [p.get("token", -1) for p in plist]
+        if any(not isinstance(t, int) or t < 0 for t in ptoks):
+            raise EvidenceError(f"attribution needs labeled python tokens at {key}")
+        if len(set(ptoks)) != len(ptoks):
+            raise EvidenceError(f"duplicate python tokens at {key}")
+        for crec, tok in zip(clist, ptoks):
+            crec["token"] = tok
+        notes.append(f"{key}: attributed tokens {ptoks[0]}..{ptoks[-1]} "
+                     f"({len(clist)} records, call-order aligned)")
+    return notes
 
 
 def merge_records(cpp_records: list[dict], py_rows: list[dict]) -> tuple[list[dict], list[str]]:
@@ -184,7 +257,9 @@ def merge_records(cpp_records: list[dict], py_rows: list[dict]) -> tuple[list[di
             notes.append(f"{key}: python-only record (no C++ spans)")
             continue
         for field in SPAN_FIELDS:
-            if field in norm and norm[field] is not None and field not in base:
+            # A None-valued base entry (C++ emits all spans, null when
+            # unmeasured) must NOT block a measured Python value.
+            if field in norm and norm[field] is not None and base.get(field) is None:
                 base[field] = norm[field]
                 base["provenance"][field] = norm["provenance"].get(field, "HOST_WALL")
         if "native_call_wall_ms" in norm and "native_call_wall_ms" in base:
@@ -200,6 +275,13 @@ def merge_records(cpp_records: list[dict], py_rows: list[dict]) -> tuple[list[di
             full[field] = rec.get(field)
         full["provenance"] = {f: rec.get("provenance", {}).get(f, "UNKNOWN")
                               for f in SPAN_FIELDS}
+        # Schema authority: native_call_wall_ms is the top-level inclusive
+        # parent for closure even when the C++ emitter tags it NESTED
+        # (emitter labeling quirk; closure math follows TIMING_SCHEMA.md).
+        if full["provenance"].get("native_call_wall_ms") == "NESTED":
+            full["provenance"]["native_call_wall_ms"] = "HOST_WALL"
+            notes.append(f"{(token, layer, device)}: native_call_wall "
+                         "provenance normalized NESTED->HOST_WALL per schema")
         full["extras"] = rec.get("extras", {})
         if "counters" in rec:
             full["counters"] = rec["counters"]
@@ -283,10 +365,14 @@ def ingest_abc(payload: dict) -> dict:
     tails). Missing/failing cases stay UNKNOWN."""
     if not isinstance(payload, dict):
         raise EvidenceError("ABC payload must be an object")
+    # Accept both the flat runner shape and the driver {"cases": {...}} wrap.
+    cases = payload.get("cases", payload)
+    if not isinstance(cases, dict):
+        raise EvidenceError("ABC cases must be an object")
     out: dict = {"gpu": payload.get("gpu", "UNKNOWN"),
                  "cases": {}, "status": payload.get("status", "UNKNOWN")}
     for name in ("A_hash_staging", "B_contention", "C_barrier"):
-        case = payload.get(name)
+        case = cases.get(name)
         if not isinstance(case, dict) or case.get("status") != "ok":
             out["cases"][name] = {"status": "UNKNOWN",
                                   "reason": "missing or failing case output"}

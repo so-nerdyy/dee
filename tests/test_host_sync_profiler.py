@@ -157,7 +157,8 @@ def test_candidate_diff_is_timing_only():
             "try:", "except", "hp[", "deferred", "shared-expert",
             "synchronization", "perturb", "UNKNOWN", "completed",
             "waited", "dump", "JSON", "out", "row = dict",
-            "start is not", "return path", "Returns", "else:")), line
+            "start is not", "return path", "Returns", "else:",
+            "shared_host")), line
 
 
 # --- Nesting rules ----------------------------------------------------------
@@ -293,3 +294,19 @@ def test_json_round_trip():
     out = compute_closure(recs, decode_wall_ms=10.0)
     json.dumps(out)
     assert out["by_field_ms"] == {"native_call_wall_ms": 9.5}
+    assert out["extras_detail_ms"] == {}
+
+
+def test_extras_and_counters_pass_through():
+    rec = {"token": 0, "layer": 0, "device": 0, "native_call_wall_ms": 5.0,
+           "extras": {"stage_enqueue_wait_ms": 1.5, "junk": "skip-me"},
+           "counters": {"ids_bytes": 24}}
+    out = validate_record(rec)
+    assert out["extras"] == {"stage_enqueue_wait_ms": 1.5, "junk": "skip-me"}
+    assert out["counters"] == {"ids_bytes": 24}
+    closed = compute_closure([rec], decode_wall_ms=10.0)
+    assert closed["extras_detail_ms"] == {"stage_enqueue_wait_ms": 1.5}
+    assert closed["accounted_ms"] == 5.0
+    import pytest
+    with pytest.raises(SchemaError):
+        validate_record({"token": 0, "layer": 0, "device": 0, "extras": [1]})
