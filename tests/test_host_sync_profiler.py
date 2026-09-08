@@ -170,6 +170,27 @@ def test_nested_set_matches_schema():
     assert "host_span_nested" in text
 
 
+def test_header_declaration_order_compiles():
+    """Regression for the v7 live build break: HostSpan/HostSpanTicket/
+    HostLayerRecord must be declared BEFORE StageProfiler (which names them
+    in member declarations), and the inline guards AFTER the complete class.
+    No use of StageProfiler::TimePoint outside the class (incomplete type)."""
+    text = PROF_H.read_text(encoding="utf-8")
+    pos = {key: text.find(key) for key in (
+        "enum class HostSpan", "struct HostSpanTicket",
+        "struct HostLayerRecord", "class StageProfiler",
+        "class HostSpanGuard", "class HostLayerScope",
+        "host_span_name(HostSpan span)")}
+    assert all(v >= 0 for v in pos.values()), pos
+    assert pos["enum class HostSpan"] < pos["struct HostSpanTicket"] < pos["class StageProfiler"]
+    assert pos["struct HostLayerRecord"] < pos["class StageProfiler"]
+    assert pos["class StageProfiler"] < pos["class HostSpanGuard"]
+    assert pos["class StageProfiler"] < pos["host_span_name(HostSpan span)"]
+    ticket_block = text[text.find("struct HostSpanTicket"):
+                        text.find("struct HostLayerRecord")]
+    assert "StageProfiler::TimePoint" not in ticket_block
+
+
 def test_closure_excludes_nested():
     rec = {"token": 0, "layer": 0, "device": 0,
            "native_call_wall_ms": 10.0, "decode_ms": 4.0,

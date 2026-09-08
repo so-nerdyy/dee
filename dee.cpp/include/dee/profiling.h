@@ -173,6 +173,52 @@ struct IdleGapRecord {
     uint64_t transfer_id = 0;
 };
 
+// ---- Host/sync profiler types (declared before StageProfiler so member
+// declarations and inline guards below see complete types; observing only,
+// no CUDA calls, no behavior change) ----
+enum class HostSpan : size_t {
+    LayerWall,          // whole native layer call, inclusive (NESTED parent)
+    NativeCallWall,     // moe_forward_batch_device_impl body (NESTED parent)
+    SourceLookupWait,   // host-pack lookup + source-read wait
+    FillWait,           // fill/reservation wait
+    StageEnqueueWait,   // H2D enqueue (host submission, not device time)
+    ReadinessWait,      // wait_on_stream + pin (host-side wait)
+    DecodeWait,         // packed->FP16 decode launches (host span)
+    ExpertComputeWait,  // GEMM/activation dispatch (host span)
+    GatherScatterWait,  // D2D gather/scatter dispatch (host span)
+    NativeOutputSync,   // TIMES the existing final sync; never adds one
+    SharedExpert,       // torch-side shared expert (Python records this)
+    Combine,            // host combine (Python records this)
+    Orchestration,      // Python orchestration between layers
+    Handoff,            // cross-GPU handoff at layer 21/22
+    Count
+};
+
+// Provenance of one span sample (see TIMING_SCHEMA.md).
+enum class SpanProvenance : uint8_t {
+    HostWall,   // steady_clock delta on host
+    CudaEvent,  // device interval from existing CUDA events
+    Counter,    // byte/count telemetry, not time
+    Derived,    // computed from other spans (never added to wall)
+    Unknown,    // explicitly unmeasured
+    Nested      // sub-span of an inclusive parent; excluded from closure sums
+};
+
+struct HostSpanTicket {
+    bool valid = false;
+    HostSpan span = HostSpan::LayerWall;
+    std::chrono::steady_clock::time_point begin{};
+};
+
+struct HostLayerRecord {
+    int token = -1;
+    int layer = -1;
+    int device_id = -1;
+    std::array<double, static_cast<size_t>(HostSpan::Count)> ms{};
+    std::array<uint64_t, 4> counters{};  // ids_bytes, copies, syncs, events
+    bool complete = false;
+};
+
 struct StageProfile {
     bool enabled = false;
     bool trace_enabled = false;
@@ -513,52 +559,6 @@ class HostLayerScope {
 std::string stage_profile_json(const StageProfile& profile, bool include_trace);
 std::string cuda_timeline_json(const StageProfile& profile);
 
-// ---- Host/sync profiler (research/route-pipeline, profiling-only) ----
-// Additive, default-off instrumentation that decomposes per-layer host wall
-// into non-overlapping (or explicitly NESTED) spans. Observes only: no CUDA
-// calls, no sync insertion/removal, no reordering, no arithmetic. Every
-// method is a no-op unless the profiler is enabled via configure().
-enum class HostSpan : size_t {
-    LayerWall,          // whole native layer call, inclusive (NESTED parent)
-    NativeCallWall,     // moe_forward_batch_device_impl body (NESTED parent)
-    SourceLookupWait,   // host-pack lookup + source-read wait
-    FillWait,           // fill/reservation wait
-    StageEnqueueWait,   // H2D enqueue (host submission, not device time)
-    ReadinessWait,      // wait_on_stream + pin (host-side wait)
-    DecodeWait,         // packed->FP16 decode launches (host span)
-    ExpertComputeWait,  // GEMM/activation dispatch (host span)
-    GatherScatterWait,  // D2D gather/scatter dispatch (host span)
-    NativeOutputSync,   // TIMES the existing final sync; never adds one
-    SharedExpert,       // torch-side shared expert (Python records this)
-    Combine,            // host combine (Python records this)
-    Orchestration,      // Python orchestration between layers
-    Handoff,            // cross-GPU handoff at layer 21/22
-    Count
-};
-
-// Provenance of one span sample (see TIMING_SCHEMA.md).
-enum class SpanProvenance : uint8_t {
-    HostWall,   // steady_clock delta on host
-    CudaEvent,  // device interval from existing CUDA events
-    Counter,    // byte/count telemetry, not time
-    Derived,    // computed from other spans (never added to wall)
-    Unknown,    // explicitly unmeasured
-    Nested      // sub-span of an inclusive parent; excluded from closure sums
-};
-
-struct HostSpanTicket {
-    bool valid = false;
-    HostSpan span = HostSpan::LayerWall;
-    StageProfiler::TimePoint begin{};
-};
-
-struct HostLayerRecord {
-    int token = -1;
-    int layer = -1;
-    int device_id = -1;
-    std::array<double, static_cast<size_t>(HostSpan::Count)> ms{};
-    std::array<uint64_t, 4> counters{};  // ids_bytes, copies, syncs, events
-    bool complete = false;
-};
+// Host/sync type definitions live above (before StageProfiler).
 
 }  // namespace dee

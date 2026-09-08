@@ -1,5 +1,5 @@
 {
-  "profiler_patch_sha256": "4e52df03dfe0b552a4a5754d1ceafd4414339f22be8e7650f00253a76c077d0c",
+  "profiler_patch_sha256": "aae0f41a1e63afeea43a77e994b9b36993347d8e8ebf55b1d032dc7ace4d6fb8",
   "profiler_patch_base": "9c16529d48a2b7d02cc0830ed0ad8ef2e5c7c592",
   "profiler_files": [
     "dee.cpp/src/engine.cpp",
@@ -17,7 +17,7 @@
     "emission"
   ],
   "rules_sha256": "71cf026289b304da067480470338b5873eca6590b9f75b2bdc854217f2081c1e",
-  "driver_build_id": "0409a9495d0b-20260907T232049Z",
-  "driver_sha256": "500f149d83b2591611a902175088b9c792116fd0931d935f8dec31e962638894",
+  "driver_build_id": "694fd7159ad7-20260908T001252Z",
+  "driver_sha256": "625b7fd2aef81b9b19c99b3133651a36cf7cd73b1475fba47390330ab34f76d1",
   "kernel_id": "nivind/dee-cpp-host-sync-profile-20260905"
 }
