@@ -1,5 +1,5 @@
 {
-  "profiler_patch_sha256": "aae0f41a1e63afeea43a77e994b9b36993347d8e8ebf55b1d032dc7ace4d6fb8",
+  "profiler_patch_sha256": "228ef4b39fd5951f11d35312073608808156db00e55f714784b230a254afc000",
   "profiler_patch_base": "9c16529d48a2b7d02cc0830ed0ad8ef2e5c7c592",
   "profiler_files": [
     "dee.cpp/src/engine.cpp",
@@ -9,6 +9,7 @@
     "dee.cpp/pydee/pydee.cpp",
     "dee.cpp/scripts/deepseek_v4_layer_candidate.py"
   ],
+  "flavor": "profile",
   "rule_ids": [
     "run-id",
     "profile-guard",
@@ -16,8 +17,8 @@
     "patch-apply",
     "emission"
   ],
-  "rules_sha256": "71cf026289b304da067480470338b5873eca6590b9f75b2bdc854217f2081c1e",
-  "driver_build_id": "694fd7159ad7-20260908T001252Z",
-  "driver_sha256": "625b7fd2aef81b9b19c99b3133651a36cf7cd73b1475fba47390330ab34f76d1",
+  "rules_sha256": "adb2e3288246d3236c7c3b154bffff645532ec40b3bc5801a0b8a3fc62b02c32",
+  "driver_build_id": "12560ebc3aa6-20260909T034736Z",
+  "driver_sha256": "390ca73bd0251137465ab2977dea05a31f6927c31bf62093a43d7c3d1a0d3e0f",
   "kernel_id": "nivind/dee-cpp-host-sync-profile-20260905"
 }

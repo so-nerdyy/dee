@@ -153,12 +153,27 @@ def run_variant(variant: Path, patch_path: Path, out_dir: Path) -> dict:
     for key in list(env):
         if key.startswith("NATIVE_") or key in (
                 "DEE_HOST_PROFILE", "HOST_SYNC_EMIT", "HOST_SYNC_PROFILE_ARM",
-                "HOST_SYNC_PATCH_PATH", "HOST_SYNC_PATCH_SHA256"):
+                "HOST_SYNC_PATCH_PATH", "HOST_SYNC_PATCH_SHA256",
+                "HOST_SYNC_PATCH_FILES"):
             del env[key]
     env.update({"DEE_HOST_PROFILE": "1", "HOST_SYNC_EMIT": "1",
                 "HOST_SYNC_PROFILE_ARM": "1",
                 "HOST_SYNC_PATCH_PATH": str(patch_path),
                 "HOST_SYNC_PATCH_SHA256": FILL_PATCH_SHA256,
+                "HOST_SYNC_PATCH_FILES": ",".join([
+                    "dee.cpp/CMakeLists.txt",
+                    "dee.cpp/include/dee/engine.h",
+                    "dee.cpp/include/dee/expert_store.h",
+                    "dee.cpp/include/dee/host_pack_cache.h",
+                    "dee.cpp/include/dee/profiling.h",
+                    "dee.cpp/pydee/pydee.cpp",
+                    "dee.cpp/scripts/deepseek_v4_layer_candidate.py",
+                    "dee.cpp/src/engine.cpp",
+                    "dee.cpp/src/expert_store.cpp",
+                    "dee.cpp/src/host_pack_cache.cpp",
+                    "dee.cpp/src/profiling.cpp",
+                    "dee.cpp/tools/fill_replay.cpp",
+                ]),
                 "PYTHONUNBUFFERED": "1"})
     stdout_path = out_dir / "arm-stdout.log"
     t0 = time.time()
