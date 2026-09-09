@@ -981,6 +981,59 @@ bool host_span_nested(HostSpan span) {
     return span == HostSpan::LayerWall || span == HostSpan::NativeCallWall;
 }
 
+const char* fill_stage_name(FillStage stage) {
+    static const char* names[] = {
+        "batch_submit", "dedup_scan", "reserve", "worker_wake",
+        "batch_wait", "commit"
+    };
+    return names[static_cast<size_t>(stage)];
+}
+
+void StageProfiler::note_fill_batch(const FillBatchRecord& record) {
+    if (!enabled_) return;
+    fill_batches_.push_back(record);
+}
+
+const std::vector<FillBatchRecord>& StageProfiler::fill_batches() const {
+    return fill_batches_;
+}
+
+std::string StageProfiler::fill_timeline_json() const {
+    // Raw batch + request windows only. Occupancy series (reads
+    // outstanding, SSD busy/idle) are DERIVED downstream (fill_timeline.py)
+    // so overlapping worker sums are never mistaken for wall time.
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(6);
+    out << "{\"batches\":[";
+    for (size_t b = 0; b < fill_batches_.size(); ++b) {
+        const FillBatchRecord& rec = fill_batches_[b];
+        if (b) out << ',';
+        out << "{\"batch_id\":" << rec.batch_id
+            << ",\"token\":" << rec.token << ",\"layer\":" << rec.layer
+            << ",\"device\":" << rec.device_id
+            << ",\"misses\":" << rec.misses << ",\"bytes\":" << rec.bytes
+            << ",\"evictions\":" << rec.evictions << ",\"lanes\":" << rec.lanes
+            << ",\"reserve_ms\":" << rec.reserve_ms
+            << ",\"wake_ms\":" << rec.wake_ms
+            << ",\"batch_wall_ms\":" << rec.batch_wall_ms
+            << ",\"worker_sum_ms\":" << rec.worker_sum_ms
+            << ",\"requests\":[";
+        for (size_t i = 0; i < rec.requests.size(); ++i) {
+            const FillRequestSample& req = rec.requests[i];
+            if (i) out << ',';
+            out << "{\"key\":" << req.key
+                << ",\"start_offset_ms\":" << req.start_offset_ms
+                << ",\"service_ms\":" << req.service_ms
+                << ",\"nbytes\":" << req.nbytes
+                << ",\"cache_hit\":" << (req.cache_hit ? "true" : "false")
+                << ",\"success\":" << (req.success ? "true" : "false") << '}';
+        }
+        out << "]}";
+    }
+    out << "]}";
+    return out.str();
+}
+
 void StageProfiler::set_host_layer_context(int token, int layer, int device_id) {
     if (!enabled_) return;
     if (host_current_open_) emit_host_layer_record();  // close any dangling record

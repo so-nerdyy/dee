@@ -1,4 +1,5 @@
 #include "dee/host_pack_cache.h"
+#include "dee/profiling.h"
 
 #include <algorithm>
 #include <chrono>
@@ -61,6 +62,11 @@ void HostPackCache::run_fill_lane() {
         const BatchRequest& request = active_requests_[index];
         BatchResult& result = active_results_[index];
         const auto begin = std::chrono::steady_clock::now();
+        // Profiling-only start offset for occupancy timelines (clock read
+        // only; the fill itself is untouched).
+        result.fill_start_offset_ms =
+            std::chrono::duration<double, std::milli>(
+                begin - active_batch_begin_).count();
         bool success = false;
         try {
             success = request.fill && result.data &&
@@ -168,6 +174,12 @@ bool HostPackCache::get_batch(
         return false;
     }
     for (size_t index = 0; index < count; ++index) results[index] = {};
+    // Profiling-only phase clock (steady_clock reads only; no behavior change).
+    const auto phase_t0 = std::chrono::steady_clock::now();
+    const uint64_t evict_before_batch = stats_.evictions;
+
+    size_t additional_bytes = 0;
+    size_t unique_misses = 0;
 
     size_t additional_bytes = 0;
     size_t unique_misses = 0;
@@ -269,8 +281,10 @@ bool HostPackCache::get_batch(
         stats_.entries = map_.size();
         return false;
     }
+    const auto phase_reserved = std::chrono::steady_clock::now();
 
     const auto batch_begin = std::chrono::steady_clock::now();
+    active_batch_begin_ = batch_begin;
     active_requests_ = requests;
     active_results_ = results;
     active_fill_count_ = 0;
@@ -294,6 +308,7 @@ bool HostPackCache::get_batch(
             return lhs < rhs;
         });
     next_fill_index_.store(0, std::memory_order_relaxed);
+    const auto wake_begin = std::chrono::steady_clock::now();
     if (!fill_workers_.empty() && unique_misses > 1) {
         {
             std::lock_guard<std::mutex> lock(fill_mutex_);
@@ -307,6 +322,7 @@ bool HostPackCache::get_batch(
     } else {
         run_fill_lane();
     }
+    const auto wake_end = std::chrono::steady_clock::now();
     const double batch_wall_ms =
         std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - batch_begin).count();
@@ -376,6 +392,36 @@ bool HostPackCache::get_batch(
     stats_.fill_overlap_ms += std::max(0.0, worker_ms - batch_wall_ms);
     stats_.bytes = used_bytes_;
     stats_.entries = map_.size();
+    // Profiling-only batch record (clock reads + small vector; the fill
+    // itself is untouched). phases: submit->dedup->reserve->wake->wait.
+    if (fill_profiler_ != nullptr) {
+        FillBatchRecord record;
+        record.batch_id = ++fill_batch_id_;
+        record.token = fill_ctx_token_;
+        record.layer = fill_ctx_layer_;
+        record.device_id = fill_ctx_device_;
+        record.misses = unique_misses;
+        record.bytes = additional_bytes;
+        record.evictions = stats_.evictions - evict_before_batch;
+        record.lanes = std::min(fill_lanes_, std::max<size_t>(1, unique_misses));
+        record.reserve_ms = std::chrono::duration<double, std::milli>(
+            phase_reserved_ - phase_t0).count();
+        record.wake_ms = std::chrono::duration<double, std::milli>(
+            wake_end - wake_begin).count();
+        record.batch_wall_ms = batch_wall_ms;
+        record.worker_sum_ms = worker_ms;
+        for (size_t index = 0; index < count; ++index) {
+            FillRequestSample sample;
+            sample.key = requests[index].key;
+            sample.start_offset_ms = results[index].fill_start_offset_ms;
+            sample.service_ms = results[index].fill_milliseconds;
+            sample.nbytes = requests[index].nbytes;
+            sample.cache_hit = results[index].cache_hit;
+            sample.success = results[index].success;
+            record.requests.push_back(sample);
+        }
+        fill_profiler_->note_fill_batch(record);
+    }
     return success;
 }
 

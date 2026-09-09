@@ -261,3 +261,44 @@ LIVE_PROFILE_RESULTS.md; bundle: evidence-live/ (688 merged records).
     NO_OVERLAP_OPTIMIZATION_JUSTIFIED as the live alternative the root
     should weigh: the data says the wall is fill-throughput-bound (42 s)
     and no A/B/C candidate reduces fill service.
+
+---
+
+# Fill-bucket investigation installment (experiment/host-sync-profile, MUSE)
+
+No optimization implemented or A/B-run. The 42 s critical fill is now
+mechanically explained as far as sealed evidence permits; the residual
+split is instrumented, packaged, and staged for one live measurement run.
+
+## What the sealed counters already prove
+
+Per-request worker service mean 96 ms per 12.75 MiB record (0.13 GB/s vs
+2.9 GB/s rider capability): the anomaly is PER-REQUEST, not (only)
+starvation. Mutex serialization ruled out by audit (lock-free fill path);
+H2D backpressure ruled out by construction (fills complete before staging)
+and independently by readiness ≈ 0; memset bounded ≈ 0.8 s (reuse avoids
+half); LRU scans negligible. Dependency starvation between layer batches
+is certain by construction (≤6 known/layer); its share is timeline work.
+
+## What was built
+
+- Fill-path decomposition telemetry (FillStage spans, per-request start
+  offsets, pread service/short-read counters, mincore residency probe),
+  all additive/default-off across 8 source files + pybind exports.
+- `tools/fill_replay` (host-only): journal replay through the REAL
+  store/cache objects + rider QD sweep, emitting the same timeline JSON.
+- `fill_timeline.py`: occupancy sweep (worker sums never counted as wall)
+  + self-contained HTML rendering.
+- `analyze_fragmentation.py`: journal pattern metrics (measured vs
+  ASSUMED-layout tiers); live journal: 1620 unique/21.7 GB, reuse p50 260,
+  batches exactly 6, seeks p50 adjacent-record / p95 187 MB / 0% sequential.
+- Fill-measurement kernel package (dry-run gate, sealed arm-A fetch,
+  variant build, ONE arm + replay matrix + rider, evidence bundle).
+
+## Verdict
+
+STORAGE_VERDICT.md + results/fill_verdict.json: limiter is per-request
+service × dependency burstiness (combination, ranked); perfect-utilization
+ceiling decode ≈ 35 s (upper bound only); implementation change: NONE
+until the live session splits cold/random vs overhead. No event-handoff
+experiment. No 20 GiB cache. No merge.

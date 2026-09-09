@@ -9,6 +9,8 @@
 #include "dee/weight_mmap.h"
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -67,6 +69,14 @@ struct ExpertStoreStats {
     double source_read_batch_wall_ms = 0.0;
     double source_read_overlap_ms = 0.0;
     double source_read_overlap_percent = 0.0;
+    // Fill-path read-service decomposition (dee4 pread path; profiling-only,
+    // accumulated via lock-free atomics from worker threads, zero when unused).
+    double pread_service_ms = 0.0;      // time inside pread() syscalls
+    uint64_t pread_calls = 0;           // pread() invocations
+    uint64_t pread_short_reads = 0;     // calls returning < requested
+    uint64_t pread_bytes = 0;           // bytes delivered by pread
+    uint64_t mincore_probed_bytes = 0;  // page-cache residency probed
+    uint64_t mincore_resident_bytes = 0;// probed bytes already resident
 };
 
 class ExpertStore {
@@ -101,6 +111,21 @@ public:
 
 protected:
     void record_lookup(bool success);
+    // Lock-free read-service accounting for worker threads (profiling-only).
+    // Safe to call from materialize() on any thread; never affects reads.
+    void note_pread_service(uint64_t service_ns, uint64_t bytes,
+                            uint64_t short_reads, uint64_t probed_bytes,
+                            uint64_t resident_bytes) const;
+    struct ReadTelemetry {
+        uint64_t service_ns = 0;
+        uint64_t calls = 0;
+        uint64_t short_reads = 0;
+        uint64_t bytes = 0;
+        uint64_t probed_bytes = 0;
+        uint64_t resident_bytes = 0;
+    };
+    // Snapshot (and optionally reset) the worker-thread telemetry.
+    ReadTelemetry read_telemetry(bool reset = false) const;
 
 private:
     uint64_t lookups_ = 0;
@@ -117,6 +142,13 @@ private:
     uint64_t max_source_read_lanes_ = 0;
     double source_read_batch_wall_ms_ = 0.0;
     double source_read_overlap_ms_ = 0.0;
+    // Worker-thread read-service telemetry (mutable atomics; profiling-only).
+    mutable std::atomic<uint64_t> pread_service_ns_{0};
+    mutable std::atomic<uint64_t> pread_calls_{0};
+    mutable std::atomic<uint64_t> pread_short_reads_{0};
+    mutable std::atomic<uint64_t> pread_bytes_{0};
+    mutable std::atomic<uint64_t> mincore_probed_bytes_{0};
+    mutable std::atomic<uint64_t> mincore_resident_bytes_{0};
 };
 
 class SafetensorsExpertStore final : public ExpertStore {

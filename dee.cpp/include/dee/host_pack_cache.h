@@ -21,6 +21,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <atomic>
@@ -30,6 +31,7 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace dee {
@@ -72,6 +74,9 @@ public:
         bool fill_executed = false;
         bool success = false;
         double fill_milliseconds = 0.0;
+        // Worker-observed start offset from the batch submit instant, for
+        // occupancy timelines (0 when unmeasured/single-lane inline).
+        double fill_start_offset_ms = 0.0;
     };
 
     HostPackCache() = default;
@@ -113,6 +118,18 @@ public:
 
     void clear();
     const Stats& stats() const { return stats_; }
+    // Optional fill-path profiler (default nullptr = no observation).
+    // Profiling-only: never changes fill behavior, ordering, or results.
+    void set_fill_profiler(class StageProfiler* profiler) {
+        fill_profiler_ = profiler;
+    }
+    // Optional per-batch attribution context (token/layer/device, default
+    // -1 = unattributed). Profiling-only.
+    void set_fill_context(int token, int layer, int device) {
+        fill_ctx_token_ = token;
+        fill_ctx_layer_ = layer;
+        fill_ctx_device_ = device;
+    }
 
 private:
     struct Entry {
@@ -142,6 +159,13 @@ private:
     std::array<size_t, kMaxBatchRequests> active_fill_order_{};
     size_t active_fill_count_ = 0;
     std::atomic<size_t> next_fill_index_{0};
+    // Batch submit instant for per-request start offsets (steady clock).
+    std::chrono::steady_clock::time_point active_batch_begin_{};
+    uint64_t fill_batch_id_ = 0;
+    class StageProfiler* fill_profiler_ = nullptr;
+    int fill_ctx_token_ = -1;
+    int fill_ctx_layer_ = -1;
+    int fill_ctx_device_ = -1;
 
     void stop_fill_workers();
     void fill_worker_loop();

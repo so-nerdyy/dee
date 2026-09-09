@@ -11,6 +11,7 @@ option(DEE_CUDA "Enable the CUDA runtime and kernels" OFF)
 option(DEE_BUILD_TESTS "Build unit tests" ON)
 option(DEE_BUILD_GGML "Build the vendored ggml reference backend" OFF)
 option(DEE_CUDA_VALIDATE "Synchronize CUDA launches close to their call site" OFF)
+option(DEE_BUILD_FILL_REPLAY "Build the fill-path replay/rider tool (host-only)" OFF)
 
 if(DEE_CUDA)
     enable_language(CUDA)
@@ -78,6 +79,14 @@ endif()
 
 add_executable(dee_cli main.cpp)
 target_link_libraries(dee_cli PRIVATE dee_core)
+
+# Fill-path replay/rider (research/route-pipeline): replays production
+# expert-record access through the real store/cache objects. Host-only by
+# construction (no CUDA sources); default OFF so sealed builds are unaffected.
+if(DEE_BUILD_FILL_REPLAY)
+    add_executable(fill_replay tools/fill_replay.cpp)
+    target_link_libraries(fill_replay PRIVATE dee_core)
+endif()
 
 if(DEE_BUILD_TESTS)
     enable_testing()

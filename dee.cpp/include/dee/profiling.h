@@ -219,6 +219,46 @@ struct HostLayerRecord {
     bool complete = false;
 };
 
+// ---- Fill-path stages (research/route-pipeline fill decomposition) ----
+// Additive, default-off. Phases of one HostPackCache::get_batch call on the
+// calling thread, plus per-request worker service windows. Observes only.
+enum class FillStage : size_t {
+    BatchSubmit,    // get_batch entry (request known)
+    DedupScan,      // duplicate + hit scan
+    Reserve,        // LRU victim scan + entry allocation + zero-fill
+    WorkerWake,     // epoch bump + worker notification
+    BatchWait,      // fill_done_cv wait (CRITICAL host wait)
+    Commit,         // success sweep + duplicate fan-out + bookkeeping
+    Count
+};
+
+struct FillRequestSample {
+    uint64_t key = 0;
+    double start_offset_ms = 0.0;  // from batch submit
+    double service_ms = 0.0;       // worker fill() wall (read service)
+    size_t nbytes = 0;
+    bool cache_hit = false;
+    bool success = false;
+};
+
+struct FillBatchRecord {
+    uint64_t batch_id = 0;
+    int token = -1;
+    int layer = -1;
+    int device_id = -1;
+    size_t misses = 0;
+    size_t bytes = 0;
+    size_t evictions = 0;
+    size_t lanes = 0;
+    double reserve_ms = 0.0;
+    double wake_ms = 0.0;
+    double batch_wall_ms = 0.0;   // calling-thread critical wait
+    double worker_sum_ms = 0.0;   // summed request service (overlaps!)
+    std::vector<FillRequestSample> requests;
+    // Note: page-cache residency is reported globally (mincore_* stats),
+    // not per batch: the store object, not the cache, owns the mapping.
+};
+
 struct StageProfile {
     bool enabled = false;
     bool trace_enabled = false;
@@ -394,6 +434,11 @@ public:
     const std::vector<HostLayerRecord>& host_layer_records() const;
     std::string host_layer_records_json() const;
     std::string host_layer_records_csv() const;
+    // Fill-path timeline: no-op unless enabled. The caller builds one
+    // record per get_batch and notes it once (no cross-call profiler state).
+    void note_fill_batch(const FillBatchRecord& record);
+    const std::vector<FillBatchRecord>& fill_batches() const;
+    std::string fill_timeline_json() const;
 
 #ifdef DEE_CUDA
     bool begin_cuda_timeline(void* compute_stream, void* transfer_stream);
@@ -464,6 +509,7 @@ private:
     HostLayerRecord host_current_{};
     bool host_current_open_ = false;
     std::vector<HostLayerRecord> host_records_;
+    std::vector<FillBatchRecord> fill_batches_;
 
 #ifdef DEE_CUDA
     struct PendingCudaSample {
@@ -519,6 +565,7 @@ const char* idle_gap_category_name(IdleGapCategory category);
 const char* readiness_wait_category_name(ReadinessWaitCategory category);
 const char* host_span_name(HostSpan span);
 bool host_span_nested(HostSpan span);  // true: sub-span, excluded from closure sums
+const char* fill_stage_name(FillStage stage);
 
 // RAII host-span guard: begins in ctor, ends in dtor (early-return safe).
 // Zero behavior change: two no-op calls when the profiler is disabled.

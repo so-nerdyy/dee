@@ -172,6 +172,12 @@ PYBIND11_MODULE(pydee_core, m) {
             result["source_read_batch_wall_ms"] = stats.source_read_batch_wall_ms;
             result["source_read_overlap_ms"] = stats.source_read_overlap_ms;
             result["source_read_overlap_percent"] = stats.source_read_overlap_percent;
+            result["pread_service_ms"] = stats.pread_service_ms;
+            result["pread_calls"] = stats.pread_calls;
+            result["pread_short_reads"] = stats.pread_short_reads;
+            result["pread_bytes"] = stats.pread_bytes;
+            result["mincore_probed_bytes"] = stats.mincore_probed_bytes;
+            result["mincore_resident_bytes"] = stats.mincore_resident_bytes;
             return result;
         })
         .def("reset_runtime_cache", &dee::Engine::reset_runtime_cache,

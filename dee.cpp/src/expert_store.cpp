@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <cstdio>
@@ -12,6 +13,7 @@
 #include <iterator>
 #include <limits>
 #include <sstream>
+#include <vector>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -135,6 +137,37 @@ void ExpertStore::record_source_read_batch(
     source_read_overlap_ms_ += std::max(0.0, summed_ms - wall_ms);
 }
 
+void ExpertStore::note_pread_service(uint64_t service_ns, uint64_t bytes,
+                                      uint64_t short_reads,
+                                      uint64_t probed_bytes,
+                                      uint64_t resident_bytes) const {
+    pread_service_ns_.fetch_add(service_ns, std::memory_order_relaxed);
+    pread_calls_.fetch_add(1, std::memory_order_relaxed);
+    pread_short_reads_.fetch_add(short_reads, std::memory_order_relaxed);
+    pread_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+    mincore_probed_bytes_.fetch_add(probed_bytes, std::memory_order_relaxed);
+    mincore_resident_bytes_.fetch_add(resident_bytes, std::memory_order_relaxed);
+}
+
+ExpertStore::ReadTelemetry ExpertStore::read_telemetry(bool reset) const {
+    ReadTelemetry out;
+    out.service_ns = pread_service_ns_.load(std::memory_order_relaxed);
+    out.calls = pread_calls_.load(std::memory_order_relaxed);
+    out.short_reads = pread_short_reads_.load(std::memory_order_relaxed);
+    out.bytes = pread_bytes_.load(std::memory_order_relaxed);
+    out.probed_bytes = mincore_probed_bytes_.load(std::memory_order_relaxed);
+    out.resident_bytes = mincore_resident_bytes_.load(std::memory_order_relaxed);
+    if (reset) {
+        pread_service_ns_.store(0, std::memory_order_relaxed);
+        pread_calls_.store(0, std::memory_order_relaxed);
+        pread_short_reads_.store(0, std::memory_order_relaxed);
+        pread_bytes_.store(0, std::memory_order_relaxed);
+        mincore_probed_bytes_.store(0, std::memory_order_relaxed);
+        mincore_resident_bytes_.store(0, std::memory_order_relaxed);
+    }
+    return out;
+}
+
 ExpertStoreStats ExpertStore::stats() const {
     ExpertStoreStats result;
     result.backend = backend_name();
@@ -153,6 +186,14 @@ ExpertStoreStats ExpertStore::stats() const {
     result.max_source_read_lanes = max_source_read_lanes_;
     result.source_read_batch_wall_ms = source_read_batch_wall_ms_;
     result.source_read_overlap_ms = source_read_overlap_ms_;
+    result.pread_service_ms =
+        static_cast<double>(pread_service_ns_.load(std::memory_order_relaxed)) / 1e6;
+    result.pread_calls = pread_calls_.load(std::memory_order_relaxed);
+    result.pread_short_reads = pread_short_reads_.load(std::memory_order_relaxed);
+    result.pread_bytes = pread_bytes_.load(std::memory_order_relaxed);
+    result.mincore_probed_bytes = mincore_probed_bytes_.load(std::memory_order_relaxed);
+    result.mincore_resident_bytes =
+        mincore_resident_bytes_.load(std::memory_order_relaxed);
     if (read_milliseconds_ > 0.0) {
         result.source_read_overlap_percent =
             std::min(100.0, 100.0 * source_read_overlap_ms_ /
@@ -560,7 +601,27 @@ bool Dee4ExpertStore::materialize(const ExpertView& view, uint8_t* dst,
             std::numeric_limits<off_t>::max())) {
         return false;
     }
+    // Profiling-only page-cache residency probe (mincore): two cheap syscalls
+    // per 12.75 MiB record (~microseconds vs ~90 ms reads). Never affects IO.
+    uint64_t probed_bytes = 0;
+    uint64_t resident_bytes = 0;
+#ifdef __linux__
+    {
+        const size_t kPage = 4096;
+        const size_t pages = (nbytes + kPage - 1) / kPage;
+        std::vector<unsigned char> vec(pages, 0);
+        if (::mincore(base_ + offset, nbytes, vec.data()) == 0) {
+            probed_bytes = nbytes;
+            size_t resident_pages = 0;
+            for (size_t i = 0; i < pages; ++i) resident_pages += (vec[i] & 1u);
+            resident_bytes = resident_pages * kPage;
+            if (resident_bytes > nbytes) resident_bytes = nbytes;
+        }
+    }
+#endif
+    const auto read_begin = std::chrono::steady_clock::now();
     size_t copied = 0;
+    uint64_t short_reads = 0;
     while (copied < nbytes) {
         const size_t remaining = nbytes - copied;
         if (offset + copied > static_cast<size_t>(
@@ -572,8 +633,14 @@ bool Dee4ExpertStore::materialize(const ExpertView& view, uint8_t* dst,
             static_cast<off_t>(offset + copied));
         if (count < 0 && errno == EINTR) continue;
         if (count <= 0) return false;
+        if (static_cast<size_t>(count) < remaining) ++short_reads;
         copied += static_cast<size_t>(count);
     }
+    const uint64_t service_ns = static_cast<uint64_t>(
+        std::chrono::duration<double, std::nano>(
+            std::chrono::steady_clock::now() - read_begin).count());
+    note_pread_service(service_ns, copied, short_reads, probed_bytes,
+                       resident_bytes);
     return true;
 #endif
 }

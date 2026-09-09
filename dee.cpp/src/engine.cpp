@@ -2210,6 +2210,7 @@ bool Engine::reset_external_profile() {
     cache_.set_profiler(cfg_.profile_stages ? &profiler_ : nullptr);
     prefetcher_.set_profiler(cfg_.profile_stages ? &profiler_ : nullptr);
     oracle_.set_profiler(cfg_.profile_stages ? &profiler_ : nullptr);
+    pack_cache_.set_fill_profiler(cfg_.profile_stages ? &profiler_ : nullptr);
 #ifdef DEE_CUDA
     if (cfg_.use_cuda && cfg_.profile_timeline &&
         !profiler_.begin_cuda_timeline(static_cast<void*>(compute_stream_),
@@ -2807,6 +2808,7 @@ bool Engine::prepare_fp4_experts(
     std::array<HostPackCache::BatchResult,
                HostPackCache::kMaxBatchRequests> results{};
 
+    pack_cache_.set_fill_context(current_token_, source_layer, cfg_.device_id);
     for (size_t first = 0; first < count; first += queue_depth) {
         const size_t batch_count = std::min(queue_depth, count - first);
         for (size_t index = 0; index < batch_count; ++index) {
@@ -3323,6 +3325,7 @@ bool Engine::prepare_profile_scenario() {
         // its bounded CUDA event pool cannot be consumed by setup transfers.
         cache_.set_profiler(nullptr);
         prefetcher_.set_profiler(nullptr);
+        pack_cache_.set_fill_profiler(nullptr);
         if (!preload_all_experts()) return false;
     }
 
@@ -3336,6 +3339,7 @@ bool Engine::prepare_profile_scenario() {
     cache_.set_profiler(cfg_.profile_stages ? &profiler_ : nullptr);
     prefetcher_.set_profiler(cfg_.profile_stages ? &profiler_ : nullptr);
     oracle_.set_profiler(cfg_.profile_stages ? &profiler_ : nullptr);
+    pack_cache_.set_fill_profiler(cfg_.profile_stages ? &profiler_ : nullptr);
     return true;
 }
 
@@ -3729,6 +3733,7 @@ bool Engine::init(const EngineConfig& cfg) {
     cache_.set_profiler(cfg.profile_stages ? &profiler_ : nullptr);
     prefetcher_.set_profiler(cfg.profile_stages ? &profiler_ : nullptr);
     oracle_.set_profiler(cfg.profile_stages ? &profiler_ : nullptr);
+    pack_cache_.set_fill_profiler(cfg.profile_stages ? &profiler_ : nullptr);
 
     hidden_buf_[0].assign(hidden_, 0.0f);
     hidden_buf_[1].assign(hidden_, 0.0f);
