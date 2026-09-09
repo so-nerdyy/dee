@@ -1,5 +1,9 @@
 {"schema": "dee.route_pipeline.fill_verdict/v1",
  "status": "structural-case-closed; service-split-pending-live-run",
+ "live_attempts": [
+  {"kernel": "nivind/dee-cpp-fill-measure-20260909 v1", "result": "FAILED: patch-apply guard rejected 11-file fill patch (fixed in 7c14f49)"},
+  {"kernel": "nivind/dee-cpp-fill-measure-20260909 v2/v3/v4", "result": "FAIL_CLOSED dry-run gate: pool assigned 1x P100, need 2x T4 SM75; evidence in dee.cpp/experiments/route_pipeline/fill-live-v2..v4/"}],
+ "next": "repush reruns the fill session when the pool serves 2x T4; no code change needed",
  "decode_wall_s": 66.233,
  "critical_fill_s": 42.0,
  "per_request_service": {"mean_ms": 96.0, "gibps": 0.13,

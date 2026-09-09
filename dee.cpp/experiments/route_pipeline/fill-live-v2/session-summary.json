@@ -1,0 +1,11 @@
+{
+  "session": "host-sync-fill",
+  "arms": {},
+  "dry_run_gate": {
+    "status": "FAIL_CLOSED",
+    "nvidia_smi": [
+      "Tesla P100-PCIE-16GB, 6.0, 16384 MiB"
+    ],
+    "error": "RuntimeError(\"need exactly 2x SM75 T4, saw: ['Tesla P100-PCIE-16GB, 6.0, 16384 MiB']\")"
+  }
+}
