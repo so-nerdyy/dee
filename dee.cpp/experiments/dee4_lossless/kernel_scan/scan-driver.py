@@ -27,14 +27,14 @@ HARNESS_COMMIT = "ec31f174c14caf25fd92214060d50cabd05a240c"
 HARNESS_BASE = ("https://raw.githubusercontent.com/so-nerdyy/dee/"
                 + HARNESS_COMMIT + "/research/dee4-lossless")
 HARNESS_FILES = {
-    "records.py": "df733230d8ccb63224d3ece276190172c7f491b3",
-    "dq_codecs.py": "33a0ae4d9727e529bac55bee00e0128a5d6cd499",
-    "scan.py": "a817b47489e6c3378f510a1fcf2e6fe3798548ec",
+    "records.py": "4266a1e0bf2468759209fd1da8a69a42d69331c7045d7563a7fbb7f6d1684d1f",
+    "dq_codecs.py": "4347c34b0c215f160593c6b89f8874329195f6a983fd7451b58d4ff5a44687f7",
+    "scan.py": "c5318a950aaeb28409bb2058c065a876be9e0bf3fa59be3d29263c720298b06b",
 }
 INPUT_FILES = {
-    "model.safetensors.index.json": "c3b10d45a829545fbf0d9d2880a1aa0b9ab3b43a",
-    "journal.txt": "d838e7a11479be57368e234c4897ea242af1bf22",
-    "dee4-integrity.jsonl": "4849f7469ed541a45665bc09dd0bf690619cc5ac",
+    "model.safetensors.index.json": "98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b",
+    "journal.txt": "a1c63d022aa55e5552bf7220bf7e0ec6eade4682fddfdb26a938d54c0caf57c6",
+    "dee4-integrity.jsonl": "55129bc080555d57caff1d89899de0e3cd85a8f5cfa57668b1b4ce6b1545fea4",
 }
 NWORKERS = 4
 FULL_EVERY = 25  # stratified full-tier subset: every 25th record
