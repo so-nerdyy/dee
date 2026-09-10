@@ -23,18 +23,18 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 # Pinned harness source (commit B fills these in; shas enforced at fetch).
-HARNESS_COMMIT = "@@HARNESS_COMMIT@@"
+HARNESS_COMMIT = "ec31f174c14caf25fd92214060d50cabd05a240c"
 HARNESS_BASE = ("https://raw.githubusercontent.com/so-nerdyy/dee/"
                 + HARNESS_COMMIT + "/research/dee4-lossless")
 HARNESS_FILES = {
-    "records.py": "@@SHA_RECORDS@@",
-    "dq_codecs.py": "@@SHA_CODECS@@",
-    "scan.py": "@@SHA_SCAN@@",
+    "records.py": "df733230d8ccb63224d3ece276190172c7f491b3",
+    "dq_codecs.py": "33a0ae4d9727e529bac55bee00e0128a5d6cd499",
+    "scan.py": "a817b47489e6c3378f510a1fcf2e6fe3798548ec",
 }
 INPUT_FILES = {
-    "model.safetensors.index.json": "@@SHA_INDEX@@",
-    "journal.txt": "@@SHA_JOURNAL@@",
-    "dee4-integrity.jsonl": "@@SHA_INTEG@@",
+    "model.safetensors.index.json": "c3b10d45a829545fbf0d9d2880a1aa0b9ab3b43a",
+    "journal.txt": "d838e7a11479be57368e234c4897ea242af1bf22",
+    "dee4-integrity.jsonl": "4849f7469ed541a45665bc09dd0bf690619cc5ac",
 }
 NWORKERS = 4
 FULL_EVERY = 25  # stratified full-tier subset: every 25th record
