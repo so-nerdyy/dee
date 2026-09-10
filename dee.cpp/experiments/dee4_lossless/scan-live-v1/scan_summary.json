@@ -1,0 +1,8 @@
+{
+  "session": "dee4-lossless-scan",
+  "exact_records": 0,
+  "mismatch": [],
+  "status": "failed",
+  "error": "RuntimeError('sha mismatch for https://raw.githubusercontent.com/so-nerdyy/dee/ec31f174c14caf25fd92214060d50cabd05a240c/research/dee4-lossless/records.py')",
+  "wall_s": 6.938465356826782
+}

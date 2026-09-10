@@ -1,0 +1,19 @@
+{
+  "session": "dee4-lossless-scan",
+  "exact_records": 2364,
+  "mismatch": [],
+  "selection": 2364,
+  "shards": 48,
+  "full_tier_n": 95,
+  "csv_rows": 117736,
+  "dict_study": {
+    "train": 256,
+    "test": 64,
+    "mean_ratio": 0.9201124532549989,
+    "min_ratio": 0.9191786822150735,
+    "max_ratio": 0.9231392355526195,
+    "note": "global-state; NOT per-record independent"
+  },
+  "status": "ok",
+  "wall_s": 9208.883678913116
+}
