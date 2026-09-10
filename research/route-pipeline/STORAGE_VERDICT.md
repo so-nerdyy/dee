@@ -1,9 +1,10 @@
-# Storage verdict: why production sees ~0.74 GB/s (measured + bounded)
+# Storage verdict: bank reads run at the /tmp device ceiling (measured live)
 
-Status: structural case closed from sealed evidence; per-request service
-split + residency + timeline shapes require the instrumented live run
-(packaged, staged; see end). No number below is simulated — each is
-measured, derived with stated arithmetic, or explicitly UNKNOWN.
+Status: MEASURED live on 2x T4 20260909
+(`dee.cpp/experiments/route_pipeline/fill-live-t4x2-20260909/`,
+ingest: `research/route-pipeline/results/fill_matrix_ingest.json`).
+Phase 1 closed — every open item below now has a live number. No number
+here is simulated.
 
 ## 1. The 42.0 s critical fill bucket (decode, 645 rows)
 
@@ -15,14 +16,16 @@ measured, derived with stated arithmetic, or explicitly UNKNOWN.
 | └─ memset zero-fill (fresh allocs only) | ≈0.8 s est. (16.7 GB @ ~20 GB/s; 14.9 GB reused, no zero) | DERIVED est. |
 | └─ LRU victim scans | ≈10–50 ms total by audit (24k ops/batch) | DERIVED est. |
 | └─ wake/commit/mutex | µs–ms scale (new spans quantify live) | UNKNOWN (bounded small) |
-| short-read chunking | UNKNOWN (new counter) | UNKNOWN |
-| mincore residency at read | UNKNOWN (new probe) | UNKNOWN |
+| short-read chunking | 0 short reads / 6046 preads (1.065 preads per call) | MEASURED live |
+| mincore residency at read | 15.7% (production, coldest replay); 29.7%/32.7% later cases = page-cache warming by run order | MEASURED live |
+| wake/commit/mutex | wake p95 320 ms prod / 54 ms qd1 (batch join wait, part of wall, not service) | MEASURED live |
 
-## 2. SSD busy fraction: UNKNOWN precisely; bounded structurally
+## 2. SSD busy fraction: MEASURED — production keeps the disk 96% busy
 
-Worker-service sums (239 s whole-run) across ≤3 lanes with 868 batches
-beckon timeline analysis, not division. The live timeline measures it;
-until then: NOT computed (refusing the Flash-bug class).
+Within-batch union of request windows over batch wall (never worker-sum
+division): production (lanes 3, QD 6) busy mean 0.96; QD 1 busy 0.53
+(disk idle ~half — underlap, not device speed). Worker/wall 2.49 of 3
+lanes: overlap is already good; the ceiling is the device, not software.
 
 ## 3. Why idle, when idle (proven structurally)
 
@@ -36,10 +39,16 @@ transfers always ready).
 
 ## 4. Limiter verdict: COMBINATION, ranked
 
-1. **Per-request service slowness (dominant, measured)**: 96 ms mean per
-   12.75 MiB read = 0.13 GB/s vs 2.9 GB/s rider — a ~22× gap PER REQUEST
-   that no queue depth can hide at QD ≤ 6. Cause split (cold/random faults
-   vs chunking vs overhead) is the open item for mincore + replay.
+1. **Cold device ceiling of the bank store (dominant, measured)**: all
+   patterns and concurrencies converge on 0.29–0.37 GB/s on the /tmp
+   backing store (production 0.29, lanes1 0.35, qdepth1 0.37, rider seq
+   0.33–0.38 flat over lanes 1–8, rider rand 0.37–0.51). No lane scaling:
+   the disk, not the software, is the cap. The 2.9 GB/s rider datum is
+   the INPUT mount — live fills run at the /tmp ceiling.
+   Per-request: 57.4 ms mean / 162 ms p95 production (3-wide batches
+   serialize on the device: reserve p95 53 ms ≈ one service time),
+   18–19 ms single-flight. pread ≈ 100% of service (650 s ≈ 651 s
+   worker sum): zero software overhead, zero short reads.
 2. **Legal dependency structure (bounding)**: ≤6/batch, layer-serial
    submission guarantees intermittent SSD idleness regardless of device
    speed. Even infinite bandwidth leaves the submit gaps.
@@ -59,16 +68,11 @@ i.e. decode wall 66 s → ~35 s, all else equal. This is an UPPER bound, not
 a plan: it requires both fixing per-request service AND eliminating
 submit gaps. Never converted to tok/s.
 
-## 6. ONE implementation change with the best mechanical case
+## 6. Cause decided: FEED-side. Phase 1 closed, Phase 2 = engineering
 
-NONE yet — deliberately. The data isolates the anomaly to per-request
-service (96 ms vs ~4 ms at capability) but NOT its cause:
-- if mincore shows cold + replay shows pattern-sensitivity → the fix is
-  FEEDING (earlier submission / deeper outstanding queue / bank relayout),
-  not the fill path;
-- if warm-but-slow or short-read-heavy → the fix is the READ path
-  (chunking/vectorization, fd strategy).
-The fill-measurement session (rider QD sweep + journal/monotonic/random
-replay + mincore, packaged as kernel_fill_measure) decides between these
-with one live run. Advancing any code change before that would be guessing
-with a 22× uncertainty. No event-handoff experiment. No 20 GiB cache.
+mincore shows cold (15.7%) + replay shows NO pattern/concurrency
+sensitivity (all ≈0.3 GB/s) + pread ≈ 100% of service with zero short
+reads → the fix is FEEDING (fewer/smaller fills, earlier submission,
+bank placement), not the read path, which needs nothing. The narrowed
+Phase 2 plan applies unchanged. No event-handoff experiment.
+No 20 GiB cache.
