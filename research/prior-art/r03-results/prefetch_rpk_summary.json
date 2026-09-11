@@ -1,0 +1,192 @@
+{
+  "journal_sha256": "665aac3e8db570237c6dc6acaf08dc39f2af890e8a04e400ce7154f1a858dae1",
+  "admission_gate": {
+    "journal_sha256": "665aac3e8db570237c6dc6acaf08dc39f2af890e8a04e400ce7154f1a858dae1",
+    "sim_singlelevel_host_miss": {
+      "0": 1391,
+      "1": 1091
+    },
+    "expected_host_miss": {
+      "0": 1391,
+      "1": 1091
+    },
+    "sim_device_miss": {
+      "0": 2284,
+      "1": 2161
+    },
+    "expected_device_miss": {
+      "0": 2284,
+      "1": 2161
+    },
+    "sim_twolevel_preads_total": 2453,
+    "expected_twolevel_preads": 2453,
+    "sealed_live_anchors": {
+      "host_pack_miss": [
+        1390,
+        1091
+      ],
+      "device_miss": [
+        2285,
+        2159
+      ]
+    },
+    "pass": true
+  },
+  "baseline": {
+    "decode_preads": 1224,
+    "total_preads": 2453,
+    "decode_fill_wall_s": 42.838
+  },
+  "constants": {
+    "record_bytes": 13369344,
+    "device_slots_per_gpu": 281,
+    "host_slots_per_gpu": 682,
+    "row_wall_ms": 102.7,
+    "w1_table_ms": {
+      "0": 0.0,
+      "1": 37.2,
+      "2": 66.1,
+      "3": 105.8,
+      "4": 139.6,
+      "5": 177.2,
+      "6": 221.6
+    },
+    "w1_slope_ms_per_miss": 35.4
+  },
+  "oracle_bound_cells": [
+    {
+      "gap_ms": 23.0,
+      "bw_gibps": 0.29,
+      "prune_hopeless": true,
+      "decode_preads": 881,
+      "preads_saved_net": 343,
+      "conversions": 343,
+      "pollution_extra_fills": 0,
+      "wall_saved_s": 11.944,
+      "pf_completed": 343,
+      "gap_budget_utilization": 0.9927
+    },
+    {
+      "gap_ms": 23.0,
+      "bw_gibps": 0.33,
+      "prune_hopeless": true,
+      "decode_preads": 835,
+      "preads_saved_net": 389,
+      "conversions": 389,
+      "pollution_extra_fills": 0,
+      "wall_saved_s": 13.51,
+      "pf_completed": 389,
+      "gap_budget_utilization": 0.9894
+    },
+    {
+      "gap_ms": 23.0,
+      "bw_gibps": 0.37,
+      "prune_hopeless": true,
+      "decode_preads": 788,
+      "preads_saved_net": 436,
+      "conversions": 436,
+      "pollution_extra_fills": 0,
+      "wall_saved_s": 15.246,
+      "pf_completed": 436,
+      "gap_budget_utilization": 0.989
+    },
+    {
+      "gap_ms": 37.6,
+      "bw_gibps": 0.29,
+      "prune_hopeless": true,
+      "decode_preads": 667,
+      "preads_saved_net": 557,
+      "conversions": 557,
+      "pollution_extra_fills": 0,
+      "wall_saved_s": 19.429,
+      "pf_completed": 557,
+      "gap_budget_utilization": 0.9861
+    },
+    {
+      "gap_ms": 37.6,
+      "bw_gibps": 0.33,
+      "prune_hopeless": true,
+      "decode_preads": 591,
+      "preads_saved_net": 633,
+      "conversions": 633,
+      "pollution_extra_fills": 0,
+      "wall_saved_s": 22.073,
+      "pf_completed": 633,
+      "gap_budget_utilization": 0.9848
+    },
+    {
+      "gap_ms": 37.6,
+      "bw_gibps": 0.37,
+      "prune_hopeless": true,
+      "decode_preads": 515,
+      "preads_saved_net": 709,
+      "conversions": 709,
+      "pollution_extra_fills": 0,
+      "wall_saved_s": 24.795,
+      "pf_completed": 709,
+      "gap_budget_utilization": 0.9848
+    }
+  ],
+  "best_cell": {
+    "gap_ms": 37.6,
+    "bw_gibps": 0.37,
+    "need_ms_per_record": 33.65,
+    "gap_records_per_row": 1.117,
+    "r": 1.0,
+    "p": 1.0,
+    "k": 12,
+    "target_rows": 644,
+    "emitted": 3864,
+    "emitted_correct": 3864,
+    "emitted_wrong": 0,
+    "emit_recall_realized": 1.0,
+    "emit_precision_realized": 1.0,
+    "admitted": 3864,
+    "dropped_infeasible_at_emit": 0,
+    "pf_completed": 709,
+    "pf_hit_events": 1239,
+    "pf_used_keys": 707,
+    "pf_completed_never_used": 0,
+    "pred_correct_on_miss": 1219,
+    "ready_before_use_frac": 0.5816,
+    "conversions": 709,
+    "survival_gains": 0,
+    "pollution_extra_fills": 0,
+    "fate_completed": 709,
+    "fate_skipped_resident": 2647,
+    "fate_merged": 0,
+    "fate_starved": 0,
+    "fate_partial": 0,
+    "fate_hopeless": 508,
+    "fate_infeasible": 0,
+    "device_outcome_mismatches": 0,
+    "starved": 0,
+    "partial_at_deadline": 0,
+    "partial_ms_wasted": 0.0,
+    "dropped_hopeless": 508,
+    "hopeless_lastgap_skips": 0,
+    "pending_depth_mean": 62.52,
+    "pending_depth_max": 72,
+    "gap_budget_utilization": 0.9838,
+    "host_evictions0": 678,
+    "host_evictions1": 411,
+    "pf_evictions0": 367,
+    "pf_evictions1": 261,
+    "evicted_live_pf0": 59,
+    "evicted_live_pf1": 24,
+    "completion_lead_rows_mean": 2.12,
+    "lead_ms_nominal": 1232.4,
+    "decode_preads": 515,
+    "preads_saved_net": 709,
+    "ssd_gib_avoided_net": 8.828,
+    "ssd_gib_converted_gross": 8.828,
+    "ssd_gib_pollution_cost": 0.0,
+    "device_misses0": 2284,
+    "device_misses1": 2161,
+    "extra_h2d_gib": 0.0,
+    "decode_fill_wall_s": 18.005,
+    "wall_saved_s": 24.833,
+    "frac_of_oracle_bound": 1.0015
+  },
+  "n_cells": 900
+}
