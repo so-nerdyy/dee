@@ -1,0 +1,63 @@
+{
+  "journal_sha256": "665aac3e8db570237c6dc6acaf08dc39f2af890e8a04e400ce7154f1a858dae1",
+  "journal_records": 688,
+  "baseline": {
+    "label": "baseline_serial",
+    "decode_preads": 1224,
+    "prefill_preads": 1229,
+    "total_preads": 2453,
+    "decode_fill_wall_s": 42.838,
+    "prefill_fill_wall_s": 43.507,
+    "decode_gib": 15.24
+  },
+  "sealed_validation": {
+    "sim_singlelevel_host_miss_cuda0": 1391,
+    "sealed_host_pack_miss_cuda0": 1390,
+    "sim_singlelevel_host_miss_cuda1": 1091,
+    "sealed_host_pack_miss_cuda1": 1091,
+    "sim_device_miss_cuda0": 2284,
+    "sealed_device_miss_cuda0": 2285,
+    "sim_device_miss_cuda1": 2161,
+    "sealed_device_miss_cuda1": 2159,
+    "twolevel_preads_total": 2453,
+    "p2c_sim_preads_total": 2453
+  },
+  "demand_structure": {
+    "decode_requests": 3870,
+    "decode_requests_per_row": 6.0,
+    "decode_miss_dist": {
+      "0": 111,
+      "1": 179,
+      "2": 161,
+      "3": 98,
+      "4": 62,
+      "5": 23,
+      "6": 11
+    },
+    "decode_miss_mean": 1.898,
+    "hash_decode_requests": 270,
+    "hash_decode_host_misses": 196,
+    "prevtok_samelayer_recall_at6_demand": 0.3602,
+    "prevtok_samelayer_recall_on_misses": 0.0054
+  },
+  "constants": {
+    "record_bytes": 13369344,
+    "row_wall_ms": 102.7,
+    "row_fill_ms": 65.1,
+    "gap_conservative_ms": 23.0,
+    "gap_max_ms": 37.60000000000001,
+    "w1_table_ms": {
+      "0": 0.0,
+      "1": 37.2,
+      "2": 66.1,
+      "3": 105.8,
+      "4": 139.6,
+      "5": 177.2,
+      "6": 221.6
+    },
+    "w1_slope_ms_per_miss": 35.4,
+    "all_256_per_layer_gib": 3.188,
+    "device_slots_per_gpu": 281,
+    "host_slots_per_gpu": 682
+  }
+}
