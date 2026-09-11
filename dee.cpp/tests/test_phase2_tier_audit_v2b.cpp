@@ -315,12 +315,12 @@ void llp64_layer_collision() {
     const long b = pf.prefetch(1, 5, src, 64, 0);
     check(a >= 0, "collision: first prefetch issued");
     if (sizeof(long) == 4) {
-        // DOCUMENTED PRE-EXISTING DEFECT (LLP64): (1,5) coalesces onto (0,5)'s
-        // transfer; the layer-1 expert is never loaded and wait() fails.
-        check(b == a, "collision: LLP64 legacy map drops layer bits (pre-existing)");
+        // FIXED (688bd98): map_key is the full 64-bit key_id unconditionally,
+        // so (1,5) no longer coalesces onto (0,5) on LLP64. Regression check.
+        check(b != a, "collision FIXED: LLP64 map keeps full layer bits");
         check(pf.wait(0, 5), "collision: layer-0 expert completes");
-        check(!pf.wait(1, 5), "collision: layer-1 expert was silently coalesced away");
-        check(!cache.is_resident(1, 5), "collision: layer-1 block absent");
+        check(pf.wait(1, 5), "collision FIXED: layer-1 expert completes");
+        check(cache.is_resident(1, 5), "collision FIXED: layer-1 block resident");
     } else {
         check(b != a, "collision: LP64 keeps layers distinct");
         check(pf.wait(1, 5), "collision: LP64 layer-1 completes");
@@ -1332,25 +1332,29 @@ void second_tier_scope_replacement() {
     bool threw = false;
     try { dev_b = std::make_unique<DeviceExpertTier>(cache, pf, scope_b); }
     catch (const std::invalid_argument&) { threw = true; }
-    check(!threw && dev_b,
-          "FINDING v2b-1: second live tier admitted; armed scope silently replaced "
-          "(ctor-time-only exclusivity, still live at 56dad3c; 688bd98 arming token fixes)");
-    // Tier A still accepts its own scope but every stage now dies at the
-    // prefetch scope gate — AFTER consuming a host fill it can never use.
+    check(threw && !dev_b,
+          "FIXED v2b-1: second live tier rejected — 688bd98 arming token holds "
+          "exclusivity for the tier's whole lifetime, not just construction");
+    // The armed scope is still A's: tier A stages normally (no foreign-scope
+    // rejection, no orphaned host fill).
     const auto fills_before = host.stats().fills;
-    check(!dev_a->stage(rec(7), store, host, codec, 0),
-          "scope-rep: tier-A stage fails closed under the foreign armed scope");
+    check(dev_a->stage(rec(7), store, host, codec, 0),
+          "scope-rep FIXED: tier-A stage still works under its own armed scope");
     check(host.stats().fills == fills_before + 1,
-          "scope-rep: rejected stage consumed a host fill (record left resident-unservable)");
-    check(dev_a->metrics(host, 0).device_failures == 1,
-          "scope-rep: rejection attributed to device_failures");
-    // ~B unconditionally clears the score callback A installed at its ctor.
+          "scope-rep FIXED: the successful stage consumed its host fill");
+    check(dev_a->metrics(host, 0).device_failures == 0,
+          "scope-rep FIXED: no spurious device_failures attribution");
+    // dev_b never constructed, so ~B cannot strip tier-A's callback; the
+    // configured EvictNewest policy stays live. Note the two-slot arena now
+    // also holds (0,7) from A's successful stage: ensure(0,5) evicts the
+    // newest (4), ensure(0,6) evicts the newest (5) — residents end {7,6}.
     dev_b.reset();
     check(cache.ensure(0, 4, 64, 0) && cache.ensure(0, 5, 64, 0), "scope-rep: refill two");
     check(cache.ensure(0, 6, 64, 0), "scope-rep: eviction after ~B");
-    check(!cache.is_resident(0, 4) && cache.is_resident(0, 5) && cache.is_resident(0, 6),
-          "FINDING v2b-1: ~tier-B stripped tier-A's eviction callback — legacy "
-          "scoring resumed under a live configured tier");
+    check(cache.is_resident(0, 7) && !cache.is_resident(0, 4) &&
+          !cache.is_resident(0, 5) && cache.is_resident(0, 6),
+          "scope-rep FIXED: ~B was a no-op — tier-A's eviction callback still "
+          "live (newest blocks evicted, staged record resident)");
     dev_a.reset();
 }
 
@@ -1364,17 +1368,23 @@ void tier_replace_strips_new_callback() {
     auto dev = std::make_unique<DeviceExpertTier>(cache, pf, scope,
         std::make_shared<EvictNewestPolicy>());
     pf.reset(); cache.clear(); // both guards pass while the first tier lives
-    // Engine::init re-init does exactly this: make_unique constructs the
-    // replacement (installing a fresh callback), then the assignment destroys
-    // the old tier — whose dtor clears the callback the NEW tier just set.
-    dev = std::make_unique<DeviceExpertTier>(cache, pf, scope,
-        std::make_shared<EvictNewestPolicy>());
-    check(static_cast<bool>(dev), "replace: replacement tier constructed");
+    // FIXED (688bd98): the Engine::init re-init pattern — make_unique of a
+    // replacement while the old tier is alive — now throws invalid_argument
+    // (arming token is held for the tier's whole lifetime). The old tier and
+    // its eviction callback therefore survive untouched.
+    bool threw = false;
+    try {
+        auto dev_new = std::make_unique<DeviceExpertTier>(cache, pf, scope,
+            std::make_shared<EvictNewestPolicy>());
+        (void)dev_new;
+    } catch (const std::invalid_argument&) { threw = true; }
+    check(threw, "replace FIXED: overlapping replacement ctor rejected");
+    check(static_cast<bool>(dev), "replace FIXED: original tier still owns the slot");
     check(cache.ensure(0, 1, 64, 0) && cache.ensure(0, 2, 64, 0), "replace: seed two");
     check(cache.ensure(0, 3, 64, 0), "replace: third forces eviction");
-    check(!cache.is_resident(0, 1) && cache.is_resident(0, 2) && cache.is_resident(0, 3),
-          "FINDING v2b-2: old dtor ran after new ctor — live tier's configured "
-          "policy silently dead (legacy scoring observed)");
+    check(cache.is_resident(0, 1) && !cache.is_resident(0, 2) && cache.is_resident(0, 3),
+          "replace FIXED: live tier's configured policy still installed "
+          "(EvictNewest evicts expert 2, the newest)");
 }
 
 // ===========================================================================
@@ -1399,9 +1409,9 @@ void vram_arm_inherits_llp64_mapkey() {
     const long a = pf.prefetch(0, 5, src, 64, 0);
     const long b = pf.prefetch(1, 5, src, 64, 0);
     check(a >= 0, "vram-mapkey: first prefetch issued");
-    check(b == a && !pf.wait(1, 5) && !cache.is_resident(1, 5),
-          "FINDING v2b-3: vram-only arm on LLP64 keeps the truncated legacy "
-          "map_key — layer>0 silently coalesced away (688bd98 fixes)");
+    check(b != a && pf.wait(1, 5) && cache.is_resident(1, 5),
+          "vram-mapkey FIXED: 688bd98 makes map_key 64-bit unconditionally — "
+          "layer>0 prefetches stay distinct on LLP64 (v2b-3 closed)");
 }
 
 // ===========================================================================
