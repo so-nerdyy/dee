@@ -1,0 +1,7 @@
+gap_ms,bw_gibps,prune_hopeless,decode_preads,preads_saved_net,conversions,pollution_extra_fills,wall_saved_s,pf_completed,gap_budget_utilization
+23.0,0.29,True,881,343,343,0,11.944,343,0.9927
+23.0,0.33,True,835,389,389,0,13.51,389,0.9894
+23.0,0.37,True,788,436,436,0,15.246,436,0.989
+37.6,0.29,True,667,557,557,0,19.429,557,0.9861
+37.6,0.33,True,591,633,633,0,22.073,633,0.9848
+37.6,0.37,True,515,709,709,0,24.795,709,0.9848
