@@ -12,6 +12,7 @@ option(DEE_BUILD_TESTS "Build unit tests" ON)
 option(DEE_BUILD_GGML "Build the vendored ggml reference backend" OFF)
 option(DEE_CUDA_VALIDATE "Synchronize CUDA launches close to their call site" OFF)
 option(DEE_BUILD_FILL_REPLAY "Build the fill-path replay/rider tool (host-only)" OFF)
+option(DEE_BUILD_TIER_REPLAY "Build the Phase-2 tier journal replay tool (host-only)" OFF)
 
 if(DEE_CUDA)
     enable_language(CUDA)
@@ -88,6 +89,15 @@ target_link_libraries(dee_cli PRIVATE dee_core)
 if(DEE_BUILD_FILL_REPLAY)
     add_executable(fill_replay tools/fill_replay.cpp)
     target_link_libraries(fill_replay PRIVATE dee_core)
+endif()
+
+# Phase-2 tier replay: drives the real HostExpertTier / VramCacheManager /
+# AsyncPrefetcher / DeviceExpertTier with the sealed route journal to compare
+# realized counters against the Python policy simulator. Host-only; default
+# OFF so sealed builds are unaffected.
+if(DEE_BUILD_TIER_REPLAY)
+    add_executable(phase2_tier_replay tools/phase2_tier_replay.cpp)
+    target_link_libraries(phase2_tier_replay PRIVATE dee_core)
 endif()
 
 if(DEE_BUILD_TESTS)
