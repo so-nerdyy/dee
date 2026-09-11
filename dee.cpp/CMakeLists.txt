@@ -117,6 +117,7 @@ if(DEE_BUILD_TESTS)
         tests/test_oracle.cpp
         tests/test_engine.cpp)
     list(APPEND DEE_TEST_SOURCES tests/test_real_router.cpp)
+    list(APPEND DEE_TEST_SOURCES tests/test_json_min.cpp)
     if(DEE_CUDA)
         list(APPEND DEE_TEST_SOURCES
             tests/test_swiglu_cuda.cpp
