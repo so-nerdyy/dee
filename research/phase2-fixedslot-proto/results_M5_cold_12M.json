@@ -1,0 +1,10 @@
+{
+ "label": "MEASURED (synthetic host mechanism; no GPU)",
+ "cfg": {"record_bytes": 13369344, "preload_entries": 32, "proto_slots": 32, "lanes": 3, "batches": 6, "fill_us": 5000, "h2d_us": 2400, "scenario": "cold"},
+ "exact_combine_match": true,
+ "baseline": {"reserve_ms_per_batch": 0.0113, "hit_h2d_submit_ms": 0.0000, "hit_n": 0, "miss_h2d_submit_ms": 128.0892, "miss_n": 36, "first_h2d_submit_ms": 59.0173, "first_fill_invoke_ms": 0.0378, "hits": 0, "misses": 68, "evictions": 36, "reused_buffers": 36, "gather_memcpy_MB": 867.000},
+ "prototype": {"reserve_ms_per_batch": 0.0120, "hit_h2d_submit_ms": 0.0000, "hit_n": 0, "miss_h2d_submit_ms": 48.4434, "miss_n": 36, "first_h2d_submit_ms": 30.9546, "first_fill_invoke_ms": 0.0446, "victim_scans": 36, "victims_taken": 36, "slot_allocs": 32, "slot_reuses": 36, "zero_fill_bytes": 0, "mutex_waits": 68,
+  "dma_memcpy_MB": 867.000, "ooo_batches": 6},
+ "lifetime": {"policy_resident_intact": true, "consume_before_dma_fails_closed": true},
+ "projection": {"memset_MBps_measured": 27853.6, "note": "DERIVED: production 12.75MiB fresh-miss resize cost = 13369344 / memset_rate; map-scan cost scales per entry"}
+}
