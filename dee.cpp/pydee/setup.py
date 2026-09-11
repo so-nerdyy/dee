@@ -106,11 +106,31 @@ ext_modules = [
     )
 ]
 
+# Windows MinGW builds (`build_ext --compiler=mingw32`): pybind11's helpers
+# add MSVC-only flags keyed off sys.platform ("/EHsc", "/bigobj" at
+# construction and "/std:c++latest" inside build_ext.build_extensions).
+# Strip every slash-flag in build_extension so clang/gcc drivers work; the
+# canonical Linux/Kaggle path keeps the stock pybind11 build_ext.
+if sys.platform.startswith("win") and any(
+        "mingw" in arg.lower() for arg in sys.argv):
+
+    class _MingwBuildExt(build_ext):  # noqa: N801
+        def build_extension(self, ext):
+            ext.extra_compile_args = [
+                arg for arg in ext.extra_compile_args
+                if not arg.startswith("/")
+            ]
+            super().build_extension(ext)
+
+    _build_ext_cmd = _MingwBuildExt
+else:
+    _build_ext_cmd = build_ext
+
 setup(
     name="pydee",
     version="0.1.0",
     description="dee.cpp MoE expert engine - Python binding",
     ext_modules=ext_modules,
-    cmdclass={"build_ext": build_ext},
+    cmdclass={"build_ext": _build_ext_cmd},
     zip_safe=False,
 )
