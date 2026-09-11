@@ -896,6 +896,23 @@ bool AsyncPrefetcher::cuda_submit(long index) {
     if (!DEE_CUDA_CHECK_NAMED(DEE_TA_EVENT_CREATE_FLAGS(&event, cudaEventDisableTiming, "event"),
                               "cudaEventCreateWithFlags(prefetch completion)")) return false;
     transfer.event = static_cast<void*>(event);
+    // Failed-submit cleanup, shared by every return below (Phase-2 audit L4
+    // parity with cuda_submit_host): a failed call may have launched work
+    // before the error surfaced, and the caller's release_transfer recycles
+    // the staging slot + cache block, so drain the stream first — an
+    // unprovable drain fail-stops rather than recycling memory in flight —
+    // then destroy the per-transfer event instead of leaving it on the
+    // abandoned transfer until reset() (a bounded event-object leak per
+    // failed submit). dma_complete is managed_source/host_lease state and is
+    // never consulted for legacy transfers, so it is not touched here.
+    auto fail_submit = [&]() {
+        if (cudaStreamSynchronize(static_cast<cudaStream_t>(stream_)) != cudaSuccess)
+            std::terminate();
+        DEE_CUDA_CHECK_NAMED(DEE_TA_EVENT_DESTROY(event, "event"),
+                             "cudaEventDestroy(failed prefetch submit)");
+        transfer.event = nullptr;
+        return false;
+    };
     const size_t queue_depth = active_transfers_ + 1;
     if (profiler_ && profiler_->enabled()) {
         profiler_->set_cuda_context(transfer.token, transfer.logical_layer,
@@ -909,8 +926,8 @@ bool AsyncPrefetcher::cuda_submit(long index) {
         ? slot.device_ptr : transfer.dst;
     if (!DEE_CUDA_CHECK_NAMED(cudaMemcpyAsync(copy_destination, h2d_source, transfer.source_nbytes,
                                               cudaMemcpyHostToDevice, static_cast<cudaStream_t>(stream_)),
-                              "cudaMemcpyAsync(pinned staging to expert cache)")) return false;
-    if (profiler_ && profiler_->enabled() && !profiler_->cuda_end(h2d_ticket, stream_)) return false;
+                              "cudaMemcpyAsync(pinned staging to expert cache)")) return fail_submit();
+    if (profiler_ && profiler_->enabled() && !profiler_->cuda_end(h2d_ticket, stream_)) return fail_submit();
     if (transfer.expand_bf16) {
         const size_t elements = transfer.source_nbytes / sizeof(uint16_t);
         const bool converted = transfer.cache_fp16
@@ -919,18 +936,18 @@ bool AsyncPrefetcher::cuda_submit(long index) {
             : bf16_to_f32_cuda(static_cast<const uint16_t*>(slot.device_ptr),
                                static_cast<float*>(transfer.dst), elements,
                                static_cast<cudaStream_t>(stream_), profiler_);
-        if (!converted) return false;
+        if (!converted) return fail_submit();
     }
     if (transfer.dequantize_int8 &&
         !int8_to_f16_cuda(static_cast<const int8_t*>(slot.device_ptr), transfer.dst,
                           transfer.source_nbytes, transfer.projection_elements,
                           transfer.quant_scales, static_cast<cudaStream_t>(stream_),
-                          profiler_)) return false;
+                          profiler_)) return fail_submit();
     if (transfer.dequantize_int4 &&
         !int4_to_f16_cuda(static_cast<const uint8_t*>(slot.device_ptr), transfer.dst,
                           transfer.nbytes / sizeof(uint16_t), transfer.projection_elements,
                           transfer.quant_scales, static_cast<cudaStream_t>(stream_),
-                          profiler_)) return false;
+                          profiler_)) return fail_submit();
     if (transfer.dequantize_fp4) {
         uint16_t* dst16 = static_cast<uint16_t*>(transfer.dst);
         size_t decoded_elems_before = 0;
@@ -941,12 +958,12 @@ bool AsyncPrefetcher::cuda_submit(long index) {
                                     transfer.fp4_scale_offsets[p];
             if (!fp4_e2m1_to_f16_cuda(packed, scale, dst16 + decoded_elems_before,
                                       transfer.fp4_out[p], transfer.fp4_in[p],
-                                      static_cast<cudaStream_t>(stream_), profiler_)) return false;
+                                      static_cast<cudaStream_t>(stream_), profiler_)) return fail_submit();
             decoded_elems_before += transfer.fp4_out[p] * transfer.fp4_in[p];
         }
     }
     if (!DEE_CUDA_CHECK_NAMED(cudaEventRecord(event, static_cast<cudaStream_t>(stream_)),
-                              "cudaEventRecord(prefetch completion)")) return false;
+                              "cudaEventRecord(prefetch completion)")) return fail_submit();
     if (profiler_ && profiler_->enabled()) {
         profiler_->add_cpu(CpuStage::TransferSubmission, submission_begin);
         profiler_->note_h2d_copy(transfer.source_nbytes);

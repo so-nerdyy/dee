@@ -144,6 +144,36 @@ if(DEE_BUILD_TESTS)
     endif()
     set_tests_properties(test_phase2_host_tier PROPERTIES TIMEOUT 30)
     set_tests_properties(test_phase2_tier_audit PROPERTIES TIMEOUT 60)
+
+    # Legacy cuda_submit event-leak regression. Compiles the REAL DEE_CUDA
+    # code paths (async_prefetcher + its dependencies) against tests/cuda_stub
+    # — a mock CUDA runtime with per-call fault injection — so the failure-path
+    # drain + event-destroy cleanup actually executes under ctest with no
+    # toolkit. CPU-only builds only: a real toolkit build exercises the shipped
+    # path via test_phase2_cuda, and the stub must never shadow real headers.
+    if(NOT DEE_CUDA)
+        add_executable(test_legacy_submit_event_leak
+            tests/test_legacy_submit_event_leak.cpp
+            tests/cuda_stub/cuda_stub.cpp
+            src/async_prefetcher.cpp
+            src/vram_cache.cpp
+            src/profiling.cpp
+            src/trace_alloc.cpp
+            src/host_expert_tier.cpp)
+        target_include_directories(test_legacy_submit_event_leak PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda_stub
+            ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        target_compile_definitions(test_legacy_submit_event_leak PRIVATE DEE_CUDA=1)
+        target_compile_options(test_legacy_submit_event_leak PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
+            $<$<CXX_COMPILER_ID:MSVC>:/W4>)
+        target_link_libraries(test_legacy_submit_event_leak PRIVATE
+            ZLIB::ZLIB Threads::Threads)
+        add_test(NAME test_legacy_submit_event_leak
+                 COMMAND test_legacy_submit_event_leak)
+        set_tests_properties(test_legacy_submit_event_leak PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} TIMEOUT 60)
+    endif()
     add_test(
         NAME test_ornith_support
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ornith_support.py)
