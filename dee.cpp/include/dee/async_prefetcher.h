@@ -106,6 +106,11 @@ public:
 
 private:
     friend class DeviceExpertTier;
+    // phase2_tier_replay replays journal batches against the raw
+    // prefetcher+cache — it needs the armed-scope semantics (full-width
+    // LLP64 keys, scoped host leases) WITHOUT holding the live-tier token,
+    // so its hook arms then immediately releases the token.
+    friend bool dee_replay_arm_scope(AsyncPrefetcher&, const TierExpertKey&);
     // Arms the experimental host-tier path under `scope`. One-shot while a
     // DeviceExpertTier holds the token: a second arm attempt — including the
     // audit's drain + reset() + cache clear interleaving — fails closed until

@@ -55,6 +55,21 @@
 #include "dee/json_min.h"
 #include "dee/vram_cache.h"
 
+namespace dee {
+
+// Friend-declared in async_prefetcher.h: arm the experimental scope (the
+// LLP64 full-width-key + scoped-lease semantics this tool replays under),
+// then hand the live-tier token straight back — the replay owns the cache
+// directly, so no DeviceExpertTier is ever constructed here.
+bool dee_replay_arm_scope(AsyncPrefetcher& prefetcher,
+                          const TierExpertKey& scope) {
+    if (!prefetcher.enable_experimental_host_tier(scope)) return false;
+    prefetcher.release_experimental_host_tier(scope);
+    return true;
+}
+
+}  // namespace dee
+
 namespace {
 
 using namespace dee;
@@ -300,8 +315,8 @@ ArmResult arm_vram(const std::vector<Batch>& stream, size_t slots,
     // equivalence). The Phase-2 scope flag restores full keys so multi-layer
     // replay exercises the real bookkeeping instead of aliasing layers.
     // On the LP64 T4 target the legacy key is already full-width.
-    if (!prefetcher.enable_experimental_host_tier(
-            make_record(0, 0, record_bytes).key)) {
+    if (!dee::dee_replay_arm_scope(
+            prefetcher, make_record(0, 0, record_bytes).key)) {
         r.ok = false; r.error = "experimental scope enable failed"; return r;
     }
     std::vector<uint8_t> source(record_bytes, 0xab);  // stable pageable source
