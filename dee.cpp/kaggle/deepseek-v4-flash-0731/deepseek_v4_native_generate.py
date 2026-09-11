@@ -291,6 +291,14 @@ def apply_phase2_config() -> None:
 # contract while the T4 pool recovers; the log labels hardware so
 # performance numbers stay honest.
 SINGLE_GPU = os.environ.get("NATIVE_SINGLE_GPU", "0") == "1"
+# Campaign payload (PHASE2_T4_CAMPAIGN P5): the Batch-#1 driver runs one
+# generation per (arm, rep) as a fresh subprocess for a true regime-A cold
+# start.  NATIVE_REUSE_TREE=1 skips the already-completed shared phases —
+# clone/build/test/pydee (P1/P2 artifacts exist) and the full bank repack +
+# 29.4 GiB re-hash validation (P4 did it once; per rep we re-verify only the
+# cheap metadata identity + data size).  Default OFF: a standalone run keeps
+# the historical from-scratch behavior.
+REUSE_TREE = os.environ.get("NATIVE_REUSE_TREE", "0") == "1"
 PROGRESS = WORK / "progress.log"
 
 
@@ -323,6 +331,11 @@ def write_evidence(name: str, payload: dict) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, indent=2), "utf-8")
     temporary.replace(path)
+
+
+class _BankReady(Exception):
+    """Internal sentinel: reuse mode resolved the bank identity; skip the
+    full repack/validate path without unwinding main()'s error handling."""
 
 
 class RoutedExpertJournal:
@@ -1007,16 +1020,28 @@ def main() -> int:
     res = log_host_resources("startup")
     tmp_free = res.get("/tmp", {}).get("free_gb", 0)
 
-    log("=== clone + checkout ===")
-    if ROOT.exists():
-        run(["rm", "-rf", str(ROOT)])
-    run(["git", "clone", "--branch", BRANCH, "--single-branch",
-         REPO, str(ROOT)])
-    if COMMIT:
-        run(["git", "-C", str(ROOT), "checkout", "--quiet", COMMIT])
-    head = subprocess.check_output(
-        ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
-    log(f"pinned commit {head}")
+    if REUSE_TREE:
+        log("=== reuse prepared tree (NATIVE_REUSE_TREE=1) ===")
+        if not (ROOT / ".git").exists():
+            raise RuntimeError(
+                f"NATIVE_REUSE_TREE set but no prepared clone at {ROOT}")
+        head = subprocess.check_output(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
+        if COMMIT and head != COMMIT:
+            raise RuntimeError(
+                f"reuse tree is at {head}, expected pinned commit {COMMIT}")
+        log(f"reusing pinned commit {head}")
+    else:
+        log("=== clone + checkout ===")
+        if ROOT.exists():
+            run(["rm", "-rf", str(ROOT)])
+        run(["git", "clone", "--branch", BRANCH, "--single-branch",
+             REPO, str(ROOT)])
+        if COMMIT:
+            run(["git", "-C", str(ROOT), "checkout", "--quiet", COMMIT])
+        head = subprocess.check_output(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
+        log(f"pinned commit {head}")
     apply_run_config()
     apply_phase2_config()
 
@@ -1132,28 +1157,44 @@ def main() -> int:
     # is NOT used by this harness (only pydee + the FP4 regression tests),
     # so it is skipped entirely to cut build memory and wall time.
     mem_report("prebuild")
-    log("=== build dee_core + FP4 regression tests (sm_60;sm_75, -j2) ===")
-    build_jobs = max(1, min(2, os.cpu_count() or 2))
-    run(["cmake", "-S", str(DEE), "-B", str(BUILD),
-         "-DCMAKE_CUDA_ARCHITECTURES=60;75", "-DDEE_CUDA=ON",
-         "-DDEE_BUILD_TESTS=ON", "-DCMAKE_BUILD_TYPE=Release"])
-    run(["cmake", "--build", str(BUILD), "--target", "dee_core",
-         "-j", str(build_jobs)])
-    mem_report("post-dee_core")
-    for target in ("test_deepseek_v4_fp4_cuda", "test_deepseek_v4_fp4_expert"):
-        run(["cmake", "--build", str(BUILD), "--target", target,
+    if REUSE_TREE:
+        # P1/P2 already built the tree and ran the mechanism gates.  Each
+        # rep still fails closed if the expected artifacts are absent.
+        log("=== reuse build outputs (P1/P2 already ran) ===")
+        missing = []
+        if not (BUILD / "CMakeCache.txt").is_file():
+            missing.append(str(BUILD / "CMakeCache.txt"))
+        if not list(BUILD.glob("libdee_core.*")):
+            missing.append(str(BUILD / "libdee_core.*"))
+        if not list((DEE / "pydee").glob("pydee_core.*")):
+            missing.append(str(DEE / "pydee" / "pydee_core.*"))
+        if missing:
+            raise RuntimeError(
+                "NATIVE_REUSE_TREE set but build artifacts missing: "
+                + ", ".join(missing))
+    else:
+        log("=== build dee_core + FP4 regression tests (sm_60;sm_75, -j2) ===")
+        build_jobs = max(1, min(2, os.cpu_count() or 2))
+        run(["cmake", "-S", str(DEE), "-B", str(BUILD),
+             "-DCMAKE_CUDA_ARCHITECTURES=60;75", "-DDEE_CUDA=ON",
+             "-DDEE_BUILD_TESTS=ON", "-DCMAKE_BUILD_TYPE=Release"])
+        run(["cmake", "--build", str(BUILD), "--target", "dee_core",
              "-j", str(build_jobs)])
-        # These tests are the numerical admission gate for the candidate.
-        # In particular, test_deepseek_v4_fp4_expert now exercises the exact
-        # packed-cache device API used by the full model. A failure must stop
-        # before the multi-hour generation, never degrade into a warning.
-        run([str(BUILD / target)], cwd=str(DEE))
-    mem_report("post-tests")
+        mem_report("post-dee_core")
+        for target in ("test_deepseek_v4_fp4_cuda", "test_deepseek_v4_fp4_expert"):
+            run(["cmake", "--build", str(BUILD), "--target", target,
+                 "-j", str(build_jobs)])
+            # These tests are the numerical admission gate for the candidate.
+            # In particular, test_deepseek_v4_fp4_expert now exercises the exact
+            # packed-cache device API used by the full model. A failure must stop
+            # before the multi-hour generation, never degrade into a warning.
+            run([str(BUILD / target)], cwd=str(DEE))
+        mem_report("post-tests")
 
-    log("=== build pydee ===")
-    run([sys.executable, "-m", "pip", "install", "--quiet", "--user", "pybind11"])
-    run([sys.executable, "pydee/setup.py", "build_ext", "--inplace"],
-        env={**os.environ, "DEE_BUILD_DIR": str(BUILD)}, cwd=str(DEE))
+        log("=== build pydee ===")
+        run([sys.executable, "-m", "pip", "install", "--quiet", "--user", "pybind11"])
+        run([sys.executable, "pydee/setup.py", "build_ext", "--inplace"],
+            env={**os.environ, "DEE_BUILD_DIR": str(BUILD)}, cwd=str(DEE))
 
     log("=== download all shards ===")
     mem_report("pre-download")
@@ -1161,10 +1202,78 @@ def main() -> int:
     mem_report("post-download")
 
     # ── DEE4: component evidence or selected live serving bank ────────
-    log(f"=== DEE4 prepare (backend={EXPERT_STORE_BACKEND}) ===")
+    if REUSE_TREE and EXPERT_STORE_BACKEND != "dee4_trace":
+        raise RuntimeError("NATIVE_REUSE_TREE supports dee4_trace runs only")
+    _reuse_bank = REUSE_TREE  # implies the dee4_trace backend (checked above)
+    log(f"=== DEE4 prepare (backend={EXPERT_STORE_BACKEND}"
+        f"{', reuse fast-path' if _reuse_bank else ''}) ===")
     dee4_store_path = ""
     dee4_trace_validation = {}
     try:
+        if _reuse_bank:
+            # P4 already repacked + fully validated the bank (including the
+            # 29.4 GiB data sha256 walk).  Each rep re-verifies only the
+            # cheap identity surface: metadata presence + hash, data-file
+            # size, and the sealed record geometry.
+            _trace_metadata_path = (
+                DEE4_TRACE_PATH
+                if DEE4_TRACE_PATH.name == "metadata.json"
+                else DEE4_TRACE_PATH / "metadata.json")
+            if not _trace_metadata_path.is_file():
+                raise RuntimeError(
+                    "NATIVE_REUSE_TREE requires the P4-prepared bank at "
+                    f"{_trace_metadata_path}")
+            _meta = json.loads(_trace_metadata_path.read_text("utf-8"))
+            _data_path = _trace_metadata_path.parent / str(
+                _meta.get("data_file", ""))
+            if (not _data_path.is_file()
+                    or _data_path.stat().st_size != int(_meta["total_bytes"])):
+                raise RuntimeError(
+                    "reuse-mode bank data file missing or wrong size: "
+                    f"{_data_path}")
+            # Cheap-but-real re-verification (never trusted blindly): record
+            # indices contiguous 0..N-1 in metadata, and the integrity
+            # journal still has one line per record.  The 29.4 GiB per-record
+            # sha256 walk stays a P4-only cost.
+            _records = _meta.get("records") or []
+            _indices_contiguous = all(
+                int(rec.get("record_index", -1)) == idx
+                for idx, rec in enumerate(_records))
+            _integrity_path = _trace_metadata_path.parent / str(
+                _meta.get("integrity_file", ""))
+            _integrity_lines = (
+                _integrity_path.read_text("utf-8").splitlines()
+                if _integrity_path.is_file() else [])
+            _integrity_complete = (
+                len(_integrity_lines) == int(_meta.get("total_experts", -2)))
+            if not (_indices_contiguous and _integrity_complete):
+                raise RuntimeError(
+                    "reuse-mode bank integrity surface changed since P4 "
+                    f"(records_contiguous={_indices_contiguous} "
+                    f"integrity_lines={len(_integrity_lines)})")
+            dee4_store_path = str(_trace_metadata_path)
+            dee4_trace_validation = {
+                "schema": "dee4-v3-trace-validation",
+                "success": True,
+                "reused_from_p4": True,
+                "format": _meta.get("format"),
+                "metadata_path": str(_trace_metadata_path),
+                "metadata_sha256": sha256_file(_trace_metadata_path),
+                "data_path": str(_data_path),
+                "data_sha256": _meta["data_sha256"],
+                "trace_journal_sha256": _meta["trace_journal_sha256"],
+                "trace_final_chain_sha256":
+                    _meta["trace_final_chain_sha256"],
+                "selection_sha256": _meta["selection_sha256"],
+                "record_indices_contiguous": _indices_contiguous,
+                "integrity_records_complete": _integrity_complete,
+                "record_bytes": int(_meta["record_bytes"]),
+                "total_experts": int(_meta["total_experts"]),
+                "total_bytes": int(_meta["total_bytes"]),
+            }
+            log(f"DEE4 trace bank reused (P4-validated): {dee4_store_path} "
+                f"data_sha256={str(_meta['data_sha256'])[:16]}")
+            raise _BankReady()
         sys.path.insert(0, str(DEE / "kaggle" / "deepseek-v4-flash-0731"))
         from repack_to_dee4 import (
             _filesystem_identity as _storage_identity,
@@ -1390,6 +1499,8 @@ def main() -> int:
             # Component-only evidence must not occupy runtime disk or be
             # mistaken for the serving backend selected by this run.
             shutil.rmtree(_dee4_out)
+    except _BankReady:
+        pass
     except Exception as _e:
         log(f"DEE4 prepare failed: {_e}")
         import traceback as _tb

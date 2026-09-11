@@ -90,6 +90,16 @@ if(DEE_BUILD_FILL_REPLAY)
     target_link_libraries(fill_replay PRIVATE dee_core)
 endif()
 
+# GPU Batch #1 P3 microbench (PHASE2_T4_CAMPAIGN section 3.3): measures the
+# pinned-direct host-lease H2D submission path vs the legacy gather-copy path
+# at the production 12.75 MiB record size. Built only for CUDA toolchains
+# (the Kaggle job is the intended executor); the source is #ifdef-clean so a
+# manual DEE_CUDA=OFF compile still exercises the mock-stream decomposition.
+if(DEE_CUDA)
+    add_executable(pinned_direct_bench tools/pinned_direct_bench.cpp)
+    target_link_libraries(pinned_direct_bench PRIVATE dee_core)
+endif()
+
 if(DEE_BUILD_TESTS)
     enable_testing()
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
