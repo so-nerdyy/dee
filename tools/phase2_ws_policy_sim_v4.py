@@ -348,12 +348,17 @@ class BeladyPrewarm:
     name = "belady_same_state_prewarm"
     regime = "C"
 
-    def __init__(self, slots, freq=None, **kw):
+    def __init__(self, slots, freq=None, first_use=None, **kw):
         self.slots = slots
         init = {k for k, _ in freq.most_common(slots)} if slots > 0 else set()
         self.initial = init
-        # 10**12 = "never used again" for not-yet-touched initial entries
-        self.resident = {k: 10 ** 12 for k in init}
+        # exact first-future-use distance per resident entry; 10**12 only
+        # for records that never occur in the stream. (The earlier
+        # 10**12-for-all init evicted soon-needed prewarmed records on the
+        # first faults, understating this bound — see
+        # research/phase2-ws-policy/SIM_INIT_FIX.md.)
+        fu = first_use or {}
+        self.resident = {k: fu.get(k, 10 ** 12) for k in init}
         self.evictions = 0
 
     def touch(self, key, tick, next_use=None, prio=0):
@@ -605,8 +610,14 @@ def simulate(batches, policy, slots, freq, layer_freq, pin_frac=0.5,
     """
     cls = CACHE_CLASSES[policy]
     boundary_step = 4 if policy == "freq_lru_warmup_s4" else 1
+    # first occurrence index per record in this scope's stream — the exact
+    # initial next-use distance BeladyPrewarm needs for the regime-C bound.
+    first_use = {}
+    for i0, key in enumerate(k for _, _, ks in batches for k in ks):
+        if key not in first_use:
+            first_use[key] = i0
     cache = cls(slots, freq=freq, layer_freq=layer_freq, pin_frac=pin_frac,
-                boundary_step=boundary_step)
+                boundary_step=boundary_step, first_use=first_use)
     hits = misses = 0
     prefill_misses = decode_misses = 0
     prefill_hits = decode_hits = 0
