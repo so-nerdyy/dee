@@ -1,0 +1,149 @@
+{
+  "result": "EVIDENCE_COMPLETE_PUBLICATION_PENDING",
+  "acceptance_audit": [
+    {
+      "criterion": 1,
+      "detail": "RSS/PSS/smaps plus native allocation ledger",
+      "evidence": "host-memory-breakdown.json",
+      "status": "PASS"
+    },
+    {
+      "criterion": 2,
+      "detail": "per-GPU NVML, PyTorch, native, residual",
+      "evidence": "gpu-memory-breakdown.json",
+      "status": "PASS"
+    },
+    {
+      "criterion": 3,
+      "detail": null,
+      "evidence": "host-memory-breakdown.json",
+      "status": "PASS"
+    },
+    {
+      "criterion": 4,
+      "detail": null,
+      "evidence": "gpu-memory-breakdown.json",
+      "status": "PASS"
+    },
+    {
+      "criterion": 5,
+      "detail": null,
+      "evidence": "host-memory-breakdown.json",
+      "status": "PASS"
+    },
+    {
+      "criterion": 6,
+      "detail": null,
+      "evidence": "milestone-2.5-report.json",
+      "status": "PASS"
+    },
+    {
+      "criterion": 7,
+      "detail": null,
+      "evidence": "expert-trace.jsonl.gz and expert-cache-analysis.json",
+      "status": "PASS"
+    },
+    {
+      "criterion": 8,
+      "detail": null,
+      "evidence": "expert-cache-analysis.json",
+      "status": "PASS"
+    },
+    {
+      "criterion": 9,
+      "detail": null,
+      "evidence": "transfer-analysis.json",
+      "status": "PASS"
+    },
+    {
+      "criterion": 10,
+      "detail": null,
+      "evidence": "layer-timing.json representative_warm_decode",
+      "status": "PASS"
+    },
+    {
+      "criterion": 11,
+      "detail": null,
+      "evidence": "layer-timing.json",
+      "status": "PASS"
+    },
+    {
+      "criterion": 12,
+      "detail": null,
+      "evidence": "profiler-summary.md and timing-raw.json",
+      "status": "PASS"
+    },
+    {
+      "criterion": 13,
+      "detail": null,
+      "evidence": "layer-timing.json native operation totals",
+      "status": "PASS"
+    },
+    {
+      "criterion": 14,
+      "detail": null,
+      "evidence": "milestone-2.5-report.json experiment matrix",
+      "status": "PASS"
+    },
+    {
+      "criterion": 15,
+      "detail": null,
+      "evidence": "milestone-2.5-report.json experiment matrix",
+      "status": "PASS"
+    },
+    {
+      "criterion": 16,
+      "detail": null,
+      "evidence": "milestone-2.5-report.json experiment matrix",
+      "status": "PASS"
+    },
+    {
+      "criterion": 17,
+      "detail": null,
+      "evidence": "prior-30-tps-audit.md",
+      "status": "PASS"
+    },
+    {
+      "criterion": 18,
+      "detail": null,
+      "evidence": "bottleneck-ranking.json",
+      "status": "PASS"
+    },
+    {
+      "criterion": 19,
+      "detail": null,
+      "evidence": "bottleneck-ranking.json and git diff audit",
+      "status": "PASS"
+    },
+    {
+      "criterion": 20,
+      "detail": null,
+      "evidence": "run-report.json correctness fields for all matrix runs",
+      "status": "PASS"
+    },
+    {
+      "criterion": 21,
+      "detail": null,
+      "evidence": "ornith-layer0-regression.json",
+      "status": "PASS"
+    },
+    {
+      "criterion": 22,
+      "detail": null,
+      "evidence": "dual-cold-primary/run-report.json",
+      "status": "PASS"
+    },
+    {
+      "criterion": 23,
+      "detail": null,
+      "evidence": "evidence-manifest.json and all downloaded run reports",
+      "status": "PASS"
+    },
+    {
+      "criterion": 24,
+      "detail": "pending local commit/push",
+      "evidence": "publication commit and pushed branch",
+      "status": "FAIL"
+    }
+  ]
+}

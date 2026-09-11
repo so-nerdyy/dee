@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "id": "v48-seal-p2.3-fp4-repair",
+  "run_id": "p2.3-fp4-repair-v48",
+  "sealed_at_utc": "2026-08-28T08:03:23Z",
+  "classification": "ACCEPT_CORRECTNESS",
+  "acceptance_scope": "accepted packed-FP4 safetensors residency baseline",
+  "evidence_dir": "dee.cpp/benchmark_reports/deepseek-v4-flash-0731-t4/v48-evidence-20260828T201300Z/",
+  "repository": "https://github.com/so-nerdyy/dee.git",
+  "branch": "freebuff/deepseek-v4-flash-0731-t4",
+  "identity": {
+    "pinned_commit": "0672a4d2a7c399561761644baaa52e10267b9b55",
+    "model_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+    "executing_harness_sha256": "993589d63d4fddcc3b1f964c560a582e3d831d715db3ab40e0da249b6b04e204",
+    "cloned_harness_sha256": "5c0569fca595d3570c7da28dcea6d9332818e7b992a4b5edaeda74087bd4c10d",
+    "run_config_sha256": "b8d4776bfb6dff19fda07ae60626cc7aa115059c8ae211f3a811da60e21c9bac",
+    "kernel_metadata_sha256": "b4f3f5ea04a8099801fe6f03611e9bffb5ad7e4e6e420020ba4d2174ff11ea79"
+  },
+  "hardware": {
+    "requested": "2x Tesla T4",
+    "observed": "2x Tesla T4",
+    "performance_hardware_eligible": true
+  },
+  "configuration": {
+    "cache_dtype": "fp4",
+    "cache_representation": "packed FP4 bytes resident; compute-time FP16 scratch decode",
+    "expert_store_backend": "safetensors",
+    "n_tokens": 16,
+    "profile_stages": false,
+    "vram_cache_gib_per_gpu": 3.5,
+    "host_pack_gib_per_gpu": 8.5
+  },
+  "correctness": {
+    "expected_token_ids": [666, 95140, 96807, 343, 4470, 20, 1127, 3298, 22, 22604, 515, 411, 3947, 85349, 14, 6341],
+    "actual_token_ids": [666, 95140, 96807, 343, 4470, 20, 1127, 3298, 22, 22604, 515, 411, 3947, 85349, 14, 6341],
+    "decoded_text": "**Alan Turing (1912\u20131954)** was an English mathematician, computer",
+    "actual_token_ids_sha256": "4e4ffae391ca0b3ff72acd84f5ba2afb2b138a4af6fd6eb59128a3635ff87698",
+    "actual_decoded_text_sha256": "7fc87fbf71af7f5f3510bc2fd01a9342a866f9b4daa8382b52fd21e5a1e1609",
+    "tokens_match": "16/16 exact",
+    "layers_executed": 43,
+    "finite_outputs": true
+  },
+  "gates": {
+    "exact_16_token_ids": true,
+    "exact_decoded_text": true,
+    "all_43_layers": true,
+    "finite_outputs_observed": true,
+    "numpy_bridge_calls_zero": true,
+    "full_hidden_d2h_zero": true,
+    "raw_expert_output_d2h_zero": true,
+    "official_router_authoritative": true,
+    "no_cpu_expert_fallback": true,
+    "effective_cuda_execution": true,
+    "effective_cache_dtype": true,
+    "effective_expert_store": true,
+    "dee4_contiguous_reads": true,
+    "dee4_integrity_identity": true,
+    "required_performance_hardware": true,
+    "all_non_hardware_gates_pass": true
+  },
+  "runtime_metrics": {
+    "build_seconds": 93.01,
+    "total_wall_seconds": 10634.2,
+    "prefill_seconds": 5323.598,
+    "decode_wall_seconds": 5309.626,
+    "decode_tokens": 15,
+    "decode_tps_unrounded": 0.002825057734763239,
+    "median_inter_token_ms": 335351.56,
+    "p95_inter_token_ms": 533024.68,
+    "h2d_bytes_total": 59413364736,
+    "h2d_bytes_per_generated_token": 3713335296,
+    "cache_hits": {"cuda0": 328, "cuda1": 327},
+    "cold_loads": {"cuda0": 2285, "cuda1": 2159},
+    "evictions": {"cuda0": 2004, "cuda1": 1878},
+    "resident_experts": {"cuda0": 281, "cuda1": 281},
+    "host_pack_hits": {"cuda0": 1222, "cuda1": 1395},
+    "host_pack_misses": {"cuda0": 1391, "cuda1": 1091},
+    "peak_vram_gib": {"cuda0": 7.131, "cuda1": 8.747},
+    "bridge_counters": {
+      "numpy_bridge_calls": 0,
+      "full_hidden_d2h_copies": 0,
+      "raw_expert_output_d2h_copies": 0
+    }
+  },
+  "direct_v44_deltas": {
+    "baseline_id": "v44-p22-real-baseline",
+    "baseline_commit": "e093bae645e8f3908f861066d8c561c59a3ff6b7",
+    "decode_wall": {"v44_seconds": 5789.652, "v48_seconds": 5309.626, "delta_pct": -8.29},
+    "decode_tps": {"v44_unrounded": 0.0025908292933668553, "v48_unrounded": 0.002825057734763239, "delta_pct": 9.04},
+    "median_inter_token": {"v44_ms": 369291.19, "v48_ms": 335351.56, "delta_pct": -9.19},
+    "h2d_bytes": {"v44": 65509785600, "v48": 59413364736, "delta_pct": -9.31},
+    "cold_loads_total": {"v44": 4900, "v48": 4444, "delta_pct": -9.31}
+  },
+  "dee4_component_evidence": {
+    "format": "dee4-v2",
+    "serving_backend": "safetensors",
+    "contiguous_mib_s": 445.367,
+    "safetensors_scatter_mib_s": 320.7284356279793,
+    "speedup": 1.3886108948462306,
+    "repack_seconds": 181.83728697699996,
+    "repack_gib": 9.5625,
+    "validation_samples": 12,
+    "validated_layers": 3,
+    "data_sha256": "2747bd8a6a7d71046d4a23aed6a9fe1325edc052cd44b357ab96a4305872d0ab"
+  },
+  "caveats": [
+    "profile_stages=false: this is not profiled performance evidence; direct v44 deltas are an unprofiled A/B baseline comparison.",
+    "The live serving backend is safetensors. DEE4 evidence validates only a 3-layer component and must not be claimed as a DEE4 serving-backend result.",
+    "Executing harness SHA256 993589d63d4fddcc3b1f964c560a582e3d831d715db3ab40e0da249b6b04e204 differs from cloned harness SHA256 5c0569fca595d3570c7da28dcea6d9332818e7b992a4b5edaeda74087bd4c10d; provenance difference is disclosed and the run's integrity artifact records both."
+  ],
+  "raw_file_hashes": {
+    "dee-cpp-dsv4-native-generate.log": {"bytes": 1643702, "sha256": "2462a9ee60f8b10e7d342010efba6fbb35b6ddfc05ea17d3045ef301653ae62c"},
+    "dee4-import-validation.json": {"bytes": 31174, "sha256": "9075276800c379b5c3c2d5f7e283aa26b581a3d35a474f08770f948ff417d5c4"},
+    "dee4-integrity.jsonl": {"bytes": 554754, "sha256": "f240f8a23e24f42c6eab14bd7b87c15705a0c1bc42497a56a242c1cd2b23d345"},
+    "dee4-metadata.json": {"bytes": 2109, "sha256": "331cbe0715e55616b905e46eb5c1161def7b68ec5fb995379ce4b0a36bab5d0a"},
+    "dee4-repack_report.json": {"bytes": 971, "sha256": "b7b8b779ef768334ef882fba8d9279d9f99f82d75b61da5399eb19490baebb4b"},
+    "dee4-serving-access-benchmark.json": {"bytes": 8429, "sha256": "f95827e2575a9c8a362116009054805a26169eafbf6dd7ae5dc8efce4cc72921"},
+    "environment.json": {"bytes": 1228, "sha256": "3e4c54d574816b00cb3278c7914557d5bce31bd4571a032479981923bebb0ff5"},
+    "generated_checkpoint.jsonl": {"bytes": 79499, "sha256": "27350ca21d41b10889475224c4d6e35410ca4fb08909f5f4d4d6ebe6a85a3769"},
+    "integrity.json": {"bytes": 3799, "sha256": "7e80ddf183f37c89a65e73415634d1fed06778bb9cd175e88536d87b267f48c8"},
+    "memory.json": {"bytes": 907, "sha256": "72e2f0862dca1fb33c504418ca6f79277a64e8c623eeeeeb1126d4c7283d0080"},
+    "model.safetensors.index.json": {"bytes": 5602871, "sha256": "98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b"},
+    "native-generate-result.json": {"bytes": 34661, "sha256": "2d646be1861a0d4dffa32e8c2790686466c0bb421b02648f3adff6bddd8b9f4a"},
+    "p2.2-dee4-evidence.json": {"bytes": 1526, "sha256": "bd3dea00d5f8a21fbd7f850463aee493fde4accf2f3a1c5c24e263bd8c0d592b"},
+    "profile.json": {"bytes": 29420, "sha256": "318185291e5faecdc39b0b4419ea126bf2ef9ba11626cc25eba7acbc5c78ebd7"},
+    "progress.log": {"bytes": 29695, "sha256": "a5096bcdce18dc36c998d04d55dbf3ae23d74147d673f6d1c99e5de422982535"},
+    "result.json": {"bytes": 34661, "sha256": "2d646be1861a0d4dffa32e8c2790686466c0bb421b02648f3adff6bddd8b9f4a"},
+    "run_config.json": {"bytes": 611, "sha256": "4530fa2da76b0fad5effcf28542bfde3facc5bb572d25deddd1c4a2464a37c7a"}
+  }
+}

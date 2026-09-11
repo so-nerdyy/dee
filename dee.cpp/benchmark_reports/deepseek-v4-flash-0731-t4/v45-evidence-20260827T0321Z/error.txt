@@ -1,0 +1,13 @@
+Traceback (most recent call last):
+  File "/kaggle/src/script.py", line 890, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/kaggle/src/script.py", line 805, in main
+    toks = model.generate(input_ids, max_new_tokens=N_TOKENS,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/dsv4-native-src/dee.cpp/scripts/deepseek_v4_model.py", line 868, in generate
+    logits = self.forward(input_ids, 0, captures=captures,
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/dsv4-native-src/dee.cpp/scripts/deepseek_v4_model.py", line 828, in forward
+    raise FloatingPointError("non-finite logits")
+FloatingPointError: non-finite logits

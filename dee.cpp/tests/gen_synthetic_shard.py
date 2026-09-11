@@ -10,9 +10,10 @@ Format (safetensors):
   [uint64 LE header_len][header JSON][data bytes]
   header: {"tensor_name": {"dtype","shape","data_offsets":[start,end]}, ...}
 """
-import struct, json, os
+import struct, json, os, sys
 
-OUT = "/mnt/c/Users/carth/Downloads/dee.cpp/tests/data/layer0_shard.safetensors"
+OUT = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(
+    os.path.dirname(__file__), "data", "layer0_shard.safetensors")
 
 def f32_to_bf16(x: float) -> int:
     import struct as _s
@@ -61,6 +62,7 @@ header = {tname: {"dtype": dt, "shape": sh, "data_offsets": list(offsets[tname])
 header_json = json.dumps(header, separators=(",", ":"))
 hlen = len(header_json)
 
+os.makedirs(os.path.dirname(OUT), exist_ok=True)
 with open(OUT, "wb") as f:
     f.write(struct.pack("<Q", hlen))
     f.write(header_json.encode("utf-8"))

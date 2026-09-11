@@ -1,0 +1,737 @@
+// dee.cpp/pydee/pydee.cpp
+//
+// pybind11 Python module for the dee.cpp MoE expert engine. Exposes the
+// minimum surface needed by the Python HF adapter for real-model integration:
+//
+//   import pydee
+//   cfg = pydee.EngineConfig()
+//   cfg.shard_path = "/.../model-00001-of-00016.safetensors"
+//   cfg.num_experts = 256
+//   cfg.num_layers = 40
+//   cfg.hidden = 2048
+//   cfg.inter = 512
+//   cfg.oracle_path = ""              # caller owns routing (HF model)
+//   cfg.transfer_dtype = pydee.WeightTransferDType.Bf16
+//   cfg.use_cuda = False              # CPU parity first; switch on T4 later
+//   engine = pydee.Engine()
+//   engine.init(cfg)
+//   expert_outs = np.empty((top_k, hidden), dtype=np.float32)
+//   ok = engine.moe_forward_experts(layer_idx, hidden_np, expert_outs, [e0,...])
+//
+// All numeric buffers are passed via numpy's buffer protocol so torch tensors
+// (after `.cpu().numpy()`) and np.ndarray are interchangeable.
+//
+// Build (from this directory):
+//   python3 -m pip install pybind11 --break-system-packages --user
+//   python3 setup.py build_ext --inplace
+
+#include <pybind11/pybind11.h>
+#include <pybind11/numpy.h>
+#include <pybind11/stl.h>
+
+#include <cstdint>
+
+#include "dee/engine.h"
+#include "dee/trace_alloc.h"
+
+namespace py = pybind11;
+
+PYBIND11_MODULE(pydee_core, m) {
+    if (sizeof(dee::Engine) != dee::engine_abi_size()) {
+        throw py::import_error(
+            "pydee/dee_core Engine ABI mismatch: rebuild both with the same DEE_CUDA setting");
+    }
+    m.doc() = "pydee: Python binding for dee.cpp MoE expert execution "
+              "(real-model integration mode; caller owns routing + combine).";
+    m.def("_trace_alloc_selftest", &dee::trace_alloc::startup_self_test,
+          "Run the harmless traced host-allocation connectivity proof.");
+    m.def("_trace_alloc_stats", []() {
+        py::dict result;
+        result["live"] = dee::trace_alloc::live_count();
+        result["dead"] = dee::trace_alloc::dead_count();
+        result["non_selftest_allocs"] =
+            dee::trace_alloc::non_selftest_alloc_count();
+        result["unalloc_aborts"] = dee::trace_alloc::unalloc_abort_count();
+        result["double_free_aborts"] =
+            dee::trace_alloc::double_free_abort_count();
+        result["mismatch_aborts"] =
+            dee::trace_alloc::mismatch_abort_count();
+        result["uaf_aborts"] = dee::trace_alloc::uaf_abort_count();
+        return result;
+    }, "Return bounded trace-allocation connectivity counters.");
+
+    py::enum_<dee::DeviceCacheDType>(m, "DeviceCacheDType")
+        .value("Fp32", dee::DeviceCacheDType::Fp32)
+        .value("Fp16", dee::DeviceCacheDType::Fp16)
+        .value("Fp4E2m1", dee::DeviceCacheDType::Fp4E2m1);
+    py::enum_<dee::WeightTransferDType>(m, "WeightTransferDType")
+        .value("Bf16", dee::WeightTransferDType::Bf16)
+        .value("Int8", dee::WeightTransferDType::Int8)
+        .value("Int4", dee::WeightTransferDType::Int4)
+        .value("Fp4E2m1", dee::WeightTransferDType::Fp4E2m1);
+
+    py::class_<dee::EngineConfig>(m, "EngineConfig")
+        .def(py::init<>())
+        .def_readwrite("shard_path", &dee::EngineConfig::shard_path)
+        .def_readwrite("shard_paths", &dee::EngineConfig::shard_paths)
+        .def_readwrite("expert_store_path", &dee::EngineConfig::expert_store_path)
+        .def_readwrite("oracle_path", &dee::EngineConfig::oracle_path)
+        .def_readwrite("num_tokens", &dee::EngineConfig::num_tokens)
+        .def_readwrite("topk", &dee::EngineConfig::topk)
+        .def_readwrite("num_layers", &dee::EngineConfig::num_layers)
+        .def_readwrite("num_experts", &dee::EngineConfig::num_experts)
+        .def_readwrite("base_layer", &dee::EngineConfig::base_layer)
+        .def_readwrite("device_id", &dee::EngineConfig::device_id)
+        .def_readwrite("budget_bytes", &dee::EngineConfig::budget_bytes)
+        .def_readwrite("host_pack_cache_bytes", &dee::EngineConfig::host_pack_cache_bytes)
+        .def_readwrite("source_read_lanes", &dee::EngineConfig::source_read_lanes)
+        .def_readwrite("source_read_queue_depth", &dee::EngineConfig::source_read_queue_depth)
+        .def_readwrite("use_batched_experts", &dee::EngineConfig::use_batched_experts)
+        .def_readwrite("cache_dtype", &dee::EngineConfig::cache_dtype)
+        .def_readwrite("transfer_dtype", &dee::EngineConfig::transfer_dtype)
+        .def_readwrite("use_cuda", &dee::EngineConfig::use_cuda)
+        .def_readwrite("hidden", &dee::EngineConfig::hidden)
+        .def_readwrite("inter", &dee::EngineConfig::inter)
+        .def_readwrite("verbose", &dee::EngineConfig::verbose)
+        .def_readwrite("prefetch_depth", &dee::EngineConfig::prefetch_depth)
+        .def_readwrite("profile_stages", &dee::EngineConfig::profile_stages)
+        .def_readwrite("trace_requests", &dee::EngineConfig::trace_requests)
+        .def_readwrite("profile_timeline", &dee::EngineConfig::profile_timeline)
+        .def_readwrite("debug_validate_cache", &dee::EngineConfig::debug_validate_cache)
+        .def_readwrite("prepack_quantized_source", &dee::EngineConfig::prepack_quantized_source)
+        .def_readwrite("swiglu_limit", &dee::EngineConfig::swiglu_limit);
+
+    py::class_<dee::Engine>(m, "Engine")
+        .def(py::init<>())
+        .def("init", &dee::Engine::init, py::arg("cfg"))
+        .def("hidden_dim", &dee::Engine::hidden_dim)
+        .def("inter_dim", &dee::Engine::inter_dim)
+        .def("runtime_config", [](const dee::Engine& self) -> py::dict {
+            const dee::EngineConfig& cfg = self.config();
+            py::dict result;
+            result["device_id"] = cfg.device_id;
+            result["use_cuda"] = cfg.use_cuda;
+            result["cache_dtype"] = dee::device_cache_dtype_name(cfg.cache_dtype);
+            result["transfer_dtype"] =
+                dee::weight_transfer_dtype_name(cfg.transfer_dtype);
+            result["budget_bytes"] = cfg.budget_bytes;
+            result["host_pack_cache_bytes"] = cfg.host_pack_cache_bytes;
+            result["source_read_lanes"] = cfg.source_read_lanes;
+            result["source_read_queue_depth"] = cfg.source_read_queue_depth;
+            result["expert_store_path"] = cfg.expert_store_path;
+            result["use_batched_experts"] = cfg.use_batched_experts;
+            result["num_layers"] = cfg.num_layers;
+            result["num_experts"] = cfg.num_experts;
+            result["topk"] = cfg.topk;
+            result["hidden"] = cfg.hidden;
+            result["inter"] = cfg.inter;
+            return result;
+        }, "Return the immutable effective engine configuration used by the live path.")
+        .def("host_pack_stats", [](const dee::Engine& self) -> py::dict {
+            py::dict result;
+            const auto& hp = self.host_pack_stats();
+            result["budget_bytes"] = self.config().host_pack_cache_bytes;
+            result["hits"] = hp.hits;
+            result["misses"] = hp.misses;
+            result["evictions"] = hp.evictions;
+            result["bytes"] = hp.bytes;
+            result["entries"] = hp.entries;
+            result["fill_batches"] = hp.fill_batches;
+            result["concurrent_fill_batches"] = hp.concurrent_fill_batches;
+            result["fill_requests"] = hp.fill_requests;
+            result["max_fill_queue_depth"] = hp.max_fill_queue_depth;
+            result["max_fill_lanes"] = hp.max_fill_lanes;
+            result["fill_batch_wall_ms"] = hp.fill_batch_wall_ms;
+            result["fill_worker_ms"] = hp.fill_worker_ms;
+            result["fill_overlap_ms"] = hp.fill_overlap_ms;
+            result["reused_fill_buffers"] = hp.reused_fill_buffers;
+            result["reused_fill_bytes"] = hp.reused_fill_bytes;
+            result["fill_reservation_wall_ms"] = hp.fill_reservation_wall_ms;
+            return result;
+        })
+        .def("expert_store_stats", [](const dee::Engine& self) -> py::dict {
+            const dee::ExpertStoreStats stats = self.expert_store_stats();
+            py::dict result;
+            result["backend"] = stats.backend;
+            result["integrity_identity"] = stats.integrity_identity;
+            result["lookups"] = stats.lookups;
+            result["lookup_failures"] = stats.lookup_failures;
+            result["source_reads"] = stats.source_reads;
+            result["contiguous_source_reads"] = stats.contiguous_source_reads;
+            result["source_regions"] = stats.source_regions;
+            result["bytes_requested"] = stats.bytes_requested;
+            result["read_milliseconds"] = stats.read_milliseconds;
+            result["average_request_bytes"] = stats.average_request_bytes;
+            result["average_read_ms"] = stats.average_read_ms;
+            result["p50_read_ms"] = stats.p50_read_ms;
+            result["p95_read_ms"] = stats.p95_read_ms;
+            result["max_read_ms"] = stats.max_read_ms;
+            result["read_bandwidth_mib_s"] = stats.read_bandwidth_mib_s;
+            result["materialization_mode"] = stats.materialization_mode;
+            result["source_read_batches"] = stats.source_read_batches;
+            result["concurrent_source_read_batches"] = stats.concurrent_source_read_batches;
+            result["max_source_read_queue_depth"] = stats.max_source_read_queue_depth;
+            result["max_source_read_lanes"] = stats.max_source_read_lanes;
+            result["source_read_batch_wall_ms"] = stats.source_read_batch_wall_ms;
+            result["source_read_overlap_ms"] = stats.source_read_overlap_ms;
+            result["source_read_overlap_percent"] = stats.source_read_overlap_percent;
+            return result;
+        })
+        .def("reset_runtime_cache", &dee::Engine::reset_runtime_cache,
+             "Evict all streamed experts and reset live cache/transfer counters.")
+        .def("validate_cache_invariants", [](const dee::Engine& self) {
+            std::string error;
+            const bool valid = self.validate_cache_invariants(&error);
+            return py::make_tuple(valid, error);
+        }, "Return (valid, error) for cache pointer/range/generation/pin invariants.")
+        .def("reset_external_profile", &dee::Engine::reset_external_profile,
+             "Reset measurement counters without evicting resident experts.")
+        .def("set_external_token", &dee::Engine::set_external_token,
+             py::arg("token"),
+             "Attach an external prefill/decode-step index to trace records.")
+        .def("external_profile_json", &dee::Engine::external_profile_json,
+             py::arg("total_wall_ms"),
+             "Return the measurement-only stage/cache/request profile.")
+        .def("external_timeline_json", &dee::Engine::external_timeline_json,
+             py::arg("total_wall_ms"),
+             "Return the bounded CUDA/host timeline as Chrome trace JSON.")
+        .def("route_topk", [](
+                dee::Engine& self,
+                int layer,
+                py::array_t<float, py::array::c_style | py::array::forcecast> h_in) {
+            auto in_buf = h_in.request();
+            const size_t H = static_cast<size_t>(self.hidden_dim());
+            const dee::EngineConfig& cfg = self.config();
+            if (in_buf.size != H) {
+                throw std::runtime_error("h_in size does not match hidden_dim");
+            }
+            py::array_t<float> logits(static_cast<size_t>(cfg.num_experts));
+            py::array_t<float> weights(static_cast<size_t>(cfg.topk));
+            py::array_t<int> experts(static_cast<size_t>(cfg.topk));
+            bool ok = false;
+            {
+                py::gil_scoped_release release;
+                ok = self.route_topk(
+                    layer, static_cast<float*>(in_buf.ptr), logits.mutable_data(),
+                    weights.mutable_data(), experts.mutable_data());
+            }
+            if (!ok) throw std::runtime_error("dee.cpp route_topk failed (see stderr)");
+            return py::make_tuple(logits, weights, experts);
+        }, py::arg("layer"), py::arg("h_in"),
+           "Run the real checkpoint router and return (logits, topk_weights, expert_ids).")
+        .def("route_topk_batch", [](
+                dee::Engine& self,
+                int layer,
+                py::array_t<float, py::array::c_style | py::array::forcecast> h_in) {
+            auto in_buf = h_in.request();
+            if (in_buf.ndim != 2 || in_buf.shape[1] != self.hidden_dim()) {
+                throw std::runtime_error("h_in must have shape [tokens, hidden_dim]");
+            }
+            const py::ssize_t tokens = in_buf.shape[0];
+            const dee::EngineConfig& cfg = self.config();
+            py::array_t<float> logits({tokens, static_cast<py::ssize_t>(cfg.num_experts)});
+            py::array_t<float> weights({tokens, static_cast<py::ssize_t>(cfg.topk)});
+            py::array_t<int> experts({tokens, static_cast<py::ssize_t>(cfg.topk)});
+            bool ok = false;
+            {
+                py::gil_scoped_release release;
+                ok = self.route_topk_batch(
+                    layer, static_cast<float*>(in_buf.ptr), static_cast<int>(tokens),
+                    logits.mutable_data(), weights.mutable_data(), experts.mutable_data());
+            }
+            if (!ok) throw std::runtime_error("dee.cpp route_topk_batch failed (see stderr)");
+            return py::make_tuple(logits, weights, experts);
+        }, py::arg("layer"), py::arg("h_in"),
+           "Run the real checkpoint router for a [tokens, hidden] batch.")
+        .def("moe_forward_experts", [](
+                dee::Engine& self,
+                int layer,
+                py::array_t<float, py::array::c_style | py::array::forcecast> h_in,
+                py::array_t<float, py::array::c_style | py::array::forcecast> experts_out,
+                std::vector<int> experts) -> bool {
+            auto in_buf = h_in.request();
+            auto out_buf = experts_out.request();
+            const size_t H = (size_t)self.hidden_dim();
+            if (in_buf.size != H) {
+                throw std::runtime_error(
+                    "h_in.size (" + std::to_string(in_buf.size) +
+                    ") != hidden_dim (" + std::to_string(H) + ")");
+            }
+            if (out_buf.size != experts.size() * H) {
+                throw std::runtime_error(
+                    "experts_out.size (" + std::to_string(out_buf.size) +
+                    ") != " + std::to_string(experts.size()) + " * hidden_dim (" +
+                    std::to_string(H) + ")");
+            }
+            bool ok = false;
+            {
+                py::gil_scoped_release release;
+                ok = self.moe_forward_experts(
+                    layer,
+                    static_cast<float*>(in_buf.ptr),
+                    static_cast<float*>(out_buf.ptr),
+                    experts);
+            }
+            return ok;
+        }, py::arg("layer"), py::arg("h_in"), py::arg("experts_out"),
+           py::arg("experts"),
+           R"pbdoc(
+                Run SwiGLU forward for each requested expert and return per-expert
+                FP32 outputs to `experts_out` (layout: [K, hidden_dim], contiguous).
+                Caller handles the gate-weighted sum combine (matching HF reference).
+            )pbdoc")
+        .def("moe_forward_batch", [](
+                dee::Engine& self,
+                int layer,
+                py::array_t<float, py::array::c_style | py::array::forcecast> h_in,
+                py::array_t<int, py::array::c_style | py::array::forcecast> expert_ids) {
+            auto in_buf = h_in.request();
+            auto ids_buf = expert_ids.request();
+            if (in_buf.ndim != 2 || in_buf.shape[1] != self.hidden_dim()) {
+                throw std::runtime_error("h_in must have shape [tokens, hidden_dim]");
+            }
+            if (ids_buf.ndim != 2 || ids_buf.shape[0] != in_buf.shape[0]) {
+                throw std::runtime_error("expert_ids must have shape [tokens, topk]");
+            }
+            const py::ssize_t tokens = in_buf.shape[0];
+            const py::ssize_t topk = ids_buf.shape[1];
+            if (topk != self.config().topk) {
+                throw std::runtime_error("expert_ids topk does not match EngineConfig.topk");
+            }
+            py::array_t<float> output({
+                tokens, topk, static_cast<py::ssize_t>(self.hidden_dim())
+            });
+            bool ok = false;
+            {
+                py::gil_scoped_release release;
+                ok = self.moe_forward_batch(
+                    layer, static_cast<float*>(in_buf.ptr), static_cast<int>(tokens),
+                    static_cast<int*>(ids_buf.ptr), static_cast<int>(topk),
+                    output.mutable_data());
+            }
+            if (!ok) {
+                std::string msg = "dee.cpp batched MoE failed (moe_forward_batch("
+                    "layer=" + std::to_string(layer)
+                    + " tokens=" + std::to_string(tokens)
+                    + " topk=" + std::to_string(topk)
+                    + " device=" + std::to_string(self.config().device_id) + "))";
+                const std::string& native = self.last_error_message();
+                if (!native.empty()) msg += " | native: " + native;
+                else msg += " | native: <no detailed diagnostic recorded>";
+                throw std::runtime_error(msg);
+            }
+            return output;
+        }, py::arg("layer"), py::arg("h_in"), py::arg("expert_ids"),
+           "Run token batches grouped by expert with eager-compatible CUDA GEMM shapes.")
+        .def("moe_forward_batch_device", [](
+                dee::Engine& self,
+                int layer,
+                uintptr_t d_h_in_ptr,
+                int tokens,
+                py::array_t<int, py::array::c_style | py::array::forcecast> expert_ids,
+                int topk,
+                uintptr_t d_experts_out_ptr) -> bool {
+            auto ids_buf = expert_ids.request();
+            if (ids_buf.ndim != 2 || ids_buf.shape[0] != tokens ||
+                ids_buf.shape[1] != topk) {
+                throw std::runtime_error("expert_ids must have shape [tokens, topk]");
+            }
+            if (topk != self.config().topk) {
+                throw std::runtime_error("expert_ids topk does not match EngineConfig.topk");
+            }
+            bool ok = false;
+            {
+                py::gil_scoped_release release;
+                ok = self.moe_forward_batch_device(
+                    layer,
+                    reinterpret_cast<const void*>(d_h_in_ptr),
+                    tokens,
+                    static_cast<int*>(ids_buf.ptr),
+                    topk,
+                    reinterpret_cast<void*>(d_experts_out_ptr));
+            }
+            return ok;
+        }, py::arg("layer"), py::arg("d_h_in_ptr"), py::arg("tokens"),
+           py::arg("expert_ids"), py::arg("topk"), py::arg("d_experts_out_ptr"),
+           R"pbdoc(
+                Run MoE forward with device-resident hidden and outputs.
+                d_h_in_ptr: device pointer to FP16 hidden [tokens, hidden].
+                expert_ids: numpy int32 array [tokens, topk] (host-side for grouping).
+                d_experts_out_ptr: device pointer to FP32 output [tokens, topk, hidden].
+                Returns True on success; caller must sync the compute stream before
+                reading d_experts_out.
+            )pbdoc")
+        .def("moe_forward_combined_device", [](
+                dee::Engine& self,
+                int layer,
+                uintptr_t d_h_in_ptr,
+                int tokens,
+                uintptr_t d_expert_ids_ptr,
+                int topk,
+                uintptr_t d_weights_ptr,
+                uintptr_t d_output_ptr,
+                uintptr_t d_raw_trace_ptr,
+                uintptr_t external_stream_ptr) -> bool {
+            if (topk != self.config().topk) {
+                throw std::runtime_error(
+                    "expert_ids topk does not match EngineConfig.topk");
+            }
+            bool ok = false;
+            {
+                py::gil_scoped_release release;
+                ok = self.moe_forward_combined_device(
+                    layer,
+                    reinterpret_cast<const void*>(d_h_in_ptr),
+                    tokens,
+                    reinterpret_cast<const int64_t*>(d_expert_ids_ptr),
+                    topk,
+                    reinterpret_cast<const float*>(d_weights_ptr),
+                    reinterpret_cast<void*>(d_output_ptr),
+                    reinterpret_cast<void*>(d_raw_trace_ptr),
+                    reinterpret_cast<void*>(external_stream_ptr));
+            }
+            return ok;
+        }, py::arg("layer"), py::arg("d_h_in_ptr"), py::arg("tokens"),
+           py::arg("d_expert_ids_ptr"), py::arg("topk"),
+           py::arg("d_weights_ptr"), py::arg("d_output_ptr"),
+           py::arg("d_raw_trace_ptr"),
+           py::arg("external_stream_ptr"),
+           R"pbdoc(
+                Run exact combined MoE on device tensors.
+                Hidden/output are FP16, weights are FP32, expert IDs are int64.
+                Completion is handed from the engine compute stream to the
+                supplied PyTorch CUDA stream. Optional raw trace output is
+                FP32 [tokens, topk, hidden].
+            )pbdoc")
+        .def("moe_forward_combined_direct_device", [](
+                dee::Engine& self,
+                int layer,
+                uintptr_t d_h_in_ptr,
+                int tokens,
+                uintptr_t d_expert_ids_ptr,
+                int topk,
+                uintptr_t d_weights_ptr,
+                uintptr_t d_output_ptr,
+                uintptr_t d_raw_trace_ptr,
+                uintptr_t external_stream_ptr) -> bool {
+            if (topk != self.config().topk) {
+                throw std::runtime_error(
+                    "expert_ids topk does not match EngineConfig.topk");
+            }
+            bool ok = false;
+            {
+                py::gil_scoped_release release;
+                ok = self.moe_forward_combined_direct_device(
+                    layer,
+                    reinterpret_cast<const void*>(d_h_in_ptr),
+                    tokens,
+                    reinterpret_cast<const int64_t*>(d_expert_ids_ptr),
+                    topk,
+                    reinterpret_cast<const float*>(d_weights_ptr),
+                    reinterpret_cast<void*>(d_output_ptr),
+                    reinterpret_cast<void*>(d_raw_trace_ptr),
+                    reinterpret_cast<void*>(external_stream_ptr));
+            }
+            return ok;
+        }, py::arg("layer"), py::arg("d_h_in_ptr"), py::arg("tokens"),
+           py::arg("d_expert_ids_ptr"), py::arg("topk"),
+           py::arg("d_weights_ptr"), py::arg("d_output_ptr"),
+           py::arg("d_raw_trace_ptr"),
+           py::arg("external_stream_ptr"),
+            R"pbdoc(
+                Run exact combined MoE while bypassing gather/scatter copies
+                for single-row expert groups. Multi-row and duplicate groups
+                retain the established copy path.
+            )pbdoc")
+        .def("moe_forward_combined_pointer_batched_device", [](
+                dee::Engine& self,
+                int layer,
+                uintptr_t d_h_in_ptr,
+                int tokens,
+                uintptr_t d_expert_ids_ptr,
+                int topk,
+                uintptr_t d_weights_ptr,
+                uintptr_t d_output_ptr,
+                uintptr_t d_raw_trace_ptr,
+                uintptr_t external_stream_ptr) -> bool {
+            if (topk != self.config().topk) {
+                throw std::runtime_error(
+                    "expert_ids topk does not match EngineConfig.topk");
+            }
+            bool ok = false;
+            {
+                py::gil_scoped_release release;
+                ok = self.moe_forward_combined_pointer_batched_device(
+                    layer,
+                    reinterpret_cast<const void*>(d_h_in_ptr),
+                    tokens,
+                    reinterpret_cast<const int64_t*>(d_expert_ids_ptr),
+                    topk,
+                    reinterpret_cast<const float*>(d_weights_ptr),
+                    reinterpret_cast<void*>(d_output_ptr),
+                    reinterpret_cast<void*>(d_raw_trace_ptr),
+                    reinterpret_cast<void*>(external_stream_ptr));
+            }
+            return ok;
+        }, py::arg("layer"), py::arg("d_h_in_ptr"), py::arg("tokens"),
+           py::arg("d_expert_ids_ptr"), py::arg("topk"),
+           py::arg("d_weights_ptr"), py::arg("d_output_ptr"),
+           py::arg("d_raw_trace_ptr"),
+           py::arg("external_stream_ptr"),
+           R"pbdoc(
+                Run exact combined token-1 MoE with pointer-batched cuBLAS
+                expert projections. Unsupported shapes fail closed.
+            )pbdoc")
+        .def("qwen_rms_norm_device", [](
+                dee::Engine& self,
+                uintptr_t d_input_ptr,
+                uintptr_t d_weight_ptr,
+                uintptr_t d_output_ptr,
+                int rows,
+                int dim,
+                float epsilon,
+                uintptr_t external_stream_ptr) -> bool {
+            bool ok = false;
+            {
+                py::gil_scoped_release release;
+                ok = self.qwen_rms_norm_device(
+                    reinterpret_cast<const void*>(d_input_ptr),
+                    reinterpret_cast<const void*>(d_weight_ptr),
+                    reinterpret_cast<void*>(d_output_ptr),
+                    rows,
+                    dim,
+                    epsilon,
+                    reinterpret_cast<void*>(external_stream_ptr));
+            }
+            return ok;
+        }, py::arg("d_input_ptr"), py::arg("d_weight_ptr"),
+           py::arg("d_output_ptr"), py::arg("rows"), py::arg("dim"),
+           py::arg("epsilon"), py::arg("external_stream_ptr"),
+           "Launch Qwen RMSNorm on contiguous FP16 device tensors.")
+        .def("qwen_rms_norm_device_diagnostic", [](
+                dee::Engine& self,
+                uintptr_t d_input_ptr,
+                uintptr_t d_weight_ptr,
+                uintptr_t d_output_ptr,
+                int rows,
+                int dim,
+                float epsilon,
+                int row_start,
+                int row_count,
+                int element_start,
+                int element_count,
+                uintptr_t d_input_snapshot_ptr,
+                uintptr_t d_sum_squares_ptr,
+                uintptr_t d_denominator_ptr,
+                uintptr_t d_reciprocal_rms_ptr,
+                uintptr_t d_weight_snapshot_ptr,
+                uintptr_t d_normalized_ptr,
+                uintptr_t d_output_snapshot_ptr,
+                uintptr_t external_stream_ptr) -> uint64_t {
+            const size_t vector_stride = static_cast<size_t>(element_count) * sizeof(float);
+            const size_t scalar_stride = sizeof(float);
+            uint64_t sequence = 0;
+            {
+                py::gil_scoped_release release;
+                sequence = self.qwen_rms_norm_device_diagnostic(
+                    reinterpret_cast<const void*>(d_input_ptr),
+                    reinterpret_cast<const void*>(d_weight_ptr),
+                    reinterpret_cast<void*>(d_output_ptr),
+                    rows,
+                    dim,
+                    epsilon,
+                    row_start,
+                    row_count,
+                    element_start,
+                    element_count,
+                    vector_stride,
+                    vector_stride,
+                    vector_stride,
+                    vector_stride,
+                    scalar_stride,
+                    reinterpret_cast<void*>(d_input_snapshot_ptr),
+                    reinterpret_cast<void*>(d_sum_squares_ptr),
+                    reinterpret_cast<void*>(d_denominator_ptr),
+                    reinterpret_cast<void*>(d_reciprocal_rms_ptr),
+                    reinterpret_cast<void*>(d_weight_snapshot_ptr),
+                    reinterpret_cast<void*>(d_normalized_ptr),
+                    reinterpret_cast<void*>(d_output_snapshot_ptr),
+                    reinterpret_cast<void*>(external_stream_ptr));
+            }
+            return sequence;
+        }, py::arg("d_input_ptr"), py::arg("d_weight_ptr"),
+           py::arg("d_output_ptr"), py::arg("rows"), py::arg("dim"),
+           py::arg("epsilon"), py::arg("row_start"), py::arg("row_count"),
+           py::arg("element_start"), py::arg("element_count"),
+           py::arg("d_input_snapshot_ptr"), py::arg("d_sum_squares_ptr"),
+           py::arg("d_denominator_ptr"), py::arg("d_reciprocal_rms_ptr"),
+           py::arg("d_weight_snapshot_ptr"), py::arg("d_normalized_ptr"),
+           py::arg("d_output_snapshot_ptr"), py::arg("external_stream_ptr"),
+           "Run the opt-in device-authentic regular RMSNorm diagnostic and "
+           "wait for its completion event before returning a sequence number.")
+        .def("qwen_rms_norm_reference_diagnostic", [](
+                dee::Engine& self,
+                uintptr_t d_input_ptr,
+                uintptr_t d_weight_ptr,
+                uintptr_t d_output_ptr,
+                int rows,
+                int dim,
+                float epsilon,
+                int row_start,
+                int row_count,
+                int element_start,
+                int element_count,
+                uintptr_t d_input_snapshot_ptr,
+                uintptr_t d_sum_squares_ptr,
+                uintptr_t d_denominator_ptr,
+                uintptr_t d_reciprocal_rms_ptr,
+                uintptr_t d_weight_snapshot_ptr,
+                uintptr_t d_normalized_ptr,
+                uintptr_t d_output_snapshot_ptr,
+                uintptr_t external_stream_ptr) -> uint64_t {
+            const size_t vector_stride = static_cast<size_t>(element_count) * sizeof(float);
+            const size_t scalar_stride = sizeof(float);
+            uint64_t sequence = 0;
+            {
+                py::gil_scoped_release release;
+                sequence = self.qwen_rms_norm_reference_diagnostic(
+                    reinterpret_cast<const void*>(d_input_ptr),
+                    reinterpret_cast<const void*>(d_weight_ptr),
+                    reinterpret_cast<void*>(d_output_ptr),
+                    rows,
+                    dim,
+                    epsilon,
+                    row_start,
+                    row_count,
+                    element_start,
+                    element_count,
+                    vector_stride,
+                    vector_stride,
+                    vector_stride,
+                    vector_stride,
+                    scalar_stride,
+                    reinterpret_cast<void*>(d_input_snapshot_ptr),
+                    reinterpret_cast<void*>(d_sum_squares_ptr),
+                    reinterpret_cast<void*>(d_denominator_ptr),
+                    reinterpret_cast<void*>(d_reciprocal_rms_ptr),
+                    reinterpret_cast<void*>(d_weight_snapshot_ptr),
+                    reinterpret_cast<void*>(d_normalized_ptr),
+                    reinterpret_cast<void*>(d_output_snapshot_ptr),
+                    reinterpret_cast<void*>(external_stream_ptr));
+            }
+            return sequence;
+        }, py::arg("d_input_ptr"), py::arg("d_weight_ptr"),
+           py::arg("d_output_ptr"), py::arg("rows"), py::arg("dim"),
+           py::arg("epsilon"), py::arg("row_start"), py::arg("row_count"),
+           py::arg("element_start"), py::arg("element_count"),
+           py::arg("d_input_snapshot_ptr"), py::arg("d_sum_squares_ptr"),
+           py::arg("d_denominator_ptr"), py::arg("d_reciprocal_rms_ptr"),
+           py::arg("d_weight_snapshot_ptr"), py::arg("d_normalized_ptr"),
+           py::arg("d_output_snapshot_ptr"), py::arg("external_stream_ptr"),
+           "Run the diagnostic-only control RMSNorm probe; callers must prove "
+           "its output bits match the untouched reference module.")
+        .def("qwen_rms_norm_gated_device", [](
+                dee::Engine& self,
+                uintptr_t d_input_ptr,
+                uintptr_t d_weight_ptr,
+                uintptr_t d_gate_ptr,
+                uintptr_t d_output_ptr,
+                int rows,
+                int dim,
+                float epsilon,
+                uintptr_t external_stream_ptr) -> bool {
+            bool ok = false;
+            {
+                py::gil_scoped_release release;
+                ok = self.qwen_rms_norm_gated_device(
+                    reinterpret_cast<const void*>(d_input_ptr),
+                    reinterpret_cast<const void*>(d_weight_ptr),
+                    reinterpret_cast<const void*>(d_gate_ptr),
+                    reinterpret_cast<void*>(d_output_ptr),
+                    rows,
+                    dim,
+                    epsilon,
+                    reinterpret_cast<void*>(external_stream_ptr));
+            }
+            return ok;
+        }, py::arg("d_input_ptr"), py::arg("d_weight_ptr"),
+           py::arg("d_gate_ptr"), py::arg("d_output_ptr"),
+           py::arg("rows"), py::arg("dim"), py::arg("epsilon"),
+           py::arg("external_stream_ptr"),
+           "Launch Qwen gated RMSNorm on contiguous FP16 device tensors.")
+        .def("compute_stream_handle", &dee::Engine::compute_stream_handle,
+             "Return the native compute-stream handle for allocator lifetime tracking.")
+        .def("last_error_message", [](const dee::Engine& self) -> std::string {
+            return self.last_error_message();
+        }, "Return the most recent native diagnostic captured by the failure "
+           "paths of moe_forward_experts/moe_forward_batch/moe_forward_batch_device. "
+           "Empty string if the last call succeeded or no detail was captured.")
+        .def("last_stats_json", [](const dee::Engine& self) -> std::string {
+            std::ostringstream ss;
+            const dee::EngineStats s = self.runtime_stats();
+            ss << "{"
+               << "\"tokens\":" << s.tokens
+               << ",\"elapsed_sec\":" << s.elapsed_sec
+               << ",\"tok_per_sec\":" << s.tok_per_sec
+               << ",\"cache_hits\":" << s.cache_hits
+               << ",\"cache_loads\":" << s.cache_loads
+               << ",\"cold_loads\":" << s.cold_loads
+               << ",\"resident_hits\":" << s.resident_hits
+               << ",\"inflight_hits\":" << s.inflight_hits
+               << ",\"evictions\":" << s.evictions
+               << ",\"fallbacks\":" << s.fallbacks
+               << ",\"prefetch_issued\":" << s.prefetch_issued
+               << ",\"prefetch_fallbacks\":" << s.prefetch_fallbacks
+               << ",\"duplicate_requests\":" << s.duplicate_requests
+               << ",\"h2d_bytes\":" << s.h2d_bytes
+               << ",\"h2d_copies\":" << s.h2d_copies
+               << ",\"hidden_finite\":" << (s.hidden_finite ? "true" : "false")
+               << ",\"peak_vram\":" << s.peak_vram
+               << ",\"current_vram\":" << s.current_vram
+               << ",\"resident_experts\":" << s.resident_experts
+               << ",\"host_pinned_expert_staging_bytes\":"
+               << s.host_pinned_expert_staging_bytes
+               << ",\"host_pageable_expert_staging_bytes\":"
+               << s.host_pageable_expert_staging_bytes
+               << ",\"host_router_weight_bytes\":" << s.host_router_weight_bytes
+               << ",\"host_hidden_buffer_bytes\":" << s.host_hidden_buffer_bytes
+               << ",\"host_moe_dispatch_bytes\":" << s.host_moe_dispatch_bytes
+               << ",\"host_moe_pointer_table_bytes\":"
+               << s.host_moe_pointer_table_bytes
+               << ",\"host_prefetch_ring_bytes\":" << s.host_prefetch_ring_bytes
+               << ",\"host_prefetch_ring_slots\":" << s.host_prefetch_ring_slots
+               << ",\"peak_transient_host_bytes\":" << s.peak_transient_host_bytes
+               << ",\"device_expert_cache_reserved_bytes\":"
+               << s.device_expert_cache_reserved_bytes
+               << ",\"device_prefetch_staging_bytes\":"
+               << s.device_prefetch_staging_bytes
+               << ",\"device_fixed_work_buffer_bytes\":"
+               << s.device_fixed_work_buffer_bytes
+               << ",\"device_router_weight_bytes\":" << s.device_router_weight_bytes
+               << ",\"device_router_dynamic_bytes\":" << s.device_router_dynamic_bytes
+               << ",\"device_moe_batch_buffer_bytes\":"
+               << s.device_moe_batch_buffer_bytes
+               << ",\"device_moe_raw_workspace_bytes\":"
+               << s.device_moe_raw_workspace_bytes
+               << ",\"device_moe_pointer_batch_workspace_bytes\":"
+               << s.device_moe_pointer_batch_workspace_bytes
+               << ",\"d2d_gather_copies\":" << s.d2d_gather_copies
+               << ",\"d2d_gather_bytes\":" << s.d2d_gather_bytes
+               << ",\"d2d_scatter_copies\":" << s.d2d_scatter_copies
+               << ",\"d2d_scatter_bytes\":" << s.d2d_scatter_bytes
+               << ",\"direct_row_gather_bypasses\":"
+               << s.direct_row_gather_bypasses
+               << ",\"direct_row_scatter_bypasses\":"
+               << s.direct_row_scatter_bypasses
+               << ",\"pointer_batched_expert_calls\":"
+               << s.pointer_batched_expert_calls
+               << ",\"pointer_batched_experts\":"
+               << s.pointer_batched_experts
+               << ",\"device_oracle_scratch_bytes\":"
+               << s.device_oracle_scratch_bytes
+               << ",\"cuda_total\":" << s.cuda_total
+               << ",\"cuda_free\":" << s.cuda_free
+               << "}";
+            return ss.str();
+        });
+}

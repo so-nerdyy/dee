@@ -1,0 +1,9 @@
+{
+  "baseline_evidence": "v1-fetch-20260904T180559Z/output/result.json",
+  "candidate_evidence": "v2-fetch-20260904T183100Z/output/result.json",
+  "terminal": {"v1": "COMPLETE", "v2": "COMPLETE"},
+  "correctness": {"v1_classification": "ACCEPT_CORRECTNESS", "v2_classification": "ACCEPT_CORRECTNESS", "exact_ids_equal": true, "exact_text_equal": true, "v2_all_sealed_gates": true},
+  "metrics": {"total_wall_seconds": {"v1": 176.01, "v2": 175.12, "delta_v2_minus_v1": -0.89}, "decode_wall_seconds": {"v1": 73.213, "v2": 71.284, "delta_v2_minus_v1": -1.929}, "decode_tokens_per_second": {"v1": 0.205, "v2": 0.21, "delta_v2_minus_v1": 0.005}},
+  "replication_result": "Decode and total-wall improvements reproduced in the matched pair, but this remains a single replication pair and is not performance acceptance.",
+  "performance_acceptance": false
+}

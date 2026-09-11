@@ -1,0 +1,18 @@
+{
+  "kernel_id": 133165288,
+  "version": 2,
+  "evidence_dir": "fetch-20260907T190302Z/output",
+  "status": "COMPLETE",
+  "classification": "ACCEPT_CORRECTNESS",
+  "commit": "217a33359b06a0453444a698ec52e4078b77e388",
+  "tree_verified_by_integrity": true,
+  "harness_sha256": "66ea7736f1c9044a6c1d4498f6515216bd206e4c89f098fb8e1e05dae32dc457",
+  "exact_ids": [666,95140,96807,343,4470,20,1127,3298,22,22604,515,411,3947,85349,14,6341],
+  "exact_text": "**Alan Turing (1912–1954)** was an English mathematician, computer",
+  "layers": 43,
+  "all_sealed_gates": true,
+  "hardware": "2x Tesla T4",
+  "timing": {"total_wall_seconds": 160.82, "decode_wall_seconds": 70.445},
+  "config_equivalence": "cache dtype/store, token count, cache budget, host-pack bytes/cap, profile-off, force_tmp match repair2 baseline; run_id, recorded time, and source_sha256 differ as expected for distinct payload/commit.",
+  "performance_acceptance": false
+}

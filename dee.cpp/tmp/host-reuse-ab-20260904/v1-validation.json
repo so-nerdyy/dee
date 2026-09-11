@@ -1,0 +1,17 @@
+{
+  "valid": true,
+  "kernel": "nivind/dee-cpp-dsv4-host-reuse-ab-20260904",
+  "kernel_id": 133096265,
+  "version": 1,
+  "run_id": "host-reuse-ab1-baseline-q6l3-20260904-v1",
+  "evidence_dir": "v1-fetch-20260904T171320Z",
+  "result": "output/result.json",
+  "classification": "ACCEPT_CORRECTNESS",
+  "performance_eligible": true,
+  "exact_token_count": 16,
+  "exact_decoded_text": "**Alan Turing (1912–1954)** was an English mathematician, computer",
+  "sealed_contract_gates": "all true",
+  "all_non_hardware_gates_pass": true,
+  "hardware": "2x Tesla T4",
+  "source_sha256": "598fc98760aecf92948380f041ef7978a13e89076f5a0c1f6b887711f9318d5a"
+}

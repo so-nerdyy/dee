@@ -2,12 +2,17 @@
 #include "dee/weight_mmap.h"
 #include "dee/json_min.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#endif
 
 namespace dee {
 
@@ -16,6 +21,9 @@ DType dtype_from_string(const std::string& s) {
     if (s == "F32" || s == "F32E4M3" || s == "F32E5M2") return DType::F32;
     if (s == "F16") return DType::F16;
     if (s == "BF16") return DType::BF16;
+    if (s == "F8_E4M3" || s == "F8_E5M2" || s == "F8_E8M0") return DType::F8;
+    if (s == "I8") return DType::I8;
+    if (s == "I64") return DType::I64;
     return DType::UNKNOWN;
 }
 const char* dtype_to_string(DType d) {
@@ -23,6 +31,9 @@ const char* dtype_to_string(DType d) {
         case DType::F32:  return "F32";
         case DType::F16:  return "F16";
         case DType::BF16: return "BF16";
+        case DType::F8:   return "F8";
+        case DType::I8:   return "I8";
+        case DType::I64:  return "I64";
         default:          return "UNKNOWN";
     }
 }
@@ -59,21 +70,107 @@ float f16_to_f32(uint16_t h) {
     return f;
 }
 
+// ---- DeepSeek-V4 FP4 (e2m1fn) decode -------------------------------------
+// Official 16-entry table (convert.py): positive half indices 0..7, negative
+// half indices 8..15.  Index 0 and 8 both decode to 0.0 (official quirk).
+const float* fp4_e2m1_table() {
+    static const float table[16] = {
+        0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,
+        0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f,
+    };
+    return table;
+}
+
+float fp4_nibble_to_f32(uint8_t nibble) {
+    return fp4_e2m1_table()[nibble & 0x0F];
+}
+
+float e8m0_to_f32(uint8_t bits) {
+    // ue8m0: value = 2^(bits - 127).  Realistic scale bytes are 0x7d..0x82
+    // (exponents -2..3); clamp the extremes so hostile inputs produce 0 or a
+    // finite max instead of inf/NaN/negative-shift UB.
+    int exponent = static_cast<int>(bits) - 127;
+    if (exponent >= 127) exponent = 127;
+    if (exponent <= -127) return 0.0f;
+    uint32_t u = static_cast<uint32_t>(exponent + 127) << 23;
+    float f;
+    std::memcpy(&f, &u, sizeof(f));
+    return f;
+}
+
+void fp4_e2m1_dequantize(const uint8_t* packed, const uint8_t* scale,
+                         size_t out, size_t in, float* dst) {
+    const size_t packed_in = in / 2;
+    const size_t scale_in = in / 32;
+    for (size_t o = 0; o < out; ++o) {
+        const uint8_t* row_packed = packed + o * packed_in;
+        const uint8_t* row_scale = scale + o * scale_in;
+        float* row_dst = dst + o * in;
+        for (size_t i = 0; i < in; ++i) {
+            const uint8_t byte = row_packed[i / 2];
+            const uint8_t nibble = (i & 1) ? (byte >> 4) : (byte & 0x0F);
+            const float value = fp4_nibble_to_f32(nibble);
+            const float s = e8m0_to_f32(row_scale[i / 32]);
+            row_dst[i] = value * s;
+        }
+    }
+}
+
 // ---- WeightMmap -----------------------------------------------------------
 WeightMmap::WeightMmap() = default;
 
 WeightMmap::~WeightMmap() { close(); }
 
 void WeightMmap::close() {
+#ifdef _WIN32
+    if (base_) UnmapViewOfFile(base_);
+    if (mapping_handle_) CloseHandle(static_cast<HANDLE>(mapping_handle_));
+    mapping_handle_ = nullptr;
+#else
     if (base_ && base_ != MAP_FAILED) munmap(base_, size_);
+#endif
     base_ = nullptr; size_ = 0;
+#ifndef _WIN32
     if (fd_ >= 0) ::close(fd_);
+#endif
     fd_ = -1;
     tensors_.clear();
     header_json_.clear();
 }
 
 bool WeightMmap::map_file(const std::string& path) {
+#ifdef _WIN32
+    HANDLE file = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        std::fprintf(stderr, "WeightMmap: CreateFile failed for %s (error %lu)\n", path.c_str(), GetLastError());
+        return false;
+    }
+    LARGE_INTEGER file_size{};
+    if (!GetFileSizeEx(file, &file_size) || file_size.QuadPart < 8 ||
+        static_cast<unsigned long long>(file_size.QuadPart) > static_cast<unsigned long long>(SIZE_MAX)) {
+        std::fprintf(stderr, "WeightMmap: invalid file size for %s\n", path.c_str());
+        CloseHandle(file);
+        return false;
+    }
+    HANDLE mapping = CreateFileMappingA(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
+    CloseHandle(file);
+    if (!mapping) {
+        std::fprintf(stderr, "WeightMmap: CreateFileMapping failed for %s (error %lu)\n", path.c_str(), GetLastError());
+        return false;
+    }
+    void* mapped = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
+    if (!mapped) {
+        std::fprintf(stderr, "WeightMmap: MapViewOfFile failed for %s (error %lu)\n", path.c_str(), GetLastError());
+        CloseHandle(mapping);
+        return false;
+    }
+    mapping_handle_ = mapping;
+    base_ = static_cast<uint8_t*>(mapped);
+    size_ = static_cast<size_t>(file_size.QuadPart);
+    fd_ = 0;
+    return true;
+#else
     fd_ = ::open(path.c_str(), O_RDONLY);
     if (fd_ < 0) { fprintf(stderr, "WeightMmap: open failed: %s\n", path.c_str()); return false; }
     struct stat st;
@@ -86,6 +183,7 @@ bool WeightMmap::map_file(const std::string& path) {
     // exactly as llama.cpp does with POSIX_MADV_RANDOM.
     posix_madvise(base_, size_, POSIX_MADV_RANDOM);
     return true;
+#endif
 }
 
 bool WeightMmap::open(const std::string& path) {
@@ -134,6 +232,7 @@ bool WeightMmap::parse_header_json(const std::string& json) {
         }
         long long start = off_v->arr[0]->i;
         long long end   = off_v->arr[1]->i;
+        if (start < 0 || end < start) continue;
         m.data_offset = (size_t)start;
         m.nbytes      = (size_t)(end - start);
         tensors_[name] = m;
@@ -153,11 +252,52 @@ TensorView WeightMmap::lookup(const std::string& tensor_name) const {
     uint64_t hlen = 0;
     std::memcpy(&hlen, base_, 8);
     size_t abs = 8 + (size_t)hlen + m.data_offset;
+    if (abs > size_ || m.nbytes > size_ - abs) return view;
     view.data   = base_ + abs;
     view.nbytes = m.nbytes;
     view.dtype  = m.dtype;
     view.shape  = m.shape;
     return view;
+}
+
+bool WeightMmap::discard_source_pages(const void* data, size_t nbytes) const {
+#ifdef _WIN32
+    (void)data;
+    (void)nbytes;
+    return false;
+#else
+    if (!base_ || fd_ < 0 || !data || nbytes == 0) return false;
+    const auto begin = reinterpret_cast<uintptr_t>(base_);
+    const auto address = reinterpret_cast<uintptr_t>(data);
+    if (address < begin || address - begin >= size_) return false;
+    const size_t offset = static_cast<size_t>(address - begin);
+    const size_t length = std::min(nbytes, size_ - offset);
+
+    // POSIX_FADV_DONTNEED operates on the file-backed pages and is stronger
+    // than relying on mmap advice alone for a shared, read-only mapping.
+    const int advice = ::posix_fadvise(fd_,
+                                       static_cast<off_t>(offset), length,
+                                       POSIX_FADV_DONTNEED);
+    const long page_size = ::sysconf(_SC_PAGESIZE);
+    if (page_size <= 0) return advice == 0;
+    const uintptr_t page_mask = static_cast<uintptr_t>(page_size) - 1;
+    const uintptr_t map_begin = begin;
+    const uintptr_t map_end = begin + size_;
+    const uintptr_t aligned_begin = std::max(
+        address & ~page_mask, map_begin);
+    const uintptr_t end = address + length;
+    const uintptr_t aligned_end = std::min(
+        (end + page_mask) & ~page_mask, map_end);
+    const size_t span = aligned_end > aligned_begin
+        ? static_cast<size_t>(aligned_end - aligned_begin) : 0;
+    if (span != 0) {
+        // Best effort: POSIX_FADV_DONTNEED is the authoritative file-cache
+        // operation; MADV_DONTNEED additionally drops resident mapping PTEs.
+        (void)::madvise(reinterpret_cast<void*>(aligned_begin), span,
+                        MADV_DONTNEED);
+    }
+    return advice == 0;
+#endif
 }
 
 // ---- TensorResolver --------------------------------------------------------
@@ -175,12 +315,53 @@ std::string TensorResolver::expert_tensor_name(int layer, int expert, TensorReso
     return std::string(buf);
 }
 
+namespace {
+// DeepSeek-V4 weight suffix per resolver Kind: w1=gate, w3=up, w2=down.
+const char* v4_kind_suffix(TensorResolver::Kind kind) {
+    switch (kind) {
+        case TensorResolver::GATE_PROJ: return "w1";
+        case TensorResolver::UP_PROJ:   return "w3";
+        case TensorResolver::DOWN_PROJ: return "w2";
+    }
+    return "?";
+}
+}  // namespace
+
+std::string TensorResolver::v4_expert_tensor_name(int layer, int expert, TensorResolver::Kind kind) {
+    char buf[256];
+    snprintf(buf, sizeof(buf), "layers.%d.ffn.experts.%d.%s.weight", layer, expert, v4_kind_suffix(kind));
+    return std::string(buf);
+}
+
+std::string TensorResolver::v4_expert_scale_name(int layer, int expert, TensorResolver::Kind kind) {
+    char buf[256];
+    snprintf(buf, sizeof(buf), "layers.%d.ffn.experts.%d.%s.scale", layer, expert, v4_kind_suffix(kind));
+    return std::string(buf);
+}
+
+std::string TensorResolver::v4_shared_expert_tensor_name(int layer, TensorResolver::Kind kind) {
+    char buf[256];
+    snprintf(buf, sizeof(buf), "layers.%d.ffn.shared_experts.%s.weight", layer, v4_kind_suffix(kind));
+    return std::string(buf);
+}
+
 void TensorResolver::register_shard(WeightMmap* mmap) {
     if (mmap) shards_.push_back(mmap);
 }
 
 TensorView TensorResolver::resolve_expert(int layer, int expert, Kind kind) const {
-    std::string name = expert_tensor_name(layer, expert, kind);
+    if (model_ == Model::DEEPSEEK_V4) {
+        return resolve_tensor(v4_expert_tensor_name(layer, expert, kind));
+    }
+    return resolve_tensor(expert_tensor_name(layer, expert, kind));
+}
+
+TensorView TensorResolver::resolve_expert_scale(int layer, int expert, Kind kind) const {
+    if (model_ != Model::DEEPSEEK_V4) return TensorView{};  // no scales in ORNITH
+    return resolve_tensor(v4_expert_scale_name(layer, expert, kind));
+}
+
+TensorView TensorResolver::resolve_tensor(const std::string& name) const {
     for (auto* sh : shards_) {
         TensorView v = sh->lookup(name);
         if (v.ok()) return v;

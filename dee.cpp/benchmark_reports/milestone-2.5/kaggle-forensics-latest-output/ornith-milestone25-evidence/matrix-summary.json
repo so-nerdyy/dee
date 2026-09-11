@@ -1,0 +1,111 @@
+{
+  "experiments": [
+    {
+      "all_40_layers": true,
+      "elapsed_seconds": 1785.458301003,
+      "generated_token_ids": [
+        11,
+        271,
+        40,
+        1044
+      ],
+      "report": "runs/dual-cold-primary/run-report.json",
+      "result": "PASS",
+      "run_id": "dual-cold-primary"
+    },
+    {
+      "all_40_layers": true,
+      "elapsed_seconds": 47.530697303000125,
+      "generated_token_ids": [
+        11,
+        271,
+        40,
+        1044
+      ],
+      "report": "runs/dual-warm-profiled/run-report.json",
+      "result": "PASS",
+      "run_id": "dual-warm-profiled"
+    },
+    {
+      "all_40_layers": true,
+      "elapsed_seconds": 37.85249860900012,
+      "generated_token_ids": [
+        11,
+        271,
+        40,
+        1044
+      ],
+      "report": "runs/dual-warm-control/run-report.json",
+      "result": "PASS",
+      "run_id": "dual-warm-control"
+    },
+    {
+      "all_40_layers": true,
+      "elapsed_seconds": 57.972865030999856,
+      "generated_token_ids": [
+        11,
+        271,
+        40,
+        1044
+      ],
+      "report": "runs/dual-warm-reference-present/run-report.json",
+      "result": "PASS",
+      "run_id": "dual-warm-reference-present"
+    },
+    {
+      "all_40_layers": true,
+      "elapsed_seconds": 30.73015666299989,
+      "generated_token_ids": [
+        11,
+        271
+      ],
+      "report": "runs/dual-cache-disabled/run-report.json",
+      "result": "PASS",
+      "run_id": "dual-cache-disabled"
+    },
+    {
+      "all_40_layers": true,
+      "elapsed_seconds": 30.58465254199973,
+      "generated_token_ids": [
+        11,
+        271
+      ],
+      "report": "runs/dual-cache-capacity-4/run-report.json",
+      "result": "PASS",
+      "run_id": "dual-cache-capacity-4"
+    },
+    {
+      "all_40_layers": true,
+      "elapsed_seconds": 2472.0163753639995,
+      "generated_token_ids": [
+        198,
+        760
+      ],
+      "report": "runs/dual-long-prompt/run-report.json",
+      "result": "PASS",
+      "run_id": "dual-long-prompt"
+    },
+    {
+      "all_40_layers": true,
+      "elapsed_seconds": 25.12025373399956,
+      "generated_token_ids": [
+        11
+      ],
+      "report": "runs/dual-one-token/run-report.json",
+      "result": "PASS",
+      "run_id": "dual-one-token"
+    },
+    {
+      "all_40_layers": true,
+      "elapsed_seconds": 29.550805243000468,
+      "generated_token_ids": [
+        11,
+        271
+      ],
+      "report": "runs/single-t4-warm/run-report.json",
+      "result": "PASS",
+      "run_id": "single-t4-warm"
+    }
+  ],
+  "schema_version": 1
+}

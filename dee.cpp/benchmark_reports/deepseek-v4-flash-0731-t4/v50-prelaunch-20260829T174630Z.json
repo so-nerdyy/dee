@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "id": "v50-prelaunch",
+  "created_utc": "20260829T174630Z",
+  "run_id": "p2.3-route-journal-v50",
+  "pinned_commit": "576382bddb6bdcbbe22b92739dd73109886e4638",
+  "origin_commit_verified": "576382bddb6bdcbbe22b92739dd73109886e4638",
+  "branch": "freebuff/deepseek-v4-flash-0731-t4",
+  "harness_git_blob": "614a8249fa2b42f26895ead2db2f6af179b51179",
+  "harness_sha256_git_blob": "2b81d7f8d6693b969020f1c1444e88947597151661d58f7e4425dacde8d2dd9b",
+  "run_config_git_blob": "679a211f195890716dcf97d3bb2afab49d7bdd20",
+  "run_config_sha256_git_blob": "c496e8874b69872ae67cf0a359f54a472e5826e699c7691eab8d7aeb350add6a",
+  "kernel_metadata_git_blob": "68fc04d5fbaa63d3455c70feb075e84c710521d7",
+  "kernel_metadata_sha256_git_blob": "b4f3f5ea04a8099801fe6f03611e9bffb5ad7e4e6e420020ba4d2174ff11ea79",
+  "model_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+  "requested_topology": {
+    "accelerator": "NvidiaTeslaT4",
+    "gpu_count": 2,
+    "is_shared_vm": false,
+    "container_size": "medium"
+  },
+  "kernel": {
+    "id": "nivind/dee-cpp-dsv4-native-generate",
+    "code_file": "deepseek_v4_native_generate.py",
+    "code_file_exists": true,
+    "dataset_source": "nivind/deepseek-v4-flash-0731-shards"
+  },
+  "config": {
+    "cache_dtype": "fp4",
+    "expert_store": "safetensors",
+    "dee4_validate_samples": 12,
+    "profile_stages": false,
+    "n_tokens": 16
+  },
+  "route_journal_contract": {
+    "artifact": "routed_experts.jsonl",
+    "schema_version": 1,
+    "canonical_order": "forward_step,layer,token_row,topk_rank",
+    "n_layers": 43,
+    "topk": 6,
+    "expected_completed_forwards": 16,
+    "expected_layer_records": 688,
+    "expected_token_rows": 22,
+    "expected_ranked_expert_ids": 5676,
+    "flush_each_layer": true,
+    "fsync_each_completed_forward": true,
+    "adds_device_transfers": false,
+    "adds_host_synchronizations": false
+  },
+  "local_prelaunch_tests": {
+    "test_native_generation_evidence.py": "8 passed",
+    "harness_py_compile": "passed"
+  },
+  "runtime_dispatch_verification": {
+    "kernel_version": 50,
+    "pinned_commit_observed": "576382bddb6bdcbbe22b92739dd73109886e4638",
+    "gpu_count_observed": 2,
+    "gpu_names_observed": ["Tesla T4", "Tesla T4"],
+    "compute_capabilities_observed": [7.5, 7.5],
+    "effective_run_id": "p2.3-route-journal-v50",
+    "effective_cache_dtype": "fp4",
+    "effective_expert_store": "safetensors",
+    "effective_profile_stages": false,
+    "effective_n_tokens": 16,
+    "effective_dee4_validate_samples": 12,
+    "fp4_cuda_test_completed": true,
+    "fp4_expert_test_completed": true
+  },
+  "launch_identity": "The branch contained exactly pinned_commit when this receipt was written. This receipt remains untracked until the remote log confirms that exact clone, then it can be committed without moving the already-running source identity.",
+  "expectation": "Diagnostic rerun of the accepted packed-FP4 safetensors path. Require exact 16-token contract, complete 688-record route journal, valid chain/file SHA-256 identities, 22 routed token rows and 5676 ranked expert IDs, and exact 2x Tesla T4 observation."
+}

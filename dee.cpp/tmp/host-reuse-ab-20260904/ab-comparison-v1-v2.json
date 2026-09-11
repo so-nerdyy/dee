@@ -1,0 +1,25 @@
+{
+  "baseline_evidence": "v1-fetch-20260904T171320Z/output/result.json",
+  "candidate_evidence": "v2-fetch-20260904T173515Z/output/result.json",
+  "terminal": {"v1": "COMPLETE", "v2": "COMPLETE"},
+  "correctness": {"v1_classification": "ACCEPT_CORRECTNESS", "v2_classification": "ACCEPT_CORRECTNESS", "v1_all_gates": true, "v2_all_gates": true, "ids_and_text_equal": true, "layers": 43},
+  "metrics": {
+    "total_wall_seconds": {"v1": 170.53, "v2": 169.36, "delta_v2_minus_v1": -1.17},
+    "prefill_ms": {"v1": 99062.33, "v2": 98568.25, "delta_v2_minus_v1": -494.08},
+    "decode_wall_seconds": {"v1": 71.362, "v2": 70.691, "delta_v2_minus_v1": -0.671},
+    "decode_tokens_per_second": {"v1": 0.21, "v2": 0.212, "delta_v2_minus_v1": 0.002},
+    "inter_token_latency_ms_p50": {"v1": 4459.5, "v2": 4366.81, "delta_v2_minus_v1": -92.69},
+    "inter_token_latency_ms_p95": {"v1": 6889.31, "v2": 6867.3, "delta_v2_minus_v1": -22.01},
+    "storage_roof_tokens_per_second": {"v1": 0.0622750618, "v2": 0.0613318361, "delta_v2_minus_v1": -0.0009432256},
+    "storage_bytes_per_token": {"v1": 2073083904, "v2": 2073083904},
+    "h2d_bytes_per_token": {"v1": 3713335296, "v2": 3713335296}
+  },
+  "candidate_reuse_telemetry": {
+    "cuda0": {"reused_fill_buffers": 708, "reused_fill_bytes": 9465495552, "fill_reservation_wall_ms": 5983.181875},
+    "cuda1": {"reused_fill_buffers": 409, "reused_fill_bytes": 5468061696, "fill_reservation_wall_ms": 6018.196153},
+    "total_reused_fill_buffers": 1117,
+    "total_reused_fill_bytes": 14933557248
+  },
+  "hashes": {"v1_server_source_sha256": "598fc98760aecf92948380f041ef7978a13e89076f5a0c1f6b887711f9318d5a", "v2_server_source_sha256": "8ac333757bf3c952966a81b00f41c00928c717b3d4ba91a3b4ce0ab4b1859e9a"},
+  "conclusion": "Candidate v2 wins wall/prefill/decode/ITL by observed deltas and adds reuse telemetry; storage roof is lower. These are single-run A/B observations, not performance acceptance."
+}

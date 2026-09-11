@@ -1,0 +1,10 @@
+{
+  "candidate": {"commit":"217a33359b06a0453444a698ec52e4078b77e388","harness_sha256":"66ea7736f1c9044a6c1d4498f6515216bd206e4c89f098fb8e1e05dae32dc457","result_sha256":"df8b31fa146fc124c3e1416b0361b815a4c14a5dbdfa2b0d5ad09cbb08352c6d","total_wall_seconds":160.82,"decode_wall_seconds":70.445,"decode_tokens_per_second":0.213},
+  "baseline_repair2": {"commit":"7b137846893c46b3aed2c7e322f0dbbd8d3ce0ec","harness_sha256":"c10be45cc5d2e37e517fa7d81ee26f82d06e14f4eb1a5793c4d23e368f063a0e","result_sha256":"b6893e2f62703d64edc4e3ad44eb8e6326e968beae37fd15fe66f1aedfec2cfa","total_wall_seconds":161.74,"decode_wall_seconds":70.695,"decode_tokens_per_second":0.212},
+  "delta_candidate_minus_baseline": {"total_wall_seconds":-0.92,"decode_wall_seconds":-0.25,"decode_tokens_per_second":0.001},
+  "correctness": {"candidate_classification":"ACCEPT_CORRECTNESS","exact_ids_text":true,"layers":43,"all_gates":true,"hardware":"2x Tesla T4"},
+  "route_equivalence": {"records_baseline":688,"records_candidate":688,"compared_records":688,"array_differences":0,"chain_continuity_baseline":true,"chain_continuity_candidate":true,"exact_output_route_claim":true,"baseline_route_chain_sha256":"8e07a818013befb9ef5cdc80ad7b3fe9eaa5c3bb6d3beb74233ab5a42ea5071c","candidate_route_chain_sha256":"9655ce34d7c8a2103dc8506e67fbff5ec354bd3e8389b1713ca7ecb2f63e4b33","note":"Per-record step/layer/device/phase/positions/top-k/expert-id arrays match; each chain is internally continuous; final hashes differ due run metadata."},
+  "baseline_scope_caveat":"Candidate commit 217a333 includes buffer-reuse plus consumer-completion guard relative to baseline 7b137846; this comparison is not an isolated guard-only A/B.",
+  "performance_acceptance":false,
+  "seal":"ACCEPT_CORRECTNESS only"
+}

@@ -1,0 +1,20 @@
+{
+  "recorded_at_utc": "2026-08-30T17:58:21Z",
+  "run_id": "p2.3-dee4-trace-v51",
+  "cache_dtype": "fp4",
+  "expert_store": "dee4_trace",
+  "dee4_trace_path": "/tmp/dsv4-dee4-v3-trace/metadata.json",
+  "dee4_validate_samples": 12,
+  "profile_stages": false,
+  "n_tokens": 16,
+  "cache_budget_bytes_per_gpu": 3758096384,
+  "cache_budget_gib_per_gpu": 3.5,
+  "host_pack_requested_bytes": [
+    13819057274,
+    13819057274
+  ],
+  "host_pack_runtime_cap_gib_total": 17.0,
+  "force_tmp": false,
+  "source_path": "/tmp/dsv4-native-src/dee.cpp/kaggle/deepseek-v4-flash-0731/run_config.json",
+  "source_sha256": "bc9c8e7015002bd97e2c869b07481be2a52012ac9b659bd66a7825c6595e809a"
+}

@@ -1,0 +1,12 @@
+{
+ "verdict": "INVALID_EXPERIMENT",
+ "gates": {
+  "probe_ok": true,
+  "config_identity": true,
+  "tokenizer_identity": true,
+  "shard_identity": true,
+  "reference_loaded": true
+ },
+ "first_failing_gate": null,
+ "error": "InternalError: Failed to set the allowed dynamic shared memory size to 82048"
+}
