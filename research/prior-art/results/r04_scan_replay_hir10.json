@@ -1,0 +1,1225 @@
+{
+ "tool": "phase2_scan_resistance_replay.py",
+ "journal": "C:\\Users\\carth\\Downloads\\dynamic_expert_eviction\\.freebuff\\wt\\r04\\dee.cpp\\benchmark_reports\\deepseek-v4-flash-0731-t4\\v50-evidence-20260829T195940Z\\routed_experts.jsonl",
+ "journal_sha256": "665aac3e8db570237c6dc6acaf08dc39f2af890e8a04e400ce7154f1a858dae1",
+ "requests_per_sealed_pass": 5099,
+ "unique_pairs": 2364,
+ "untouched_universe_scan_len": 8644,
+ "hir_ratio": 0.1,
+ "gate": {
+  "journal_sha256": "665aac3e8db570237c6dc6acaf08dc39f2af890e8a04e400ce7154f1a858dae1",
+  "checks": [
+   {
+    "cell": "pooled lru @642",
+    "got": [
+     2056,
+     3043,
+     2401
+    ],
+    "want": [
+     2056,
+     3043,
+     2401
+    ],
+    "ok": true
+   },
+   {
+    "cell": "pooled lru @963",
+    "got": [
+     2376,
+     2723,
+     1760
+    ],
+    "want": [
+     2376,
+     2723,
+     1760
+    ],
+    "ok": true
+   },
+   {
+    "cell": "pooled lru @1285",
+    "got": [
+     2592,
+     2507,
+     1222
+    ],
+    "want": [
+     2592,
+     2507,
+     1222
+    ],
+    "ok": true
+   },
+   {
+    "cell": "pooled lru @1606",
+    "got": [
+     2668,
+     2431,
+     825
+    ],
+    "want": [
+     2668,
+     2431,
+     825
+    ],
+    "ok": true
+   },
+   {
+    "cell": "pooled lru @1927",
+    "got": [
+     2707,
+     2392,
+     465
+    ],
+    "want": [
+     2707,
+     2392,
+     465
+    ],
+    "ok": true
+   },
+   {
+    "cell": "pooled lru @2570",
+    "got": [
+     2735,
+     2364,
+     0
+    ],
+    "want": [
+     2735,
+     2364,
+     0
+    ],
+    "ok": true
+   },
+   {
+    "cell": "cuda0 lru @682",
+    "got": [
+     1222,
+     1391,
+     709
+    ],
+    "want_sim": [
+     1222,
+     1391,
+     709
+    ],
+    "sealed": [
+     1223,
+     1390,
+     708
+    ],
+    "ok": true
+   },
+   {
+    "cell": "cuda1 lru @682",
+    "got": [
+     1395,
+     1091,
+     409
+    ],
+    "want_sim": [
+     1395,
+     1091,
+     409
+    ],
+    "sealed": [
+     1395,
+     1091,
+     409
+    ],
+    "ok": true
+   },
+   {
+    "cell": "belady @642",
+    "got_hits": 2735,
+    "want_hits": 2735,
+    "ok": true
+   },
+   {
+    "cell": "belady @963",
+    "got_hits": 2735,
+    "want_hits": 2735,
+    "ok": true
+   },
+   {
+    "cell": "belady @1285",
+    "got_hits": 2735,
+    "want_hits": 2735,
+    "ok": true
+   },
+   {
+    "cell": "belady @1606",
+    "got_hits": 2735,
+    "want_hits": 2735,
+    "ok": true
+   },
+   {
+    "cell": "belady @1927",
+    "got_hits": 2735,
+    "want_hits": 2735,
+    "ok": true
+   },
+   {
+    "cell": "belady @2570",
+    "got_hits": 2735,
+    "want_hits": 2735,
+    "ok": true
+   }
+  ],
+  "ok": true
+ },
+ "results": [
+  {
+   "probe": "sealed",
+   "policy": "lru",
+   "budget_gib": 4.0,
+   "slots": 321,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 1313,
+     "misses": 3786
+    }
+   ],
+   "evictions": 3465,
+   "hits": 1313,
+   "requests": 5099
+  },
+  {
+   "probe": "sealed",
+   "policy": "lirs",
+   "budget_gib": 4.0,
+   "slots": 321,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 1393,
+     "misses": 3706
+    }
+   ],
+   "evictions": 3385,
+   "hits": 1393,
+   "requests": 5099
+  },
+  {
+   "probe": "sealed",
+   "policy": "lru",
+   "budget_gib": 8.0,
+   "slots": 642,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2056,
+     "misses": 3043
+    }
+   ],
+   "evictions": 2401,
+   "hits": 2056,
+   "requests": 5099
+  },
+  {
+   "probe": "sealed",
+   "policy": "lirs",
+   "budget_gib": 8.0,
+   "slots": 642,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 1861,
+     "misses": 3238
+    }
+   ],
+   "evictions": 2596,
+   "hits": 1861,
+   "requests": 5099
+  },
+  {
+   "probe": "sealed",
+   "policy": "lru",
+   "budget_gib": 12.0,
+   "slots": 963,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2376,
+     "misses": 2723
+    }
+   ],
+   "evictions": 1760,
+   "hits": 2376,
+   "requests": 5099
+  },
+  {
+   "probe": "sealed",
+   "policy": "lirs",
+   "budget_gib": 12.0,
+   "slots": 963,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2100,
+     "misses": 2999
+    }
+   ],
+   "evictions": 2036,
+   "hits": 2100,
+   "requests": 5099
+  },
+  {
+   "probe": "sealed",
+   "policy": "lru",
+   "budget_gib": 16.0,
+   "slots": 1285,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2592,
+     "misses": 2507
+    }
+   ],
+   "evictions": 1222,
+   "hits": 2592,
+   "requests": 5099
+  },
+  {
+   "probe": "sealed",
+   "policy": "lirs",
+   "budget_gib": 16.0,
+   "slots": 1285,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2333,
+     "misses": 2766
+    }
+   ],
+   "evictions": 1481,
+   "hits": 2333,
+   "requests": 5099
+  },
+  {
+   "probe": "sealed",
+   "policy": "lru",
+   "budget_gib": 20.0,
+   "slots": 1606,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2668,
+     "misses": 2431
+    }
+   ],
+   "evictions": 825,
+   "hits": 2668,
+   "requests": 5099
+  },
+  {
+   "probe": "sealed",
+   "policy": "lirs",
+   "budget_gib": 20.0,
+   "slots": 1606,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2526,
+     "misses": 2573
+    }
+   ],
+   "evictions": 967,
+   "hits": 2526,
+   "requests": 5099
+  },
+  {
+   "probe": "sealed",
+   "policy": "lru",
+   "budget_gib": 24.0,
+   "slots": 1927,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2707,
+     "misses": 2392
+    }
+   ],
+   "evictions": 465,
+   "hits": 2707,
+   "requests": 5099
+  },
+  {
+   "probe": "sealed",
+   "policy": "lirs",
+   "budget_gib": 24.0,
+   "slots": 1927,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2685,
+     "misses": 2414
+    }
+   ],
+   "evictions": 487,
+   "hits": 2685,
+   "requests": 5099
+  },
+  {
+   "probe": "sealed",
+   "policy": "lru",
+   "budget_gib": 32.0,
+   "slots": 2570,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2735,
+     "misses": 2364
+    }
+   ],
+   "evictions": 0,
+   "hits": 2735,
+   "requests": 5099
+  },
+  {
+   "probe": "sealed",
+   "policy": "lirs",
+   "budget_gib": 32.0,
+   "slots": 2570,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2735,
+     "misses": 2364
+    }
+   ],
+   "evictions": 0,
+   "hits": 2735,
+   "requests": 5099
+  },
+  {
+   "probe": "repeat3",
+   "policy": "lru",
+   "budget_gib": 4.0,
+   "slots": 321,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 1313,
+     "misses": 3786
+    },
+    {
+     "segment": "sealed_p2",
+     "requests": 5099,
+     "hits": 1313,
+     "misses": 3786
+    },
+    {
+     "segment": "sealed_p3",
+     "requests": 5099,
+     "hits": 1313,
+     "misses": 3786
+    }
+   ],
+   "evictions": 11037,
+   "hits": 3939,
+   "requests": 15297
+  },
+  {
+   "probe": "repeat3",
+   "policy": "lirs",
+   "budget_gib": 4.0,
+   "slots": 321,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 1393,
+     "misses": 3706
+    },
+    {
+     "segment": "sealed_p2",
+     "requests": 5099,
+     "hits": 1601,
+     "misses": 3498
+    },
+    {
+     "segment": "sealed_p3",
+     "requests": 5099,
+     "hits": 1601,
+     "misses": 3498
+    }
+   ],
+   "evictions": 10381,
+   "hits": 4595,
+   "requests": 15297
+  },
+  {
+   "probe": "repeat3",
+   "policy": "lru",
+   "budget_gib": 8.0,
+   "slots": 642,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2056,
+     "misses": 3043
+    },
+    {
+     "segment": "sealed_p2",
+     "requests": 5099,
+     "hits": 2115,
+     "misses": 2984
+    },
+    {
+     "segment": "sealed_p3",
+     "requests": 5099,
+     "hits": 2115,
+     "misses": 2984
+    }
+   ],
+   "evictions": 8369,
+   "hits": 6286,
+   "requests": 15297
+  },
+  {
+   "probe": "repeat3",
+   "policy": "lirs",
+   "budget_gib": 8.0,
+   "slots": 642,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 1861,
+     "misses": 3238
+    },
+    {
+     "segment": "sealed_p2",
+     "requests": 5099,
+     "hits": 2226,
+     "misses": 2873
+    },
+    {
+     "segment": "sealed_p3",
+     "requests": 5099,
+     "hits": 2224,
+     "misses": 2875
+    }
+   ],
+   "evictions": 8344,
+   "hits": 6311,
+   "requests": 15297
+  },
+  {
+   "probe": "repeat3",
+   "policy": "lru",
+   "budget_gib": 12.0,
+   "slots": 963,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2376,
+     "misses": 2723
+    },
+    {
+     "segment": "sealed_p2",
+     "requests": 5099,
+     "hits": 2520,
+     "misses": 2579
+    },
+    {
+     "segment": "sealed_p3",
+     "requests": 5099,
+     "hits": 2520,
+     "misses": 2579
+    }
+   ],
+   "evictions": 6918,
+   "hits": 7416,
+   "requests": 15297
+  },
+  {
+   "probe": "repeat3",
+   "policy": "lirs",
+   "budget_gib": 12.0,
+   "slots": 963,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2100,
+     "misses": 2999
+    },
+    {
+     "segment": "sealed_p2",
+     "requests": 5099,
+     "hits": 3263,
+     "misses": 1836
+    },
+    {
+     "segment": "sealed_p3",
+     "requests": 5099,
+     "hits": 3555,
+     "misses": 1544
+    }
+   ],
+   "evictions": 5416,
+   "hits": 8918,
+   "requests": 15297
+  },
+  {
+   "probe": "repeat3",
+   "policy": "lru",
+   "budget_gib": 16.0,
+   "slots": 1285,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2592,
+     "misses": 2507
+    },
+    {
+     "segment": "sealed_p2",
+     "requests": 5099,
+     "hits": 2837,
+     "misses": 2262
+    },
+    {
+     "segment": "sealed_p3",
+     "requests": 5099,
+     "hits": 2837,
+     "misses": 2262
+    }
+   ],
+   "evictions": 5746,
+   "hits": 8266,
+   "requests": 15297
+  },
+  {
+   "probe": "repeat3",
+   "policy": "lirs",
+   "budget_gib": 16.0,
+   "slots": 1285,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2333,
+     "misses": 2766
+    },
+    {
+     "segment": "sealed_p2",
+     "requests": 5099,
+     "hits": 3838,
+     "misses": 1261
+    },
+    {
+     "segment": "sealed_p3",
+     "requests": 5099,
+     "hits": 3892,
+     "misses": 1207
+    }
+   ],
+   "evictions": 3949,
+   "hits": 10063,
+   "requests": 15297
+  },
+  {
+   "probe": "repeat3",
+   "policy": "lru",
+   "budget_gib": 20.0,
+   "slots": 1606,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2668,
+     "misses": 2431
+    },
+    {
+     "segment": "sealed_p2",
+     "requests": 5099,
+     "hits": 3056,
+     "misses": 2043
+    },
+    {
+     "segment": "sealed_p3",
+     "requests": 5099,
+     "hits": 3056,
+     "misses": 2043
+    }
+   ],
+   "evictions": 4911,
+   "hits": 8780,
+   "requests": 15297
+  },
+  {
+   "probe": "repeat3",
+   "policy": "lirs",
+   "budget_gib": 20.0,
+   "slots": 1606,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2526,
+     "misses": 2573
+    },
+    {
+     "segment": "sealed_p2",
+     "requests": 5099,
+     "hits": 4152,
+     "misses": 947
+    },
+    {
+     "segment": "sealed_p3",
+     "requests": 5099,
+     "hits": 4180,
+     "misses": 919
+    }
+   ],
+   "evictions": 2833,
+   "hits": 10858,
+   "requests": 15297
+  },
+  {
+   "probe": "repeat3",
+   "policy": "lru",
+   "budget_gib": 24.0,
+   "slots": 1927,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2707,
+     "misses": 2392
+    },
+    {
+     "segment": "sealed_p2",
+     "requests": 5099,
+     "hits": 3272,
+     "misses": 1827
+    },
+    {
+     "segment": "sealed_p3",
+     "requests": 5099,
+     "hits": 3272,
+     "misses": 1827
+    }
+   ],
+   "evictions": 4119,
+   "hits": 9251,
+   "requests": 15297
+  },
+  {
+   "probe": "repeat3",
+   "policy": "lirs",
+   "budget_gib": 24.0,
+   "slots": 1927,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2685,
+     "misses": 2414
+    },
+    {
+     "segment": "sealed_p2",
+     "requests": 5099,
+     "hits": 4482,
+     "misses": 617
+    },
+    {
+     "segment": "sealed_p3",
+     "requests": 5099,
+     "hits": 4471,
+     "misses": 628
+    }
+   ],
+   "evictions": 1732,
+   "hits": 11638,
+   "requests": 15297
+  },
+  {
+   "probe": "repeat3",
+   "policy": "lru",
+   "budget_gib": 32.0,
+   "slots": 2570,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2735,
+     "misses": 2364
+    },
+    {
+     "segment": "sealed_p2",
+     "requests": 5099,
+     "hits": 5099,
+     "misses": 0
+    },
+    {
+     "segment": "sealed_p3",
+     "requests": 5099,
+     "hits": 5099,
+     "misses": 0
+    }
+   ],
+   "evictions": 0,
+   "hits": 12933,
+   "requests": 15297
+  },
+  {
+   "probe": "repeat3",
+   "policy": "lirs",
+   "budget_gib": 32.0,
+   "slots": 2570,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2735,
+     "misses": 2364
+    },
+    {
+     "segment": "sealed_p2",
+     "requests": 5099,
+     "hits": 5099,
+     "misses": 0
+    },
+    {
+     "segment": "sealed_p3",
+     "requests": 5099,
+     "hits": 5099,
+     "misses": 0
+    }
+   ],
+   "evictions": 0,
+   "hits": 12933,
+   "requests": 15297
+  },
+  {
+   "probe": "scan",
+   "policy": "lru",
+   "budget_gib": 4.0,
+   "slots": 321,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 1313,
+     "misses": 3786
+    },
+    {
+     "segment": "scan_untouched_8644",
+     "requests": 8644,
+     "hits": 0,
+     "misses": 8644
+    },
+    {
+     "segment": "sealed_p2_postscan",
+     "requests": 5099,
+     "hits": 1313,
+     "misses": 3786
+    }
+   ],
+   "evictions": 15895,
+   "hits": 2626,
+   "requests": 18842
+  },
+  {
+   "probe": "scan",
+   "policy": "lirs",
+   "budget_gib": 4.0,
+   "slots": 321,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 1393,
+     "misses": 3706
+    },
+    {
+     "segment": "scan_untouched_8644",
+     "requests": 8644,
+     "hits": 0,
+     "misses": 8644
+    },
+    {
+     "segment": "sealed_p2_postscan",
+     "requests": 5099,
+     "hits": 1601,
+     "misses": 3498
+    }
+   ],
+   "evictions": 15527,
+   "hits": 2994,
+   "requests": 18842
+  },
+  {
+   "probe": "scan",
+   "policy": "lru",
+   "budget_gib": 8.0,
+   "slots": 642,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2056,
+     "misses": 3043
+    },
+    {
+     "segment": "scan_untouched_8644",
+     "requests": 8644,
+     "hits": 0,
+     "misses": 8644
+    },
+    {
+     "segment": "sealed_p2_postscan",
+     "requests": 5099,
+     "hits": 2056,
+     "misses": 3043
+    }
+   ],
+   "evictions": 14088,
+   "hits": 4112,
+   "requests": 18842
+  },
+  {
+   "probe": "scan",
+   "policy": "lirs",
+   "budget_gib": 8.0,
+   "slots": 642,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 1861,
+     "misses": 3238
+    },
+    {
+     "segment": "scan_untouched_8644",
+     "requests": 8644,
+     "hits": 0,
+     "misses": 8644
+    },
+    {
+     "segment": "sealed_p2_postscan",
+     "requests": 5099,
+     "hits": 2226,
+     "misses": 2873
+    }
+   ],
+   "evictions": 14113,
+   "hits": 4087,
+   "requests": 18842
+  },
+  {
+   "probe": "scan",
+   "policy": "lru",
+   "budget_gib": 12.0,
+   "slots": 963,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2376,
+     "misses": 2723
+    },
+    {
+     "segment": "scan_untouched_8644",
+     "requests": 8644,
+     "hits": 0,
+     "misses": 8644
+    },
+    {
+     "segment": "sealed_p2_postscan",
+     "requests": 5099,
+     "hits": 2376,
+     "misses": 2723
+    }
+   ],
+   "evictions": 13127,
+   "hits": 4752,
+   "requests": 18842
+  },
+  {
+   "probe": "scan",
+   "policy": "lirs",
+   "budget_gib": 12.0,
+   "slots": 963,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2100,
+     "misses": 2999
+    },
+    {
+     "segment": "scan_untouched_8644",
+     "requests": 8644,
+     "hits": 0,
+     "misses": 8644
+    },
+    {
+     "segment": "sealed_p2_postscan",
+     "requests": 5099,
+     "hits": 3263,
+     "misses": 1836
+    }
+   ],
+   "evictions": 12516,
+   "hits": 5363,
+   "requests": 18842
+  },
+  {
+   "probe": "scan",
+   "policy": "lru",
+   "budget_gib": 16.0,
+   "slots": 1285,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2592,
+     "misses": 2507
+    },
+    {
+     "segment": "scan_untouched_8644",
+     "requests": 8644,
+     "hits": 0,
+     "misses": 8644
+    },
+    {
+     "segment": "sealed_p2_postscan",
+     "requests": 5099,
+     "hits": 2592,
+     "misses": 2507
+    }
+   ],
+   "evictions": 12373,
+   "hits": 5184,
+   "requests": 18842
+  },
+  {
+   "probe": "scan",
+   "policy": "lirs",
+   "budget_gib": 16.0,
+   "slots": 1285,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2333,
+     "misses": 2766
+    },
+    {
+     "segment": "scan_untouched_8644",
+     "requests": 8644,
+     "hits": 0,
+     "misses": 8644
+    },
+    {
+     "segment": "sealed_p2_postscan",
+     "requests": 5099,
+     "hits": 3838,
+     "misses": 1261
+    }
+   ],
+   "evictions": 11386,
+   "hits": 6171,
+   "requests": 18842
+  },
+  {
+   "probe": "scan",
+   "policy": "lru",
+   "budget_gib": 20.0,
+   "slots": 1606,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2668,
+     "misses": 2431
+    },
+    {
+     "segment": "scan_untouched_8644",
+     "requests": 8644,
+     "hits": 0,
+     "misses": 8644
+    },
+    {
+     "segment": "sealed_p2_postscan",
+     "requests": 5099,
+     "hits": 2668,
+     "misses": 2431
+    }
+   ],
+   "evictions": 11900,
+   "hits": 5336,
+   "requests": 18842
+  },
+  {
+   "probe": "scan",
+   "policy": "lirs",
+   "budget_gib": 20.0,
+   "slots": 1606,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2526,
+     "misses": 2573
+    },
+    {
+     "segment": "scan_untouched_8644",
+     "requests": 8644,
+     "hits": 0,
+     "misses": 8644
+    },
+    {
+     "segment": "sealed_p2_postscan",
+     "requests": 5099,
+     "hits": 4150,
+     "misses": 949
+    }
+   ],
+   "evictions": 10560,
+   "hits": 6676,
+   "requests": 18842
+  },
+  {
+   "probe": "scan",
+   "policy": "lru",
+   "budget_gib": 24.0,
+   "slots": 1927,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2707,
+     "misses": 2392
+    },
+    {
+     "segment": "scan_untouched_8644",
+     "requests": 8644,
+     "hits": 0,
+     "misses": 8644
+    },
+    {
+     "segment": "sealed_p2_postscan",
+     "requests": 5099,
+     "hits": 2707,
+     "misses": 2392
+    }
+   ],
+   "evictions": 11501,
+   "hits": 5414,
+   "requests": 18842
+  },
+  {
+   "probe": "scan",
+   "policy": "lirs",
+   "budget_gib": 24.0,
+   "slots": 1927,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2685,
+     "misses": 2414
+    },
+    {
+     "segment": "scan_untouched_8644",
+     "requests": 8644,
+     "hits": 0,
+     "misses": 8644
+    },
+    {
+     "segment": "sealed_p2_postscan",
+     "requests": 5099,
+     "hits": 4459,
+     "misses": 640
+    }
+   ],
+   "evictions": 9771,
+   "hits": 7144,
+   "requests": 18842
+  },
+  {
+   "probe": "scan",
+   "policy": "lru",
+   "budget_gib": 32.0,
+   "slots": 2570,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2735,
+     "misses": 2364
+    },
+    {
+     "segment": "scan_untouched_8644",
+     "requests": 8644,
+     "hits": 0,
+     "misses": 8644
+    },
+    {
+     "segment": "sealed_p2_postscan",
+     "requests": 5099,
+     "hits": 2735,
+     "misses": 2364
+    }
+   ],
+   "evictions": 10802,
+   "hits": 5470,
+   "requests": 18842
+  },
+  {
+   "probe": "scan",
+   "policy": "lirs",
+   "budget_gib": 32.0,
+   "slots": 2570,
+   "segments": [
+    {
+     "segment": "sealed_p1",
+     "requests": 5099,
+     "hits": 2735,
+     "misses": 2364
+    },
+    {
+     "segment": "scan_untouched_8644",
+     "requests": 8644,
+     "hits": 0,
+     "misses": 8644
+    },
+    {
+     "segment": "sealed_p2_postscan",
+     "requests": 5099,
+     "hits": 5048,
+     "misses": 51
+    }
+   ],
+   "evictions": 8489,
+   "hits": 7783,
+   "requests": 18842
+  }
+ ]
+}
