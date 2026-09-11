@@ -1,0 +1,62 @@
+{
+ "provenance": "SIMULATED/DERIVED on sealed inputs; see script header",
+ "journal": {
+  "rows_total": 688,
+  "decode_rows": 645,
+  "prefill_rows": 43,
+  "devices": [
+   "cuda:0",
+   "cuda:1"
+  ],
+  "decode_batch_size_hist": {
+   "6": 645
+  },
+  "decode_batch_max": 6,
+  "decode_batch_mean": 6.0,
+  "hash_layer_early_ids_decode": 270,
+  "hash_layer_early_bytes": 3609722880,
+  "hash_layer_early_mib_per_token": 229.5,
+  "adjacent_layer_shared_experts": 81,
+  "adjacent_layer_comparisons": 630
+ },
+ "per_row_ms": {
+  "wall": 102.69,
+  "fill_critical": 65.1,
+  "stage_enqueue": 14.63,
+  "output_sync": 7.59
+ },
+ "A_immediate_submit": {
+  "reserve_serial_total_s_derived": 4.57,
+  "h2d_headofline_for_hits_ms_per_row": 65.1,
+  "h2d_self_ms_per_record": 2.41,
+  "verdict": "within-layer submit already immediate (one batch at route_known); residual is host serial (reservation + enqueue), folded into B"
+ },
+ "B_fixed_slot": {
+  "host_serial_buckets_s": 11.74,
+  "prize_upper_s_derived": 14.02,
+  "prize_upper_pct_of_decode": 21.2,
+  "external_anchor": "exact-critical-path buffer_reuse SIMULATED -12.3% on-demand (~-8.8 s), ~0 post-staging-lead"
+ },
+ "C_component_split": {
+  "gate_up_first_deadline_mib": 8.5,
+  "down_second_deadline_mib": 4.25,
+  "down_h2d_ms_per_row": 0.804,
+  "prize_h2d_overlap_s_theoretical": 0.52,
+  "prize_ssd_overlap_s_theoretical": 2.54,
+  "prize_pct_of_decode": 3.83,
+  "verdict": "requires splitting one contiguous pread; readiness~0 proves H2D never exposed; compute 1.5 s of 66 s"
+ },
+ "D_shared_overlap": {
+  "prize_upper_s_bound": 0.308,
+  "prize_pct_of_decode": 0.47,
+  "caveats": "shared HOST wall UNKNOWN (instrumentation gap); GEMM-under-H2D contention c=0.021 measured severe"
+ },
+ "E_prefetch_only": {
+  "measured_useful_byte_rate": 0.251,
+  "required_parity": 0.5,
+  "required_with_margin": 0.6,
+  "gap_pp_to_margin": 34.9,
+  "measured_full_bundle_recall_at12": 0.047,
+  "verdict": "in-situ prefetch MEASURED neutral-to-harmful at all caps; need ~2.4x accuracy gain + cross-token scheduler"
+ }
+}
