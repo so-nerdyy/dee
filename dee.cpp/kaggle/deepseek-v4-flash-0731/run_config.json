@@ -8,5 +8,13 @@
   "profile_stages": true,
   "n_tokens": 16,
   "source_read_lanes": 3,
-  "source_read_queue_depth": 6
+  "source_read_queue_depth": 6,
+  "phase2_mode": "off",
+  "phase2_host_budget_bytes": 0,
+  "phase2_host_dynamic_slots": 0,
+  "phase2_host_policy_slots": 0,
+  "phase2_host_slot_bytes": 0,
+  "phase2_host_alignment": 4096,
+  "phase2_host_try_pin": true,
+  "phase2_model_identity": ""
 }

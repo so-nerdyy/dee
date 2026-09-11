@@ -23,6 +23,8 @@ try:
         EngineConfig,
         DeviceCacheDType,
         WeightTransferDType,
+        HostTierConfig,
+        Phase2TierConfig,
         _trace_alloc_selftest,
         _trace_alloc_stats,
     )
@@ -32,6 +34,8 @@ except ImportError:
     EngineConfig = None
     DeviceCacheDType = None
     WeightTransferDType = None
+    HostTierConfig = None
+    Phase2TierConfig = None
     _trace_alloc_selftest = None
     _trace_alloc_stats = None
 

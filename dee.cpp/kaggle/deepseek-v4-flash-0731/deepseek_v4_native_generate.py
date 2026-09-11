@@ -142,6 +142,26 @@ os.environ.setdefault("DEE_RELEASE_MMAP_PAGES", "0")
 # clean 2-GPU run proves the 16/16 token gate holds with the staged path.
 FORCE_TMP = os.environ.get("NATIVE_FORCE_TMP", "1") == "1"
 
+# Phase-2 A/B (see PHASE2_PYDEE_ARMING.md): NATIVE_PHASE2 selects the arm —
+# "off" (default; all switches False), "vram" (actual-recency VRAM eviction
+# only), "host" (SSD->host->VRAM hierarchy), "both".  The host arm requires
+# cache_dtype="fp4" plus an immutable model identity; Engine::init fails
+# closed on invalid combinations.  Host-tier geometry is explicit and
+# per-engine (each engine owns its own bounded slot arena).
+PHASE2_MODE = os.environ.get("NATIVE_PHASE2", "off").strip().lower()
+PHASE2_HOST_BUDGET_BYTES = int(
+    os.environ.get("NATIVE_PHASE2_HOST_BYTES", "0"))
+PHASE2_HOST_DYNAMIC_SLOTS = int(
+    os.environ.get("NATIVE_PHASE2_HOST_SLOTS", "0"))
+PHASE2_HOST_POLICY_SLOTS = int(
+    os.environ.get("NATIVE_PHASE2_HOST_POLICY_SLOTS", "0"))
+PHASE2_HOST_SLOT_BYTES = int(
+    os.environ.get("NATIVE_PHASE2_HOST_SLOT_BYTES", "0"))
+PHASE2_HOST_ALIGNMENT = int(
+    os.environ.get("NATIVE_PHASE2_HOST_ALIGNMENT", "4096"))
+PHASE2_HOST_TRY_PIN = os.environ.get("NATIVE_PHASE2_TRY_PIN", "1") == "1"
+PHASE2_MODEL_IDENTITY = os.environ.get("NATIVE_PHASE2_MODEL_IDENTITY", "")
+
 # P2.3 A/B: Kaggle kernel metadata env_vars are not reliably passed to the
 # script, so commit-time knobs live in run_config.json next to this file.
 # The kernel clones the branch and reads it from the working tree; the file
@@ -151,6 +171,9 @@ def apply_run_config() -> None:
     global CACHE_DTYPE, N_TOKENS, EXPERT_STORE_BACKEND, DEE4_VALIDATE_SAMPLES
     global PROFILE_STAGES, RUN_ID, DEE4_TRACE_PATH
     global SOURCE_READ_LANES, SOURCE_READ_QUEUE_DEPTH
+    global PHASE2_MODE, PHASE2_HOST_BUDGET_BYTES, PHASE2_HOST_DYNAMIC_SLOTS
+    global PHASE2_HOST_POLICY_SLOTS, PHASE2_HOST_SLOT_BYTES
+    global PHASE2_HOST_ALIGNMENT, PHASE2_HOST_TRY_PIN, PHASE2_MODEL_IDENTITY
     cfg_path = DEE / "kaggle/deepseek-v4-flash-0731/run_config.json"
     if not cfg_path.is_file():
         log(f"[config] run_config.json not found at {cfg_path}; using defaults")
@@ -178,6 +201,29 @@ def apply_run_config() -> None:
     if not os.environ.get("NATIVE_SOURCE_READ_QUEUE_DEPTH"):
         SOURCE_READ_QUEUE_DEPTH = int(
             cfg.get("source_read_queue_depth", SOURCE_READ_QUEUE_DEPTH))
+    if not os.environ.get("NATIVE_PHASE2"):
+        PHASE2_MODE = str(cfg.get("phase2_mode", PHASE2_MODE)).strip().lower()
+    if not os.environ.get("NATIVE_PHASE2_HOST_BYTES"):
+        PHASE2_HOST_BUDGET_BYTES = int(
+            cfg.get("phase2_host_budget_bytes", PHASE2_HOST_BUDGET_BYTES))
+    if not os.environ.get("NATIVE_PHASE2_HOST_SLOTS"):
+        PHASE2_HOST_DYNAMIC_SLOTS = int(
+            cfg.get("phase2_host_dynamic_slots", PHASE2_HOST_DYNAMIC_SLOTS))
+    if not os.environ.get("NATIVE_PHASE2_HOST_POLICY_SLOTS"):
+        PHASE2_HOST_POLICY_SLOTS = int(
+            cfg.get("phase2_host_policy_slots", PHASE2_HOST_POLICY_SLOTS))
+    if not os.environ.get("NATIVE_PHASE2_HOST_SLOT_BYTES"):
+        PHASE2_HOST_SLOT_BYTES = int(
+            cfg.get("phase2_host_slot_bytes", PHASE2_HOST_SLOT_BYTES))
+    if not os.environ.get("NATIVE_PHASE2_HOST_ALIGNMENT"):
+        PHASE2_HOST_ALIGNMENT = int(
+            cfg.get("phase2_host_alignment", PHASE2_HOST_ALIGNMENT))
+    if not os.environ.get("NATIVE_PHASE2_TRY_PIN"):
+        PHASE2_HOST_TRY_PIN = bool(
+            cfg.get("phase2_host_try_pin", PHASE2_HOST_TRY_PIN))
+    if not os.environ.get("NATIVE_PHASE2_MODEL_IDENTITY"):
+        PHASE2_MODEL_IDENTITY = str(
+            cfg.get("phase2_model_identity", PHASE2_MODEL_IDENTITY))
     if CACHE_DTYPE not in {"fp16", "fp4"}:
         raise ValueError(f"unsupported cache_dtype: {CACHE_DTYPE!r}")
     if EXPERT_STORE_BACKEND not in {"safetensors", "dee4", "dee4_trace"}:
@@ -197,8 +243,43 @@ def apply_run_config() -> None:
         f"dee4_validate_samples={DEE4_VALIDATE_SAMPLES} "
         f"source_read_lanes={SOURCE_READ_LANES} "
         f"source_read_queue_depth={SOURCE_READ_QUEUE_DEPTH} "
-        f"profile_stages={PROFILE_STAGES}"
+        f"profile_stages={PROFILE_STAGES} phase2_mode={PHASE2_MODE}"
     )
+
+
+def apply_phase2_config() -> None:
+    """Validate the Phase-2 arm and resolve its default identity.
+
+    Runs whether or not run_config.json exists (env-only arming still hits
+    this fail-closed check).  When a host arm is selected without an explicit
+    identity, the already-pinned model revision REV is the immutable
+    checkpoint identity the host tier scopes every record to.
+    """
+    global PHASE2_MODEL_IDENTITY
+    if PHASE2_MODE not in {"off", "vram", "host", "both"}:
+        raise ValueError(
+            f"unsupported phase2_mode: {PHASE2_MODE!r} "
+            "(expected 'off', 'vram', 'host', or 'both')")
+    if PHASE2_MODE in {"host", "both"}:
+        if CACHE_DTYPE != "fp4":
+            raise ValueError(
+                "phase2 host tier requires cache_dtype='fp4' "
+                f"(packed FP4 device cache), got {CACHE_DTYPE!r}")
+        if not PHASE2_MODEL_IDENTITY:
+            PHASE2_MODEL_IDENTITY = f"deepseek-v4-flash-0731@{REV}"
+            log(f"[config] phase2 model identity defaulting to "
+                f"{PHASE2_MODEL_IDENTITY}")
+    if PHASE2_MODE != "off":
+        log(f"[config] phase2 arm={PHASE2_MODE} "
+            f"host_budget_bytes={PHASE2_HOST_BUDGET_BYTES} "
+            f"dynamic_slots={PHASE2_HOST_DYNAMIC_SLOTS} "
+            f"policy_slots={PHASE2_HOST_POLICY_SLOTS} "
+            f"slot_bytes={PHASE2_HOST_SLOT_BYTES} "
+            f"alignment={PHASE2_HOST_ALIGNMENT} "
+            f"try_pin={PHASE2_HOST_TRY_PIN} "
+            f"model_identity={PHASE2_MODEL_IDENTITY or '<empty>'}")
+
+
 # P2.4 (2026-08-23): the dual-T4 pool has been exhausted for ~12 consecutive
 # launches (Kaggle hands out 1x P100 instead).  SINGLE_GPU runs the full
 # 43-layer model on one CUDA device (split=n_layers, same-device handoff,
@@ -937,6 +1018,7 @@ def main() -> int:
         ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
     log(f"pinned commit {head}")
     apply_run_config()
+    apply_phase2_config()
 
     # Storage geometry is backend-specific. Safetensors execution may stage
     # the full 153-GiB checkpoint into /tmp only with very large headroom.
@@ -1003,6 +1085,14 @@ def main() -> int:
         "host_pack_requested_bytes": [
             HOST_PACK_CACHE_BYTES_GPU0, HOST_PACK_CACHE_BYTES_GPU1],
         "host_pack_runtime_cap_gib_total": 17.0,
+        "phase2_mode": PHASE2_MODE,
+        "phase2_host_budget_bytes_per_engine": PHASE2_HOST_BUDGET_BYTES,
+        "phase2_host_dynamic_slots": PHASE2_HOST_DYNAMIC_SLOTS,
+        "phase2_host_policy_slots": PHASE2_HOST_POLICY_SLOTS,
+        "phase2_host_slot_bytes": PHASE2_HOST_SLOT_BYTES,
+        "phase2_host_alignment": PHASE2_HOST_ALIGNMENT,
+        "phase2_host_try_pin": PHASE2_HOST_TRY_PIN,
+        "phase2_model_identity": PHASE2_MODEL_IDENTITY,
         "force_tmp": FORCE_TMP,
         "source_path": str(source_run_config),
         "source_sha256": sha256_file(source_run_config),
@@ -1365,7 +1455,17 @@ def main() -> int:
         f"diagnostics={DIAGNOSTICS} mem_avail={mem_avail:.1f}GiB "
         f"mem_total={mem_total:.1f}GiB lru_cap={LRU_TOTAL_CAP_GIB}GiB "
         f"cache_dtype={CACHE_DTYPE} source_read_lanes={SOURCE_READ_LANES} "
-        f"source_read_queue_depth={SOURCE_READ_QUEUE_DEPTH}")
+        f"source_read_queue_depth={SOURCE_READ_QUEUE_DEPTH} "
+        f"phase2_mode={PHASE2_MODE}")
+    phase2_kwargs = dict(
+        phase2_mode=PHASE2_MODE,
+        phase2_host_budget_bytes=PHASE2_HOST_BUDGET_BYTES,
+        phase2_host_dynamic_slots=PHASE2_HOST_DYNAMIC_SLOTS,
+        phase2_host_policy_slots=PHASE2_HOST_POLICY_SLOTS,
+        phase2_host_slot_bytes=PHASE2_HOST_SLOT_BYTES,
+        phase2_host_alignment=PHASE2_HOST_ALIGNMENT,
+        phase2_host_try_pin=PHASE2_HOST_TRY_PIN,
+        phase2_model_identity=PHASE2_MODEL_IDENTITY)
     # P2.4 single-GPU mode: one engine on cuda:0 carrying the FULL budget
     # (both halves merged), all 43 layers on device0 (split=n_layers), and
     # the same-device handoff path.  eng1 is not built.  Cache budget is
@@ -1383,7 +1483,8 @@ def main() -> int:
             cache_dtype=CACHE_DTYPE,
             source_read_lanes=SOURCE_READ_LANES,
             source_read_queue_depth=SOURCE_READ_QUEUE_DEPTH,
-            expert_store_path=dee4_store_path)
+            expert_store_path=dee4_store_path,
+            **phase2_kwargs)
         eng1 = eng0
         log(f"engines built SINGLE_GPU budget={single_budget/2**30:.2f}GiB "
             f"host_pack={single_pack/2**30:.2f}GiB cache_dtype={CACHE_DTYPE}")
@@ -1396,7 +1497,8 @@ def main() -> int:
             cache_dtype=CACHE_DTYPE,
             source_read_lanes=SOURCE_READ_LANES,
             source_read_queue_depth=SOURCE_READ_QUEUE_DEPTH,
-            expert_store_path=dee4_store_path)
+            expert_store_path=dee4_store_path,
+            **phase2_kwargs)
         eng1 = vm.build_native_engine(
             shard_paths, device_id=1, budget_bytes=BUDGET_BYTES,
             host_pack_cache_bytes=pack_budget1,
@@ -1405,7 +1507,8 @@ def main() -> int:
             cache_dtype=CACHE_DTYPE,
             source_read_lanes=SOURCE_READ_LANES,
             source_read_queue_depth=SOURCE_READ_QUEUE_DEPTH,
-            expert_store_path=dee4_store_path)
+            expert_store_path=dee4_store_path,
+            **phase2_kwargs)
         log(f"engines built (cache_dtype={CACHE_DTYPE})")
 
     log("=== build full model (native FFN) ===")
@@ -1512,6 +1615,13 @@ def main() -> int:
             }
             rec["host_pack"] = {
                 key: engine.host_pack_stats()
+                for key, engine in _checkpoint_engines
+            }
+            # Phase-2 tier snapshot (PHASE2_METRICS.md): step+1 generated
+            # tokens have completed when this record is written.  Disabled
+            # arms produce an all-zero, invalid-denominator snapshot.
+            rec["phase2"] = {
+                key: engine.phase2_metrics(step + 1)
                 for key, engine in _checkpoint_engines
             }
         except Exception:
@@ -1621,6 +1731,22 @@ def main() -> int:
         result["stage_profile"] = {
             "cuda0": json.loads(eng0.external_profile_json(wall_s * 1000.0)),
             "cuda1": json.loads(eng1.external_profile_json(wall_s * 1000.0)),
+        }
+        # Phase-2 evidence (PHASE2_METRICS.md): requested arm, the effective
+        # armed config echoed back by each live engine, and the final
+        # TierMetrics snapshot with the generated-token denominator.  In
+        # single-GPU mode eng1 aliases eng0 (parity with engine_stats).
+        result["phase2"] = {
+            "requested_mode": PHASE2_MODE,
+            "model_identity": PHASE2_MODEL_IDENTITY,
+            "metrics": {
+                "cuda0": eng0.phase2_metrics(len(toks)),
+                "cuda1": eng1.phase2_metrics(len(toks)),
+            },
+            "config": {
+                "cuda0": eng0.runtime_config().get("phase2", {}),
+                "cuda1": eng1.runtime_config().get("phase2", {}),
+            },
         }
         result["model_cuda_stage_profile"] = model.cuda_stage_profile()
     except Exception as exc:  # never fail the run over instrumentation
@@ -1813,6 +1939,7 @@ def main() -> int:
         "expert_store": result.get("expert_store", {}),
         "dee4_trace_validation": result.get("dee4_trace_validation", {}),
         "host_pack": result.get("host_pack", {}),
+        "phase2": result.get("phase2", {}),
         "byte_accounting": result["byte_accounting"],
         "per_token_accounting": result["per_token_accounting"],
         "measured_roofline": result["measured_roofline"],

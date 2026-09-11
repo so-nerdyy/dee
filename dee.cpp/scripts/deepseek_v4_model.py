@@ -1269,7 +1269,15 @@ def build_native_engine(shard_paths: list[str], *,
                         cache_dtype: str = "fp16",
                         source_read_lanes: int = 1,
                         source_read_queue_depth: int = 6,
-                        expert_store_path: str = "") -> Any:
+                        expert_store_path: str = "",
+                        phase2_mode: str = "off",
+                        phase2_host_budget_bytes: int = 0,
+                        phase2_host_dynamic_slots: int = 0,
+                        phase2_host_policy_slots: int = 0,
+                        phase2_host_slot_bytes: int = 0,
+                        phase2_host_alignment: int = 4096,
+                        phase2_host_try_pin: bool = True,
+                        phase2_model_identity: str = "") -> Any:
     """Build one pydee.Engine (FP4 transfer, FP16 or packed-FP4 device cache)
     that streams routed experts for the full DeepSeek-V4-Flash-0731 model.
 
@@ -1283,12 +1291,38 @@ def build_native_engine(shard_paths: list[str], *,
     checkpoint's packed e2m1fn bytes + e8m0 scales (12.75 MiB/expert instead of
     48 MiB FP16), expanding into a bounded scratch at compute time.  This is a
     performance experiment; the default "fp16" is the sealed exact path.
+
+    phase2_mode arms the Phase-2 expert hierarchy (default "off" — every
+    Phase-2 switch stays False):
+
+      "off"   baseline; all three switches False.
+      "vram"  enabled + vram_priority_fix_enabled (actual-recency VRAM
+              eviction; no host tier).
+      "host"  enabled + host_enabled (SSD->host->VRAM hierarchy).
+      "both"  enabled + host_enabled + vram_priority_fix_enabled.
+
+    The host arm additionally requires cache_dtype="fp4" (the engine fails
+    closed otherwise) and a non-empty ``phase2_model_identity`` — the
+    immutable checkpoint ID/revision the host tier scopes every record to.
+    Host geometry is explicit: ``phase2_host_budget_bytes`` bounds the slot
+    arena (including alignment padding), ``phase2_host_dynamic_slots`` /
+    ``phase2_host_policy_slots`` pick the slot count (policy_slots must stay
+    0 under the default plain-LRU policy), ``phase2_host_slot_bytes`` /
+    ``phase2_host_alignment`` / ``phase2_host_try_pin`` shape each slot
+    (slot_bytes=0 lets the engine default to the packed expert record size).
+    Invalid combinations are rejected by Engine::init, never silently
+    ignored.
     """
     import pydee
     if pydee.Engine is None:
         raise RuntimeError("pydee compiled binding not importable")
     if cache_dtype not in ("fp16", "fp4"):
         raise ValueError(f"cache_dtype must be 'fp16' or 'fp4', got {cache_dtype!r}")
+    phase2_mode = str(phase2_mode).strip().lower()
+    if phase2_mode not in ("off", "vram", "host", "both"):
+        raise ValueError(
+            f"phase2_mode must be 'off', 'vram', 'host', or 'both', "
+            f"got {phase2_mode!r}")
     cfg = pydee.configure(
         shard_path=shard_paths[0], num_experts=num_experts,
         num_layers=num_layers, hidden=hidden, inter=inter,
@@ -1304,4 +1338,15 @@ def build_native_engine(shard_paths: list[str], *,
     cfg.use_batched_experts = use_batched_experts
     cfg.profile_stages = profile_stages
     cfg.profile_timeline = False
+    if phase2_mode != "off":
+        cfg.phase2.enabled = True
+        cfg.phase2.host_enabled = phase2_mode in ("host", "both")
+        cfg.phase2.vram_priority_fix_enabled = phase2_mode in ("vram", "both")
+        cfg.phase2.model_identity = str(phase2_model_identity)
+        cfg.phase2.host.slot_bytes = int(phase2_host_slot_bytes)
+        cfg.phase2.host.alignment = int(phase2_host_alignment)
+        cfg.phase2.host.policy_slots = int(phase2_host_policy_slots)
+        cfg.phase2.host.dynamic_slots = int(phase2_host_dynamic_slots)
+        cfg.phase2.host.budget_bytes = int(phase2_host_budget_bytes)
+        cfg.phase2.host.try_pin = bool(phase2_host_try_pin)
     return pydee.new_engine(cfg)

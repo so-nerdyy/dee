@@ -36,6 +36,63 @@
 
 namespace py = pybind11;
 
+namespace {
+
+// Convert dee::TierMetrics (+ embedded dee::HostTierStats) into a plain dict
+// whose key names match the field names documented in PHASE2_METRICS.md.
+// `device_gpu_wait_ms` is std::optional in C++: empty encodes as None
+// (UNKNOWN), never as 0.
+py::dict host_tier_stats_dict(const dee::HostTierStats& host) {
+    py::dict result;
+    result["host_hit"] = host.host_hit;
+    result["host_miss"] = host.host_miss;
+    result["coalesced"] = host.coalesced;
+    result["SSD_bytes"] = host.SSD_bytes;
+    result["fills"] = host.fills;
+    result["evictions"] = host.evictions;
+    result["failures"] = host.failures;
+    result["budget_rejections"] = host.budget_rejections;
+    result["pin_failures"] = host.pin_failures;
+    result["allocated_bytes"] = host.allocated_bytes;
+    result["pinned_bytes"] = host.pinned_bytes;
+    result["resident_bytes"] = host.resident_bytes;
+    result["peak_resident_bytes"] = host.peak_resident_bytes;
+    result["leased_slots"] = host.leased_slots;
+    result["host_wait_ms"] = host.host_wait_ms;
+    result["storage_service_ms"] = host.storage_service_ms;
+    return result;
+}
+
+py::dict tier_metrics_dict(const dee::TierMetrics& metrics) {
+    py::dict result;
+    result["host"] = host_tier_stats_dict(metrics.host);
+    result["device_hit"] = metrics.device_hit;
+    result["device_miss"] = metrics.device_miss;
+    result["H2D_bytes"] = metrics.H2D_bytes;
+    result["device_evictions"] = metrics.device_evictions;
+    result["device_failures"] = metrics.device_failures;
+    result["device_bytes"] = metrics.device_bytes;
+    result["device_peak_bytes"] = metrics.device_peak_bytes;
+    result["device_budget"] = metrics.device_budget;
+    result["host_capacity_wait_ms"] = metrics.host_capacity_wait_ms;
+    result["device_enqueue_ms"] = metrics.device_enqueue_ms;
+    result["device_host_wait_ms"] = metrics.device_host_wait_ms;
+    result["pageable_fallback_wait_ms"] = metrics.pageable_fallback_wait_ms;
+    if (metrics.device_gpu_wait_ms) {
+        result["device_gpu_wait_ms"] = *metrics.device_gpu_wait_ms;
+    } else {
+        result["device_gpu_wait_ms"] = py::none();
+    }
+    result["tokens"] = metrics.tokens;
+    result["bytes_per_token_valid"] = metrics.bytes_per_token_valid;
+    result["SSD_bytes_per_token"] = metrics.SSD_bytes_per_token;
+    result["H2D_bytes_per_token"] = metrics.H2D_bytes_per_token;
+    result["bytes_per_token"] = metrics.bytes_per_token;
+    return result;
+}
+
+}  // namespace
+
 PYBIND11_MODULE(pydee_core, m) {
     if (sizeof(dee::Engine) != dee::engine_abi_size()) {
         throw py::import_error(
@@ -70,6 +127,28 @@ PYBIND11_MODULE(pydee_core, m) {
         .value("Int4", dee::WeightTransferDType::Int4)
         .value("Fp4E2m1", dee::WeightTransferDType::Fp4E2m1);
 
+    // Phase-2 experiment switches (see PHASE2_METRICS.md and
+    // PHASE2_PYDEE_ARMING.md). POD fields only: host_policy/device_policy
+    // stay C++-only so a null pointer keeps the PlainLruHostPlacementPolicy
+    // default and no Python object can impersonate a policy.
+    py::class_<dee::HostTierConfig>(m, "HostTierConfig")
+        .def(py::init<>())
+        .def_readwrite("slot_bytes", &dee::HostTierConfig::slot_bytes)
+        .def_readwrite("alignment", &dee::HostTierConfig::alignment)
+        .def_readwrite("policy_slots", &dee::HostTierConfig::policy_slots)
+        .def_readwrite("dynamic_slots", &dee::HostTierConfig::dynamic_slots)
+        .def_readwrite("budget_bytes", &dee::HostTierConfig::budget_bytes)
+        .def_readwrite("try_pin", &dee::HostTierConfig::try_pin);
+
+    py::class_<dee::Phase2TierConfig>(m, "Phase2TierConfig")
+        .def(py::init<>())
+        .def_readwrite("enabled", &dee::Phase2TierConfig::enabled)
+        .def_readwrite("host_enabled", &dee::Phase2TierConfig::host_enabled)
+        .def_readwrite("vram_priority_fix_enabled",
+                       &dee::Phase2TierConfig::vram_priority_fix_enabled)
+        .def_readwrite("model_identity", &dee::Phase2TierConfig::model_identity)
+        .def_readwrite("host", &dee::Phase2TierConfig::host);
+
     py::class_<dee::EngineConfig>(m, "EngineConfig")
         .def(py::init<>())
         .def_readwrite("shard_path", &dee::EngineConfig::shard_path)
@@ -99,7 +178,8 @@ PYBIND11_MODULE(pydee_core, m) {
         .def_readwrite("profile_timeline", &dee::EngineConfig::profile_timeline)
         .def_readwrite("debug_validate_cache", &dee::EngineConfig::debug_validate_cache)
         .def_readwrite("prepack_quantized_source", &dee::EngineConfig::prepack_quantized_source)
-        .def_readwrite("swiglu_limit", &dee::EngineConfig::swiglu_limit);
+        .def_readwrite("swiglu_limit", &dee::EngineConfig::swiglu_limit)
+        .def_readwrite("phase2", &dee::EngineConfig::phase2);
 
     py::class_<dee::Engine>(m, "Engine")
         .def(py::init<>())
@@ -125,8 +205,33 @@ PYBIND11_MODULE(pydee_core, m) {
             result["topk"] = cfg.topk;
             result["hidden"] = cfg.hidden;
             result["inter"] = cfg.inter;
+            {
+                py::dict phase2;
+                phase2["enabled"] = cfg.phase2.enabled;
+                phase2["host_enabled"] = cfg.phase2.host_enabled;
+                phase2["vram_priority_fix_enabled"] =
+                    cfg.phase2.vram_priority_fix_enabled;
+                phase2["model_identity"] = cfg.phase2.model_identity;
+                py::dict host;
+                host["slot_bytes"] = cfg.phase2.host.slot_bytes;
+                host["alignment"] = cfg.phase2.host.alignment;
+                host["policy_slots"] = cfg.phase2.host.policy_slots;
+                host["dynamic_slots"] = cfg.phase2.host.dynamic_slots;
+                host["budget_bytes"] = cfg.phase2.host.budget_bytes;
+                host["try_pin"] = cfg.phase2.host.try_pin;
+                phase2["host"] = host;
+                result["phase2"] = phase2;
+            }
             return result;
         }, "Return the immutable effective engine configuration used by the live path.")
+        .def("phase2_metrics", [](const dee::Engine& self,
+                                  uint64_t completed_tokens) -> py::dict {
+            return tier_metrics_dict(self.phase2_metrics(completed_tokens));
+        }, py::arg("completed_tokens") = 0,
+           "Return the Phase-2 TierMetrics snapshot (see PHASE2_METRICS.md). "
+           "A disabled engine returns an all-zero, invalid-denominator "
+           "snapshot; the VRAM-only arm reports device fields with an empty "
+           "host section.")
         .def("host_pack_stats", [](const dee::Engine& self) -> py::dict {
             py::dict result;
             const auto& hp = self.host_pack_stats();
