@@ -1,13 +1,21 @@
 // tests/test_legacy_submit_event_leak.cpp
 //
 // Regression coverage for the legacy AsyncPrefetcher::cuda_submit failure
-// paths (fix/legacy-submit-event-leak). The Phase-2 audit L4 fix in T1
-// (688bd98) hardened cuda_submit_host; the legacy path had the same defect
-// and then some: every failure return after cudaEventCreateWithFlags left
-// the per-transfer event on the abandoned transfer until reset() — a
-// bounded event-object leak per failed submit — AND released the pinned
-// staging slot + cache pin without draining the stream, so enqueued work
-// could still be touching the recycled memory.
+// paths (fix/legacy-submit-event-leak, fix/legacy-submit-resident-garbage).
+// The Phase-2 audit L4 fix in T1 (688bd98) hardened cuda_submit_host; the
+// legacy path had the same defect and then some: every failure return after
+// cudaEventCreateWithFlags left the per-transfer event on the abandoned
+// transfer until reset() — a bounded event-object leak per failed submit —
+// AND released the pinned staging slot + cache pin without draining the
+// stream, so enqueued work could still be touching the recycled memory.
+//
+// A second, correctness-class defect lived one frame up: prefetch_impl's
+// cold-submit failure path discarded the freshly ensured cache block only on
+// the managed (host_lease) path. On the legacy path the block stayed
+// resident holding stale/partial bytes, so the next request for the same key
+// took the ResidentHit path and served garbage to compute. Section 5 pins
+// the repaired invariant: a failed cold submit leaves NO resident block for
+// the failed generation, on either submit path (one call site, one rule).
 //
 // This target compiles the REAL async_prefetcher.cpp with DEE_CUDA defined
 // against the mock runtime in tests/cuda_stub/ (per-call fault injection +
@@ -275,6 +283,80 @@ void failure_storm() {
           "storm: sentinel table balanced");
 }
 
+// ===========================================================================
+// 5. Resident-garbage defect (the correctness half of a failed cold submit).
+//    prefetch_impl ensures a fresh cache block BEFORE cuda_submit; when the
+//    submit fails the block's bytes are stale/partial. The generation-matched
+//    discard must run on the legacy path exactly as on the managed
+//    (host_lease) path — otherwise is_resident() answers true and the next
+//    request for the key takes ResidentHit, serving garbage to compute.
+//
+//    Byte oracle is made deterministic by seeding the arena: the first
+//    transfer leaves src_a's bytes at offset 0; cache.clear() frees the
+//    block without touching arena memory; the failed submit's ensure()
+//    first-fit reuses offset 0, so a stale block would read back as src_a —
+//    never the retry's src_b — on both stub and real allocators.
+// ===========================================================================
+void failed_submit_leaves_no_resident_block() {
+    std::cout << "-- failed legacy cold submit discards the ensured block --\n";
+    dee_stub::g.reset();
+    const size_t ta_before = dee::trace_alloc::live_count();
+    {
+        Rig rig;
+        check(rig.init(4096), "garbage: init");
+        uint8_t src_a[64], src_b[64];
+        std::memset(src_a, 0xAA, sizeof(src_a));
+        std::memset(src_b, 0x55, sizeof(src_b));
+
+        check(rig.pf.prefetch(0, 1, src_a, sizeof(src_a), 0) >= 0 &&
+              rig.pf.wait(0, 1), "garbage: seed transfer completes");
+        check(std::memcmp(rig.cache.data(0, 1), src_a, sizeof(src_a)) == 0,
+              "garbage: seed bytes landed at the first arena offset");
+        rig.pf.reset();   // retire the seed transfer + its event
+        rig.cache.clear(); // free the block; arena bytes are left behind
+        check(!rig.cache.is_resident(0, 1) && dee_stub::g.live_events == 0,
+              "garbage: clean slate — no resident block, no live events");
+
+        // Injected H2D failure: the stub counts the enqueue then reports the
+        // error, matching the drain-first contract. prefetch must reject AND
+        // the ensured block must not survive.
+        dee_stub::g.fail_next("cudaMemcpyAsync");
+        check(rig.pf.prefetch(0, 1, src_b, sizeof(src_b), 0) < 0,
+              "garbage: injected failure rejects the cold prefetch");
+        check(!rig.cache.is_resident(0, 1),
+              "garbage: failed generation is NOT resident");
+        check(rig.cache.generation_of(0, 1) == 0 && rig.cache.data(0, 1) == nullptr,
+              "garbage: no block survives for the failed key");
+        check(rig.cache.pinned_count() == 0,
+              "garbage: no leaked cache pin");
+        check(dee_stub::g.live_events == 0,
+              "garbage: no leaked event");
+        const size_t slots_after_fail = rig.pf.staging_slot_count();
+
+        // The next request for the same key must be a ColdLoad — never a
+        // ResidentHit on the failed generation's stale bytes.
+        const uint64_t hits_before = rig.pf.stats().resident_hits;
+        const uint64_t colds_before = rig.pf.stats().cold_loads;
+        check(rig.pf.prefetch(0, 1, src_b, sizeof(src_b), 0) >= 0,
+              "garbage: re-request issues");
+        check(rig.pf.stats().cold_loads == colds_before + 1 &&
+              rig.pf.stats().resident_hits == hits_before,
+              "garbage: re-request took ColdLoad, not ResidentHit");
+        check(rig.pf.staging_slot_count() == slots_after_fail,
+              "garbage: staging slot recycled, not leaked");
+        check(rig.pf.wait(0, 1), "garbage: re-request completes");
+        check(std::memcmp(rig.cache.data(0, 1), src_b, sizeof(src_b)) == 0,
+              "garbage: retry delivers the NEW bytes, not the stale block");
+        check(dee_stub::g.live_events == 1,
+              "garbage: successful retry owns exactly one event");
+        std::string err;
+        check(rig.pf.validate_invariants(&err),
+              "garbage: prefetcher invariants hold after failure + retry");
+    }
+    check(dee::trace_alloc::live_count() == ta_before,
+          "garbage: sentinel table balanced");
+}
+
 }  // namespace
 
 int main() {
@@ -284,6 +366,7 @@ int main() {
     event_record_failure();
     conversion_failures();
     failure_storm();
+    failed_submit_leaves_no_resident_block();
     std::cout << "Legacy submit event-leak failures: " << failures << '\n';
     return failures ? 1 : 0;
 }
