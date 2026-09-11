@@ -180,9 +180,6 @@ bool HostPackCache::get_batch(
 
     size_t additional_bytes = 0;
     size_t unique_misses = 0;
-
-    size_t additional_bytes = 0;
-    size_t unique_misses = 0;
     for (size_t index = 0; index < count; ++index) {
         const BatchRequest& request = requests[index];
         if (request.nbytes == 0 || request.nbytes > budget_bytes_) return false;
@@ -405,7 +402,7 @@ bool HostPackCache::get_batch(
         record.evictions = stats_.evictions - evict_before_batch;
         record.lanes = std::min(fill_lanes_, std::max<size_t>(1, unique_misses));
         record.reserve_ms = std::chrono::duration<double, std::milli>(
-            phase_reserved_ - phase_t0).count();
+            phase_reserved - phase_t0).count();
         record.wake_ms = std::chrono::duration<double, std::milli>(
             wake_end - wake_begin).count();
         record.batch_wall_ms = batch_wall_ms;
