@@ -302,17 +302,24 @@ zero post-3335b79 commits touch dee.cpp/src or dee.cpp/include):
   design (old-seam audit evidence; findings folded via T1).
 - PRs: #1 campaign, #2 phase3-store, #3 ws-policy, #4 verification audit.
 
-RESOLVED LEDGER (campaign doc §9 is authoritative numbering):
-    CPU 1/10  remote build+host-test gate   -> pinned campaign commit
-    CPU 2/10  trace-bank segmentation
-    CPU 3/10  fill_replay remote replay
-    CPU 4/10  Phase-3 full-store build      (+CPU 5 reserved as resume)
-    CPU 6-10  reserve
-    GPU 1/2   4-arm Phase-2 causal campaign (A0/A1/A2/A3, ~2-3.2 h)
-    GPU 2/2   decision tree (corrected rerun OR Phase-3 arbitrary prompt)
+RESOLVED LEDGER (campaign doc §9 numbering; PARALLEL lanes — user
+clarified 2026-09-11 the caps are 10 parallel CPU + 2 parallel GPU):
+    CPU 1/10  remote build+host-test gate   RUNNING (dee-cpp-cpu-build-gate v1)
+    CPU 2/10  trace-bank segmentation       SUPERSEDED 2026-09-11 — dee4-v4
+              segments are contiguous-per-bucket; sparse trace bank needs a
+              new format for ~250s repack savings; CPU-4 already exercises
+              segment+publish machinery at full-store scale
+    CPU 3/10  fill_replay remote replay     RUNNING (dee-fill-replay-cpu3 v1)
+    CPU 4/10  Phase-3 full-store build      RUNNING (dee4-p3-store-build-cpu1 v1)
+    CPU 5/10  p3 resume contingency         held pending CPU-4 outcome
+    CPU 6/10  t_cpu(1) real-geometry bench  RUNNING (dee-tcpu-real-geometry v1)
+              (R5 gating measurement: portable executor, 4096/2048, thread sweep)
+    CPU 7-10  reserve
+    GPU 1/2   4-arm Phase-2 causal campaign RUNNING (dee-cpp-dsv4-phase2-campaign
+              v66 @ 79eac7e — A0/A1/A2/A3 + drift bracket, ~2-3.2 h)
+    GPU 2/2   decision tree — HELD pending GPU-1 outcome
     NOTE: PHASE3_BUILD_PLAN.md/kernel id "cpu1" is cosmetic; the store
-    build is CPU 4/10 in the authoritative ledger. Re-pin exact SHAs at
-    launch time.
+    build is CPU 4/10 in the authoritative ledger.
 
 RESEARCH ASSIMILATION PASS (COMPLETE 2026-09-11): R1-R11 prior-art swarm
 landed on research/prior-art-rNN branches (all pushed) -> consolidated on
