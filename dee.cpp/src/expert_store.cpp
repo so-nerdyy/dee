@@ -90,6 +90,212 @@ bool is_sha256_hex(const std::string& value) {
     return true;
 }
 
+// Minimal SHA-256 (FIPS 180-4) for dee4-v4-segmented seal verification and
+// the derived segment-table identity.  Self-contained: dee.cpp links no
+// crypto library and the digest length here is fixed.
+class Sha256 {
+public:
+    Sha256() { reset(); }
+
+    void reset() {
+        state_[0] = 0x6a09e667u; state_[1] = 0xbb67ae85u;
+        state_[2] = 0x3c6ef372u; state_[3] = 0xa54ff53au;
+        state_[4] = 0x510e527fu; state_[5] = 0x9b05688cu;
+        state_[6] = 0x1f83d9abu; state_[7] = 0x5be0cd19u;
+        total_len_ = 0;
+        buf_len_ = 0;
+    }
+
+    void update(const uint8_t* data, size_t size) {
+        total_len_ += size;
+        while (size > 0) {
+            const size_t take = std::min(size, sizeof(buf_) - buf_len_);
+            std::memcpy(buf_ + buf_len_, data, take);
+            buf_len_ += take;
+            data += take;
+            size -= take;
+            if (buf_len_ == sizeof(buf_)) {
+                compress(buf_);
+                buf_len_ = 0;
+            }
+        }
+    }
+
+    void update(const char* data, size_t size) {
+        update(reinterpret_cast<const uint8_t*>(data), size);
+    }
+
+    // Finalizes; the object must be reset() before reuse.
+    void finish(uint8_t out[32]) {
+        const uint64_t bit_len = total_len_ * 8;
+        const uint8_t one = 0x80;
+        update(&one, 1);
+        const uint8_t zero = 0;
+        while (buf_len_ != 56) update(&zero, 1);
+        uint8_t len_block[8];
+        for (int i = 0; i < 8; ++i) {
+            len_block[i] = static_cast<uint8_t>(bit_len >> (56 - 8 * i));
+        }
+        update(len_block, sizeof(len_block));
+        for (int i = 0; i < 8; ++i) {
+            out[4 * i + 0] = static_cast<uint8_t>(state_[i] >> 24);
+            out[4 * i + 1] = static_cast<uint8_t>(state_[i] >> 16);
+            out[4 * i + 2] = static_cast<uint8_t>(state_[i] >> 8);
+            out[4 * i + 3] = static_cast<uint8_t>(state_[i]);
+        }
+    }
+
+    std::string hexdigest() {
+        uint8_t digest[32];
+        finish(digest);
+        static const char kHex[] = "0123456789abcdef";
+        std::string out(64, '0');
+        for (int i = 0; i < 32; ++i) {
+            out[2 * i] = kHex[digest[i] >> 4];
+            out[2 * i + 1] = kHex[digest[i] & 0xf];
+        }
+        return out;
+    }
+
+private:
+    static uint32_t rotr(uint32_t x, int n) {
+        return (x >> n) | (x << (32 - n));
+    }
+
+    void compress(const uint8_t* block) {
+        static const uint32_t kK[64] = {
+            0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u,
+            0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
+            0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u,
+            0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
+            0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu,
+            0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
+            0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u,
+            0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
+            0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u,
+            0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
+            0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u,
+            0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
+            0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u,
+            0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
+            0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u,
+            0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u,
+        };
+        uint32_t w[64];
+        for (int i = 0; i < 16; ++i) {
+            w[i] = (static_cast<uint32_t>(block[4 * i]) << 24) |
+                   (static_cast<uint32_t>(block[4 * i + 1]) << 16) |
+                   (static_cast<uint32_t>(block[4 * i + 2]) << 8) |
+                   static_cast<uint32_t>(block[4 * i + 3]);
+        }
+        for (int i = 16; i < 64; ++i) {
+            const uint32_t s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^
+                                (w[i - 15] >> 3);
+            const uint32_t s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^
+                                (w[i - 2] >> 10);
+            w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+        }
+        uint32_t a = state_[0], b = state_[1], c = state_[2], d = state_[3];
+        uint32_t e = state_[4], f = state_[5], g = state_[6], h = state_[7];
+        for (int i = 0; i < 64; ++i) {
+            const uint32_t s1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+            const uint32_t ch = (e & f) ^ (~e & g);
+            const uint32_t t1 = h + s1 + ch + kK[i] + w[i];
+            const uint32_t s0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+            const uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+            const uint32_t t2 = s0 + maj;
+            h = g; g = f; f = e; e = d + t1;
+            d = c; c = b; b = a; a = t1 + t2;
+        }
+        state_[0] += a; state_[1] += b; state_[2] += c; state_[3] += d;
+        state_[4] += e; state_[5] += f; state_[6] += g; state_[7] += h;
+    }
+
+    uint32_t state_[8];
+    uint64_t total_len_;
+    uint8_t buf_[64];
+    size_t buf_len_;
+};
+
+std::string sha256_hex(const uint8_t* data, size_t size) {
+    Sha256 hash;
+    hash.update(data, size);
+    return hash.hexdigest();
+}
+
+// Replace bare JSON `null` literals with empty strings ("").
+//
+// json_min has no `null` literal: parse_value() errors on 'n'.  The segmented
+// writer (p3_builder.build_segmented) legitimately emits "data_file": null,
+// which would otherwise make a conforming dee4-v4-segmented metadata.json
+// unparseable.  The scrub is string-aware and only rewrites a `null` that
+// sits in a value position (preceded by ':', '[' or ',' modulo whitespace
+// and followed by ',', ']' or '}' modulo whitespace), so it can never turn
+// invalid-but-previously-parseable input into accepted input: any field that
+// was null becomes "", which then fails the by-name schema checks exactly as
+// a missing/wrong-typed value does.  Used only as a retry after the primary
+// parse fails, so the dee4-v2/dee4-v3-trace parse path is byte-identical to
+// before.
+std::string scrub_json_nulls(const std::string& text) {
+    auto significant_before = [&](size_t pos) -> char {
+        while (pos > 0) {
+            const char c = text[pos - 1];
+            if (!std::isspace(static_cast<unsigned char>(c))) return c;
+            --pos;
+        }
+        return '\0';
+    };
+    auto significant_after = [&](size_t pos) -> char {
+        while (pos < text.size()) {
+            const char c = text[pos];
+            if (!std::isspace(static_cast<unsigned char>(c))) return c;
+            ++pos;
+        }
+        return '\0';
+    };
+    std::string out;
+    out.reserve(text.size());
+    bool in_string = false;
+    bool escaped = false;
+    for (size_t i = 0; i < text.size();) {
+        const char c = text[i];
+        if (in_string) {
+            out += c;
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                in_string = false;
+            }
+            ++i;
+            continue;
+        }
+        if (c == '"') {
+            in_string = true;
+            out += c;
+            ++i;
+            continue;
+        }
+        if (c == 'n' && i + 4 <= text.size() &&
+            text.compare(i, 4, "null") == 0) {
+            const char prev = significant_before(i);
+            const char next = significant_after(i + 4);
+            const bool value_position =
+                (prev == ':' || prev == '[' || prev == ',') &&
+                (next == ',' || next == ']' || next == '}' || next == '\0');
+            if (value_position) {
+                out += "\"\"";
+                i += 4;
+                continue;
+            }
+        }
+        out += c;
+        ++i;
+    }
+    return out;
+}
+
 }  // namespace
 
 void ExpertStore::record_lookup(bool success) {
@@ -249,7 +455,28 @@ Dee4ExpertStore::Dee4ExpertStore() = default;
 
 Dee4ExpertStore::~Dee4ExpertStore() { close(); }
 
+void Dee4ExpertStore::unmap_segment(Segment* segment) {
+#ifdef _WIN32
+    if (segment->base) UnmapViewOfFile(segment->base);
+    if (segment->mapping_handle) {
+        CloseHandle(static_cast<HANDLE>(segment->mapping_handle));
+    }
+#else
+    if (segment->base && segment->base != MAP_FAILED) {
+        munmap(segment->base, segment->size);
+    }
+    if (segment->fd >= 0) ::close(segment->fd);
+#endif
+    segment->mapping_handle = nullptr;
+    segment->fd = -1;
+    segment->base = nullptr;
+    segment->size = 0;
+}
+
 void Dee4ExpertStore::close() {
+    for (Segment& segment : segments_) unmap_segment(&segment);
+    segments_.clear();
+    segmented_ = false;
 #ifdef _WIN32
     if (base_) UnmapViewOfFile(base_);
     if (mapping_handle_) CloseHandle(static_cast<HANDLE>(mapping_handle_));
@@ -272,7 +499,8 @@ void Dee4ExpertStore::close() {
     identity_.clear();
 }
 
-bool Dee4ExpertStore::map_file(const std::string& path) {
+bool Dee4ExpertStore::map_segment_file(const std::string& path,
+                                       Segment* segment) {
 #ifdef _WIN32
     HANDLE file = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
                               nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
@@ -301,43 +529,81 @@ bool Dee4ExpertStore::map_file(const std::string& path) {
         last_error_ = "MapViewOfFile failed for DEE4 data";
         return false;
     }
-    mapping_handle_ = mapping;
-    base_ = static_cast<uint8_t*>(mapped);
-    size_ = static_cast<size_t>(file_size.QuadPart);
-    fd_ = 0;
+    segment->mapping_handle = mapping;
+    segment->base = static_cast<uint8_t*>(mapped);
+    segment->size = static_cast<size_t>(file_size.QuadPart);
+    segment->fd = 0;
     return true;
 #else
-    fd_ = ::open(path.c_str(), O_RDONLY);
-    if (fd_ < 0) {
+    segment->fd = ::open(path.c_str(), O_RDONLY);
+    if (segment->fd < 0) {
         last_error_ = "open failed for DEE4 data";
         return false;
     }
     struct stat st{};
-    if (fstat(fd_, &st) != 0 || st.st_size <= 0 ||
+    if (fstat(segment->fd, &st) != 0 || st.st_size <= 0 ||
         static_cast<unsigned long long>(st.st_size) >
             static_cast<unsigned long long>(SIZE_MAX)) {
-        ::close(fd_);
-        fd_ = -1;
+        ::close(segment->fd);
+        segment->fd = -1;
         last_error_ = "invalid DEE4 data file size";
         return false;
     }
-    size_ = static_cast<size_t>(st.st_size);
-    base_ = static_cast<uint8_t*>(
-        mmap(nullptr, size_, PROT_READ, MAP_SHARED, fd_, 0));
-    if (base_ == MAP_FAILED) {
-        base_ = nullptr;
-        ::close(fd_);
-        fd_ = -1;
+    segment->size = static_cast<size_t>(st.st_size);
+    segment->base = static_cast<uint8_t*>(
+        mmap(nullptr, segment->size, PROT_READ, MAP_SHARED, segment->fd, 0));
+    if (segment->base == MAP_FAILED) {
+        segment->base = nullptr;
+        ::close(segment->fd);
+        segment->fd = -1;
         last_error_ = "mmap failed for DEE4 data";
         return false;
     }
     // DEE4 turns six scattered tensors into one sequential record per miss.
-    posix_madvise(base_, size_, POSIX_MADV_RANDOM);
+    posix_madvise(segment->base, segment->size, POSIX_MADV_RANDOM);
     return true;
 #endif
 }
 
+bool Dee4ExpertStore::map_file(const std::string& path) {
+    Segment segment;
+    if (!map_segment_file(path, &segment)) return false;
+    mapping_handle_ = segment.mapping_handle;
+    fd_ = segment.fd;
+    base_ = segment.base;
+    size_ = segment.size;
+    return true;
+}
+
+const Dee4ExpertStore::Segment* Dee4ExpertStore::find_segment(
+        size_t record_index) const {
+    // The segment table is sorted by first_record with contiguous coverage
+    // (validated at open); find the last segment with
+    // first_record <= record_index, then check its declared count.
+    size_t lo = 0;
+    size_t hi = segments_.size();
+    while (lo < hi) {
+        const size_t mid = lo + (hi - lo) / 2;
+        if (record_index < segments_[mid].first_record) {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    if (lo == 0) return nullptr;
+    const Segment* segment = &segments_[lo - 1];
+    if (record_index - segment->first_record >= segment->record_count) {
+        return nullptr;
+    }
+    return segment;
+}
+
 bool Dee4ExpertStore::open(const std::string& directory_or_metadata) {
+    return open(directory_or_metadata, Dee4OpenOptions{});
+}
+
+bool Dee4ExpertStore::open(const std::string& directory_or_metadata,
+                           const Dee4OpenOptions& options) {
     close();
     last_error_.clear();
     namespace fs = std::filesystem;
@@ -353,6 +619,13 @@ bool Dee4ExpertStore::open(const std::string& directory_or_metadata) {
                      std::istreambuf_iterator<char>());
     bool parsed = false;
     auto root = json::parse(text, &parsed);
+    if (!parsed) {
+        // json_min has no `null` literal; dee4-v4-segmented metadata emits
+        // "data_file": null.  Retry once on the null-scrubbed text (the
+        // format dispatch below still applies the full schema checks).
+        const std::string scrubbed = scrub_json_nulls(text);
+        if (scrubbed != text) root = json::parse(scrubbed, &parsed);
+    }
     if (!parsed || !root || !root->is_object()) {
         last_error_ = "DEE4 metadata JSON parse failed";
         return false;
@@ -363,13 +636,13 @@ bool Dee4ExpertStore::open(const std::string& directory_or_metadata) {
     size_t start_layer = 0;
     size_t num_layers = 0;
     size_t experts_per_layer = 0;
-    if (!json_string(root.get(), "format", &format) ||
-        (format != "dee4-v2" && format != "dee4-v3-trace") ||
+    const bool format_known =
+        json_string(root.get(), "format", &format) &&
+        (format == "dee4-v2" || format == "dee4-v3-trace" ||
+         format == "dee4-v4-segmented");
+    if (!format_known ||
         !json_string(root.get(), "codec", &codec) ||
         codec != "deepseek-fp4-e2m1-e8m0" ||
-        !json_string(root.get(), "data_file", &data_file) || data_file.empty() ||
-        !json_string(root.get(), "data_sha256", &identity_) ||
-        !is_sha256_hex(identity_) ||
         !json_nonnegative_int(root.get(), "start_layer", &start_layer) ||
         !json_nonnegative_int(root.get(), "num_layers", &num_layers) ||
         !json_nonnegative_int(root.get(), "experts_per_layer", &experts_per_layer) ||
@@ -382,6 +655,17 @@ bool Dee4ExpertStore::open(const std::string& directory_or_metadata) {
         !json_size_array(root.get(), "scale_nbytes", &scale_nbytes_) ||
         !json_size_array(root.get(), "scale_out", &scale_out_) ||
         !json_size_array(root.get(), "scale_in", &scale_in_)) {
+        last_error_ = "DEE4 metadata schema/codec/layout is invalid";
+        close();
+        return false;
+    }
+    // Monolithic formats carry a single sealed data file; the segmented
+    // format carries a segment table instead (data_file is null/absent).
+    if (format != "dee4-v4-segmented" &&
+        (!json_string(root.get(), "data_file", &data_file) ||
+         data_file.empty() ||
+         !json_string(root.get(), "data_sha256", &identity_) ||
+         !is_sha256_hex(identity_))) {
         last_error_ = "DEE4 metadata schema/codec/layout is invalid";
         close();
         return false;
@@ -417,13 +701,131 @@ bool Dee4ExpertStore::open(const std::string& directory_or_metadata) {
         }
     }
     size_t total_experts = 0;
-    size_t expected_size = 0;
     if (format == "dee4-v2") {
         if (!checked_mul(num_layers, experts_per_layer, &total_experts)) {
             last_error_ = "DEE4 total size overflow";
             close();
             return false;
         }
+    } else if (format == "dee4-v4-segmented") {
+        // The segment table is the byte-space map: the writer
+        // (p3_builder.build_segmented) emits one segment per bucket whose
+        // [first_record, first_record+record_count) ranges tile
+        // [0, total_experts) contiguously and in order.  A segmented store
+        // must NOT name a monolithic data file (the writer emits
+        // "data_file": null, which the null-scrub parse reads back as "").
+        const json::Value* data_file_value = root->find("data_file");
+        if (data_file_value &&
+            !(data_file_value->is_string() && data_file_value->s.empty())) {
+            last_error_ =
+                "DEE4 segmented metadata must not name a data_file";
+            close();
+            return false;
+        }
+        size_t declared_total = 0;
+        const json::Value* segments_value = root->find("segments");
+        if (!json_nonnegative_int(root.get(), "total_experts",
+                                  &declared_total) ||
+            declared_total == 0 ||
+            !checked_mul(num_layers, experts_per_layer, &total_experts) ||
+            total_experts != declared_total ||
+            !segments_value || !segments_value->is_array() ||
+            segments_value->arr.size() != num_layers) {
+            last_error_ = "DEE4 segmented store metadata is invalid";
+            close();
+            return false;
+        }
+        // Optional universe bindings: when present they must be well-formed
+        // (the table is what the reader actually consumes; these bind the
+        // store to the Phase-3 manifest universe).
+        for (const char* key : {"universe_sha256", "manifest_sha256"}) {
+            const json::Value* binding = root->find(key);
+            if (binding &&
+                (!binding->is_string() || !is_sha256_hex(binding->s))) {
+                last_error_ = "DEE4 segmented universe binding is invalid";
+                close();
+                return false;
+            }
+        }
+        segments_.reserve(num_layers);
+        size_t next_first = 0;
+        for (size_t i = 0; i < segments_value->arr.size(); ++i) {
+            const json::Value* item = segments_value->arr[i].get();
+            std::string file;
+            std::string sha;
+            size_t bucket = 0;
+            size_t first_record = 0;
+            size_t record_count = 0;
+            size_t declared_bytes = 0;
+            if (!item || !item->is_object() ||
+                !json_string(item, "file", &file) || file.empty() ||
+                !json_nonnegative_int(item, "bucket", &bucket) ||
+                bucket != i ||
+                !json_nonnegative_int(item, "first_record", &first_record) ||
+                first_record != next_first ||
+                !json_nonnegative_int(item, "record_count", &record_count) ||
+                record_count != experts_per_layer ||
+                !json_nonnegative_int(item, "bytes", &declared_bytes) ||
+                !json_string(item, "sha256", &sha) ||
+                !is_sha256_hex(sha)) {
+                last_error_ = "DEE4 segment table is invalid";
+                close();
+                return false;
+            }
+            // `domain` ("main"/"mtp") is informational for tooling only;
+            // if present it must at least be a string.
+            const json::Value* domain = item->find("domain");
+            if (domain && !domain->is_string()) {
+                last_error_ = "DEE4 segment table is invalid";
+                close();
+                return false;
+            }
+            size_t expected_bytes = 0;
+            if (!checked_mul(record_count, record_bytes_, &expected_bytes) ||
+                expected_bytes != declared_bytes) {
+                last_error_ = "DEE4 segment byte count is inconsistent";
+                close();
+                return false;
+            }
+            // `file` is a store-relative path.  Refuse absolute paths and
+            // parent escapes so the mmap set can never leave the store dir.
+            const fs::path relative(file);
+            if (relative.is_absolute() ||
+                file.find("..") != std::string::npos) {
+                last_error_ = "DEE4 segment path escapes the store";
+                close();
+                return false;
+            }
+            for (char& c : sha) {
+                c = static_cast<char>(
+                    std::tolower(static_cast<unsigned char>(c)));
+            }
+            Segment segment;
+            segment.first_record = first_record;
+            segment.record_count = record_count;
+            segment.file = file;
+            segment.sha256 = sha;
+            segments_.push_back(std::move(segment));
+            next_first += record_count;
+        }
+        if (next_first != declared_total) {
+            last_error_ = "DEE4 segments do not cover the declared universe";
+            close();
+            return false;
+        }
+        // The segmented format has no whole-file seal: derive the store
+        // identity as sha256 over the ordered concatenation of the segment
+        // table's sha256 hex strings (the declared content seals).
+        {
+            Sha256 table_hash;
+            for (const Segment& segment : segments_) {
+                table_hash.update(segment.sha256.data(),
+                                  segment.sha256.size());
+            }
+            identity_ = table_hash.hexdigest();
+        }
+        segmented_ = true;
+        backend_ = "dee4_segmented";
     } else {
         size_t declared_total = 0;
         std::string journal_sha;
@@ -478,24 +880,64 @@ bool Dee4ExpertStore::open(const std::string& directory_or_metadata) {
         trace_indexed_ = true;
         backend_ = "dee4_trace";
     }
-    if (
-        !checked_mul(total_experts, record_bytes_, &expected_size)) {
-        last_error_ = "DEE4 total size overflow";
-        close();
-        return false;
-    }
-    fs::path data_path = metadata_path.parent_path() / data_file;
-    if (!map_file(data_path.string())) {
-        close();
-        return false;
-    }
-    if (size_ != expected_size) {
-        std::ostringstream message;
-        message << "DEE4 data size " << size_ << " does not match expected "
-                << expected_size;
-        last_error_ = message.str();
-        close();
-        return false;
+    if (segmented_) {
+        // Map every segment and enforce the exact declared size.  Missing,
+        // unreadable, or mis-sized segment files fail closed here.
+        for (Segment& segment : segments_) {
+            const fs::path segment_path =
+                metadata_path.parent_path() / segment.file;
+            if (!map_segment_file(segment_path.string(), &segment)) {
+                close();
+                return false;
+            }
+            size_t expected_segment_bytes = 0;
+            if (!checked_mul(segment.record_count, record_bytes_,
+                             &expected_segment_bytes) ||
+                segment.size != expected_segment_bytes) {
+                std::ostringstream message;
+                message << "DEE4 segment " << segment.file << " size "
+                        << segment.size << " does not match expected "
+                        << expected_segment_bytes;
+                last_error_ = message.str();
+                close();
+                return false;
+            }
+        }
+        if (options.verify_segment_hashes) {
+            // The per-segment sha256 is the segmented format's content seal:
+            // a segment whose bytes do not match its declared seal must
+            // never be served.  One-time O(total bytes) pass over the
+            // mapped views.
+            for (const Segment& segment : segments_) {
+                if (sha256_hex(segment.base, segment.size) !=
+                    segment.sha256) {
+                    last_error_ = "DEE4 segment " + segment.file +
+                                  " sha256 mismatch";
+                    close();
+                    return false;
+                }
+            }
+        }
+    } else {
+        size_t expected_size = 0;
+        if (!checked_mul(total_experts, record_bytes_, &expected_size)) {
+            last_error_ = "DEE4 total size overflow";
+            close();
+            return false;
+        }
+        fs::path data_path = metadata_path.parent_path() / data_file;
+        if (!map_file(data_path.string())) {
+            close();
+            return false;
+        }
+        if (size_ != expected_size) {
+            std::ostringstream message;
+            message << "DEE4 data size " << size_ << " does not match expected "
+                    << expected_size;
+            last_error_ = message.str();
+            close();
+            return false;
+        }
     }
     start_layer_ = static_cast<int>(start_layer);
     num_layers_ = static_cast<int>(num_layers);
@@ -505,7 +947,9 @@ bool Dee4ExpertStore::open(const std::string& directory_or_metadata) {
 }
 
 bool Dee4ExpertStore::get(int layer, int expert, ExpertView* out) {
-    const bool in_range = out && base_ && layer >= start_layer_ &&
+    const bool mapped =
+        segmented_ ? !segments_.empty() : base_ != nullptr;
+    const bool in_range = out && mapped && layer >= start_layer_ &&
         layer < start_layer_ + num_layers_ && expert >= 0 &&
         expert < experts_per_layer_;
     if (!in_range) {
@@ -533,12 +977,32 @@ bool Dee4ExpertStore::get(int layer, int expert, ExpertView* out) {
                 static_cast<size_t>(experts_per_layer_) +
             static_cast<size_t>(expert);
     }
-    const size_t record_offset = record_index * record_bytes_;
-    if (record_offset > size_ || record_bytes_ > size_ - record_offset) {
-        record_lookup(false);
-        return false;
+    const uint8_t* record = nullptr;
+    if (segmented_) {
+        // record_index -> segment via the declared table, then a fixed
+        // in-segment stride.  The table is validated contiguous at open, so
+        // a miss here can only mean corruption after open — fail closed.
+        const Segment* segment = find_segment(record_index);
+        if (segment) {
+            const size_t record_offset =
+                (record_index - segment->first_record) * record_bytes_;
+            if (record_offset <= segment->size &&
+                record_bytes_ <= segment->size - record_offset) {
+                record = segment->base + record_offset;
+            }
+        }
+        if (!record) {
+            record_lookup(false);
+            return false;
+        }
+    } else {
+        const size_t record_offset = record_index * record_bytes_;
+        if (record_offset > size_ || record_bytes_ > size_ - record_offset) {
+            record_lookup(false);
+            return false;
+        }
+        record = base_ + record_offset;
     }
-    const uint8_t* record = base_ + record_offset;
     ExpertView view;
     view.codec = ExpertCodec::DeepSeekFp4E2m1E8m0;
     view.contiguous_data = record;
@@ -583,21 +1047,34 @@ bool Dee4ExpertStore::get_layout_reference(int preferred_layer,
 
 bool Dee4ExpertStore::materialize(const ExpertView& view, uint8_t* dst,
                                   size_t nbytes) const {
-    if (!dst || !base_ || nbytes == 0 || nbytes != record_bytes_ ||
+    if (!dst || nbytes == 0 || nbytes != record_bytes_ ||
         view.contiguous_nbytes != record_bytes_ ||
         view.record_index >= stored_records_) {
         return false;
     }
-    const size_t offset = static_cast<size_t>(view.record_index) * record_bytes_;
-    if (offset > size_ || nbytes > size_ - offset ||
-        view.contiguous_data != base_ + offset) {
+    // Resolve the backing store the same way get() did: one file for the
+    // monolithic formats, the owning segment for dee4-v4-segmented.
+    [[maybe_unused]] int fd = fd_;
+    const uint8_t* mapped = base_;
+    size_t mapped_size = size_;
+    size_t offset = static_cast<size_t>(view.record_index) * record_bytes_;
+    if (segmented_) {
+        const Segment* segment = find_segment(view.record_index);
+        if (!segment) return false;
+        fd = segment->fd;
+        mapped = segment->base;
+        mapped_size = segment->size;
+        offset = (view.record_index - segment->first_record) * record_bytes_;
+    }
+    if (!mapped || offset > mapped_size || nbytes > mapped_size - offset ||
+        view.contiguous_data != mapped + offset) {
         return false;
     }
 #ifdef _WIN32
     std::memcpy(dst, view.contiguous_data, nbytes);
     return true;
 #else
-    if (fd_ < 0 || offset > static_cast<size_t>(
+    if (fd < 0 || offset > static_cast<size_t>(
             std::numeric_limits<off_t>::max())) {
         return false;
     }
@@ -610,7 +1087,7 @@ bool Dee4ExpertStore::materialize(const ExpertView& view, uint8_t* dst,
         const size_t kPage = 4096;
         const size_t pages = (nbytes + kPage - 1) / kPage;
         std::vector<unsigned char> vec(pages, 0);
-        if (::mincore(base_ + offset, nbytes, vec.data()) == 0) {
+        if (::mincore(mapped + offset, nbytes, vec.data()) == 0) {
             probed_bytes = nbytes;
             size_t resident_pages = 0;
             for (size_t i = 0; i < pages; ++i) resident_pages += (vec[i] & 1u);
@@ -629,7 +1106,7 @@ bool Dee4ExpertStore::materialize(const ExpertView& view, uint8_t* dst,
             return false;
         }
         const ssize_t count = ::pread(
-            fd_, dst + copied, remaining,
+            fd, dst + copied, remaining,
             static_cast<off_t>(offset + copied));
         if (count < 0 && errno == EINTR) continue;
         if (count <= 0) return false;
