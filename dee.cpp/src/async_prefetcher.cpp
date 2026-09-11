@@ -507,7 +507,16 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
         release_transfer(inflight_[index]);
         inflight_[index].abandoned = true;
         key_to_idx_.erase(map_key(layer, expert));
-        if (host_lease) cache_.discard_unpinned(layer, expert, transfer.generation);
+        // The ensured block was never filled — its bytes are stale/partial —
+        // so it must not stay resident on EITHER submit path: a later
+        // is_resident() would answer true and the request would take the
+        // ResidentHit path on garbage. Both submit functions drained the
+        // stream before returning false and release_transfer just dropped
+        // this transfer's pin, so the fresh-generation block is unpinned here
+        // by construction (no other request can hold a pin on a generation
+        // this call just minted); the generation match keeps the discard a
+        // safe no-op if the block were ever superseded.
+        cache_.discard_unpinned(layer, expert, transfer.generation);
         return -1;
     }
     record_request(RequestKind::ColdLoad, token, logical_layer, layer, expert, priority,
