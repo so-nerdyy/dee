@@ -53,7 +53,7 @@ reproduces the dee4-v2 file byte-for-byte.
 `format == "dee4-v4-segmented"` alongside the existing `dee4-v2` and
 `dee4-v3-trace`. For a segmented store it:
 
-1. Parses metadata (with a one-retry `null`-literal scrub — see §5).
+1. Parses metadata (json_min parses the `null` literal natively — see §5).
 2. Validates the shared schema exactly as v2/v3 (codec, geometry, component
    tables, shape×byte consistency).
 3. Validates the segment table **strictly, matching the writer**:
@@ -69,8 +69,9 @@ reproduces the dee4-v2 file byte-for-byte.
    - `file` must be a non-empty store-relative path (absolute paths and
      `..` escapes are rejected);
    - `domain` is informational only (validated as a string if present);
-   - `data_file` must be absent or JSON `null` — a segmented store naming
-     a monolithic file is contradictory and rejected.
+   - `data_file` must be absent, JSON `null`, or an empty string — a
+     segmented store naming a monolithic file is contradictory and
+     rejected.
 4. mmaps every segment file (`MapViewOfFile`/`mmap` per segment, read-only)
    and requires `actual size == declared bytes` — fail-closed on missing,
    unreadable, or mis-sized segments.
@@ -147,15 +148,19 @@ exactly as in the v2 reader.
 
 ## 5. Schema ambiguities resolved (documented per task)
 
-1. **`"data_file": null` vs json_min.** `json_min` has no `null` literal —
-   a conforming segmented metadata.json is *unparseable* as-is. The reader
-   retries a failed parse once on a scrubbed copy that rewrites bare
-   value-position `null` literals to `""` (string-aware, token-bounded).
-   For segmented stores `data_file` must then be absent or empty-string;
-   v2/v3 still require a non-empty `data_file`, so previously-parseable
-   inputs are byte-identical in behavior. Fixing `json_min` itself would be
-   the cleaner long-term change but `src/json_min.cpp` is outside this
-   task's scope.
+1. **`"data_file": null` vs json_min — RESOLVED on the integration
+   line.** `json_min` originally had no `null` literal, so a conforming
+   segmented metadata.json was *unparseable*; this branch carried a
+   retry-only `scrub_json_nulls()` (value-position `null` → `""`) as the
+   workaround. The `fix/json-min-null` merge (T17) made `null` parse
+   natively to a Null-typed `Value` with `is_null()`, so the scrub and its
+   retry were deleted as dead code. The segmented `data_file` gate was
+   updated to accept `is_null()` (plus absent key / empty string for
+   hand-edited metadata) — without that arm, native null parsing would
+   have made `is_string()` false and `open()` would reject every
+   conforming segmented store. v2/v3 still require a non-empty
+   `data_file`. Regression check: `test_segment_table_validation` opens
+   metadata carrying the literal `"data_file": null`.
 2. **Store identity.** Segmented metadata has no `data_sha256`; identity is
    derived as the segment-table digest (sha256 of the concatenated declared
    seals). If a canonical whole-store seal is ever emitted, switching
@@ -184,9 +189,11 @@ exactly as in the v2 reader.
 - `dee.cpp/src/host_pack_cache.cpp` is broken at the base commit `8a3a2cd`
   (duplicate `additional_bytes`/`unique_misses` declarations + stale
   `phase_reserved_`; the fix `d68cf4ad` exists on
-  `research/phase2-integration-lru-fix`). It blocks the `dee_core` target
-  and therefore the full `ctest` suite on this branch. Not touched here
-  (outside task scope); tests were verified by direct compilation of the
+  `research/phase2-integration-lru-fix` and is cherry-picked onto
+  `integration/phase3-store` as `78265b5`). It blocked the `dee_core`
+  target and therefore the full `ctest` suite on this branch. On the
+  integration line it is fixed; on this branch standalone, tests were
+  verified by direct compilation of the
   store sources + test — the same path `test_p3_full_store.py`'s C++ proof
   uses — and by the phase3 pytest suite (9/9 PASS, which recompiles the
   modified `expert_store.cpp` and exercises the unchanged v2 path).

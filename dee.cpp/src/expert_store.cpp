@@ -223,79 +223,6 @@ std::string sha256_hex(const uint8_t* data, size_t size) {
     return hash.hexdigest();
 }
 
-// Replace bare JSON `null` literals with empty strings ("").
-//
-// json_min has no `null` literal: parse_value() errors on 'n'.  The segmented
-// writer (p3_builder.build_segmented) legitimately emits "data_file": null,
-// which would otherwise make a conforming dee4-v4-segmented metadata.json
-// unparseable.  The scrub is string-aware and only rewrites a `null` that
-// sits in a value position (preceded by ':', '[' or ',' modulo whitespace
-// and followed by ',', ']' or '}' modulo whitespace), so it can never turn
-// invalid-but-previously-parseable input into accepted input: any field that
-// was null becomes "", which then fails the by-name schema checks exactly as
-// a missing/wrong-typed value does.  Used only as a retry after the primary
-// parse fails, so the dee4-v2/dee4-v3-trace parse path is byte-identical to
-// before.
-std::string scrub_json_nulls(const std::string& text) {
-    auto significant_before = [&](size_t pos) -> char {
-        while (pos > 0) {
-            const char c = text[pos - 1];
-            if (!std::isspace(static_cast<unsigned char>(c))) return c;
-            --pos;
-        }
-        return '\0';
-    };
-    auto significant_after = [&](size_t pos) -> char {
-        while (pos < text.size()) {
-            const char c = text[pos];
-            if (!std::isspace(static_cast<unsigned char>(c))) return c;
-            ++pos;
-        }
-        return '\0';
-    };
-    std::string out;
-    out.reserve(text.size());
-    bool in_string = false;
-    bool escaped = false;
-    for (size_t i = 0; i < text.size();) {
-        const char c = text[i];
-        if (in_string) {
-            out += c;
-            if (escaped) {
-                escaped = false;
-            } else if (c == '\\') {
-                escaped = true;
-            } else if (c == '"') {
-                in_string = false;
-            }
-            ++i;
-            continue;
-        }
-        if (c == '"') {
-            in_string = true;
-            out += c;
-            ++i;
-            continue;
-        }
-        if (c == 'n' && i + 4 <= text.size() &&
-            text.compare(i, 4, "null") == 0) {
-            const char prev = significant_before(i);
-            const char next = significant_after(i + 4);
-            const bool value_position =
-                (prev == ':' || prev == '[' || prev == ',') &&
-                (next == ',' || next == ']' || next == '}' || next == '\0');
-            if (value_position) {
-                out += "\"\"";
-                i += 4;
-                continue;
-            }
-        }
-        out += c;
-        ++i;
-    }
-    return out;
-}
-
 }  // namespace
 
 void ExpertStore::record_lookup(bool success) {
@@ -619,13 +546,6 @@ bool Dee4ExpertStore::open(const std::string& directory_or_metadata,
                      std::istreambuf_iterator<char>());
     bool parsed = false;
     auto root = json::parse(text, &parsed);
-    if (!parsed) {
-        // json_min has no `null` literal; dee4-v4-segmented metadata emits
-        // "data_file": null.  Retry once on the null-scrubbed text (the
-        // format dispatch below still applies the full schema checks).
-        const std::string scrubbed = scrub_json_nulls(text);
-        if (scrubbed != text) root = json::parse(scrubbed, &parsed);
-    }
     if (!parsed || !root || !root->is_object()) {
         last_error_ = "DEE4 metadata JSON parse failed";
         return false;
@@ -713,10 +633,13 @@ bool Dee4ExpertStore::open(const std::string& directory_or_metadata,
         // [first_record, first_record+record_count) ranges tile
         // [0, total_experts) contiguously and in order.  A segmented store
         // must NOT name a monolithic data file (the writer emits
-        // "data_file": null, which the null-scrub parse reads back as "").
+        // "data_file": null, which json_min now parses to a Null-typed
+        // value; an absent key or an explicit empty string is also
+        // accepted for hand-edited metadata).
         const json::Value* data_file_value = root->find("data_file");
         if (data_file_value &&
-            !(data_file_value->is_string() && data_file_value->s.empty())) {
+            !(data_file_value->is_null() ||
+              (data_file_value->is_string() && data_file_value->s.empty()))) {
             last_error_ =
                 "DEE4 segmented metadata must not name a data_file";
             close();

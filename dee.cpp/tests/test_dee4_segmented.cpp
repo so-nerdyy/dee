@@ -581,6 +581,14 @@ void test_segment_table_validation() {
     with_data.replace(with_data.find("\"data_file\": null"), 17,
                       "\"data_file\": \"experts.dee4\"");
     expect_reject(with_data, "segmented metadata naming a data_file");
+    // Regression gate (json_min native null, JSON_MIN_NULL.md): the writer's
+    // literal "data_file": null parses to a Null-typed Value, not "" — the
+    // segmented gate must accept is_null() or every conforming store is
+    // rejected.  `good` carries the literal null; it must open.
+    write_text(dir / "metadata.json", good);
+    check(store.open(dir.string(), no_verify),
+          "explicit \"data_file\": null opens under native null parsing");
+    store.close();
     // bucket ids must match their table position.
     std::string bad_bucket = good;
     bad_bucket.replace(bad_bucket.find("\"bucket\": 2"), 11, "\"bucket\": 9");
