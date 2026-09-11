@@ -1,0 +1,193 @@
+{
+ "journal": "C:\\Users\\carth\\Downloads\\dynamic_expert_eviction\\.freebuff\\wt\\p2c\\dee.cpp\\benchmark_reports\\deepseek-v4-flash-0731-t4\\v50-evidence-20260829T195940Z\\routed_experts.jsonl",
+ "journal_sha256": "665aac3e8db570237c6dc6acaf08dc39f2af890e8a04e400ce7154f1a858dae1",
+ "v60_journal_content_identical": true,
+ "record_bytes": 13369344,
+ "device_slots": 281,
+ "host_slots": 682,
+ "sealed_counters": {
+  "host_pack": {
+   "cuda0": {
+    "hits": 1223,
+    "misses": 1390,
+    "evictions": 708
+   },
+   "cuda1": {
+    "hits": 1395,
+    "misses": 1091,
+    "evictions": 409
+   }
+  },
+  "device": {
+   "cuda0": {
+    "hits": 328,
+    "cold_loads": 2285,
+    "evictions": 2004
+   },
+   "cuda1": {
+    "hits": 327,
+    "cold_loads": 2159,
+    "evictions": 1878
+   }
+  }
+ },
+ "sim_single_level_host_lru682_full_stream": {
+  "0": {
+   "sim_hits": 1222,
+   "sim_misses": 1391,
+   "sim_evictions": 709
+  },
+  "1": {
+   "sim_hits": 1395,
+   "sim_misses": 1091,
+   "sim_evictions": 409
+  }
+ },
+ "sim_two_level_sealed_device_policy": {
+  "0": {
+   "requests": 2613,
+   "device_hits": 329,
+   "host_hits": 924,
+   "host_misses": 1360,
+   "miss_dist": {
+    "0": 35,
+    "1": 87,
+    "2": 89,
+    "3": 52,
+    "4": 38,
+    "5": 20,
+    "6": 9,
+    "22": 1,
+    "24": 1,
+    "25": 3,
+    "26": 3,
+    "27": 3,
+    "28": 2,
+    "29": 2,
+    "30": 2,
+    "31": 1,
+    "32": 1,
+    "36": 1,
+    "39": 1,
+    "41": 1
+   }
+  },
+  "1": {
+   "requests": 2486,
+   "device_hits": 325,
+   "host_hits": 1068,
+   "host_misses": 1093,
+   "miss_dist": {
+    "0": 76,
+    "1": 92,
+    "2": 72,
+    "3": 46,
+    "4": 24,
+    "5": 3,
+    "6": 2,
+    "23": 1,
+    "24": 2,
+    "26": 2,
+    "27": 3,
+    "28": 4,
+    "29": 1,
+    "30": 2,
+    "31": 3,
+    "32": 1,
+    "33": 2
+   }
+  }
+ },
+ "sim_two_level_plain_lru_device": {
+  "0": {
+   "requests": 2613,
+   "device_hits": 680,
+   "host_hits": 543,
+   "host_misses": 1390,
+   "miss_dist": {
+    "0": 32,
+    "1": 88,
+    "2": 82,
+    "3": 58,
+    "4": 35,
+    "5": 19,
+    "6": 16,
+    "22": 1,
+    "24": 1,
+    "25": 3,
+    "26": 3,
+    "27": 3,
+    "28": 2,
+    "29": 2,
+    "30": 2,
+    "31": 1,
+    "32": 1,
+    "36": 1,
+    "39": 1,
+    "41": 1
+   }
+  },
+  "1": {
+   "requests": 2486,
+   "device_hits": 1057,
+   "host_hits": 337,
+   "host_misses": 1092,
+   "miss_dist": {
+    "0": 72,
+    "1": 100,
+    "2": 69,
+    "3": 46,
+    "4": 22,
+    "5": 4,
+    "6": 2,
+    "23": 1,
+    "24": 2,
+    "26": 2,
+    "27": 3,
+    "28": 4,
+    "29": 1,
+    "30": 2,
+    "31": 3,
+    "32": 1,
+    "33": 2
+   }
+  }
+ },
+ "phase1_anchors": {
+  "svc_task_anchor_ms": 18.91,
+  "svc_miss_single_flight_lanes1_ms": 35.51,
+  "svc_miss_single_flight_qd1_ms": 33.76,
+  "svc_miss_lanes3_qd6_ms": 107.76,
+  "single_stream_gibps": 0.35,
+  "lanes3_aggregate_gibps": 0.29,
+  "ceiling_hi_gibps": 0.37,
+  "within_batch_busy_frac_prod": 0.96,
+  "reserve_ms_per_batch": 7.08,
+  "enqueue_ms_per_batch_decode": 14.63
+ },
+ "legacy_equivalent_stream": {
+  "host_misses_single_level": 2482,
+  "serial_fill_wall_s_W1": 87.535,
+  "serial_fill_wall_s_task_anchor": 46.935,
+  "serial_decode_fill_wall_s_W1": 44.029,
+  "bounded4_fill_wall_s_fairshare_Bagg0.29": 106.565,
+  "sealed_v60_fill_batch_wall_s": {
+   "cuda0": 55.114,
+   "cuda1": 42.097,
+   "total": 97.211,
+   "lanes": 4,
+   "queue_depth": 8
+  },
+  "sealed_filllive_decode_FillWait_s": 41.99,
+  "note": "serial model reproduces the sealed live FillWait decode bucket within ~2%; the sealed 4-lane pool paid MORE fill wall than serial single-flight"
+ },
+ "falsifiability_gate": {
+  "repair_wall_delta_vs_serial_measured_s": 19.953,
+  "repair_wall_delta_vs_serial_task_anchor_s": 13.35,
+  "repair_wall_delta_fairshare_at_ceiling_s": -3.306,
+  "removable_reserve_bucket_s": 4.871,
+  "enqueue_bucket_stays_on_caller_s": 13.471,
+  "gate_rule": "repair wins iff (serial_wall - bounded_wall) >= reservation+enqueue caller buckets it removes",
+  "gate_result": "FAIL: bounded-3-lane fill wall is 23.1% WORSE than serial on the measured /tmp bank (106.3s vs 86.3s per response); even at the best observed ceiling 0.37 GiB/s the delta is +3.3s. The only recoverable caller bucket is reservation <=4.9s (7.1ms/batch); enqueue ~13.5s stays on the caller (prefetch_host_lease owns transfer submission). The repair does not meet the gate."
+ }
+}
