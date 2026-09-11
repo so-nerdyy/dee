@@ -164,6 +164,18 @@ public:
     bool pin(int layer, int expert);
     bool unpin(int layer, int expert);
 
+    // Experimental transfer failure cleanup: never discard another generation
+    // or a block still held by DMA/compute.
+    bool discard_unpinned(int layer, int expert, uint64_t generation);
+    // Experimental Phase-2 repair: ignore staging-order priority and rank by
+    // actual cache recency only. Disabled by default.
+    void set_experimental_plain_lru(bool enabled) { experimental_plain_lru_ = enabled; }
+    bool experimental_plain_lru() const { return experimental_plain_lru_; }
+    using EvictionScore = std::function<int64_t(const ExpertBlock&)>;
+    void set_experimental_eviction_score(EvictionScore score) {
+        experimental_score_ = std::move(score);
+    }
+
     // Milestone 3 forensic: capture the most recent ensure/evict failure
     // context so the engine can surface it to Python instead of collapsing
     // to a single "cannot allocate" line.  Cleared by ensure() on entry;
@@ -182,6 +194,8 @@ private:
     StageProfiler* profiler_ = nullptr;
     std::string last_error_message_;
     bool debug_validation_ = false;
+    bool experimental_plain_lru_ = false;
+    EvictionScore experimental_score_;
 
     ExpertBlock* find_block(int layer, int expert);
     const ExpertBlock* find_block(int layer, int expert) const;
@@ -195,6 +209,8 @@ private:
     // Oracle prediction keep an expert resident longer.
     static constexpr int64_t PRIORITY_WEIGHT = 1 << 20;
     int64_t eviction_score(const ExpertBlock& b) const {
+        if (experimental_plain_lru_) return b.last_used;
+        if (experimental_score_) return experimental_score_(b);
         return b.last_used + (int64_t)b.priority * PRIORITY_WEIGHT;
     }
 };

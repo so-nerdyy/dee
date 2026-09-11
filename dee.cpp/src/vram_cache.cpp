@@ -319,6 +319,16 @@ void VramCacheManager::clear() {
     // reset stats? keep cumulative; caller decides.
 }
 
+bool VramCacheManager::discard_unpinned(int layer, int expert, uint64_t generation) {
+    const ExpertKey key{layer, expert};
+    auto it = blocks_.find(key);
+    if (it == blocks_.end() || it->second.generation != generation || it->second.pins)
+        return false;
+    arena_.free(it->second.offset, it->second.size);
+    blocks_.erase(it);
+    return true;
+}
+
 size_t VramCacheManager::resident_count() const {
     size_t n = 0;
     for (const auto& kv : blocks_) if (kv.second.resident) ++n;

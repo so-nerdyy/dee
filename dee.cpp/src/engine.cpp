@@ -2789,6 +2789,9 @@ bool Engine::fill_fp4_record(
 
 bool Engine::prepare_fp4_experts(
         int source_layer, const int* experts, size_t count) {
+    // Phase 2 fills the final leased host slot at the authoritative stage
+    // boundary. The legacy batch cache/pool remains unchanged when disabled.
+    if (cfg_.phase2.enabled && cfg_.phase2.host_enabled) return true;
     if (cfg_.transfer_dtype != WeightTransferDType::Fp4E2m1 ||
         cfg_.source_read_lanes <= 1 || count == 0) {
         return true;
@@ -3147,6 +3150,12 @@ bool Engine::stage_expert(int logical_layer, int source_layer, int expert, int p
         return false;
     }
 #endif
+    if (cfg_.phase2.enabled && cfg_.phase2.host_enabled) {
+        if (!phase2_device_ || !phase2_host_ || !phase2_cold_) return false;
+        return phase2_device_->stage(phase2_cold_->record(source_layer, expert),
+            *phase2_cold_, *phase2_host_, phase2_codec_, priority,
+            current_token_, logical_layer);
+    }
     if (cfg_.use_cuda) {
         if (cfg_.transfer_dtype == WeightTransferDType::Int4) {
             const QuantizedExpert* quantized = get_staging_int4(source_layer, expert);
@@ -3412,6 +3421,23 @@ bool Engine::init(const EngineConfig& cfg) {
     }
     const bool fp4_cache =
         cfg.cache_dtype == DeviceCacheDType::Fp4E2m1;
+    const bool phase2_host = cfg.phase2.enabled && cfg.phase2.host_enabled;
+    const bool phase2_vram = cfg.phase2.enabled && cfg.phase2.vram_priority_fix_enabled;
+    if (!cfg.phase2.enabled &&
+        (cfg.phase2.host_enabled || cfg.phase2.vram_priority_fix_enabled)) {
+        std::fprintf(stderr, "[engine] Phase 2 subfeatures require phase2.enabled=true\n");
+        return false;
+    }
+    if (cfg.phase2.enabled && !phase2_host && !phase2_vram) {
+        std::fprintf(stderr, "[engine] Phase 2 requires host_enabled or vram_priority_fix_enabled\n");
+        return false;
+    }
+    if (phase2_host && (!fp4_cache || !cfg.use_cuda ||
+        cfg.transfer_dtype != WeightTransferDType::Fp4E2m1 ||
+        cfg.phase2.model_identity.empty())) {
+        std::fprintf(stderr, "[engine] Phase 2 host tier requires packed FP4 CUDA and an immutable model identity\n");
+        return false;
+    }
     if (cfg.transfer_dtype != WeightTransferDType::Bf16 &&
         (!cfg.use_cuda ||
          (cfg.cache_dtype != DeviceCacheDType::Fp16 && !fp4_cache))) {
@@ -3649,6 +3675,46 @@ bool Engine::init(const EngineConfig& cfg) {
     if (!cache_.init(budget, be)) {
         fprintf(stderr, "[engine] cache init failed (budget %zu bytes)\n", budget);
         return false;
+    }
+    cache_.set_experimental_plain_lru(phase2_vram);
+    if (phase2_host) {
+        QuantizedExpert layout;
+        if (!configure_fp4_quantized(first_expert, &layout) ||
+            layout.fp4_total_nbytes != cache_blob_bytes_) return false;
+        std::string representation = "fp4-e2m1-e8m0-gate-up-down-v1";
+        for (int p = 0; p < 3; ++p) {
+            fp4_cache_packed_offsets_[p] = layout.fp4[p].packed_offset;
+            fp4_cache_scale_offsets_[p] = layout.fp4[p].scale_offset;
+            fp4_cache_out_[p] = layout.fp4[p].out;
+            fp4_cache_in_[p] = layout.fp4[p].in;
+            representation += ":" + std::to_string(layout.fp4[p].out) + "x" +
+                std::to_string(layout.fp4[p].in) + ":" +
+                std::to_string(layout.fp4[p].scale_offset);
+        }
+        fp4_cache_layout_valid_ = true;
+        try {
+            phase2_cold_ = std::make_unique<ExpertStoreColdAdapter>(*expert_store_,
+                cfg_.phase2.model_identity, representation, first_expert);
+            auto host_config = cfg_.phase2.host;
+            if (host_config.slot_bytes == 0) host_config.slot_bytes = cache_blob_bytes_;
+            if (host_config.slot_bytes < cache_blob_bytes_) return false;
+            auto host_policy = cfg_.phase2.host_policy;
+            if (!host_policy) {
+                if (host_config.policy_slots != 0) {
+                    throw std::invalid_argument(
+                        "plain-LRU host tier does not support policy-resident slots");
+                }
+                host_policy = std::make_shared<PlainLruHostPlacementPolicy>();
+            }
+            phase2_host_ = std::make_unique<HostExpertTier>(host_config,
+                host_memory_backend(cfg_.use_cuda, cfg_.device_id), host_policy);
+            phase2_device_ = std::make_unique<DeviceExpertTier>(cache_, prefetcher_,
+                phase2_cold_->record(0, 0).key, cfg_.phase2.device_policy);
+        } catch (const std::exception& error) {
+            phase2_device_.reset(); phase2_host_.reset(); phase2_cold_.reset();
+            std::fprintf(stderr, "[engine] Phase 2 initialization failed: %s\n", error.what());
+            return false;
+        }
     }
     cache_.set_debug_validation(cfg_.debug_validate_cache);
     if (cfg_.debug_validate_cache && !cache_.validate_invariants()) {

@@ -85,6 +85,19 @@ int main() {
     check("E3 protected by priority", mgr.is_resident(0, 3));
     check("evictions now 3", mgr.stats().evictions == 3);
 
+    // --- Experimental VRAM repair: actual recency ignores staging priority ---
+    dee::VramCacheManager plain_lru;
+    check("init experimental plain-LRU manager", plain_lru.init(BLK * 2, host_backend()));
+    plain_lru.set_experimental_plain_lru(true);
+    check("plain-LRU load E0 with high staging priority",
+          plain_lru.ensure(0, 0, BLK, 100));
+    check("plain-LRU load E1", plain_lru.ensure(0, 1, BLK, 0));
+    plain_lru.touch(0, 0); // E0 is newer even though its priority is higher.
+    check("plain-LRU load E2 evicts by recency", plain_lru.ensure(0, 2, BLK, 0));
+    check("plain-LRU retains recent E0", plain_lru.is_resident(0, 0));
+    check("plain-LRU evicts older E1", !plain_lru.is_resident(0, 1));
+    check("plain-LRU switch is observable", plain_lru.experimental_plain_lru());
+
     // --- sync_fallback semantics ---
     // E0 was evicted earlier; reaching it at compute time = a fallback + reload.
     check("sync_fallback on evicted E0", mgr.sync_fallback(0, 0, BLK, 0));
