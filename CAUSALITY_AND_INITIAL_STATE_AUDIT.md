@@ -113,13 +113,17 @@ Regime C (prewarmed, labeled) — pin value is real *as a prewarm contract*:
 |---|---|---|---|---|---|
 | static_freq_prewarm | 60.48 | 72.52 | 78.84 | 91.43 | 100 |
 | freq_lru_prewarm pf0.75 | 56.17 | 66.13 | 72.52 | 81.98 | 91.43 |
-| belady_same_state_prewarm | 56.83 | 59.11 | 70.68 | 91.14 | 100 |
+| belady_same_state_prewarm | 64.64 | 72.52 | 78.84 | 91.43 | 100 |
+
+*(Figure corrected 2026-09-10: prior row used never-used-distance init;
+exact contract init per `research/phase2-regime-c` @ 643d3559.)*
 
 Note the corrected regime-C ordering: with the *same* top-slots prewarm,
 MIN's dynamic management ties or beats the static pin from 8 through
-24 GiB (91.14 vs 91.43 % at 24 GiB is a tie to within the tail set's
-rounding). v3's "pins beat MIN" claim came from comparing v3's phantom
-static pin against MIN; with equal initial states MIN is never beaten.
+24 GiB (91.43 vs 91.43 % at 24 GiB — an exact tie; strictly better at
+8 GiB, 64.64 vs 60.48 %). v3's "pins beat MIN" claim came from
+comparing v3's phantom static pin against MIN; with equal initial
+states MIN is never beaten.
 
 Regime B interpretation (the honest online statement): on THIS sealed
 16-token window, a warmup pin **cannot pay for itself** — the window is

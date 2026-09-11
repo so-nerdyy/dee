@@ -74,12 +74,15 @@ With an explicitly prewarmed top-N set (cross-request residency; one-time
 
 Caveats that v3 omitted: (1) this requires the prewarm to be resident
 *before* the measured request stream (a labeled regime-C contract);
-(2) MIN given the same prewarm ties or beats the static pin (91.14 vs
-91.43 % at 24 GiB), so the pin vs dynamic choice is not where the value
-is — the prewarm *size* is; (3) rank stability across requests is an
-assumption about the workload class, not a measured property of this
-single window (top-1 % covers only 6.8 % of activations — the tail is
-wide).
+(2) MIN given the same prewarm ties or beats the static pin (91.43 vs
+91.43 % at 24 GiB — an exact tie), so the pin vs dynamic choice is not
+where the value is — the prewarm *size* is; (3) rank stability across
+requests is an assumption about the workload class, not a measured
+property of this single window (top-1 % covers only 6.8 % of
+activations — the tail is wide).
+
+*(Figure corrected 2026-09-10: prior row used never-used-distance init;
+exact contract init per `research/phase2-regime-c` @ 643d3559.)*
 
 ## 4. Activation-coverage curve (the prewarm ceiling)
 

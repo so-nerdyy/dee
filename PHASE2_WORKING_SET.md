@@ -156,7 +156,10 @@ at 8 GiB). No line in the recommendation.
 | freq_lru_prewarm pf0.5 | 50.48 | 59.15 | 65.62 | 72.52 | 78.84 |
 | freq_lru_prewarm pf0.99 | 60.21 | 72.33 | 78.58 | 91.04 | 100 |
 | lru_prewarm_topN (control) | 43.36 | 53.30 | 66.31 | 88.94 | 100 |
-| belady_same_state_prewarm | 56.83 | 59.11 | 70.68 | 91.14 | 100 |
+| belady_same_state_prewarm | 64.64 | 72.52 | 78.84 | 91.43 | 100 |
+
+*(Figure corrected 2026-09-10: prior row used never-used-distance init;
+exact contract init per `research/phase2-regime-c` @ 643d3559.)*
 
 Readings (corrected):
 
@@ -175,9 +178,9 @@ Readings (corrected):
 - **F4 (prewarm value is real but is a CONTRACT):** with a labeled
   prewarm, static top-N placement adds +20.2 pp over cold LRU at 16 GiB
   and +38.3 pp at 24 GiB — but MIN given the same prewarm ties or beats
-  it everywhere (91.14 vs 91.43 % at 24 GiB is a tie within tail
-  rounding). The prewarm *size* is the lever, not the static-vs-dynamic
-  choice.
+  it everywhere (91.43 vs 91.43 % at 24 GiB — an exact tie; MIN is
+  strictly better below ~12 GiB, 64.64 vs 60.48 % at 8 GiB). The
+  prewarm *size* is the lever, not the static-vs-dynamic choice.
 - **F5 (pin+LRU-remainder pathology):** freq_lru_prewarm at small budgets
   is worse than its own prewarm: marginal slope −8,186 slow-MiB per added
   GiB at 8 GiB (the LRU remainder evicts prewarmed records to cache
