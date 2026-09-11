@@ -704,6 +704,15 @@ class P3KaggleJob:
                 out[int(e["bucket"])] = e
         return out
 
+    def _committed_safe(self) -> dict[int, dict[str, Any]]:
+        """Concurrent-read variant for the watch loop: a torn trailing
+        line (journal append in flight) is ignored this poll — the next
+        poll sees it complete.  Post-join code uses the strict reader."""
+        try:
+            return self._committed()
+        except (json.JSONDecodeError, OSError):
+            return {}
+
     # -- staging / eviction ----------------------------------------------
 
     def _stage(self, src: Path, seg_name: str) -> Path:
@@ -791,8 +800,11 @@ class P3KaggleJob:
         if self.gate is not None:
             self.gate.mark_pushed(bucket)
 
-    def _push_new_committed(self, retry_failed: bool = False) -> None:
-        for bucket, entry in sorted(self._committed().items()):
+    def _push_new_committed(
+        self, retry_failed: bool = False, safe: bool = False
+    ) -> None:
+        committed = self._committed_safe() if safe else self._committed()
+        for bucket, entry in sorted(committed.items()):
             if bucket in self.pushed:
                 continue
             if bucket in self._push_failed and not retry_failed:
@@ -935,7 +947,7 @@ class P3KaggleJob:
                 target=_build, name="p3-build", daemon=True)
             thread.start()
             while thread.is_alive():
-                self._push_new_committed()
+                self._push_new_committed(safe=True)
                 time.sleep(self.poll_seconds)
             thread.join()
         else:
