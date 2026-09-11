@@ -76,7 +76,7 @@ SEALED_TOKEN_IDS = [
     22, 22604, 515, 411, 3947, 85349, 14, 6341,
 ]
 SEALED_DECODED_TEXT = (
-    "**Alan Turing (1912–1954)** was an English mathematician, computer")
+    "**Alan Turing (1912\u20131954)** was an English mathematician, computer")
 # Same fail-closed guard as the single-run harness (v47 cp1252 incident):
 # refuse to judge exactness if this file was ever re-transcoded.
 assert SEALED_DECODED_TEXT.encode("utf-8") == (
