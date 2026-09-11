@@ -32,6 +32,7 @@
 #include "dee/async_prefetcher.h"
 #include "dee/expert_store.h"
 #include "dee/host_pack_cache.h"
+#include "dee/expert_tiers.h"
 #include "dee/oracle.h"
 #include "dee/profiling.h"
 #include "dee/vram_cache.h"
@@ -93,6 +94,7 @@ struct EngineConfig {
     int         num_layers  = 40;   // depth (clamped to oracle.num_layers)
     size_t      budget_bytes = 0;   // VRAM budget (0 => 4 experts auto)
     size_t      host_pack_cache_bytes = 0; // packed-source RAM LRU (0 => 8 GiB)
+    Phase2TierConfig phase2; // explicit C++ experiment only; default OFF
     // Bounded DEE4 cold-record materialization. One lane is the conservative
     // legacy-equivalent default; queue depth bounds a layer worklist chunk.
     // Workers only populate disjoint host-cache reservations. H2D and compute
@@ -203,6 +205,10 @@ public:
     Engine() : prefetcher_(cache_) {}
     bool init(const EngineConfig& cfg);
     const EngineConfig& config() const { return cfg_; }
+    TierMetrics phase2_metrics(uint64_t completed_tokens = 0) const {
+        return phase2_device_ && phase2_host_
+            ? phase2_device_->metrics(*phase2_host_, completed_tokens) : TierMetrics{};
+    }
 
     // Expose the packed-source host RAM LRU stats (Stage 1 residency).
     const HostPackCache::Stats& host_pack_stats() const {
@@ -388,6 +394,10 @@ private:
     VramCacheManager cache_;
     AsyncPrefetcher prefetcher_;
     StageProfiler profiler_;
+    std::unique_ptr<ExpertStoreColdAdapter> phase2_cold_;
+    std::unique_ptr<HostExpertTier> phase2_host_;
+    std::unique_ptr<DeviceExpertTier> phase2_device_;
+    IdentityCodec phase2_codec_;
 
     int    hidden_ = 2048;
     int    inter_  = 256;

@@ -4,6 +4,7 @@
 // metadata/file-size checks.  No CUDA or real checkpoint is required.
 
 #include "dee/expert_store.h"
+#include "dee/expert_tiers.h"
 
 #include <algorithm>
 #include <chrono>
@@ -208,12 +209,66 @@ void test_trace_index_lookup_and_fail_closed() {
     std::filesystem::remove_all(directory);
 }
 
+void test_phase2_exact_store_integration() {
+    struct FixturePolicy : dee::HostPlacementPolicy {
+        dee::HostResidency residency(const dee::TierExpertKey&) const override {
+            return dee::HostResidency::Dynamic;
+        }
+        std::optional<size_t> victim(const dee::TierExpertKey&,
+                const std::vector<dee::HostVictim>& victims) const override {
+            return victims.empty() ? std::nullopt : std::optional<size_t>(victims.front().slot);
+        }
+    };
+    for (bool trace : {false, true}) {
+        const auto directory = make_test_dir();
+        if (trace) write_trace_fixture(directory); else write_fixture(directory);
+        {
+            dee::Dee4ExpertStore store;
+            check(store.open(directory.string()), "Phase 2 real DEE4 fixture opens");
+            dee::ExpertView layout;
+            check(store.get_layout_reference(6, &layout), "Phase 2 exact layout resolves");
+            dee::ExpertStoreColdAdapter cold(store, "fixture-checkpoint-sha256", "fixture-packed-v1", layout);
+            auto backend = dee::host_memory_backend(false);
+            backend.pin = [](void*, size_t) { return true; }; // deterministic registration mock
+            backend.unpin = [](void*) {};
+            dee::HostExpertTier host({40, 4096, 0, 1, 4096, true}, backend,
+                                      std::make_shared<FixturePolicy>());
+            dee::IdentityCodec codec;
+            auto selected = cold.record(7, 1);
+            auto a = host.acquire(selected, cold, codec);
+            check(a.lease && a.lease.size() == 40 && a.lease.pinned(), "DEE4 cold fill publishes final registered lease");
+            dee::ExpertView expected;
+            check(store.get(7, 1, &expected), "exact expert expected view resolves");
+            check(a.lease && std::equal(a.lease.data(), a.lease.data() + 40, expected.contiguous_data),
+                  "DEE4 materialize into host tier preserves every packed byte");
+            const auto reads = store.stats().source_reads;
+            auto b = host.acquire(selected, cold, codec);
+            check(a.lease.data() == b.lease.data() && store.stats().source_reads == reads,
+                  "DEE4 host hit avoids further materialization");
+            a.lease.reset(); b.lease.reset();
+            if (trace) {
+                auto absent = host.acquire(cold.record(6, 0), cold, codec);
+                check(!absent.lease, "Phase 2 preserves sparse trace missing-expert rejection");
+                auto refill = host.acquire(selected, cold, codec);
+                check(refill.lease && refill.lease.data()[0] == 97,
+                      "failed trace lookup cannot publish stale slot bytes");
+            }
+            auto alien = selected; alien.key.model = "wrong-model";
+            std::vector<uint8_t> untouched(40, 0xee);
+            check(!cold.read(alien.key, untouched.data(), 40).success && untouched[0] == 0xee,
+                  "cold adapter rejects wrong model before writing destination");
+        }
+        std::filesystem::remove_all(directory);
+    }
+}
+
 }  // namespace
 
 int main() {
     test_arithmetic_lookup_and_stats();
     test_data_size_mismatch_fails_closed();
     test_trace_index_lookup_and_fail_closed();
+    test_phase2_exact_store_integration();
     if (g_failures == 0) {
         std::printf("ALL PASS\n");
         return 0;

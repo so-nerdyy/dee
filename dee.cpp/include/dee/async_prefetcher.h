@@ -17,6 +17,7 @@
 #pragma once
 
 #include "dee/vram_cache.h"
+#include "dee/host_expert_tier.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -27,6 +28,9 @@ namespace dee {
 
 // A single in-flight weight transfer.
 struct Transfer {
+    HostExpertLease host_lease; // experimental: retained until DMA completion
+    bool managed_source = false;
+    bool dma_complete = false;
     ExpertKey key{};
     void*     dst      = nullptr;  // VRAM arena slot (from VramCacheManager)
     const void* src    = nullptr;  // stable pageable host staging pointer
@@ -77,6 +81,23 @@ public:
     // Initialize the stream/event backend. `cuda` selects the real CUDA path
     // (only available when built with DEE_CUDA=ON); otherwise a mock stream.
     bool init(bool use_cuda = false);
+
+    // Experimental packed-byte path. Owns the host lease through the existing
+    // stream/event completion; CUDA fallback for pageable slots waits on this
+    // copy's event. No staging-ring gather and no CPU/GPU dtype conversion.
+    long prefetch_host_lease(const HostExpertLease&, int priority = 0,
+                             int token = -1, int logical_layer = -1);
+    // Reclaim completed host sources; pressure may wait for one DMA event.
+    // Never drops a device pin reserved for a future compute consumer.
+    bool collect_host_sources(bool wait_one = false);
+    double experimental_readiness_wait_ms() const { return experimental_readiness_wait_ms_; }
+    double experimental_pageable_wait_ms() const { return experimental_pageable_wait_ms_; }
+    bool enable_experimental_host_tier(const TierExpertKey& scope) {
+        if (!inflight_.empty() || !scope.valid()) return false;
+        experimental_host_tier_ = true;
+        experimental_scope_ = scope;
+        return true;
+    }
 
     // Issue an async copy of `nbytes` from `src` (WeightMmap host ptr) into the
     // cache slot for (layer, expert). Reserves the VRAM slot via the cache.
@@ -238,8 +259,13 @@ private:
 
     // mock backend state
     std::vector<Transfer>        inflight_;   // ordered submission queue
-    std::unordered_map<long, int> key_to_idx_; // ExpertKey -> idx in inflight_
-    std::vector<long> batch_keys_;
+    std::unordered_map<uint64_t, int> key_to_idx_; // ExpertKey -> idx in inflight_
+    std::vector<uint64_t> batch_keys_;
+    bool experimental_host_tier_ = false;
+    TierExpertKey experimental_scope_;
+    double experimental_readiness_wait_ms_ = 0;
+    double experimental_pageable_wait_ms_ = 0;
+    uint64_t map_key(int layer, int expert) const;
 
     struct PinnedStagingSlot {
         void* ptr = nullptr;
@@ -274,10 +300,12 @@ private:
                          int priority, int token,
                          int logical_layer,
                          const void* const* fp4_region_src = nullptr,
-                         const size_t* fp4_region_nbytes = nullptr);
+                         const size_t* fp4_region_nbytes = nullptr,
+                         const HostExpertLease* host_lease = nullptr);
     void   drain_until(int idx);   // mock: run copies up to idx (inclusive)
     bool   cuda_init();            // guarded real init
     bool   cuda_submit(long idx);  // guarded real submit + event record
+    bool   cuda_submit_host(long idx);
     bool   cuda_wait(long idx, HostWaitReason reason);  // guarded real event sync
     void   release_staging(Transfer& transfer);
     bool   release_transfer(Transfer& transfer);

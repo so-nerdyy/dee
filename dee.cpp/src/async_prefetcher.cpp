@@ -18,8 +18,8 @@
 namespace dee {
 namespace {
 
-size_t key_id(int layer, int expert) {
-    return (static_cast<size_t>(static_cast<uint32_t>(layer)) << 32) |
+uint64_t key_id(int layer, int expert) {
+    return (static_cast<uint64_t>(static_cast<uint32_t>(layer)) << 32) |
            static_cast<uint32_t>(expert);
 }
 
@@ -49,11 +49,25 @@ bool AsyncPrefetcher::init(bool use_cuda) {
 }
 
 long AsyncPrefetcher::find_inflight(int layer, int expert) const {
-    const auto it = key_to_idx_.find(static_cast<long>(key_id(layer, expert)));
+    const auto it = key_to_idx_.find(map_key(layer, expert));
     return it == key_to_idx_.end() ? -1 : it->second;
 }
 
+uint64_t AsyncPrefetcher::map_key(int layer, int expert) const {
+    const auto key = key_id(layer, expert);
+    // Keep legacy behavior when disabled. The experiment preserves all bits
+    // on LLP64 platforms where long is only 32 bits.
+    return experimental_host_tier_ ? key : static_cast<uint64_t>(static_cast<long>(key));
+}
+
 void AsyncPrefetcher::release_staging(Transfer& transfer) {
+    if (transfer.managed_source && transfer.host_lease) {
+#ifdef DEE_CUDA
+        if (use_cuda_ && !transfer.dma_complete && transfer.event)
+            transfer.dma_complete = cudaEventQuery(static_cast<cudaEvent_t>(transfer.event)) == cudaSuccess;
+#endif
+        if (transfer.dma_complete) transfer.host_lease.reset();
+    }
     if (transfer.active_counted) {
         if (active_transfers_ > 0) --active_transfers_;
         transfer.active_counted = false;
@@ -99,8 +113,7 @@ bool AsyncPrefetcher::validate_invariants(std::string* error) const {
             return fail("multiple expert keys map to the same transfer");
         }
         const Transfer& transfer = inflight_[static_cast<size_t>(index)];
-        if (entry.first != static_cast<long>(
-                key_id(transfer.key.layer, transfer.key.expert))) {
+        if (entry.first != map_key(transfer.key.layer, transfer.key.expert)) {
             return fail("transfer key does not match mapped transfer expert");
         }
         if (transfer.abandoned) {
@@ -339,7 +352,8 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
                                     int priority, int token,
                                     int logical_layer,
                                     const void* const* fp4_region_src,
-                                    const size_t* fp4_region_nbytes) {
+                                    const size_t* fp4_region_nbytes,
+                                    const HostExpertLease* host_lease) {
     const bool has_regions = fp4_region_src != nullptr && fp4_region_nbytes != nullptr;
     if ((!src && !has_regions) || source_nbytes == 0 || destination_nbytes == 0) {
         std::fprintf(stderr, "AsyncPrefetcher: invalid source for expert (%d,%d)\n", layer, expert);
@@ -347,7 +361,7 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
     }
     const size_t cache_bytes_before = cache_.used_bytes();
     const size_t cache_entries_before = profiler_ ? cache_.resident_count() : 0;
-    const long request_key = static_cast<long>(key_id(layer, expert));
+    const auto request_key = map_key(layer, expert);
     if (std::find(batch_keys_.begin(), batch_keys_.end(), request_key) != batch_keys_.end()) {
         ++stats_.duplicate_requests;
         if (profiler_) profiler_->note_duplicate_request();
@@ -357,6 +371,8 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
     const long existing = find_inflight(layer, expert);
     if (existing >= 0 && existing < static_cast<long>(inflight_.size())) {
         Transfer& prior = inflight_[existing];
+        if (host_lease && (prior.key.layer != layer || prior.key.expert != expert ||
+            prior.nbytes != destination_nbytes)) return -1;
         if (!prior.done && !prior.abandoned) {
             record_request(RequestKind::InflightHit, token, logical_layer, layer,
                            expert, priority, -1, -1, cache_bytes_before,
@@ -386,7 +402,7 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
                            prior.generation, cache_.pin_count(layer, expert), false);
             return validate_request_result(prior.id, "resident transfer reuse");
         }
-        key_to_idx_.erase(static_cast<long>(key_id(layer, expert)));
+        key_to_idx_.erase(map_key(layer, expert));
     }
     if (cache_.is_resident(layer, expert)) {
         if (!cache_.ensure(layer, expert, destination_nbytes, priority)) return -1;
@@ -438,8 +454,7 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
     if (!cache_.ensure(layer, expert, destination_nbytes, priority)) return -1;
     const VramCacheManager::EnsureInfo ensure_info = cache_.last_ensure_info();
     if (ensure_info.evicted) {
-        key_to_idx_.erase(static_cast<long>(
-            key_id(ensure_info.evicted_key.layer, ensure_info.evicted_key.expert)));
+        key_to_idx_.erase(map_key(ensure_info.evicted_key.layer, ensure_info.evicted_key.expert));
     }
     void* dst = cache_.data(layer, expert);
     if (!dst || !cache_.pin(layer, expert)) return -1;
@@ -473,14 +488,19 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
     transfer.token = token;
     transfer.logical_layer = logical_layer;
     transfer.generation = ensure_info.generation;
+    if (host_lease) {
+        transfer.host_lease = *host_lease;
+        transfer.managed_source = true;
+    }
     inflight_.push_back(transfer);
     const long index = static_cast<long>(inflight_.size() - 1);
-    key_to_idx_[static_cast<long>(key_id(layer, expert))] = static_cast<int>(index);
+    key_to_idx_[map_key(layer, expert)] = static_cast<int>(index);
 
-    if (use_cuda_ && !cuda_submit(index)) {
+    if (use_cuda_ && !(host_lease ? cuda_submit_host(index) : cuda_submit(index))) {
         release_transfer(inflight_[index]);
         inflight_[index].abandoned = true;
-        key_to_idx_.erase(static_cast<long>(key_id(layer, expert)));
+        key_to_idx_.erase(map_key(layer, expert));
+        if (host_lease) cache_.discard_unpinned(layer, expert, transfer.generation);
         return -1;
     }
     record_request(RequestKind::ColdLoad, token, logical_layer, layer, expert, priority,
@@ -501,7 +521,9 @@ void AsyncPrefetcher::drain_until(int index) {
         if (!t.done && !t.abandoned) {
             std::memcpy(t.dst, t.src, t.nbytes);
             t.done = true;
-            release_transfer(t);
+            t.dma_complete = true;
+            if (t.managed_source) release_staging(t);
+            else release_transfer(t);
         }
     }
 }
@@ -515,6 +537,8 @@ bool AsyncPrefetcher::wait(int layer, int expert) {
     }
     Transfer& transfer = inflight_[index];
     if (transfer.abandoned) return false;
+    if (transfer.managed_source && use_cuda_ && !transfer.dma_complete)
+        return cuda_wait(index, HostWaitReason::CacheReadiness);
     if (transfer.done) {
         release_transfer(transfer);
         return cache_.is_resident(layer, expert);
@@ -522,6 +546,7 @@ bool AsyncPrefetcher::wait(int layer, int expert) {
     if (use_cuda_) return cuda_wait(index, HostWaitReason::CacheReadiness);
     const auto wait_begin = profiler_ && profiler_->enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
     drain_until(static_cast<int>(index));
+    if (transfer.managed_source) release_transfer(transfer);
     if (profiler_ && profiler_->enabled()) profiler_->add_cpu(CpuStage::HostWaiting, wait_begin);
     return transfer.done && cache_.is_resident(layer, expert);
 }
@@ -532,7 +557,7 @@ bool AsyncPrefetcher::wait_on_stream(int layer, int expert, void* compute_stream
     if (index < 0 || index >= static_cast<long>(inflight_.size())) return false;
     Transfer& transfer = inflight_[index];
     if (transfer.abandoned) return false;
-    if (transfer.done) {
+    if (transfer.done && (!transfer.managed_source || transfer.dma_complete)) {
         // Already complete: no device wait needed, just release ownership.
         release_transfer(transfer);
         return cache_.is_resident(layer, expert);
@@ -595,7 +620,10 @@ void AsyncPrefetcher::synchronize_all() {
 #ifdef DEE_CUDA
         const auto wait_begin = profiler_ && profiler_->enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
         if (stream_ && !DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(static_cast<cudaStream_t>(stream_)),
-                                              "cudaStreamSynchronize(prefetch)")) return;
+                                              "cudaStreamSynchronize(prefetch)")) {
+            if (experimental_host_tier_) std::terminate(); // cannot free leased DMA sources safely
+            return;
+        }
         if (stream_ && profiler_ && profiler_->enabled()) {
             const auto wait_end = StageProfiler::now();
             const double wait_ms = std::chrono::duration<double, std::milli>(
@@ -607,6 +635,10 @@ void AsyncPrefetcher::synchronize_all() {
         }
 #endif
         for (auto& transfer : inflight_) {
+            if (transfer.managed_source) {
+                transfer.dma_complete = true;
+                release_transfer(transfer);
+            }
             if (!transfer.done && !transfer.abandoned) {
                 transfer.done = true;
                 release_transfer(transfer);
@@ -614,6 +646,8 @@ void AsyncPrefetcher::synchronize_all() {
         }
     } else {
         drain_until(static_cast<int>(inflight_.size()) - 1);
+        for (auto& transfer : inflight_)
+            if (transfer.managed_source) release_transfer(transfer);
     }
 }
 
@@ -643,6 +677,106 @@ bool AsyncPrefetcher::cuda_init() {
     return true;
 #else
     std::fprintf(stderr, "AsyncPrefetcher: --cuda requested but DEE_CUDA=OFF\n");
+    return false;
+#endif
+}
+
+long AsyncPrefetcher::prefetch_host_lease(const HostExpertLease& lease,
+        int priority, int token, int logical_layer) {
+    if (!experimental_host_tier_ || !lease || !lease.key().valid() ||
+        lease.key().model != experimental_scope_.model ||
+        lease.key().representation != experimental_scope_.representation) return -1;
+    return prefetch_impl(lease.key().layer, lease.key().expert, lease.data(),
+        lease.size(), lease.size(), false, false, false, false, false,
+        nullptr, nullptr, nullptr, nullptr, 0, nullptr, lease.pinned(),
+        priority, token, logical_layer, nullptr, nullptr, &lease);
+}
+
+bool AsyncPrefetcher::collect_host_sources(bool wait_one) {
+    bool collected = false;
+    for (auto& transfer : inflight_) {
+        if (!transfer.host_lease) continue;
+#ifdef DEE_CUDA
+        if (use_cuda_) {
+            if (!transfer.event) continue;
+            const auto event = static_cast<cudaEvent_t>(transfer.event);
+            auto status = cudaEventQuery(event);
+            if (status == cudaErrorNotReady && wait_one && !collected)
+                status = cudaEventSynchronize(event);
+            if (status == cudaErrorNotReady) continue;
+            if (!DEE_CUDA_CHECK_NAMED(status, "phase2 host lease completion")) return false;
+            transfer.dma_complete = true;
+        } else
+#endif
+        {
+            if (!wait_one) continue;
+            std::memcpy(transfer.dst, transfer.src, transfer.nbytes);
+            transfer.dma_complete = true;
+            transfer.done = true;
+        }
+        release_staging(transfer);
+        collected = true;
+        if (wait_one) break;
+    }
+    return collected;
+}
+
+bool AsyncPrefetcher::cuda_submit_host(long index) {
+#ifdef DEE_CUDA
+    auto& transfer = inflight_[index];
+    if (!stream_ || !transfer.host_lease) {
+        transfer.dma_complete = true;
+        return false;
+    }
+    const auto stream = static_cast<cudaStream_t>(stream_);
+    cudaEvent_t event = nullptr;
+    if (!DEE_CUDA_CHECK_NAMED(DEE_TA_EVENT_CREATE_FLAGS(&event, cudaEventDisableTiming, "phase2_event"),
+                              "phase2 completion event")) {
+        transfer.dma_complete = true; // nothing submitted
+        return false;
+    }
+    transfer.event = event;
+    const auto begin = StageProfiler::now();
+    const bool profiling = profiler_ && profiler_->enabled();
+    if (profiling) profiler_->set_cuda_context(transfer.token, transfer.logical_layer,
+        transfer.key.expert, transfer.source_nbytes, transfer.id, active_transfers_ + 1,
+        static_cast<size_t>(-1));
+    const auto ticket = profiling ? profiler_->cuda_begin(GpuStage::H2D, stream_) : static_cast<size_t>(-1);
+    bool ok = DEE_CUDA_CHECK_NAMED(cudaMemcpyAsync(transfer.dst, transfer.src,
+        transfer.source_nbytes, cudaMemcpyHostToDevice, stream), "phase2 packed H2D");
+    if (ok && profiling) ok = profiler_->cuda_end(ticket, stream_);
+    if (ok) ok = DEE_CUDA_CHECK_NAMED(cudaEventRecord(event, stream), "phase2 record H2D completion");
+    if (!ok) {
+        // Error only: DMA may have launched before event recording failed.
+        // Do not recycle either source or destination until this stream drains.
+        if (cudaStreamSynchronize(stream) != cudaSuccess) std::terminate();
+        transfer.dma_complete = true;
+        return false;
+    }
+    if (!transfer.source_pinned) {
+        // Registration failure keeps the same aligned host slot. CUDA may stage
+        // pageable input internally; wait only for this copy, never the device.
+        const auto fallback_begin = std::chrono::steady_clock::now();
+        if (!DEE_CUDA_CHECK_NAMED(cudaEventSynchronize(event), "phase2 pageable H2D fallback"))
+            std::terminate();
+        experimental_pageable_wait_ms_ += std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - fallback_begin).count();
+        transfer.dma_complete = true;
+        transfer.host_lease.reset();
+    }
+    if (profiling) {
+        profiler_->add_cpu(CpuStage::TransferSubmission, begin);
+        profiler_->note_h2d_copy(transfer.source_nbytes);
+        profiler_->note_cpu_timeline(CpuTimelineKind::TransferSubmit, begin,
+            transfer.token, transfer.logical_layer, transfer.key.expert,
+            transfer.source_nbytes, transfer.id, active_transfers_ + 1, static_cast<size_t>(-1));
+    }
+    stats_.h2d_bytes += transfer.source_nbytes;
+    ++stats_.h2d_copies;
+    transfer.active_counted = true; ++active_transfers_;
+    return true;
+#else
+    (void)index;
     return false;
 #endif
 }
@@ -813,6 +947,8 @@ bool AsyncPrefetcher::cuda_wait(long index, HostWaitReason reason) {
 #ifdef DEE_CUDA
     if (index < 0 || index >= static_cast<long>(inflight_.size())) return false;
     Transfer& transfer = inflight_[index];
+    const auto tier_begin = transfer.managed_source ? std::chrono::steady_clock::now()
+                                                  : std::chrono::steady_clock::time_point{};
     const auto wait_begin = profiler_ && profiler_->enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
     if (transfer.event && !DEE_CUDA_CHECK_NAMED(cudaEventSynchronize(static_cast<cudaEvent_t>(transfer.event)),
                                                  "cudaEventSynchronize(prefetch completion)")) return false;
@@ -828,6 +964,9 @@ bool AsyncPrefetcher::cuda_wait(long index, HostWaitReason reason) {
         profiler_->note_host_synchronization();
     }
     transfer.done = true;
+    transfer.dma_complete = true;
+    if (transfer.managed_source) experimental_readiness_wait_ms_ +=
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tier_begin).count();
     if (reason == HostWaitReason::StagingSlot) {
         // The DMA/conversion no longer owns its staging slot, but the cache
         // block must remain pinned until wait(layer, expert) hands it to the

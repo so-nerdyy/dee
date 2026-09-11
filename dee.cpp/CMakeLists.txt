@@ -33,6 +33,8 @@ set(DEE_CORE_SOURCES
     src/vram_cache.cpp
     src/async_prefetcher.cpp
     src/host_pack_cache.cpp
+    src/host_expert_tier.cpp
+    src/expert_tiers.cpp
     src/pt_loader.cpp
     src/oracle.cpp
     src/engine.cpp
@@ -104,6 +106,7 @@ if(DEE_BUILD_TESTS)
         tests/test_vram_cache.cpp
         tests/test_async_prefetcher.cpp
         tests/test_host_pack_cache.cpp
+        tests/test_phase2_host_tier.cpp
         tests/test_oracle.cpp
         tests/test_engine.cpp)
     list(APPEND DEE_TEST_SOURCES tests/test_real_router.cpp)
@@ -116,6 +119,7 @@ if(DEE_BUILD_TESTS)
             tests/test_profiling_cuda.cpp
             tests/test_deepseek_v4_fp4_cuda.cpp
             tests/test_deepseek_v4_fp4_expert.cpp)
+        list(APPEND DEE_TEST_SOURCES tests/test_phase2_cuda.cpp)
     endif()
     foreach(test_source IN LISTS DEE_TEST_SOURCES)
         get_filename_component(test_name ${test_source} NAME_WE)
@@ -125,6 +129,10 @@ if(DEE_BUILD_TESTS)
         add_test(NAME ${test_name} COMMAND ${test_name})
         set_tests_properties(${test_name} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
+    if(DEE_CUDA)
+        set_tests_properties(test_phase2_cuda PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+    endif()
+    set_tests_properties(test_phase2_host_tier PROPERTIES TIMEOUT 30)
     add_test(
         NAME test_ornith_support
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ornith_support.py)
