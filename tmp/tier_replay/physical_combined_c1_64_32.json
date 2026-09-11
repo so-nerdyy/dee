@@ -1,0 +1,3 @@
+{"journal":"dee.cpp/benchmark_reports/deepseek-v4-flash-0731-t4/v50-evidence-20260829T195940Z/routed_experts.jsonl","record_bytes_ddee4":13369344,"runs":[
+  {"arm":"combined","scope":"cuda1","score":"priority","priority_model":"sorted","lease_mode":"","host_slots":64,"vram_slots":32,"record_bytes":13369344,"accesses":2486,"ok":true,"host":{"hits":0,"misses":2473,"evictions":2409,"fills":2473,"coalesced":0,"budget_rejections":0,"failures":0,"ssd_bytes":33062387712,"peak_resident_bytes":855638016},"device":{"hits":13,"misses":2473,"evictions":2441,"failures":0,"pinned_skipped":12549,"resident":32,"h2d_bytes":33062387712}}
+]}
