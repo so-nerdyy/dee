@@ -137,6 +137,7 @@ if(DEE_BUILD_TESTS)
         tests/test_host_pack_cache.cpp
         tests/test_phase2_host_tier.cpp
         tests/test_phase2_tier_audit.cpp
+        tests/test_phase2_tier_audit_v2b.cpp
         tests/test_oracle.cpp
         tests/test_engine.cpp)
     list(APPEND DEE_TEST_SOURCES tests/test_real_router.cpp)
