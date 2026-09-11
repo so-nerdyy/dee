@@ -1,94 +1,92 @@
-# PHASE2_BYTE_FLOOR.md — cold-byte floors for DSV4-Flash on the measured T4 /tmp bank
+# PHASE2_BYTE_FLOOR.md — cold-byte floors for DSV4-Flash on the measured T4 /tmp bank (v4, corrected)
 
 **Scope.** Offline analysis of dee's own sealed route traffic (v50 canonical
-journal, sha256 `665aac3e…`, arrays verified byte-identical to the Phase-1
-`fill-live-t4x2-20260909` run). No GPU time, no implementation, no merge.
-Everything below derives from `tools/phase2_ws_policy_sim.py`
-(`research/phase2-ws-policy/results/`), whose host-tier and VRAM-tier
-counters reproduce the sealed `fill-live` host-pack and `v60` engine_stats
-numbers within ±2 counts (see `results/validation.json`).
+journal, sha256 `665aac3e…`, embedded by hash in the sealed v60
+`dee4-v3-trace` metadata). No GPU time, no implementation, no merge.
+All numbers derive from the corrected, regime-labeled
+`tools/phase2_ws_policy_sim_v4.py` (see `CAUSALITY_AND_INITIAL_STATE_AUDIT.md`
+for what changed vs b7b9c7f and why). Host-tier and VRAM-tier counters
+reproduce the sealed `fill-live` host-pack and `v60` engine_stats within
+±2 counts (`results/validation_v4.json`).
 
 ## 1. Physical constants (measured, not assumed)
 
 | Quantity | Value | Source |
 |---|---|---|
-| DEE4 packed FP4 record | 13,369,344 B = 12.75 MiB | `dee4-metadata.json` (`record_bytes`); = `3·inter·hidden·17/32` with inter 2048, hidden 4096 (`engine.cpp packed_fp4_cache_blob_bytes`) |
-| Unique (layer, expert) records touched | 2,364 | sealed v50 journal |
-| Full 16-token working set | 2,364 × 12.75 MiB = **29.43 GiB** | journal × record size |
+| DEE4 packed FP4 record | 13,369,344 B = 12.75 MiB | sealed v60 `dee4-metadata.json` (`record_bytes`) |
+| Unique (layer, expert) records | 2,364 | v50 journal; v60 metadata `total_experts` |
+| Full 16-token working set | **29.43 GiB** = 31,605,129,216 B | v60 metadata `total_bytes` |
 | Forward passes | 16 (1 prefill of 7 rows + 15 decode) | journal |
 | Engine requests (dedup per layer call) | 5,099 | journal, engine-truth order |
-| Raw routed activations | 5,676 | journal |
+| Prefill (step 0) unique records | 1,229 (= the 80 %-coverage point, exactly) | journal |
 | Decode-only activations | 3,870 (258/token) | journal |
-| Bank read ceiling (production qd6/l3) | **0.29 GiB/s** | Phase-1 live matrix (`fill_matrix_ingest.json`) |
+| Bank read ceiling (production qd6/l3) | **0.29 GiB/s** | Phase-1 live matrix |
 | Bank read ceiling (lanes1 / qd1 riders) | 0.35 / 0.37 GiB/s | Phase-1 live matrix |
-| Rider seq/rand flat over lanes 1–8 | 0.33–0.38 / 0.37–0.51 GiB/s | Phase-1 live matrix |
 | Decode wall (live FILL arm) | 71.479 s | `session-summary.json` |
+| v60 decode wall / ITL p50 | 72.6 s / 4.60 s | sealed v60 `result.json` |
 
 The Phase-1 matrix showed all patterns/concurrency settings converge at
 0.29–0.37 GiB/s with **zero lane scaling** and pread ≈ 100 % of service:
 the ceiling is the /tmp-backed device, not the read path. Per the Phase-1
-verdict the fix is FEED-side — fewer/smaller cold fills, earlier submission —
-which is exactly what a host working-set policy buys.
+verdict the fix is FEED-side — fewer/smaller cold fills, earlier submission.
 
-## 2. The structural byte floor
+## 2. The structural byte floor (regime A: cold start)
 
-Every miss is one 12.75 MiB record. Because consecutive-token expert overlap
-exists (36.0 % of decode slots) but the *unique* working set is 29.43 GiB
-while a 16-token response has only 5,099 layer-call requests, the floor of
-cold bytes is set by two irreducible components:
+Every miss is one 12.75 MiB record. For a cold-start policy P with h(P)
+hits over the 5,099 requests:
 
-1. **Compulsory cold fills: 2,364 records = 29.43 GiB total, 1,839 MiB/token
-   over the response.** No policy that starts cold can avoid reading each
-   resident record at least once.
-2. **Repeat traffic**: 2,735 repeat requests (53.6 % of the request stream).
-   How many of these hit RAM/VRAM is the *only* policy-variable quantity.
+- charged misses = 5,099 − h(P) (+ any warmup repopulation, regime B)
+- **SSD bytes for prefill** = prefill_misses × 12.75 MiB — identical for
+  every policy that starts cold (1,229 first-touch records = 15.28 GiB;
+  exactly recovered by plain LRU at 17 GiB: sim prefill misses 1,229)
+- **SSD bytes for decode** = (decode_misses + repopulation) × 12.75 MiB
+- SSD bytes/token = total ÷ 16; wall = bytes ÷ bank bandwidth.
 
-Therefore, for any cache policy P with hit rate h(P):
+Decode floors (corrected, regime A/B):
 
-- cold records = 5,099 − hits(P)
-- SSD bytes/token = (5,099 − hits(P)) × 12.75 MiB ÷ 16
-- cold-storage wall = SSD bytes/token ÷ bank bandwidth
-
-## 3. Floors at the measured 0.29–0.37 GiB/s
-
-| Policy (host tier, pooled) | Budget | Hits | SSD MiB/token | Wall @0.29 | @0.33 | @0.37 |
+| Policy | Budget | Hits | MiB/tok (prefill+decode) | wall @0.29 | @0.33 | @0.37 |
 |---|---|---|---|---|---|---|
-| No cache (compulsory only) | 0 | 0 | 4,063.3 | 13.7 s | 12.0 s | 10.7 s |
-| Plain LRU (= today) | 8 GiB | 40.3 % | 2,424.9 | 8.17 s | 7.18 s | 6.40 s |
-| Plain LRU (= today) | 16 GiB | 50.8 % | 1,997.8 | 6.73 s | 5.91 s | 5.27 s |
-| Plain LRU (= today) | 32 GiB | 53.6 % | 1,883.8 | 6.34 s | 5.57 s | 4.97 s |
-| **Best realizable (static pin)** | **24 GiB** | **91.4 %** | **348.2** | **1.17 s** | **1.03 s** | **0.92 s** |
-| Best realizable (static pin) | 32 GiB | 100 % | 0 | 0 | 0 | 0 |
-| Belady MIN (unattainable; recency bound) | 24 GiB | 53.1 % | 1,906.1 | 6.42 s | 5.64 s | 5.03 s |
-| Belady MIN (unattainable) | 32 GiB | 53.6 % | 1,883.8 | 6.34 s | 5.57 s | 4.97 s |
+| No cache (compulsory only) | 0 | 0 | 4,063.3 | 13.68 s | 12.02 | 10.71 |
+| Plain LRU (= today) | 8 GiB | 40.3 % | 2,424.9 | 8.17 s | 7.18 | 6.40 |
+| Plain LRU (= today) | 16 GiB | 50.8 % | 1,997.8 | 6.73 s | 5.91 | 5.27 |
+| Plain LRU (= today) | 32 GiB (saturated) | 53.6 % | 1,883.8 | 6.34 s | 5.57 | 4.97 |
+| Belady/MIN (bound) | 16 GiB | 53.6 % | 1,883.8 | 6.34 s | 5.57 | 4.97 |
+| freq_lru_warmup_s4 (B) | 16 GiB | 50.4 % | 2,157.1 | 7.26 s | 6.38 | 5.69 |
+| freq_lru_warmup (B) | 24 GiB | 53.1 % | 1,906.9 | 6.42 s | 5.64 | 5.03 |
 
-The decisive structural fact: **the LRU-family (including Belady) saturates at
-53.6 %** on this trace because every repeat lies ≥ 213 distinct-experts away
-in stack distance (see PHASE2_WORKING_SET.md §4) — the reuse horizon of the
-16-token window (≈ 320 requests/token) exceeds any per-token budget that fits
-host RAM. Static frequency placement is *not* stack-bounded: pinning the
-frequency-ranked set converts far-distance repeats into hits. That is why the
-only policies that beat the 53.6 % ceiling are the frequency-pinned family,
-and why their ceiling is exactly the activation-coverage curve of §4.
+**The LRU-family floor is 1,883.8 MiB/token and no causal policy can go
+below it on this trace** — cold Belady/MIN itself saturates there because
+every repeat sits ≥ 213 distinct records away (stack-distance histogram,
+`results/reuse_distance.json`).
 
-**Wall-clock translation (16-token response, both GPUs pooled).** Today's
-live decode is 71.5 s with ≈ 60.5 s of fill wait across engines. At the
-production 0.29 GiB/s ceiling:
+## 3. The regime-C (prewarmed) floor — a contract, not a cold-start policy
 
-- LRU 8.5 GiB/GPU (the live configuration): predicted ≈ 1,930 MiB/token of
-  bank traffic ≈ 30.5 GiB ≈ the measured ~29 GiB of misses — consistent with
-  the Phase-1 42.0 s critical fill bucket.
-- Static-pin at 24 GiB total: ≈ 348 MiB/token ≈ 5.3 GiB ≈ 18 s of bank time —
-  a ~3.6× reduction in the cold-fill bucket, before any submission-overlap
-  gains (which Phase 1 already proved are available: QD6 keeps the disk 96 %
-  busy only *while requests exist*; FEED-side starvation gaps remain).
+With an explicitly prewarmed top-N set (cross-request residency; one-time
+~N × 12.75 MiB prewarm read amortized outside the measured window):
 
-## 4. Activation-coverage curve (the static-pin ceiling)
+| Prewarm size | Coverage | SSD MiB/token | wall @0.29 | @3 | @12 |
+|---|---|---|---|---|---|
+| 8 GiB (top-642) | 60.5 % | 1,605.7 | 5.41 s | 0.52 | 0.13 |
+| 12 GiB (top-963) | 72.5 % | 1,116.4 | 3.76 s | 0.36 | 0.09 |
+| 16 GiB (top-1,285) | 78.8 % | 859.8 | 2.90 s | 0.28 | 0.07 |
+| 24 GiB (top-1,927) | 91.4 % | 348.2 | 1.17 s | 0.11 | 0.03 |
+| 29.43 GiB (all) | 100 % | 0 | 0 | 0 | 0 |
 
-Top-X % of (layer, expert) records by activation frequency → coverage of the
-5,676 activations (full trace; decode-only is within ±1 pp):
+Caveats that v3 omitted: (1) this requires the prewarm to be resident
+*before* the measured request stream (a labeled regime-C contract);
+(2) MIN given the same prewarm ties or beats the static pin (91.14 vs
+91.43 % at 24 GiB), so the pin vs dynamic choice is not where the value
+is — the prewarm *size* is; (3) rank stability across requests is an
+assumption about the workload class, not a measured property of this
+single window (top-1 % covers only 6.8 % of activations — the tail is
+wide).
 
-| Top X % | Records | GiB | Activation coverage |
+## 4. Activation-coverage curve (the prewarm ceiling)
+
+Top-X % of (layer, expert) records by activation frequency → coverage of
+the 5,676 activations (full trace; decode-only within ±1 pp):
+
+| Top X % | Records | GiB | Coverage |
 |---|---|---|---|
 | 1 % | 23 | 0.29 | 6.8 % |
 | 2 % | 47 | 0.59 | 12.2 % |
@@ -100,70 +98,76 @@ Top-X % of (layer, expert) records by activation frequency → coverage of the
 | 75 % | 1,773 | 22.08 | 89.6 % |
 | 100 % | 2,364 | 29.43 | 100 % |
 
-Inverse form: 80 % coverage needs 1,229 records (15.30 GiB); 90 % needs
-1,797 (22.37 GiB); 95 % needs 2,081 (25.91 GiB).
+Inverse form: 80 % coverage needs 1,229 records (**15.30 GiB** — exactly
+the prefill's unique-record count, by construction of the window); 90 %
+needs 1,797 (22.37 GiB); 95 % needs 2,081 (25.91 GiB).
 
-Per-layer shape: each layer touches only 36–99 unique experts
-(median 53) out of 256 — layer-budgeted placement loses ≤ 1.4 pp vs global
-static pin at 16–24 GiB, so the choice between them is an engineering
-(marginal-cost) decision, not a policy-value decision.
+Per-layer shape: 36–99 unique experts per layer (median 53);
+layer-budgeted placement loses ≤ 1.5 pp vs global at 16–24 GiB
+(`results/layer_locality.json`).
 
 ## 5. Future-hardware floors (3 / 5 / 7 / 12 GiB/s)
 
-Same byte volumes, faster tiers — the *ordering* of policies is unchanged,
-only the absolute walls shrink:
+Same byte volumes, faster tiers — the *ordering* is unchanged, the walls
+shrink. Per-token wall = (SSD MiB/token)/1024 ÷ BW:
 
-| Policy @ 16 GiB | SSD MiB/token | @3 GiB/s | @5 | @7 | @12 |
+| Row | MiB/tok | @3 | @5 | @7 | @12 |
 |---|---|---|---|---|---|
-| LRU | 1,997.8 | 0.65 s | 0.39 s | 0.28 s | 0.16 s |
-| Static pin | 859.8 | 0.28 s | 0.17 s | 0.12 s | 0.07 s |
-| Static pin @ 24 GiB | 348.2 | 0.11 s | 0.07 s | 0.05 s | 0.03 s |
+| LRU 16 GiB | 1,997.8 | 0.65 s | 0.39 s | 0.28 s | 0.16 s |
+| Belady/MIN bound | 1,883.8 | 0.61 s | 0.37 s | 0.26 s | 0.15 s |
+| Prewarm 16 GiB | 859.8 | 0.28 s | 0.17 s | 0.12 s | 0.07 s |
+| Prewarm 24 GiB | 348.2 | 0.11 s | 0.07 s | 0.05 s | 0.03 s |
 
-At 3 GiB/s (a commodity NVMe class) plain LRU's fill wall is already under
-0.7 s/token and at 12 GiB/s it is noise; the policy gap collapses from
-~2.6× to ~1.6× in wall terms. **Consequence:** the value of placement policy
-is highest exactly at the current 0.29–0.37 GiB/s bank and decays with
-storage speed — this is a "now" lever, not a forever lever. The
-recommended policy must therefore be cheap to implement (it is: see
-PHASE2_RECOMMENDATION.md) because its advantage window is the current
-storage class.
+**Consequence:** the value of any placement/prewarm work is highest at the
+current 0.29–0.37 GiB/s bank and decays with storage speed — a "now"
+lever. Any mechanism must be cheap to implement because its advantage
+window is the current storage class.
 
-## 6. VRAM tier floor
+## 6. VRAM tier floor (and the priority artifact)
 
-Per GPU at the sealed v60 budget (3.5 GiB = 281 FP4 slots): even plain LRU
-captures only 26.6 % of that GPU's requests; the sealed engine-priority
-semantics capture 12.9 %. The VRAM tier cannot be the primary lever — its
-budget is structurally capped by the T4 envelope (~3.5–4 GiB/GPU after dense
-weights + engine) while the host tier is the only place where a
-multi-GiB-per-token working set can be held. Full per-GPU curves:
-`PHASE2_CAPACITY_CURVES.csv` rows `vram,*`.
+Per GPU at the sealed v60 budget (3.5 GiB = 281 packed-FP4 slots): the
+production score captures 12.6/12.5 % of that GPU's requests; plain LRU
+captures 26.0/40.5 %. The repair saves 1,083 device loads and **14.48 GB
+of H2D per 16-token response** (cuda0 4.69 GB + cuda1 9.79 GB), with a
+host-fill upside bounded at ≤ 6.6 GB NVMe per response. Full audit:
+`VRAM_PRIORITY_AUDIT.md`. The VRAM tier remains budget-capped (~3.5–4 GiB
+after dense + engine) — the host tier is where multi-GiB/token working
+sets live.
 
 ## 7. Memory cost accounting
 
-- Host-tier budget B (pooled, both engines): B GiB of anonymous pinned-capable
-  RAM. The live run held 8.5 + 8.5 = 17 GiB within a 22.9 GiB peak RSS on a
-  31.35 GiB box; 24 GiB pooled (12 + 12) projects ≈ 29–30 GiB peak RSS —
-  **fits the 2×T4 Kaggle host but not with slack; 32 GiB pooled (29.43 GiB
-  working set + dense) does not.** Static-pin's advantage: it reaches the
-  LRU-immune 91–100 % coverage *at 24 GiB*, where LRU tops at 53 %.
-- VRAM: 3.5 GiB/GPU is already the accepted envelope (peak allocated
-  7.13/8.75 GiB incl. dense at v60). Plain LRU needs zero extra VRAM.
-- Every row's memory cost is the `ram_cost_GiB` column of
-  `PHASE2_CAPACITY_CURVES.csv`.
+- Host budget B (pooled): today 17 GiB within 22.9 GiB peak RSS on the
+  31.35 GiB Kaggle host (v60: 22.48 GiB HWM, 3.5 GiB/GPU VRAM cache,
+  8.5+8.5 host packs). 24 GiB pooled projects ≈ 29–30 GiB peak RSS —
+  outside the campaign's historical safety margin. 29.43 GiB prewarm
+  (100 % coverage) does not fit alongside dense + engine.
+- **Marginal value of host RAM (cold/LRU, regime A):** 1,020 slow-MiB per
+  added GiB (8→12), 688 (12→16), 242 (16→20), 124 (20→24), 45 (24→32),
+  0 beyond 32 — the RAM knee is ≈ 16 GiB for causal operation.
+- **Marginal value of VRAM (LRU after repair):** 1,538–2,550 device-load
+  MiB per added GiB per GPU in the 2–6 GiB range (per-token working set
+  per GPU ≈ 1.6 GiB); beyond ~6–8 GiB it decays (688/644 MiB/GiB).
+- Dense/shared/non-expert weights: already resident by design (separate
+  from the expert tiers; v60 allocated 6.99/6.76 GiB incl. cache) — no
+  resident class competes with the expert cache for RSS except the
+  engine's own buffers; see PHASE2_RECOMMENDATION.md §5.
 
-## 8. Verdict
+## 8. Verdict (corrected)
 
 1. The byte floor is real and FEED-side: 29.43 GiB unique set vs a
    0.29–0.37 GiB/s bank ⇒ ≥ 84 s of unavoidable bank time if nothing is
-   cached; today's LRU halves it; static frequency pinning at 24 GiB cuts it
-   ~7×.
-2. **Increasing RAM beyond ~24 GiB pooled buys nothing for any LRU-family
-   policy** (saturated at 53.6 % by 32 GiB) and only buys the last 8.6 pp for
-   static pinning (24 → 29.43 GiB = 100 %).
-3. The knee of the host capacity curve for the best realizable policy is at
-   **≈ 15.3 GiB (80 % coverage) with diminishing returns to 22.4 GiB (90 %)**
-   — see PHASE2_RECOMMENDATION.md for the exact selection.
+   cached; today's LRU halves it; **no causal policy can halve it again**
+   (the cold floor is 1,883.8 MiB/token, reached by 32 GiB).
+2. The large further reductions (859.8 → 348.2 → 0 MiB/token) belong to
+   an explicitly labeled **prewarm contract** (regime C), which is an
+   architecture decision (persistence across requests — the dee-serve
+   shape), not a cache-policy selection, and must never be scored
+   against cold-start rows.
+3. The one memory-tier change that is free, causal, and immediately
+   justified is the **VRAM priority repair** (2.1–3.2× VRAM hits,
+   −14.5 GB H2D per response, robust across GPUs and steps ≥ 3).
 
-Artifacts: `results/sim_rows.csv`, `results/sim_rows_derived.csv`,
-`results/reuse_distance.json`, `results/validation.json`,
-`PHASE2_CAPACITY_CURVES.csv`.
+Artifacts: `results/sim_rows_v4.csv`, `results/sim_rows_v4_derived.csv`,
+`results/ram_slope_v4.csv`, `results/vram_audit.json`,
+`results/layer_locality.json`, `results/reuse_distance.json`,
+`results/validation_v4.json`, `PHASE2_CAPACITY_CURVES.csv`.

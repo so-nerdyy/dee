@@ -1,184 +1,168 @@
-# PHASE2_RECOMMENDATION.md — the one default host policy, one fallback, and the mechanical reasons
+# PHASE2_RECOMMENDATION.md — corrected final report (v4)
 
-**Deliverable.** Exactly ONE default host-tier policy for the first Phase-2
-implementation, at most ONE fallback, with mechanical reasons, plus the four
-mandated verdicts. Everything is offline-derived from dee's sealed v50 route
-journal and validated against the sealed `fill-live` (host tier) and `v60`
-(VRAM tier) counters (±2 counts; see `research/phase2-ws-policy/results/
-validation.json`). No GPU run, no implementation, no merge. Phase 1 remains
-CLOSED at `ca8abd0`; nothing here reopens it.
+**Deliverable.** Exactly one host-tier decision, the VRAM verdict, the RAM
+knee, the byte projection, the Belady gap, and the confidence label — in
+the mandated format — followed by the mechanical reasons. Supersedes the
+b7b9c7f recommendation (warmup-pin default), which rested on the
+causality/initial-state bug documented in
+`CAUSALITY_AND_INITIAL_STATE_AUDIT.md`. Everything is offline-derived from
+the sealed v50 journal (sha256 `665aac3e…`) and validated against the
+sealed `fill-live` (host) and `v60` (VRAM) counters (±1..2 counts,
+`results/validation_v4.json`). No GPU run, no implementation, no merge.
+Phase 1 remains CLOSED at `ca8abd0`.
 
 ---
 
-## 1. DEFAULT: Frequency-pinned host set from a prefill-count warmup pass (freq_lru_warmup), 16 GiB pooled budget
+## FINAL REPORT (mandated format)
 
-**Mechanical definition (no future knowledge, no per-prompt knowledge):**
+```
+HOST POLICY:            NO_CHANGE (keep plain LRU on the host expert tier)
+VRAM POLICY:            fix  (VRAM_PRIORITY_FIX_RECOMMENDED — evict by last_used only)
+RAM KNEE:               ~16 GiB pooled (causal/online operation)
+PROJECTED SSD BYTES/TOKEN:
+                        1,974.7 (today: LRU @ 17 GiB live envelope, sim;
+                        prefill 979.4 + decode 995.3; 51.40 % hits)
+                        -> unchanged by HOST POLICY: NO_CHANGE
+                        -> minus up to ~420 MiB/decode-token host-fill upside
+                           from the VRAM fix (strict upper bound; see §3)
+                        -> 859.8 @16 GiB prewarm / 348.2 @24 GiB prewarm
+                           ONLY under an explicitly labeled regime-C
+                           prewarm contract (architecture decision, not
+                           selected here)
+BELADY GAP:             2.8 pp at 16 GiB (2,592 vs 2,735 hits; 114 MiB/token)
+                        0 pp at >= 32 GiB (LRU saturates at the MIN value)
+CONFIDENCE:             simulated (sealed-anchor-validated simulator, +/-1..2
+                        counts; wall translation inferred, bounded in
+                        VRAM_PRIORITY_AUDIT.md §5-6)
+```
 
-1. On the first forward pass (the 7-row prefill every response already
-   executes), count routed requests per `(layer, expert)`. The engine's
-   dedup stream makes this pass cost exactly 2,364 records ≈ 29.4 GiB of
-   first-touch fills — which are compulsory anyway.
-2. Rank records by count (ties: ascending expert id — deterministic).
-3. Pin the top `⌊0.5 × slots⌋` records into the host tier's policy-resident
-   slots (the `HostPlacementPolicy::residency → PolicyResident` path already
-   exists in `host_expert_tier.h` — no new mechanism is required).
-4. The remaining dynamic slots run plain LRU (today's semantics), unchanged.
-5. Pin set is fixed for the response's lifetime; re-derivation happens on
-   the next response's own prefill (per-response, never cross-prompt).
+## 1. Why HOST POLICY is NO_CHANGE (mechanical reasons)
 
-**Expected on the sealed trace (validated simulator):**
+1. **The corrected study shows the cold-start optimum is the LRU curve
+   itself.** Plain LRU sits 2.8 pp below offline Belady/MIN at the
+   deployed operating point and ties it by 32 GiB. Every alternative
+   causal policy measured *worse or equal*: arc −9 pp at 8 GiB, lfu −1.5,
+   freq_x_recency ±0, layer_lru −2.9, cost_aware ≡ LRU (proven), and the
+   warmup pins −1.5 pp (s0) / −0.4 pp (s4) at 16 GiB with repopulation
+   exposure at small budgets. There is no causal policy left to select.
+2. **The b7b9c7f "warmup-pin default" is retracted.** Its +10.9 pp gain at
+   16 GiB was phantom prewarm credit (642 first-touch hits = exactly the
+   pin size). Corrected, the online pin never beats LRU on this window:
+   the prefill pass has no frequency signal (every in-pass count = 1),
+   the window is too short for counts to accumulate, and the pin region
+   displaces LRU slots that were earning recency hits.
+3. **The big host-tier numbers are real but belong to a different
+   contract.** A prewarmed top-N set (regime C, explicitly labeled) is
+   worth +20.2 pp at 16 GiB and +38.3 pp at 24 GiB over cold LRU — and
+   MIN given the same prewarm ties or beats the static pin, so even there
+   the win is the prewarm *size*, not the placement policy. That is an
+   architecture decision (cross-request residency — the dee-serve shape:
+   persistent host tier across requests, sized to the useful working
+   set), with a one-time ~prewarm-size read and a rank-stability
+   assumption per workload class. It must never be scored against
+   cold-start rows; this study labels it and hands the numbers to the
+   architecture owner (Luna) without selecting it.
+4. **RAM beyond ~16 GiB pooled is dead weight for causal operation**:
+   marginal value 1,020 slow-MiB/GiB (8→12), 688 (12→16), 242 (16→20),
+   124 (20→24), 45 (24→32), 0 beyond. If RAM is added, it should follow
+   a prewarm-contract decision, not an eviction-policy change.
 
-| Budget (pooled) | Slots | Hit rate | MiB cold/token | Wall @0.29 GiB/s | Wall @0.33 | @0.37 | @3 | @5 | @7 | @12 |
-|---|---|---|---|---|---|---|---|---|---|---|
-| **16 GiB** | 1,285 | **61.95 %** | **1,609.6** | **5.42 s** | 4.76 | 4.24 | 0.52 | 0.31 | 0.22 | 0.13 |
-| 24 GiB | 1,927 | 71.96 % | 1,137.2 | 3.83 s | 3.36 | 3.00 | 0.37 | 0.22 | 0.16 | 0.09 |
-| (today's LRU, 17 GiB live) | 1,364 | 51.2 % | ~1,960 | ~6.6 s | — | — | — | — | — | — |
+## 2. VRAM POLICY: fix — VRAM_PRIORITY_FIX_RECOMMENDED
 
-At the deployed 17 GiB envelope (8.5+8.5), interpolating the validated
-curves, warmup-pin yields ≈ 60 % hits vs ≈ 51 % for today's LRU —
-**−22 % cold bytes** with zero additional RAM.
+- Production score `last_used + priority·2²⁰` (priority = staging order,
+  refreshed on hit) leaks a stale protection: the first-staged expert of
+  every batch becomes nearly un-evictable for the run.
+- Sealed-counter-validated simulation (±2) at the sealed 281-slot budget:
+  plain LRU captures **2.07× (cuda0) / 3.25× (cuda1)** the resident hits,
+  saving **1,083 device loads and 14.48 GB of H2D per 16-token response**
+  (298/622 MiB per decode token per GPU), with host-fill savings bounded
+  at ≤ 6.6 GB NVMe per response (realistically less; avoided loads skew
+  toward recent host hits).
+- Robust across both GPUs and all decode steps ≥ 3 (steps 1–2 are a tie
+  or slight priority win — honest fine print).
+- Repair is one line (`PRIORITY_WEIGHT = 1`); eviction order cannot
+  affect exactness. Validation contract: repaired engine should report
+  ≈ 680/1,057 resident_hits at 281 slots on this trace. Confirmatory
+  microbenchmark available (rerun v60 config, diff engine_stats + ITL).
+- The oracle-path priority (`num_experts() − expert`) must never persist
+  residency beyond the current forward if that path is exercised —
+  prediction may prefetch, never protect.
 
-**Why this one (mechanical reasons, ranked):**
+## 3. PROJECTED SSD BYTES/TOKEN — accounting
 
-1. **The trace's reuse is frequency-shaped, not recency-shaped.** Exact
-   stack distances: zero repeats below 213; median repeat sits 200–399
-   records back. Every recency policy (LRU, ARC, LFU-tiebreak, F×R,
-   layer-LRU, cost-aware) converges to the same capacity curve and
-   saturates at **53.64 %** by 32 GiB — even offline Belady/MIN scores
-   exactly 53.64 % at *every* budget, i.e. MIN is the recency bound and it
-   is not the binding constraint. Only frequency-pinned placement beats
-   that bound (static top-N reaches 91.4 % at 24 GiB), because pins catch
-   far-distance repeats that no eviction policy can.
-2. **Warmup counts are free and online.** The pin set derives from the
-   prefill pass the runtime already performs; no predictor, no learned
-   model, no cross-prompt state, no future knowledge. It realizes ~79–85 %
-   of the offline pin ceiling (61.95 % vs 78.84 % at 16 GiB; 71.96 vs
-   91.43 % at 24 GiB).
-3. **It is implementable with existing seams.** The Phase-2
-   `HostExpertTier` already separates policy-resident from dynamic slots
-   and delegates residency + victim choice to a `HostPlacementPolicy`.
-   Default = a policy object that answers `PolicyResident` for the
-   prefill-derived top-half set and LRU-victim for the rest. No runtime
-   change beyond wiring the counting pass.
-4. **Zero eviction cost for the pinned half.** Phase 1 measured a 13.0 s
-   whole-run reservation/LRU bucket; pinned slots do zero scan work, and
-   the dynamic half is the same LRU as today.
-5. **Correctness is structurally untouched.** Placement only changes which
-   records are resident; every miss path is the existing exact
-   materialization. Cold == warm and token identity are unaffected
-   (same argument accepted for CACHE1g and the P2.x seals).
+- Baseline (today): 17 GiB host LRU + 3.5 GiB/GPU priority-LRU VRAM:
+  **1,974.7 MiB/token** host-tier misses (sim at the exact live envelope:
+  2,621 hits / 2,478 misses, 51.40 %; prefill 979.4 + decode 995.3
+  MiB/token; live fill-live measured ~29 GiB/response ≈ consistent), of
+  which the prefill 15.28 GiB is compulsory for any cold policy.
+- HOST POLICY NO_CHANGE leaves this unchanged. The VRAM fix's host-fill
+  upside is **bounded at ≤ 6.6 GB/response ≈ 419 MiB/decode-token
+  pooled** (upper bound; realistically a fraction — see
+  VRAM_PRIORITY_AUDIT.md §4).
+- Regime-C prewarm contracts (labeled, not selected): 859.8 MiB/token at
+  16 GiB, 348.2 at 24 GiB, 0 at 29.43 GiB — each requires cross-request
+  residency plus a one-time prewarm read amortized outside the window.
 
-**Why 16 GiB and not more:** the knee of the online-pin curve is ~16 GiB
-(61.95 %); 24 GiB adds +10 pp but pushes projected peak RSS to ~29–30 GiB
-on the 31.35 GiB Kaggle host (today: 22.9 GiB at 17 GiB budget) — outside
-the safety margin the campaign has historically required. 16 GiB keeps
-today's envelope (≈ 26 GiB peak projected) and still cuts cold bytes ~19 %
-vs today at equal RAM. If a future host has more RAM, the same policy
-simply raises `policy_slots` — the policy is budget-parametric.
+## 4. BELADY GAP
 
-## 2. FALLBACK: Offline-style static frequency pin (static_freq shape), 16 GiB
+- Cold start (regime A): best causal policy = LRU. Gap to
+  `belady_cold`: **2.8 pp at 16 GiB** (114 MiB/token), 1.4 pp at 20,
+  0.5 pp at 24, **0 at ≥ 32 GiB** (both saturate at 53.64 %).
+- Regime C: no policy beats MIN given the same initial state (checked
+  contract-matched at every budget and pin fraction).
 
-**Mechanical definition:** pin the frequency-ranked top-⌊slots/2⌋…top-slots
-set computed from *any completed prior run of the same model+trace class*
-(e.g., the sealed v50 journal's own counts, distributed as a static
-manifest), fill it once at engine build, keep zero dynamic slots (pure
-static placement).
+## 5. What Phase 2 implementation must NOT do (guardrails, updated)
 
-**Expected:** 78.84 % hits at 16 GiB (859.8 MiB/token; wall 2.90 s @0.29
-GiB/s) — better than the default on this trace because the "offline" counts
-are exactly this trace's counts.
+- Do not implement any new host placement policy on the basis of this
+  study — including the previously recommended warmup pin.
+- Do not mix prewarmed (regime C) rows into cold-start comparisons; the
+  regime label + `initial_state_gib` columns are now part of every
+  artifact and must stay there.
+- Do not let the VRAM repair grow beyond the one-line weight change; if
+  oracle priority is ever needed, pin within the current forward only.
+- Do not import locality parameters from other models; every number here
+  is DSV4's own, single-window, and re-validated by
+  `tools/phase2_ws_policy_sim_v4.py` on every run.
+- Do not exceed the host envelope on the strength of regime-C numbers:
+  24 GiB pooled projects ≈ 29–30 GiB peak RSS on the 31.35 GiB Kaggle
+  host — a memory-gate matter, not a policy matter.
 
-**Why it is only the fallback (mechanical):** its guarantee is conditional
-on the response's expert distribution matching the manifest. The sealed
-16-token window is one workload; a different prompt shifts ranks (top-1 %
-covers only 6.8 % of activations — the tail is wide). The default policy
-self-calibrates per response and degrades to plain LRU behavior at worst;
-the fallback degrades to zero hits if the manifest mismatches. Ship the
-fallback only if the warmup pass proves operationally awkward (e.g., a
-future no-prefill decode-only path), with the manifest regenerated per
-trace-class and its coverage re-validated offline first.
+## 6. Future research — Edge0-style prerouter (OFFLINE feasibility plan only, DO NOT IMPLEMENT)
 
-**Relationship between them:** both are the same mechanism (policy-resident
-host slots) differing only in where the counts come from (this response's
-prefill vs a sealed manifest). The fallback is the default's upper bound
-and its operational escape hatch.
+Per the campaign mandate, and because after this correction the feed-side
+ceiling stands (cold floor 1,883.8 MiB/token; VRAM fix bounded), the
+remaining feed-side lever of the *prediction* class is an Edge0-style
+trained prerouter used strictly as a PREFETCH HINT (never as residency
+authority, never altering executed experts — exactness contract):
 
-## 3. Mandatory rider (not a policy choice): repair the VRAM priority artifact
+- Plan (offline, on existing sealed traces only): train a per-layer
+  top-k predictor on route sequences from prior tokens; evaluate
+  recall@6 / recall@12 / precision, useful vs wasted prefetched bytes,
+  ready-before-demand fraction, cache pollution (extra evictions),
+  queue pressure, and expected exposed-wait reduction via the same
+  bank-bandwidth model used here; run a shadow-mode replay against the
+  validated simulator before any live proposal.
+- Readiness gate: only if (a) the corrected cache study is complete
+  (it now is) and (b) feed-side latency remains the dominant projected
+  limit after the VRAM fix (expected: yes, at 0.29–0.37 GiB/s).
+- Note the mechanism difference: Edge0's trained router hides latency by
+  prefetching *before* the engine asks; dee's earlier generic predictor
+  failed as a *residency* heuristic. The hint must feed the existing
+  prefetch queue, not the eviction score.
 
-The sealed v60 engine's VRAM tier runs
-`eviction_score = last_used + priority·2²⁰` with
-`priority = batch_len − batch_index` (ascending expert-id order), refreshed
-on hit (`vram_cache.cpp`, `engine.cpp stage_expert`). At the sealed 281
-slots this captured **12.9 %** of requests where plain LRU captures
-**26.6 %** — the stale priority boost protects the first-staged expert of
-every batch for the run's lifetime. One-line repair: evict by `last_used`
-only (or drop the weight). Validated: plain LRU at v60's exact budget
-reproduces the expected 26.58 % / 26.2 % per GPU and strictly dominates the
-sealed semantics at every budget. This rider costs nothing, changes no
-policy, and should ride along with whichever host policy ships.
+## 7. Reproducibility
 
-## 4. The four mandated verdicts
-
-1. **Does increasing RAM meaningfully reduce slow-tier traffic?**
-   Yes up to ~24 GiB pooled, and *only* for frequency-pinned placement;
-   beyond that, no for anyone:
-   - LRU-family: 40.3 % (8 GiB) → 53.6 % (32 GiB) → **flat forever**; the
-     traffic floor is 1,883.8 MiB/token regardless of RAM. More RAM is
-     dead weight.
-   - Frequency pin: 60.5 % → 78.8 % (16) → 91.4 % (24) → 100 % (29.43 GiB);
-     traffic falls 1,735 → 860 → 348 → 0 MiB/token. Meaningful through
-     24 GiB; the last 5 GiB to 100 % exceed the practical host envelope.
-2. **Knee of the RAM-capacity curve:** **≈ 15.3 GiB** — the 80 %
-   activation-coverage point and the empirical knee of the online-pin
-   curve (61.95 % @16 GiB, +10 pp to 24 GiB, +5.8 pp to 32, flat after).
-   For pure recency policies the knee is ~12 GiB (46.6 %) and the curve
-   dies at 32.
-3. **How close does the best realizable policy get to Belady?** It beats
-   it. Belady/MIN scores exactly 53.64 % at every budget — identical to
-   LRU at ≥ 32 GiB — because the trace's reuse horizon exceeds any
-   realizable capacity and MIN exploits only recency structure, of which
-   this window has little. The static pin (the true ceiling for exact
-   caching) reaches 91.4 % at 24 GiB and the recommended online default
-   reaches 71.96 % — i.e., the default is at **135 % of Belady's hit
-   rate**, and the question "how close to Belady" is inverted: Belady is
-   not the bound; the activation-coverage curve is.
-4. **Is cache-policy work worth implementing at all?** Yes, for exactly
-   two changes and nothing more:
-   - the VRAM one-line priority repair (12.9 % → 26.6 % VRAM hits, free);
-   - the host warmup-pin default (≈ 60 % vs 51 % at today's 17 GiB RAM;
-     62–72 % at 16–24 GiB; −22 % to −40 % cold bytes → direct reduction of
-     the 42 s critical fill bucket Phase 1 attributed to FEED-side cold
-     fills).
-   ARC, LFU, cost-aware, F×R, and layer-LRU are all LRU-shaped on this
-   trace (within ±0.1–1.5 pp of LRU, mostly worse at small budgets) and
-   should not be built. Router-ahead prefetch remains a scheduling lever
-   (Phase-1's "earlier submission"), complementary to, not part of, the
-   placement policy.
-
-## 5. What Phase 2 implementation must NOT do (guardrails from this study)
-
-- Do not count predicted/probable hits as resident hits; the policy uses
-  only exact counts of already-issued requests.
-- Do not key the pin set on the prompt or hardcode any expert set; the
-  counts are mechanical byproducts of executed forwards.
-- Do not import locality parameters from Qwen/moe-l2-style models; every
-  number here is DSV4's own.
-- Do not exceed the host envelope: budget changes must re-run the RSS
-  projection (16 GiB pooled ≈ 26 GiB peak projected on 31.35 GiB; 24 GiB
-  pooled ≈ 29–30 GiB — the latter only with an explicit memory-gate
-  re-approval).
-- Do not touch correctness gates: placement is a pure performance change;
-  cold==warm, token identity, and byte-exact materialization remain the
-  acceptance spine.
-
-## 6. Reproducibility
-
-- Simulator: `tools/phase2_ws_policy_sim.py` (single file, stdlib only).
-- Streams and anchors: `research/phase2-ws-policy/results/validation.json`.
-- Full matrix: `results/sim_rows.csv` (336 rows) +
-  `results/sim_rows_derived.csv` (adds SSD bytes/token and all wall
-  columns at 0.29/0.33/0.37/3/5/7/12 GiB/s).
-- Curves: `PHASE2_CAPACITY_CURVES.csv`. Background: `PHASE2_WORKING_SET.md`,
-  `PHASE2_BYTE_FLOOR.md`, `PHASE2_POLICY_MATRIX.md`.
-- Source journal: v50 sealed route journal (sha256 `665aac3e…`), route
-  arrays verified identical to the Phase-1 live T4×2 run.
+- Corrected simulator: `tools/phase2_ws_policy_sim_v4.py` (single file,
+  stdlib only; re-verifies the journal sha256 and the sealed anchors on
+  every run; prints the in-regime dominance checks' inputs).
+- Regime-labeled matrix: `results/sim_rows_v4.csv` +
+  `sim_rows_v4_derived.csv` (SSD MiB/token + per-token/per-response
+  walls at 0.29/0.33/0.37/3/5/7/12 GiB/s); slopes
+  `results/ram_slope_v4.csv`; VRAM per-step audit
+  `results/vram_audit.json`; per-layer locality
+  `results/layer_locality.json`; anchors `results/validation_v4.json`.
+- Deliverable view: `PHASE2_CAPACITY_CURVES.csv` (regime column, 576
+  rows), `PHASE2_WORKING_SET.md`, `PHASE2_BYTE_FLOOR.md`,
+  `PHASE2_POLICY_MATRIX.md`, `CAUSALITY_AND_INITIAL_STATE_AUDIT.md`,
+  `VRAM_PRIORITY_AUDIT.md`. b7b9c7f artifacts retained untouched for the
+  audit trail.

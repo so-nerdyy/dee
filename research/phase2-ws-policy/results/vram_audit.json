@@ -1,0 +1,110 @@
+{
+ "journal_sha256": "665aac3e8db570237c6dc6acaf08dc39f2af890e8a04e400ce7154f1a858dae1",
+ "budget_slots": 281,
+ "cuda0": {
+  "engine_priority_lru": {
+   "hits": 329,
+   "misses": 2284,
+   "evictions": 2003,
+   "prefill_hits": 0,
+   "decode_hits": 329,
+   "per_decode_step_hits": [
+    28,
+    40,
+    41,
+    24,
+    16,
+    26,
+    17,
+    15,
+    11,
+    25,
+    18,
+    18,
+    16,
+    17,
+    17
+   ]
+  },
+  "lru": {
+   "hits": 680,
+   "misses": 1933,
+   "evictions": 1652,
+   "prefill_hits": 0,
+   "decode_hits": 680,
+   "per_decode_step_hits": [
+    23,
+    58,
+    36,
+    48,
+    57,
+    69,
+    34,
+    32,
+    51,
+    17,
+    66,
+    49,
+    50,
+    64,
+    26
+   ]
+  },
+  "loads_saved": 351,
+  "h2d_bytes_saved": 4692639744,
+  "h2d_MiB_per_decode_token": 298.4
+ },
+ "cuda1": {
+  "engine_priority_lru": {
+   "hits": 325,
+   "misses": 2161,
+   "evictions": 1880,
+   "prefill_hits": 0,
+   "decode_hits": 325,
+   "per_decode_step_hits": [
+    43,
+    35,
+    28,
+    25,
+    22,
+    12,
+    10,
+    16,
+    21,
+    18,
+    22,
+    17,
+    18,
+    19,
+    19
+   ]
+  },
+  "lru": {
+   "hits": 1057,
+   "misses": 1429,
+   "evictions": 1148,
+   "prefill_hits": 0,
+   "decode_hits": 1057,
+   "per_decode_step_hits": [
+    27,
+    52,
+    69,
+    69,
+    67,
+    67,
+    54,
+    38,
+    76,
+    77,
+    80,
+    89,
+    102,
+    84,
+    106
+   ]
+  },
+  "loads_saved": 732,
+  "h2d_bytes_saved": 9786359808,
+  "h2d_MiB_per_decode_token": 622.2
+ }
+}

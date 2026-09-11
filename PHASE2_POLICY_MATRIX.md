@@ -1,144 +1,156 @@
-# PHASE2_POLICY_MATRIX.md — full policy × budget matrix with per-policy verdicts
+# PHASE2_POLICY_MATRIX.md — corrected, regime-labeled policy × budget matrix (v4)
 
-All numbers from `tools/phase2_ws_policy_sim.py` on the validated stream
-(5,099 engine requests; see PHASE2_WORKING_SET.md §1 for the validation
-anchors). Hit rates are host-tier, pooled both GPUs, unless labeled VRAM.
-Derived wall columns use the Phase-1 measured bank ceiling (production
-qd6/l3 = 0.29 GiB/s) and future floors 3/5/7/12 GiB/s; the full table with
-every wall column is `PHASE2_CAPACITY_CURVES.csv` +
-`research/phase2-ws-policy/results/sim_rows_derived.csv`.
+All numbers from `tools/phase2_ws_policy_sim_v4.py` on the validated stream
+(5,099 engine requests; anchors `results/validation_v4.json`). Hit rates
+are host-tier pooled (scope `full`) unless labeled VRAM. What changed vs
+b7b9c7f and why: `CAUSALITY_AND_INITIAL_STATE_AUDIT.md`. Regimes:
+**A** = cold start (strict bound: `belady_cold`), **B** = causal warmup
+(repopulation charged), **C** = explicitly prewarmed (labeled initial
+state; bound = MIN given the same state). Full machine-readable matrix:
+`research/phase2-ws-policy/results/sim_rows_v4.csv` (+ `_derived` with
+SSD bytes/token and per-token/per-response wall columns at
+0.29/0.33/0.37/3/5/7/12 GiB/s); deliverable view:
+`PHASE2_CAPACITY_CURVES.csv` (regime column; 576 rows).
 
 ## 1. Master matrix — full pooled host tier
 
-### 1.1 Hit rate (%) by policy × budget
+### 1.1 Regime A (cold start) and B (causal warmup) — hit rate (%)
 
-| Policy | 8 GiB | 12 GiB | 16 GiB | 20 GiB | 24 GiB | 32 GiB | 48 GiB | 64–128 GiB |
-|---|---|---|---|---|---|---|---|---|
-| lru (today) | 40.32 | 46.60 | 50.83 | 52.32 | 53.09 | 53.64 | 53.64 | 53.64 |
-| engine_priority_lru | 13.92 | 23.02 | 34.09 | 43.68 | 50.91 | 53.64 | 53.64 | 53.64 |
-| arc | 31.30 | 42.91 | 50.44 | 52.23 | 53.09 | 53.64 | 53.64 | 53.64 |
-| lfu | 38.83 | 46.56 | 50.83 | 52.32 | 53.09 | 53.64 | 53.64 | 53.64 |
-| freq_x_recency | 40.52 | 46.70 | 50.85 | 52.32 | 53.09 | 53.64 | 53.64 | 53.64 |
-| layer_lru | 37.46 | 46.13 | 50.23 | 51.79 | 52.54 | 53.40 | 53.64 | 53.64 |
-| cost_aware (= lru) | 40.32 | 46.60 | 50.83 | 52.32 | 53.09 | 53.64 | 53.64 | 53.64 |
-| freq_lru pf0.25 | 44.52 | 52.46 | 57.33 | 60.44 | 62.58 | 66.23 | 72.52 | 78.84–100 |
-| freq_lru pf0.5 | 50.48 | 59.15 | 65.62 | 69.39 | 72.52 | 78.84 | 91.43 | 100 |
-| freq_lru pf0.75 | 56.17 | 66.13 | 72.52 | 77.25 | 81.98 | 91.43 | 100 | 100 |
-| freq_lru_warmup (online) | 37.22 | 50.34 | 61.95 | 67.82 | 71.96 | 77.74 | 77.74 | 77.74 |
-| static_freq (pin ceiling) | 60.48 | 72.52 | 78.84 | 85.13 | 91.43 | 100 | 100 | 100 |
-| static_layer_freq | 58.58 | 70.90 | 78.03 | 84.82 | 90.51 | 97.27 | 99.45 | 100 |
-| belady (bound) | 53.64 | 53.64 | 53.64 | 53.64 | 53.64 | 53.64 | 53.64 | 53.64 |
-
-### 1.2 Cold SSD traffic and the wall (selected rows)
-
-`misses/token` (MiB/token) and predicted cold-storage wall seconds per
-16-token response at the measured ceiling; future floors in brackets.
-
-| Policy | Budget | MiB/tok | wall @0.29 | @3 | @5 | @7 | @12 |
+| Policy | 8 | 12 | 16 | 20 | 24 | 32 | 48+ GiB |
 |---|---|---|---|---|---|---|---|
-| no cache | 0 | 4,063.3 | 13.68 s | 1.32 | 0.79 | 0.57 | 0.33 |
-| lru | 16 GiB | 1,997.8 | 6.73 s | 0.65 | 0.39 | 0.28 | 0.16 |
-| lru | 32 GiB (saturated) | 1,883.8 | 6.34 s | 0.61 | 0.37 | 0.26 | 0.15 |
-| freq_lru_warmup | 16 GiB | 1,609.6 | 5.42 s | 0.52 | 0.31 | 0.22 | 0.13 |
-| freq_lru_warmup | 24 GiB | 1,137.2 | 3.83 s | 0.37 | 0.22 | 0.16 | 0.09 |
-| freq_lru pf0.75 | 24 GiB | 732.3 | 2.47 s | 0.24 | 0.14 | 0.10 | 0.06 |
-| static_freq | 16 GiB | 859.8 | 2.90 s | 0.28 | 0.17 | 0.12 | 0.07 |
-| **static_freq** | **24 GiB** | **348.2** | **1.17 s** | 0.11 | 0.07 | 0.05 | 0.03 |
-| static_freq | 32 GiB | 0 | 0 | 0 | 0 | 0 | 0 |
-| belady | 24 GiB | 1,906.1 | 6.42 s | 0.62 | 0.37 | 0.26 | 0.15 |
+| lru (today) | 40.32 | 46.60 | 50.83 | 52.32 | 53.09 | 53.64 | 53.64 |
+| engine_priority_lru | 13.92 | 23.02 | 34.09 | 43.68 | 50.91 | 53.64 | 53.64 |
+| arc | 31.30 | 42.91 | 50.44 | 52.23 | 53.09 | 53.64 | 53.64 |
+| lfu | 38.83 | 46.56 | 50.83 | 52.32 | 53.10 | 53.64 | 53.64 |
+| freq_x_recency | 40.52 | 46.70 | 50.85 | 52.32 | 53.09 | 53.64 | 53.64 |
+| layer_lru | 37.46 | 46.13 | 50.23 | 51.79 | 52.54 | 53.40 | 53.64 |
+| cost_aware (≡ lru) | 40.32 | 46.60 | 50.83 | 52.32 | 53.09 | 53.64 | 53.64 |
+| freq_lru_warmup (B) | 30.93 | 40.91 | 49.36 | 52.07 | 53.07 | 53.64 | 53.64 |
+| freq_lru_warmup_s4 (B) | 36.79 | 46.50 | 50.44 | 52.48 | 53.42 | 53.64 | 53.64 |
+| **belady_cold (A, bound)** | **53.64** | 53.64 | 53.64 | 53.64 | 53.64 | **53.64** | 53.64 |
 
-### 1.3 Evictions (whole 16-token response, pooled)
+### 1.2 Regime C (prewarmed; labeled; never comparable to A/B)
 
-| Policy | 8 GiB | 16 GiB | 24 GiB | 32 GiB |
+| Policy | 8 | 12 | 16 | 20 | 24 | 32 | 48 | 64+ GiB |
+|---|---|---|---|---|---|---|---|---|
+| static_freq_prewarm | 60.48 | 72.52 | 78.84 | 85.13 | 91.43 | 100 | 100 | 100 |
+| static_layer_freq_prewarm | 58.58 | 70.90 | 78.03 | 84.82 | 90.51 | 97.27 | 99.45 | 100 |
+| freq_lru_prewarm pf0.25 | 44.52 | 52.46 | 57.33 | 60.45 | 62.58 | 66.23 | 72.52 | 78.84→100 |
+| freq_lru_prewarm pf0.5 | 50.48 | 59.15 | 65.62 | 69.39 | 72.52 | 78.84 | 91.43 | 100 |
+| freq_lru_prewarm pf0.75 | 56.17 | 66.13 | 72.52 | 77.25 | 81.98 | 91.43 | 100 | 100 |
+| freq_lru_prewarm pf0.9 | 58.07 | 70.21 | 76.31 | 81.98 | 87.64 | 99.00 | 100 | 100 |
+| freq_lru_prewarm pf0.99 | 60.21 | 72.33 | 78.58 | 84.80 | 91.04 | 100 | 100 | 100 |
+| lru_prewarm_topN (control) | 43.36 | 53.30 | 66.31 | 78.02 | 88.94 | 100 | 100 | 100 |
+| belady_same_state_prewarm (bound) | 56.83 | 59.11 | 70.68 | 83.02 | 91.14 | 100 | 100 | 100 |
+| belady_pin_same_state pf0.5 (bound) | 59.93 | 63.07 | 66.23 | 69.39 | 72.52 | 78.84 | 91.43 | 100 |
+| belady_pin_same_state pf0.75 (bound) | 62.03 | 67.80 | 72.52 | 77.25 | 81.98 | 91.43 | 100 | 100 |
+
+Every `freq_lru_prewarm(pf)` row is dominated pointwise by its
+contract-matched bound `belady_pin_same_state(pf)` — dominance check PASS.
+
+### 1.3 Cold SSD traffic and the wall (corrected; per-token wall = MiB/tok ÷ 1024 ÷ BW)
+
+| Policy | Regime | Budget | MiB/tok | wall @0.29 | @3 | @5 | @7 | @12 |
+|---|---|---|---|---|---|---|---|---|
+| no cache | A | 0 | 4,063.3 | 13.68 s | 1.32 | 0.79 | 0.57 | 0.33 |
+| lru | A | 16 GiB | 1,997.8 | 6.73 s | 0.65 | 0.39 | 0.28 | 0.16 |
+| lru | A | 32 GiB | 1,883.8 | 6.34 s | 0.61 | 0.37 | 0.26 | 0.15 |
+| freq_lru_warmup_s4 | B | 16 GiB | 2,157.1 | 7.26 s | 0.70 | 0.42 | 0.30 | 0.18 |
+| freq_lru_warmup | B | 24 GiB | 1,906.9 | 6.42 s | 0.62 | 0.37 | 0.26 | 0.15 |
+| static_freq_prewarm | C | 16 GiB | 859.8 | 2.90 s | 0.28 | 0.17 | 0.12 | 0.07 |
+| static_freq_prewarm | C | 24 GiB | 348.2 | 1.17 s | 0.11 | 0.07 | 0.05 | 0.03 |
+| static_freq_prewarm | C | 32 GiB | 0 | 0 | 0 | 0 | 0 | 0 |
+| belady_cold | A | 24 GiB | 1,883.8 | 6.34 s | 0.61 | 0.37 | 0.26 | 0.15 |
+
+### 1.4 Evictions (whole 16-token response, pooled, regime A)
+
+| Policy | 8 | 16 | 24 | 32 GiB |
 |---|---|---|---|---|
-| lru | 2,401 | 1,760 | 1,222 | 465 | 0 |
-| engine_priority_lru | 3,747 | 2,962 | 2,076 | 576 | 0 |
-| arc | 2,861 | 1,948 | 1,242 | 465 | 0 |
-| freq_lru pf0.5 | 2,204 | 1,601 | 1,110 | 437 | 0 |
-| freq_lru_warmup | 2,880 | 2,050 | 1,297 | 466 | 0 |
-| static_freq / static_layer_freq | 0 | 0 | 0 | 0 | 0 |
-| belady | 1,722 | 1,401 | 1,079 | 437 | 0 |
+| lru | 2,401 | 1,760 | 1,222 | 465 |
+| engine_priority_lru | 3,747 | 2,962 | 2,076 | 576 |
+| freq_lru_warmup (B, s0) | 3,317 | 2,273 | 1,318 | 466 |
+| belady_cold | 1,722 | 1,401 | 1,079 | 437 |
 
-Static placement does zero eviction work by construction — relevant because
-Phase 1 measured reservation/LRU-scan overhead inside the 13.0 s
-whole-run reservation bucket; pinning eliminates that bookkeeping entirely.
+Static (prewarmed) placement does zero eviction work by construction —
+relevant because Phase 1 measured reservation/LRU-scan overhead inside
+the 13.0 s whole-run reservation bucket.
 
-## 2. Per-policy verdicts (mechanical reasons)
+## 2. Per-policy verdicts (mechanical reasons, corrected)
 
-1. **lru — current host default.** Validated exactly. Ceiling 53.64 %:
-   every repeat sits ≥ 213 distinct records away, so beyond ~1,900 slots
-   recency converts nothing new. Keep as the *remainder* semantics but not
-   as the placement policy.
-2. **engine_priority_lru — the sealed VRAM semantics.** Reproduces v60
-   (±2). Its stale priority boost suppresses VRAM hits 2.1× vs plain LRU at
-   identical budget (12.9 % vs 26.6 % at 281 slots). Not a candidate: a
-   defect. **Repair = plain LRU (drop `priority·2²⁰`), zero-cost, no new
-   policy machinery.**
-3. **arc.** Applicable mechanically; adapts toward recency; recency is the
-   wrong signal here. Within noise of LRU at ≥ 16 GiB, worse below (31.3 %
-   vs 40.3 % at 8 GiB). Extra ghost-list state buys nothing. **Rejected.**
-4. **lfu (online).** Ties LRU at ≥ 16 GiB; worse at 8 (38.8 %). Online
-   counts lag the short window and its LRU tiebreak collapses to LRU
-   behavior. **Rejected.**
-5. **static_freq (offline top-N).** The pinning ceiling: 91.4 % at 24 GiB,
-   100 % at 29.43 GiB. Requires whole-trace counts (not deployable as-is)
-   but bounds every frequency policy. Its online proxies are §5 and §8.
-6. **static_layer_freq.** Within 0.8–2.7 pp of global static pin at every
-   budget; gives per-layer budgets (useful if the host tier is ever
-   sharded per-engine with hard per-engine caps, as today's
-   8.5+8.5 split is). Equivalent policy value; more implementation surface.
-7. **freq_lru (pin + LRU remainder).** Dominated by pure pinning: the LRU
-   remainder converts almost nothing on this window (its hits ≈ the plain
-   LRU hits it displaces). **Not the default.** Kept as the fallback shape
-   (see PHASE2_RECOMMENDATION.md) because it degrades gracefully when the
-   pin set is wrong (stream drift) — the remainder still catches recency.
-8. **freq_lru_warmup (online pin from prefill counts).** The deployable
-   72.0 % at 24 GiB (vs 91.4 % offline ceiling; 79 % of it), 77.7 %
-   saturated at 32 GiB. No future knowledge: counts are taken from the
-   first forward pass (7 rows), which the run already executes. **Default
-   candidate.**
-9. **freq_x_recency.** 40.5 % at 8 GiB — indistinguishable from LRU; the
-   recency half of the score reproduces the LRU ceiling and the frequency
-   half arrives too late (counts build over the window). **Rejected.**
-10. **layer_lru.** ≤ 0.6 pp below pooled LRU everywhere; adds per-layer
-    bookkeeping for no gain (per-layer working sets are small: 36–99
-    records). **Rejected.**
-11. **cost_aware.** All records are exactly 13,369,344 bytes ⇒ greedy
-    cost-aware eviction is provably LRU; confirmed numerically identical
-    (every row matches lru). **Rejected as a distinct policy; recorded as
+1. **lru — keep as the host default.** Validated exactly (±1 vs sealed).
+   Sits 2.8 pp below cold MIN at 16 GiB and ties MIN by 32 GiB; the cold
+   ceiling on this trace is the LRU curve itself.
+2. **engine_priority_lru — a defect, not a policy.** Reproduces v60 (±2).
+   Suppresses VRAM hits 2.07×/3.25× at the sealed budget. Repair = evict
+   by `last_used` only (`VRAM_PRIORITY_AUDIT.md`).
+3. **arc.** Recency-adaptive; recency is the wrong signal. Worse below
+   16 GiB, ties above. **Rejected.**
+4. **lfu (online).** Ties LRU at ≥ 16 GiB; worse at 8. Online counts lag
+   the short window. **Rejected.**
+5. **static_freq_prewarm.** Regime C only. The pin value is real *as a
+   prewarm contract* (+20.2 pp over cold LRU at 16 GiB; +38.3 pp at 24),
+   and it beats the admission variant (lru_prewarm_topN) at every budget
+   — but MIN given the same prewarm ties or beats it, and its coverage
+   assumption is workload-class-dependent (top-1 % = 6.8 % of
+   activations). **Not a causal policy; a deployment contract.**
+6. **static_layer_freq_prewarm.** Within 0.9–2.7 pp of global prewarm;
+   relevant only if the host tier is sharded per-engine with hard caps.
+   Same regime-C contract caveat.
+7. **freq_lru_prewarm (pin + LRU remainder).** Pathological at small
+   budgets (marginal slope −8,186 slow-MiB per added GiB at 8 GiB: the
+   remainder evicts prewarmed records to cache never-repeating ones);
+   dominated pointwise by its own contract-matched bound
+   `belady_pin_same_state(pf)`. **Rejected as a family.**
+8. **freq_lru_warmup / _s4 (regime B).** The honest online pin: does not
+   beat plain LRU at any budget on this window (−1.5 pp at 16 GiB for
+   s0; s4 recovers to ≈ LRU), and carries repopulation exposure when the
+   pin set exceeds what the warmup pass left resident (charged misses —
+   s0: 321 @8 GiB, 266 @12, 0 at ≥ 16; s4: 0 @8, 92 @12, 180 @16, 0 at
+   ≥ 20 GiB). **Not selected.** See PHASE2_RECOMMENDATION.md §6 for why
+   this kills the warmup-pin recommendation.
+9. **freq_x_recency.** Indistinguishable from LRU. **Rejected.**
+10. **layer_lru.** ≤ 0.6 pp below pooled LRU; adds bookkeeping. **Rejected.**
+11. **cost_aware.** Uniform record size ⇒ provably LRU; confirmed
+    identical at every row. **Rejected as a distinct policy; retained as
     the required equivalence check.**
-12. **belady.** Offline MIN. *Upper bound only.* Ties LRU here (the trace's
-    reuse is frequency-shaped, not recency-shaped) and is beaten by every
-    pinned policy — evidence that the reachable optimum is the pin
-    ceiling, not MIN.
+12. **belady_cold / belady_same_state_prewarm / belady_pin_same_state.**
+    Offline MIN bounds for regimes A / C(top-slots) / C(pin+remainder).
+    Never a recommendation; the in-regime dominance checks PASS at every
+    budget (see §4).
 
-## 3. VRAM tier matrix (per GPU; cuda0 shown, cuda1 within ±1.5 pp)
+## 3. VRAM tier matrix (per GPU; same stream, cold start)
 
-| Policy | 1 GiB | 2 GiB | 3.5 GiB | 4 GiB | 6 GiB | 8 GiB |
-|---|---|---|---|---|---|---|
-| engine_priority_lru (sealed) | — | — | 12.87 | — | — | — |
-| lru | 6.44 | 14.31 | 26.58 | 27.73 | 31.05 | 33.65 |
-| static top-N | 27.6 | 43.5 | ~37* | ~40 | ~46 | ~51 |
+| Policy | 1 | 2 | 3 | 3.5 (v60) | 4 | 6 | 8 GiB |
+|---|---|---|---|---|---|---|---|
+| cuda0 engine_priority (production) | 4.1 | 8.8 | 11.2 | 12.6 | 13.7 | 21.8 | 31.4 |
+| cuda0 plain LRU | 0.0 | 19.1 | 25.1 | 26.0 | 29.9 | 41.5 | 45.6 |
+| cuda1 engine_priority | 5.7 | 10.1 | 12.4 | 13.1 | 14.1 | 23.9 | 37.0 |
+| cuda1 plain LRU | 0.0 | 32.9 | 40.2 | 42.5 | 46.4 | 51.6 | 55.7 |
 
-*At 281 slots the global top-281 set is layer-skewed (cuda0 hosts 1,247 of
-2,364 records); per-layer top-B placement scores ~35 %. VRAM static pinning
-is mechanically identical to the host policy; the tier's budget cap (≤ 4
-GiB realistic) is what limits it, not the policy.
+Full curves: `PHASE2_CAPACITY_CURVES.csv` rows `vram,gpu0/gpu1`. The
+repair verdict is `VRAM_PRIORITY_FIX_RECOMMENDED`
+(`VRAM_PRIORITY_AUDIT.md`).
 
-## 4. The decision landscape (why exactly one default + one fallback)
+## 4. The decision landscape (corrected)
 
-- The ceiling of everything realizable is the static pin
-  (activation-coverage curve). Among *implementable* policies, the online
-  warmup pin captures ~79–85 % of that ceiling at equal RAM.
-- The only other policy family with a distinct shape is pin+LRU
-  (graceful degradation under drift) — strictly worse here, safer in
-  general. That is the fallback trade.
-- Everything else is LRU-shaped on this trace and adds state or risk
-  without a single pp of gain.
-- The VRAM fix is orthogonal (a repair, not a placement policy) and is
-  carried as a mandatory rider in the recommendation, not as a separate
-  policy choice.
+- Cold start: **the reachable optimum is the LRU curve itself** (within
+  2.8 pp of MIN at the operating point). No count-based, composite, or
+  budgeted policy adds a single pp.
+- The only shape that beats the recency ceiling is a **prewarm
+  contract** (regime C, labeled) — an architecture decision about
+  cross-request residency (the dee-serve shape), not a cache-policy
+  choice, and MIN-given-the-same-state shows even there the win comes
+  from the prewarm size, not from static placement.
+- The VRAM priority repair is orthogonal, free, and the single
+  highest-value memory-tier change: **VRAM_PRIORITY_FIX_RECOMMENDED**.
 
-Full machine-readable matrix: `research/phase2-ws-policy/results/sim_rows.csv`
-(336 rows: 2 scopes × budgets × 12 policies × pin_frac variants) and
-`sim_rows_derived.csv` (same rows + SSD bytes/token + all wall columns).
+## 5. Mechanical checks embedded in the v4 simulator
+
+1. Every row carries `regime`, `initial_records`, `initial_state_gib`,
+   `repopulation_charged`.
+2. In-regime dominance checks (all PASS, 8..128 GiB host / 1..8 GiB VRAM):
+   no A/B policy exceeds `belady_cold`; `freq_lru_prewarm(pf)` never
+   exceeds `belady_pin_same_state(pf)`; `static_freq_prewarm` never loses
+   to `lru_prewarm_topN`.
+3. Warmup repopulation is charged and reported per budget.
+4. Sealed anchors re-verified every run (`validation_v4.json`).

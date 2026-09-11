@@ -1,0 +1,116 @@
+{
+ "journal_path": "C:\\Users\\carth\\Downloads\\dee-phase2-ws-policy\\dee.cpp\\benchmark_reports\\deepseek-v4-flash-0731-t4\\v50-evidence-20260829T195940Z\\routed_experts.jsonl",
+ "journal_sha256": "665aac3e8db570237c6dc6acaf08dc39f2af890e8a04e400ce7154f1a858dae1",
+ "requests_total": 5099,
+ "unique_pairs": 2364,
+ "host_filllive_682_lru": {
+  "cuda0": {
+   "sim": [
+    1222,
+    1391,
+    709
+   ],
+   "sealed": [
+    1223,
+    1390,
+    708
+   ]
+  },
+  "cuda1": {
+   "sim": [
+    1395,
+    1091,
+    409
+   ],
+   "sealed": [
+    1395,
+    1091,
+    409
+   ]
+  }
+ },
+ "vram_v60_281_engine_priority_lru": {
+  "cuda0": {
+   "sim": [
+    329,
+    2284,
+    2003
+   ],
+   "sealed": [
+    328,
+    2285,
+    2004
+   ]
+  },
+  "cuda1": {
+   "sim": [
+    325,
+    2161,
+    1880
+   ],
+   "sealed": [
+    327,
+    2159,
+    1878
+   ]
+  }
+ },
+ "vram_v60_281_plain_lru": {
+  "cuda0": {
+   "sim": [
+    680,
+    1933,
+    1652
+   ]
+  },
+  "cuda1": {
+   "sim": [
+    1057,
+    1429,
+    1148
+   ]
+  }
+ },
+ "regimeB_warmup_repopulation": {
+  "16": {
+   "full": {
+    "hits": 2517,
+    "misses": 2582,
+    "repopulation": 0,
+    "pin_size": 642
+   },
+   "gpu0": {
+    "hits": 1316,
+    "misses": 1297,
+    "repopulation": 0,
+    "pin_size": 642
+   },
+   "gpu1": {
+    "hits": 1419,
+    "misses": 1067,
+    "repopulation": 0,
+    "pin_size": 642
+   }
+  },
+  "24": {
+   "full": {
+    "hits": 2706,
+    "misses": 2393,
+    "repopulation": 0,
+    "pin_size": 963
+   },
+   "gpu0": {
+    "hits": 1316,
+    "misses": 1297,
+    "repopulation": 0,
+    "pin_size": 963
+   },
+   "gpu1": {
+    "hits": 1419,
+    "misses": 1067,
+    "repopulation": 0,
+    "pin_size": 963
+   }
+  }
+ }
+}
