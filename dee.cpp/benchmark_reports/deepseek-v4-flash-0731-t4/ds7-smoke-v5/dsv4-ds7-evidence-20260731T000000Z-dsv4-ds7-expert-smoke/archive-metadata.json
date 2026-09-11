@@ -1,0 +1,8 @@
+{
+  "archive": "/kaggle/working/dsv4-ds7-evidence-20260731T000000Z-dsv4-ds7-expert-smoke.tar.gz",
+  "archive_sha256": "f6992fbe1dcc9cf3504f8545802ab5294432279e7c8fa91570063b9b85687e6f",
+  "excluded_from_archive": [
+    "archive-metadata.json"
+  ],
+  "manifest_sha256": "6e0b02f98d4f18cf2cee47b4e5e244613438bfdb6dd028c6bc6bbda40546953a"
+}

@@ -1,0 +1,577 @@
+tier,regime,policy,budget_gib,slots,initial_state_gib,repopulation_charged,hit_rate_pct,misses_per_token,ssd_MiB_per_token,tok_wall_s_at_0.29GiBps,tok_wall_s_at_0.33GiBps,tok_wall_s_at_0.37GiBps,tok_wall_s_at_3GiBps,tok_wall_s_at_5GiBps,tok_wall_s_at_7GiBps,tok_wall_s_at_12GiBps,resp_wall_s_at_0.29GiBps,resp_wall_s_at_3GiBps,resp_wall_s_at_12GiBps,ram_cost_GiB,notes
+host,A,lru,8,642,0.0,0,40.32,190.19,2424.9,8.166,7.176,6.4,0.789,0.474,0.338,0.197,130.651,12.63,3.157,8,regime A cold; plain LRU (current dee host semantics; validated +-1 vs fill-live)
+host,A,engine_priority_lru,8,642,0.0,0,13.92,274.31,3497.5,11.778,10.35,9.231,1.139,0.683,0.488,0.285,188.442,18.216,4.554,8,regime A cold; production VRAM score (documented artifact)
+host,A,arc,8,642,0.0,0,31.3,218.94,2791.5,9.4,8.261,7.368,0.909,0.545,0.389,0.227,150.402,14.539,3.635,8,regime A cold
+host,A,lfu,8,642,0.0,0,38.83,194.94,2485.5,8.37,7.355,6.56,0.809,0.485,0.347,0.202,133.915,12.945,3.236,8,regime A cold
+host,A,freq_x_recency,8,642,0.0,0,40.52,189.56,2416.9,8.139,7.152,6.379,0.787,0.472,0.337,0.197,130.222,12.588,3.147,8,regime A cold
+host,A,layer_lru,8,642,0.0,0,37.46,199.31,2541.2,8.557,7.52,6.707,0.827,0.496,0.355,0.207,136.92,13.236,3.309,8,regime A cold; per-layer uniform budgets
+host,A,cost_aware,8,642,0.0,0,40.32,190.19,2424.9,8.166,7.176,6.4,0.789,0.474,0.338,0.197,130.651,12.63,3.157,8,regime A cold; provably == lru (uniform record size)
+host,A,belady_cold,8,642,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,8,regime A cold; offline MIN = strict upper bound for A and B
+host,B,freq_lru_warmup_pf0.5,8,642,0.0,321,30.93,240.19,3062.4,10.313,9.062,8.083,0.997,0.598,0.427,0.249,164.999,15.95,3.987,8,"regime B online; pin from step-0 prefill counts (tie-broken order), repopulation charged"
+host,B,freq_lru_warmup_s4_pf0.5,8,642,0.0,0,36.79,201.44,2568.3,8.649,7.6,6.779,0.836,0.502,0.358,0.209,138.38,13.377,3.344,8,"regime B online; pin from first 4 forwards counts, repopulation charged"
+host,C,static_freq_prewarm,8,642,7.994,0,60.48,125.94,1605.7,5.407,4.752,4.238,0.523,0.314,0.224,0.131,86.514,8.363,2.091,8,"regime C PREWARMED (labeled); top-N resident at t=0, rejects otherwise"
+host,C,static_layer_freq_prewarm,8,642,7.496,0,58.58,132.0,1683.0,5.667,4.98,4.442,0.548,0.329,0.235,0.137,90.679,8.766,2.191,8,regime C PREWARMED (labeled); per-layer top-B
+host,C,freq_lru_prewarm_pf0.25,8,642,1.992,0,44.52,176.81,2254.4,7.592,6.671,5.95,0.734,0.44,0.315,0.183,121.463,11.741,2.935,8,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.5,8,642,3.997,0,50.48,157.81,2012.1,6.776,5.954,5.311,0.655,0.393,0.281,0.164,108.411,10.48,2.62,8,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.75,8,642,5.989,0,56.17,139.69,1781.0,5.997,5.27,4.701,0.58,0.348,0.248,0.145,95.96,9.276,2.319,8,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.9,8,642,7.184,0,58.07,133.62,1703.7,5.737,5.042,4.497,0.555,0.333,0.238,0.139,91.795,8.874,2.218,8,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.99,8,642,7.906,0,60.21,126.81,1616.9,5.445,4.785,4.268,0.526,0.316,0.226,0.132,87.115,8.421,2.105,8,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,lru_prewarm_topN,8,642,7.994,0,43.36,180.5,2301.4,7.75,6.81,6.074,0.749,0.449,0.321,0.187,123.996,11.986,2.997,8,regime C PREWARMED (labeled); control: LRU given same top-N prewarm
+host,C,belady_same_state_prewarm,8,642,7.994,0,64.64,112.69,1436.8,4.838,4.252,3.792,0.468,0.281,0.2,0.117,77.412,7.483,1.871,8,regime C bound; MIN given the same top-slots prewarm
+host,C,belady_pin_same_state_pf0.25,8,642,1.992,0,56.78,137.75,1756.3,5.914,5.197,4.636,0.572,0.343,0.245,0.143,94.629,9.147,2.287,8,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.5,8,642,3.997,0,59.93,127.69,1628.0,5.482,4.818,4.297,0.53,0.318,0.227,0.132,87.716,8.479,2.12,8,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.75,8,642,5.989,0,62.03,121.0,1542.8,5.195,4.566,4.072,0.502,0.301,0.215,0.126,83.122,8.035,2.009,8,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.9,8,642,7.184,0,62.7,118.88,1515.7,5.104,4.485,4.0,0.493,0.296,0.211,0.123,81.663,7.894,1.974,8,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.99,8,642,7.906,0,61.37,123.12,1569.8,5.286,4.645,4.143,0.511,0.307,0.219,0.128,84.582,8.176,2.044,8,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,A,lru,12,963,0.0,0,46.6,170.19,2169.9,7.307,6.421,5.727,0.706,0.424,0.303,0.177,116.912,11.302,2.825,12,regime A cold; plain LRU (current dee host semantics; validated +-1 vs fill-live)
+host,A,engine_priority_lru,12,963,0.0,0,23.02,245.31,3127.7,10.532,9.256,8.255,1.018,0.611,0.436,0.255,168.52,16.29,4.073,12,regime A cold; production VRAM score (documented artifact)
+host,A,arc,12,963,0.0,0,42.91,181.94,2319.7,7.811,6.865,6.123,0.755,0.453,0.324,0.189,124.984,12.082,3.02,12,regime A cold
+host,A,lfu,12,963,0.0,0,46.56,170.31,2171.5,7.312,6.426,5.731,0.707,0.424,0.303,0.177,116.998,11.31,2.827,12,regime A cold
+host,A,freq_x_recency,12,963,0.0,0,46.7,169.88,2165.9,7.294,6.41,5.717,0.705,0.423,0.302,0.176,116.698,11.281,2.82,12,regime A cold
+host,A,layer_lru,12,963,0.0,0,46.13,171.69,2189.0,7.371,6.478,5.778,0.713,0.428,0.305,0.178,117.943,11.401,2.85,12,regime A cold; per-layer uniform budgets
+host,A,cost_aware,12,963,0.0,0,46.6,170.19,2169.9,7.307,6.421,5.727,0.706,0.424,0.303,0.177,116.912,11.302,2.825,12,regime A cold; provably == lru (uniform record size)
+host,A,belady_cold,12,963,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,12,regime A cold; offline MIN = strict upper bound for A and B
+host,B,freq_lru_warmup_pf0.5,12,963,0.0,266,40.91,204.94,2613.0,8.799,7.733,6.897,0.851,0.51,0.365,0.213,140.784,13.609,3.402,12,"regime B online; pin from step-0 prefill counts (tie-broken order), repopulation charged"
+host,B,freq_lru_warmup_s4_pf0.5,12,963,0.0,92,46.5,176.25,2247.2,7.567,6.65,5.931,0.732,0.439,0.314,0.183,121.077,11.704,2.926,12,"regime B online; pin from first 4 forwards counts, repopulation charged"
+host,C,static_freq_prewarm,12,963,11.99,0,72.52,87.56,1116.4,3.759,3.304,2.947,0.363,0.218,0.156,0.091,60.152,5.815,1.454,12,"regime C PREWARMED (labeled); top-N resident at t=0, rejects otherwise"
+host,C,static_layer_freq_prewarm,12,963,11.779,0,70.9,92.75,1182.6,3.982,3.5,3.121,0.385,0.231,0.165,0.096,63.716,6.159,1.54,12,regime C PREWARMED (labeled); per-layer top-B
+host,C,freq_lru_prewarm_pf0.25,12,963,2.988,0,52.46,151.5,1931.6,6.505,5.716,5.098,0.629,0.377,0.269,0.157,104.075,10.061,2.515,12,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.5,12,963,5.989,0,59.15,130.19,1659.9,5.59,4.912,4.381,0.54,0.324,0.232,0.135,89.434,8.645,2.161,12,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.75,12,963,8.99,0,66.13,107.94,1376.2,4.634,4.073,3.632,0.448,0.269,0.192,0.112,74.149,7.168,1.792,12,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.9,12,963,10.783,0,70.21,94.94,1210.5,4.076,3.582,3.195,0.394,0.236,0.169,0.099,65.218,6.304,1.576,12,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.99,12,963,11.866,0,72.33,88.19,1124.4,3.786,3.327,2.968,0.366,0.22,0.157,0.092,60.581,5.856,1.464,12,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,lru_prewarm_topN,12,963,11.99,0,53.3,148.81,1897.4,6.389,5.615,5.008,0.618,0.371,0.265,0.154,102.228,9.882,2.471,12,regime C PREWARMED (labeled); control: LRU given same top-N prewarm
+host,C,belady_same_state_prewarm,12,963,11.99,0,72.52,87.56,1116.4,3.759,3.304,2.947,0.363,0.218,0.156,0.091,60.152,5.815,1.454,12,regime C bound; MIN given the same top-slots prewarm
+host,C,belady_pin_same_state_pf0.25,12,963,2.988,0,58.34,132.75,1692.6,5.7,5.009,4.467,0.551,0.331,0.236,0.138,91.194,8.815,2.204,12,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.5,12,963,5.989,0,63.07,117.69,1500.5,5.053,4.44,3.96,0.488,0.293,0.209,0.122,80.847,7.815,1.954,12,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.75,12,963,8.99,0,67.8,102.62,1308.5,4.406,3.872,3.454,0.426,0.256,0.183,0.106,70.499,6.815,1.704,12,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.9,12,963,10.783,0,70.62,93.62,1193.7,4.02,3.532,3.151,0.389,0.233,0.167,0.097,64.317,6.217,1.554,12,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.99,12,963,11.866,0,72.33,88.19,1124.4,3.786,3.327,2.968,0.366,0.22,0.157,0.092,60.581,5.856,1.464,12,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,A,lru,16,1285,0.0,0,50.83,156.69,1997.8,6.728,5.912,5.273,0.65,0.39,0.279,0.163,107.638,10.405,2.601,16,regime A cold; plain LRU (current dee host semantics; validated +-1 vs fill-live)
+host,A,engine_priority_lru,16,1285,0.0,0,34.09,210.06,2678.3,9.019,7.926,7.069,0.872,0.523,0.374,0.218,144.305,13.949,3.487,16,regime A cold; production VRAM score (documented artifact)
+host,A,arc,16,1285,0.0,0,50.44,157.94,2013.7,6.781,5.959,5.315,0.656,0.393,0.281,0.164,108.497,10.488,2.622,16,regime A cold
+host,A,lfu,16,1285,0.0,0,50.83,156.69,1997.8,6.728,5.912,5.273,0.65,0.39,0.279,0.163,107.638,10.405,2.601,16,regime A cold
+host,A,freq_x_recency,16,1285,0.0,0,50.85,156.62,1997.0,6.725,5.91,5.271,0.65,0.39,0.279,0.163,107.595,10.401,2.6,16,regime A cold
+host,A,layer_lru,16,1285,0.0,0,50.23,158.62,2022.5,6.811,5.985,5.338,0.658,0.395,0.282,0.165,108.969,10.534,2.633,16,regime A cold; per-layer uniform budgets
+host,A,cost_aware,16,1285,0.0,0,50.83,156.69,1997.8,6.728,5.912,5.273,0.65,0.39,0.279,0.163,107.638,10.405,2.601,16,regime A cold; provably == lru (uniform record size)
+host,A,belady_cold,16,1285,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,16,regime A cold; offline MIN = strict upper bound for A and B
+host,B,freq_lru_warmup_pf0.5,16,1285,0.0,0,49.36,161.38,2057.5,6.929,6.089,5.43,0.67,0.402,0.287,0.167,110.858,10.716,2.679,16,"regime B online; pin from step-0 prefill counts (tie-broken order), repopulation charged"
+host,B,freq_lru_warmup_s4_pf0.5,16,1285,0.0,180,50.44,169.19,2157.1,7.264,6.383,5.693,0.702,0.421,0.301,0.176,116.225,11.235,2.809,16,"regime B online; pin from first 4 forwards counts, repopulation charged"
+host,C,static_freq_prewarm,16,1285,16.0,0,78.84,67.44,859.8,2.895,2.544,2.269,0.28,0.168,0.12,0.07,46.327,4.478,1.12,16,"regime C PREWARMED (labeled); top-N resident at t=0, rejects otherwise"
+host,C,static_layer_freq_prewarm,16,1285,15.527,0,78.03,70.0,892.5,3.005,2.641,2.356,0.291,0.174,0.125,0.073,48.087,4.648,1.162,16,regime C PREWARMED (labeled); per-layer top-B
+host,C,freq_lru_prewarm_pf0.25,16,1285,3.997,0,57.33,136.0,1734.0,5.839,5.131,4.577,0.564,0.339,0.242,0.141,93.427,9.031,2.258,16,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.5,16,1285,7.994,0,65.62,109.56,1396.9,4.704,4.134,3.687,0.455,0.273,0.195,0.114,75.265,7.276,1.819,16,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.75,16,1285,11.99,0,72.52,87.56,1116.4,3.759,3.304,2.947,0.363,0.218,0.156,0.091,60.152,5.815,1.454,16,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.9,16,1285,14.394,0,76.31,75.5,962.6,3.242,2.849,2.541,0.313,0.188,0.134,0.078,51.866,5.014,1.253,16,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.99,16,1285,15.838,0,78.58,68.25,870.2,2.93,2.575,2.297,0.283,0.17,0.121,0.071,46.885,4.532,1.133,16,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,lru_prewarm_topN,16,1285,16.0,0,66.31,107.38,1369.0,4.61,4.051,3.613,0.446,0.267,0.191,0.111,73.762,7.13,1.783,16,regime C PREWARMED (labeled); control: LRU given same top-N prewarm
+host,C,belady_same_state_prewarm,16,1285,16.0,0,78.84,67.44,859.8,2.895,2.544,2.269,0.28,0.168,0.12,0.07,46.327,4.478,1.12,16,regime C bound; MIN given the same top-slots prewarm
+host,C,belady_pin_same_state_pf0.25,16,1285,3.997,0,59.93,127.69,1628.0,5.482,4.818,4.297,0.53,0.318,0.227,0.132,87.716,8.479,2.12,16,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.5,16,1285,7.994,0,66.23,107.62,1372.2,4.621,4.061,3.622,0.447,0.268,0.191,0.112,73.934,7.147,1.787,16,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.75,16,1285,11.99,0,72.52,87.56,1116.4,3.759,3.304,2.947,0.363,0.218,0.156,0.091,60.152,5.815,1.454,16,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.9,16,1285,14.394,0,76.31,75.5,962.6,3.242,2.849,2.541,0.313,0.188,0.134,0.078,51.866,5.014,1.253,16,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.99,16,1285,15.838,0,78.58,68.25,870.2,2.93,2.575,2.297,0.283,0.17,0.121,0.071,46.885,4.532,1.133,16,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,A,lru,20,1606,0.0,0,52.32,151.94,1937.2,6.523,5.733,5.113,0.631,0.378,0.27,0.158,104.375,10.09,2.522,20,regime A cold; plain LRU (current dee host semantics; validated +-1 vs fill-live)
+host,A,engine_priority_lru,20,1606,0.0,0,43.68,179.5,2288.6,7.707,6.773,6.04,0.745,0.447,0.319,0.186,123.31,11.92,2.98,20,regime A cold; production VRAM score (documented artifact)
+host,A,arc,20,1606,0.0,0,52.23,152.25,1941.2,6.537,5.745,5.124,0.632,0.379,0.271,0.158,104.59,10.11,2.528,20,regime A cold
+host,A,lfu,20,1606,0.0,0,52.32,151.94,1937.2,6.523,5.733,5.113,0.631,0.378,0.27,0.158,104.375,10.09,2.522,20,regime A cold
+host,A,freq_x_recency,20,1606,0.0,0,52.32,151.94,1937.2,6.523,5.733,5.113,0.631,0.378,0.27,0.158,104.375,10.09,2.522,20,regime A cold
+host,A,layer_lru,20,1606,0.0,0,51.79,153.62,1958.7,6.596,5.796,5.17,0.638,0.383,0.273,0.159,105.534,10.202,2.55,20,regime A cold; per-layer uniform budgets
+host,A,cost_aware,20,1606,0.0,0,52.32,151.94,1937.2,6.523,5.733,5.113,0.631,0.378,0.27,0.158,104.375,10.09,2.522,20,regime A cold; provably == lru (uniform record size)
+host,A,belady_cold,20,1606,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,20,regime A cold; offline MIN = strict upper bound for A and B
+host,B,freq_lru_warmup_pf0.5,20,1606,0.0,0,52.07,152.75,1947.6,6.558,5.763,5.14,0.634,0.38,0.272,0.158,104.933,10.144,2.536,20,"regime B online; pin from step-0 prefill counts (tie-broken order), repopulation charged"
+host,B,freq_lru_warmup_s4_pf0.5,20,1606,0.0,0,52.48,151.44,1930.8,6.502,5.714,5.096,0.629,0.377,0.269,0.157,104.032,10.056,2.514,20,"regime B online; pin from first 4 forwards counts, repopulation charged"
+host,C,static_freq_prewarm,20,1606,19.997,0,85.13,47.38,604.0,2.034,1.787,1.594,0.197,0.118,0.084,0.049,32.545,3.146,0.786,20,"regime C PREWARMED (labeled); top-N resident at t=0, rejects otherwise"
+host,C,static_layer_freq_prewarm,20,1606,19.797,0,84.82,48.38,616.8,2.077,1.825,1.628,0.201,0.12,0.086,0.05,33.232,3.212,0.803,20,regime C PREWARMED (labeled); per-layer top-B
+host,C,freq_lru_prewarm_pf0.25,20,1606,4.993,0,60.44,126.06,1607.3,5.413,4.756,4.242,0.523,0.314,0.224,0.131,86.6,8.371,2.093,20,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.5,20,1606,9.998,0,69.39,97.56,1243.9,4.189,3.681,3.283,0.405,0.243,0.174,0.101,67.022,6.479,1.62,20,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.75,20,1606,14.991,0,77.25,72.5,924.4,3.113,2.736,2.44,0.301,0.181,0.129,0.075,49.805,4.814,1.204,20,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.9,20,1606,17.992,0,81.98,57.44,732.3,2.466,2.167,1.933,0.238,0.143,0.102,0.06,39.457,3.814,0.954,20,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.99,20,1606,19.785,0,84.8,48.44,617.6,2.08,1.828,1.63,0.201,0.121,0.086,0.05,33.275,3.217,0.804,20,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,lru_prewarm_topN,20,1606,19.997,0,78.02,70.06,893.3,3.008,2.644,2.358,0.291,0.174,0.125,0.073,48.13,4.653,1.163,20,regime C PREWARMED (labeled); control: LRU given same top-N prewarm
+host,C,belady_same_state_prewarm,20,1606,19.997,0,85.13,47.38,604.0,2.034,1.787,1.594,0.197,0.118,0.084,0.049,32.545,3.146,0.786,20,regime C bound; MIN given the same top-slots prewarm
+host,C,belady_pin_same_state_pf0.25,20,1606,4.993,0,61.5,122.69,1564.3,5.268,4.629,4.129,0.509,0.306,0.218,0.127,84.282,8.147,2.037,20,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.5,20,1606,9.998,0,69.39,97.56,1243.9,4.189,3.681,3.283,0.405,0.243,0.174,0.101,67.022,6.479,1.62,20,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.75,20,1606,14.991,0,77.25,72.5,924.4,3.113,2.736,2.44,0.301,0.181,0.129,0.075,49.805,4.814,1.204,20,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.9,20,1606,17.992,0,81.98,57.44,732.3,2.466,2.167,1.933,0.238,0.143,0.102,0.06,39.457,3.814,0.954,20,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.99,20,1606,19.785,0,84.8,48.44,617.6,2.08,1.828,1.63,0.201,0.121,0.086,0.05,33.275,3.217,0.804,20,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,A,lru,24,1927,0.0,0,53.09,149.5,1906.1,6.419,5.641,5.031,0.62,0.372,0.266,0.155,102.701,9.928,2.482,24,regime A cold; plain LRU (current dee host semantics; validated +-1 vs fill-live)
+host,A,engine_priority_lru,24,1927,0.0,0,50.91,156.44,1994.6,6.717,5.903,5.264,0.649,0.39,0.278,0.162,107.466,10.388,2.597,24,regime A cold; production VRAM score (documented artifact)
+host,A,arc,24,1927,0.0,0,53.09,149.5,1906.1,6.419,5.641,5.031,0.62,0.372,0.266,0.155,102.701,9.928,2.482,24,regime A cold
+host,A,lfu,24,1927,0.0,0,53.09,149.5,1906.1,6.419,5.641,5.031,0.62,0.372,0.266,0.155,102.701,9.928,2.482,24,regime A cold
+host,A,freq_x_recency,24,1927,0.0,0,53.09,149.5,1906.1,6.419,5.641,5.031,0.62,0.372,0.266,0.155,102.701,9.928,2.482,24,regime A cold
+host,A,layer_lru,24,1927,0.0,0,52.54,151.25,1928.4,6.494,5.707,5.09,0.628,0.377,0.269,0.157,103.903,10.044,2.511,24,regime A cold; per-layer uniform budgets
+host,A,cost_aware,24,1927,0.0,0,53.09,149.5,1906.1,6.419,5.641,5.031,0.62,0.372,0.266,0.155,102.701,9.928,2.482,24,regime A cold; provably == lru (uniform record size)
+host,A,belady_cold,24,1927,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,24,regime A cold; offline MIN = strict upper bound for A and B
+host,B,freq_lru_warmup_pf0.5,24,1927,0.0,0,53.07,149.56,1906.9,6.421,5.643,5.033,0.621,0.372,0.266,0.155,102.744,9.932,2.483,24,"regime B online; pin from step-0 prefill counts (tie-broken order), repopulation charged"
+host,B,freq_lru_warmup_s4_pf0.5,24,1927,0.0,0,53.42,148.44,1892.6,6.373,5.601,4.995,0.616,0.37,0.264,0.154,101.971,9.857,2.464,24,"regime B online; pin from first 4 forwards counts, repopulation charged"
+host,C,static_freq_prewarm,24,1927,23.993,0,91.43,27.31,348.2,1.173,1.03,0.919,0.113,0.068,0.049,0.028,18.763,1.814,0.453,24,"regime C PREWARMED (labeled); top-N resident at t=0, rejects otherwise"
+host,C,static_layer_freq_prewarm,24,1927,23.408,0,90.51,30.25,385.7,1.299,1.141,1.018,0.126,0.075,0.054,0.031,20.781,2.009,0.502,24,regime C PREWARMED (labeled); per-layer top-B
+host,C,freq_lru_prewarm_pf0.25,24,1927,5.989,0,62.58,119.25,1520.4,5.12,4.499,4.013,0.495,0.297,0.212,0.124,81.92,7.919,1.98,24,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.5,24,1927,11.99,0,72.52,87.56,1116.4,3.759,3.304,2.947,0.363,0.218,0.156,0.091,60.152,5.815,1.454,24,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.75,24,1927,17.992,0,81.98,57.44,732.3,2.466,2.167,1.933,0.238,0.143,0.102,0.06,39.457,3.814,0.954,24,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.9,24,1927,21.59,0,87.64,39.38,502.0,1.69,1.486,1.325,0.163,0.098,0.07,0.041,27.049,2.615,0.654,24,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.99,24,1927,23.744,0,91.04,28.56,364.2,1.226,1.078,0.961,0.119,0.071,0.051,0.03,19.621,1.897,0.474,24,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,lru_prewarm_topN,24,1927,23.993,0,88.94,35.25,449.4,1.513,1.33,1.186,0.146,0.088,0.063,0.037,24.215,2.341,0.585,24,regime C PREWARMED (labeled); control: LRU given same top-N prewarm
+host,C,belady_same_state_prewarm,24,1927,23.993,0,91.43,27.31,348.2,1.173,1.03,0.919,0.113,0.068,0.049,0.028,18.763,1.814,0.453,24,regime C bound; MIN given the same top-slots prewarm
+host,C,belady_pin_same_state_pf0.25,24,1927,5.989,0,63.07,117.69,1500.5,5.053,4.44,3.96,0.488,0.293,0.209,0.122,80.847,7.815,1.954,24,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.5,24,1927,11.99,0,72.52,87.56,1116.4,3.759,3.304,2.947,0.363,0.218,0.156,0.091,60.152,5.815,1.454,24,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.75,24,1927,17.992,0,81.98,57.44,732.3,2.466,2.167,1.933,0.238,0.143,0.102,0.06,39.457,3.814,0.954,24,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.9,24,1927,21.59,0,87.64,39.38,502.0,1.69,1.486,1.325,0.163,0.098,0.07,0.041,27.049,2.615,0.654,24,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.99,24,1927,23.744,0,91.04,28.56,364.2,1.226,1.078,0.961,0.119,0.071,0.051,0.03,19.621,1.897,0.474,24,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,A,lru,32,2570,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,32,regime A cold; plain LRU (current dee host semantics; validated +-1 vs fill-live)
+host,A,engine_priority_lru,32,2570,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,32,regime A cold; production VRAM score (documented artifact)
+host,A,arc,32,2570,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,32,regime A cold
+host,A,lfu,32,2570,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,32,regime A cold
+host,A,freq_x_recency,32,2570,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,32,regime A cold
+host,A,layer_lru,32,2570,0.0,0,53.4,148.5,1893.4,6.376,5.603,4.997,0.616,0.37,0.264,0.154,102.014,9.861,2.465,32,regime A cold; per-layer uniform budgets
+host,A,cost_aware,32,2570,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,32,regime A cold; provably == lru (uniform record size)
+host,A,belady_cold,32,2570,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,32,regime A cold; offline MIN = strict upper bound for A and B
+host,B,freq_lru_warmup_pf0.5,32,2570,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,32,"regime B online; pin from step-0 prefill counts (tie-broken order), repopulation charged"
+host,B,freq_lru_warmup_s4_pf0.5,32,2570,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,32,"regime B online; pin from first 4 forwards counts, repopulation charged"
+host,C,static_freq_prewarm,32,2570,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,32,"regime C PREWARMED (labeled); top-N resident at t=0, rejects otherwise"
+host,C,static_layer_freq_prewarm,32,2570,27.704,0,97.27,8.69,110.8,0.373,0.328,0.292,0.036,0.022,0.015,0.009,5.968,0.577,0.144,32,regime C PREWARMED (labeled); per-layer top-B
+host,C,freq_lru_prewarm_pf0.25,32,2570,7.994,0,66.23,107.62,1372.2,4.621,4.061,3.622,0.447,0.268,0.191,0.112,73.934,7.147,1.787,32,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.5,32,2570,16.0,0,78.84,67.44,859.8,2.895,2.544,2.269,0.28,0.168,0.12,0.07,46.327,4.478,1.12,32,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.75,32,2570,23.993,0,91.43,27.31,348.2,1.173,1.03,0.919,0.113,0.068,0.049,0.028,18.763,1.814,0.453,32,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.9,32,2570,28.8,0,99.0,3.19,40.6,0.137,0.12,0.107,0.013,0.008,0.006,0.003,2.19,0.212,0.053,32,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.99,32,2570,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,32,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,lru_prewarm_topN,32,2570,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,32,regime C PREWARMED (labeled); control: LRU given same top-N prewarm
+host,C,belady_same_state_prewarm,32,2570,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,32,regime C bound; MIN given the same top-slots prewarm
+host,C,belady_pin_same_state_pf0.25,32,2570,7.994,0,66.23,107.62,1372.2,4.621,4.061,3.622,0.447,0.268,0.191,0.112,73.934,7.147,1.787,32,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.5,32,2570,16.0,0,78.84,67.44,859.8,2.895,2.544,2.269,0.28,0.168,0.12,0.07,46.327,4.478,1.12,32,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.75,32,2570,23.993,0,91.43,27.31,348.2,1.173,1.03,0.919,0.113,0.068,0.049,0.028,18.763,1.814,0.453,32,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.9,32,2570,28.8,0,99.0,3.19,40.6,0.137,0.12,0.107,0.013,0.008,0.006,0.003,2.19,0.212,0.053,32,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.99,32,2570,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,32,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,A,lru,48,3855,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,48,regime A cold; plain LRU (current dee host semantics; validated +-1 vs fill-live)
+host,A,engine_priority_lru,48,3855,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,48,regime A cold; production VRAM score (documented artifact)
+host,A,arc,48,3855,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,48,regime A cold
+host,A,lfu,48,3855,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,48,regime A cold
+host,A,freq_x_recency,48,3855,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,48,regime A cold
+host,A,layer_lru,48,3855,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,48,regime A cold; per-layer uniform budgets
+host,A,cost_aware,48,3855,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,48,regime A cold; provably == lru (uniform record size)
+host,A,belady_cold,48,3855,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,48,regime A cold; offline MIN = strict upper bound for A and B
+host,B,freq_lru_warmup_pf0.5,48,3855,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,48,"regime B online; pin from step-0 prefill counts (tie-broken order), repopulation charged"
+host,B,freq_lru_warmup_s4_pf0.5,48,3855,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,48,"regime B online; pin from first 4 forwards counts, repopulation charged"
+host,C,static_freq_prewarm,48,3855,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,48,"regime C PREWARMED (labeled); top-N resident at t=0, rejects otherwise"
+host,C,static_layer_freq_prewarm,48,3855,29.086,0,99.45,1.75,22.3,0.075,0.066,0.059,0.007,0.004,0.003,0.002,1.202,0.116,0.029,48,regime C PREWARMED (labeled); per-layer top-B
+host,C,freq_lru_prewarm_pf0.25,48,3855,11.99,0,72.52,87.56,1116.4,3.759,3.304,2.947,0.363,0.218,0.156,0.091,60.152,5.815,1.454,48,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.5,48,3855,23.993,0,91.43,27.31,348.2,1.173,1.03,0.919,0.113,0.068,0.049,0.028,18.763,1.814,0.453,48,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.75,48,3855,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,48,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.9,48,3855,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,48,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.99,48,3855,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,48,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,lru_prewarm_topN,48,3855,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,48,regime C PREWARMED (labeled); control: LRU given same top-N prewarm
+host,C,belady_same_state_prewarm,48,3855,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,48,regime C bound; MIN given the same top-slots prewarm
+host,C,belady_pin_same_state_pf0.25,48,3855,11.99,0,72.52,87.56,1116.4,3.759,3.304,2.947,0.363,0.218,0.156,0.091,60.152,5.815,1.454,48,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.5,48,3855,23.993,0,91.43,27.31,348.2,1.173,1.03,0.919,0.113,0.068,0.049,0.028,18.763,1.814,0.453,48,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.75,48,3855,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,48,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.9,48,3855,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,48,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.99,48,3855,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,48,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,A,lru,64,5140,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,64,regime A cold; plain LRU (current dee host semantics; validated +-1 vs fill-live)
+host,A,engine_priority_lru,64,5140,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,64,regime A cold; production VRAM score (documented artifact)
+host,A,arc,64,5140,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,64,regime A cold
+host,A,lfu,64,5140,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,64,regime A cold
+host,A,freq_x_recency,64,5140,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,64,regime A cold
+host,A,layer_lru,64,5140,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,64,regime A cold; per-layer uniform budgets
+host,A,cost_aware,64,5140,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,64,regime A cold; provably == lru (uniform record size)
+host,A,belady_cold,64,5140,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,64,regime A cold; offline MIN = strict upper bound for A and B
+host,B,freq_lru_warmup_pf0.5,64,5140,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,64,"regime B online; pin from step-0 prefill counts (tie-broken order), repopulation charged"
+host,B,freq_lru_warmup_s4_pf0.5,64,5140,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,64,"regime B online; pin from first 4 forwards counts, repopulation charged"
+host,C,static_freq_prewarm,64,5140,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,64,"regime C PREWARMED (labeled); top-N resident at t=0, rejects otherwise"
+host,C,static_layer_freq_prewarm,64,5140,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,64,regime C PREWARMED (labeled); per-layer top-B
+host,C,freq_lru_prewarm_pf0.25,64,5140,16.0,0,78.84,67.44,859.8,2.895,2.544,2.269,0.28,0.168,0.12,0.07,46.327,4.478,1.12,64,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.5,64,5140,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,64,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.75,64,5140,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,64,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.9,64,5140,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,64,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.99,64,5140,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,64,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,lru_prewarm_topN,64,5140,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,64,regime C PREWARMED (labeled); control: LRU given same top-N prewarm
+host,C,belady_same_state_prewarm,64,5140,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,64,regime C bound; MIN given the same top-slots prewarm
+host,C,belady_pin_same_state_pf0.25,64,5140,16.0,0,78.84,67.44,859.8,2.895,2.544,2.269,0.28,0.168,0.12,0.07,46.327,4.478,1.12,64,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.5,64,5140,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,64,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.75,64,5140,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,64,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.9,64,5140,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,64,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.99,64,5140,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,64,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,A,lru,96,7710,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,96,regime A cold; plain LRU (current dee host semantics; validated +-1 vs fill-live)
+host,A,engine_priority_lru,96,7710,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,96,regime A cold; production VRAM score (documented artifact)
+host,A,arc,96,7710,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,96,regime A cold
+host,A,lfu,96,7710,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,96,regime A cold
+host,A,freq_x_recency,96,7710,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,96,regime A cold
+host,A,layer_lru,96,7710,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,96,regime A cold; per-layer uniform budgets
+host,A,cost_aware,96,7710,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,96,regime A cold; provably == lru (uniform record size)
+host,A,belady_cold,96,7710,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,96,regime A cold; offline MIN = strict upper bound for A and B
+host,B,freq_lru_warmup_pf0.5,96,7710,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,96,"regime B online; pin from step-0 prefill counts (tie-broken order), repopulation charged"
+host,B,freq_lru_warmup_s4_pf0.5,96,7710,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,96,"regime B online; pin from first 4 forwards counts, repopulation charged"
+host,C,static_freq_prewarm,96,7710,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,96,"regime C PREWARMED (labeled); top-N resident at t=0, rejects otherwise"
+host,C,static_layer_freq_prewarm,96,7710,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,96,regime C PREWARMED (labeled); per-layer top-B
+host,C,freq_lru_prewarm_pf0.25,96,7710,23.993,0,91.43,27.31,348.2,1.173,1.03,0.919,0.113,0.068,0.049,0.028,18.763,1.814,0.453,96,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.5,96,7710,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,96,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.75,96,7710,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,96,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.9,96,7710,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,96,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.99,96,7710,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,96,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,lru_prewarm_topN,96,7710,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,96,regime C PREWARMED (labeled); control: LRU given same top-N prewarm
+host,C,belady_same_state_prewarm,96,7710,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,96,regime C bound; MIN given the same top-slots prewarm
+host,C,belady_pin_same_state_pf0.25,96,7710,23.993,0,91.43,27.31,348.2,1.173,1.03,0.919,0.113,0.068,0.049,0.028,18.763,1.814,0.453,96,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.5,96,7710,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,96,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.75,96,7710,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,96,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.9,96,7710,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,96,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.99,96,7710,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,96,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,A,lru,128,10280,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,128,regime A cold; plain LRU (current dee host semantics; validated +-1 vs fill-live)
+host,A,engine_priority_lru,128,10280,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,128,regime A cold; production VRAM score (documented artifact)
+host,A,arc,128,10280,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,128,regime A cold
+host,A,lfu,128,10280,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,128,regime A cold
+host,A,freq_x_recency,128,10280,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,128,regime A cold
+host,A,layer_lru,128,10280,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,128,regime A cold; per-layer uniform budgets
+host,A,cost_aware,128,10280,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,128,regime A cold; provably == lru (uniform record size)
+host,A,belady_cold,128,10280,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,128,regime A cold; offline MIN = strict upper bound for A and B
+host,B,freq_lru_warmup_pf0.5,128,10280,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,128,"regime B online; pin from step-0 prefill counts (tie-broken order), repopulation charged"
+host,B,freq_lru_warmup_s4_pf0.5,128,10280,0.0,0,53.64,147.75,1883.8,6.344,5.575,4.972,0.613,0.368,0.263,0.153,101.499,9.812,2.453,128,"regime B online; pin from first 4 forwards counts, repopulation charged"
+host,C,static_freq_prewarm,128,10280,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,128,"regime C PREWARMED (labeled); top-N resident at t=0, rejects otherwise"
+host,C,static_layer_freq_prewarm,128,10280,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,128,regime C PREWARMED (labeled); per-layer top-B
+host,C,freq_lru_prewarm_pf0.25,128,10280,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,128,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.5,128,10280,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,128,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.75,128,10280,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,128,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.9,128,10280,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,128,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,freq_lru_prewarm_pf0.99,128,10280,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,128,regime C PREWARMED (labeled); pin + LRU remainder
+host,C,lru_prewarm_topN,128,10280,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,128,regime C PREWARMED (labeled); control: LRU given same top-N prewarm
+host,C,belady_same_state_prewarm,128,10280,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,128,regime C bound; MIN given the same top-slots prewarm
+host,C,belady_pin_same_state_pf0.25,128,10280,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,128,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.5,128,10280,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,128,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.75,128,10280,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,128,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.9,128,10280,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,128,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+host,C,belady_pin_same_state_pf0.99,128,10280,29.435,0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,128,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,A,lru,1,80,0.0,0,0.0,163.31,2082.2,7.012,6.162,5.496,0.678,0.407,0.29,0.169,112.189,10.845,2.711,1,regime A cold; plain LRU (current dee host semantics; validated +-1 vs fill-live)
+vram_gpu0,A,engine_priority_lru,1,80,0.0,0,4.13,156.56,1996.2,6.722,5.907,5.269,0.65,0.39,0.278,0.162,107.552,10.397,2.599,1,regime A cold; production VRAM score (documented artifact)
+vram_gpu0,A,arc,1,80,0.0,0,0.0,163.31,2082.2,7.012,6.162,5.496,0.678,0.407,0.29,0.169,112.189,10.845,2.711,1,regime A cold
+vram_gpu0,A,lfu,1,80,0.0,0,14.31,139.94,1784.2,6.008,5.28,4.709,0.581,0.348,0.249,0.145,96.132,9.293,2.323,1,regime A cold
+vram_gpu0,A,freq_x_recency,1,80,0.0,0,12.78,142.44,1816.1,6.116,5.374,4.793,0.591,0.355,0.253,0.148,97.849,9.459,2.365,1,regime A cold
+vram_gpu0,A,layer_lru,1,80,0.0,0,0.0,163.31,2082.2,7.012,6.162,5.496,0.678,0.407,0.29,0.169,112.189,10.845,2.711,1,regime A cold; per-layer uniform budgets
+vram_gpu0,A,cost_aware,1,80,0.0,0,0.0,163.31,2082.2,7.012,6.162,5.496,0.678,0.407,0.29,0.169,112.189,10.845,2.711,1,regime A cold; provably == lru (uniform record size)
+vram_gpu0,A,belady_cold,1,80,0.0,0,29.16,115.69,1475.0,4.967,4.365,3.893,0.48,0.288,0.206,0.12,79.473,7.682,1.921,1,regime A cold; offline MIN = strict upper bound for A and B
+vram_gpu0,B,freq_lru_warmup_pf0.5,1,80,0.0,40,0.73,164.62,2099.0,7.068,6.212,5.54,0.683,0.41,0.293,0.171,113.091,10.932,2.733,1,"regime B online; pin from step-0 prefill counts (tie-broken order), repopulation charged"
+vram_gpu0,B,freq_lru_warmup_s4_pf0.5,1,80,0.0,28,7.73,152.44,1943.6,6.545,5.752,5.13,0.633,0.38,0.271,0.158,104.719,10.123,2.531,1,"regime B online; pin from first 4 forwards counts, repopulation charged"
+vram_gpu0,C,static_freq_prewarm,1,80,0.996,0,25.83,121.12,1544.3,5.2,4.57,4.076,0.503,0.302,0.215,0.126,83.208,8.043,2.011,1,"regime C PREWARMED (labeled); top-N resident at t=0, rejects otherwise"
+vram_gpu0,C,static_layer_freq_prewarm,1,80,0.274,0,8.34,149.69,1908.5,6.427,5.648,5.037,0.621,0.373,0.266,0.155,102.83,9.94,2.485,1,regime C PREWARMED (labeled); per-layer top-B
+vram_gpu0,C,freq_lru_prewarm_pf0.25,1,80,0.249,0,8.53,149.38,1904.5,6.413,5.636,5.027,0.62,0.372,0.266,0.155,102.615,9.919,2.48,1,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.5,1,80,0.498,0,15.12,138.62,1767.5,5.952,5.231,4.665,0.575,0.345,0.247,0.144,95.23,9.206,2.301,1,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.75,1,80,0.747,0,20.97,129.06,1645.5,5.541,4.869,4.343,0.536,0.321,0.23,0.134,88.661,8.571,2.143,1,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.9,1,80,0.896,0,24.0,124.12,1582.6,5.329,4.683,4.177,0.515,0.309,0.221,0.129,85.269,8.243,2.061,1,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.99,1,80,0.984,0,25.6,121.5,1549.1,5.217,4.584,4.089,0.504,0.303,0.216,0.126,83.466,8.068,2.017,1,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,lru_prewarm_topN,1,80,0.996,0,0.0,163.31,2082.2,7.012,6.162,5.496,0.678,0.407,0.29,0.169,112.189,10.845,2.711,1,regime C PREWARMED (labeled); control: LRU given same top-N prewarm
+vram_gpu0,C,belady_same_state_prewarm,1,80,0.996,0,31.34,112.12,1429.6,4.814,4.231,3.773,0.465,0.279,0.199,0.116,77.026,7.446,1.861,1,regime C bound; MIN given the same top-slots prewarm
+vram_gpu0,C,belady_pin_same_state_pf0.25,1,80,0.249,0,29.54,115.06,1467.0,4.94,4.341,3.872,0.478,0.287,0.205,0.119,79.043,7.641,1.91,1,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.5,1,80,0.498,0,30.04,114.25,1456.7,4.905,4.311,3.845,0.474,0.285,0.203,0.119,78.485,7.587,1.897,1,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.75,1,80,0.747,0,29.43,115.25,1469.4,4.948,4.348,3.878,0.478,0.287,0.205,0.12,79.172,7.653,1.913,1,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.9,1,80,0.896,0,27.48,118.44,1510.1,5.085,4.469,3.986,0.492,0.295,0.211,0.123,81.362,7.865,1.966,1,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.99,1,80,0.984,0,25.6,121.5,1549.1,5.217,4.584,4.089,0.504,0.303,0.216,0.126,83.466,8.068,2.017,1,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,A,lru,2,160,0.0,0,19.1,132.12,1684.6,5.673,4.985,4.446,0.548,0.329,0.235,0.137,90.765,8.774,2.193,2,regime A cold; plain LRU (current dee host semantics; validated +-1 vs fill-live)
+vram_gpu0,A,engine_priority_lru,2,160,0.0,0,8.76,149.0,1899.8,6.397,5.622,5.014,0.618,0.371,0.265,0.155,102.357,9.895,2.474,2,regime A cold; production VRAM score (documented artifact)
+vram_gpu0,A,arc,2,160,0.0,0,15.84,137.44,1752.3,5.901,5.186,4.625,0.57,0.342,0.244,0.143,94.414,9.127,2.282,2,regime A cold
+vram_gpu0,A,lfu,2,160,0.0,0,24.68,123.0,1568.2,5.281,4.641,4.139,0.51,0.306,0.219,0.128,84.496,8.168,2.042,2,regime A cold
+vram_gpu0,A,freq_x_recency,2,160,0.0,0,22.35,126.81,1616.9,5.445,4.785,4.268,0.526,0.316,0.226,0.132,87.115,8.421,2.105,2,regime A cold
+vram_gpu0,A,layer_lru,2,160,0.0,0,0.11,163.12,2079.8,7.004,6.155,5.489,0.677,0.406,0.29,0.169,112.061,10.833,2.708,2,regime A cold; per-layer uniform budgets
+vram_gpu0,A,cost_aware,2,160,0.0,0,19.1,132.12,1684.6,5.673,4.985,4.446,0.548,0.329,0.235,0.137,90.765,8.774,2.193,2,regime A cold; provably == lru (uniform record size)
+vram_gpu0,A,belady_cold,2,160,0.0,0,41.68,95.25,1214.4,4.089,3.594,3.205,0.395,0.237,0.169,0.099,65.433,6.325,1.581,2,regime A cold; offline MIN = strict upper bound for A and B
+vram_gpu0,B,freq_lru_warmup_pf0.5,2,160,0.0,80,1.45,165.94,2115.7,7.125,6.261,5.584,0.689,0.413,0.295,0.172,113.993,11.019,2.755,2,"regime B online; pin from step-0 prefill counts (tie-broken order), repopulation charged"
+vram_gpu0,B,freq_lru_warmup_s4_pf0.5,2,160,0.0,26,12.67,144.25,1839.2,6.193,5.443,4.854,0.599,0.359,0.257,0.15,99.094,9.579,2.395,2,"regime B online; pin from first 4 forwards counts, repopulation charged"
+vram_gpu0,C,static_freq_prewarm,2,160,1.992,0,39.8,98.31,1253.5,4.221,3.709,3.308,0.408,0.245,0.175,0.102,67.537,6.529,1.632,2,"regime C PREWARMED (labeled); top-N resident at t=0, rejects otherwise"
+vram_gpu0,C,static_layer_freq_prewarm,2,160,0.822,0,20.59,129.69,1653.5,5.568,4.893,4.364,0.538,0.323,0.231,0.135,89.09,8.612,2.153,2,regime C PREWARMED (labeled); per-layer top-B
+vram_gpu0,C,freq_lru_prewarm_pf0.25,2,160,0.498,0,25.95,120.94,1542.0,5.193,4.563,4.07,0.502,0.301,0.215,0.125,83.079,8.031,2.008,2,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.5,2,160,0.996,0,25.99,120.88,1541.2,5.19,4.561,4.068,0.502,0.301,0.215,0.125,83.036,8.027,2.007,2,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.75,2,160,1.494,0,33.68,108.31,1381.0,4.65,4.087,3.645,0.45,0.27,0.193,0.112,74.406,7.193,1.798,2,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.9,2,160,1.793,0,37.35,102.31,1304.5,4.393,3.86,3.443,0.425,0.255,0.182,0.106,70.285,6.794,1.699,2,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.99,2,160,1.967,0,39.49,98.81,1259.9,4.243,3.728,3.325,0.41,0.246,0.176,0.103,67.88,6.562,1.64,2,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,lru_prewarm_topN,2,160,1.992,0,19.1,132.12,1684.6,5.673,4.985,4.446,0.548,0.329,0.235,0.137,90.765,8.774,2.193,2,regime C PREWARMED (labeled); control: LRU given same top-N prewarm
+vram_gpu0,C,belady_same_state_prewarm,2,160,1.992,0,45.39,89.19,1137.1,3.829,3.365,3.001,0.37,0.222,0.159,0.093,61.268,5.923,1.481,2,regime C bound; MIN given the same top-slots prewarm
+vram_gpu0,C,belady_pin_same_state_pf0.25,2,160,0.498,0,42.9,93.25,1188.9,4.004,3.518,3.138,0.387,0.232,0.166,0.097,64.059,6.192,1.548,2,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.5,2,160,0.996,0,43.59,92.12,1174.6,3.955,3.476,3.1,0.382,0.229,0.164,0.096,63.286,6.118,1.529,2,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.75,2,160,1.494,0,43.47,92.31,1177.0,3.963,3.483,3.107,0.383,0.23,0.164,0.096,63.415,6.13,1.533,2,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.9,2,160,1.793,0,42.82,93.38,1190.5,4.009,3.523,3.142,0.388,0.233,0.166,0.097,64.145,6.201,1.55,2,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.99,2,160,1.967,0,39.99,98.0,1249.5,4.208,3.698,3.298,0.407,0.244,0.174,0.102,67.322,6.508,1.627,2,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,A,lru,3,240,0.0,0,25.14,122.25,1558.7,5.249,4.613,4.114,0.507,0.304,0.217,0.127,83.981,8.118,2.03,3,regime A cold; plain LRU (current dee host semantics; validated +-1 vs fill-live)
+vram_gpu0,A,engine_priority_lru,3,240,0.0,0,11.21,145.0,1848.8,6.226,5.471,4.88,0.602,0.361,0.258,0.15,99.609,9.629,2.407,3,regime A cold; production VRAM score (documented artifact)
+vram_gpu0,A,arc,3,240,0.0,0,21.58,128.06,1632.8,5.498,4.832,4.31,0.532,0.319,0.228,0.133,87.974,8.504,2.126,3,regime A cold
+vram_gpu0,A,lfu,3,240,0.0,0,29.32,115.44,1471.8,4.956,4.355,3.885,0.479,0.287,0.205,0.12,79.301,7.666,1.916,3,regime A cold
+vram_gpu0,A,freq_x_recency,3,240,0.0,0,28.55,116.69,1487.8,5.01,4.403,3.927,0.484,0.291,0.208,0.121,80.16,7.749,1.937,3,regime A cold
+vram_gpu0,A,layer_lru,3,240,0.0,0,4.71,155.62,1984.2,6.682,5.872,5.237,0.646,0.388,0.277,0.161,106.908,10.334,2.584,3,regime A cold; per-layer uniform budgets
+vram_gpu0,A,cost_aware,3,240,0.0,0,25.14,122.25,1558.7,5.249,4.613,4.114,0.507,0.304,0.217,0.127,83.981,8.118,2.03,3,regime A cold; provably == lru (uniform record size)
+vram_gpu0,A,belady_cold,3,240,0.0,0,47.15,86.31,1100.5,3.706,3.257,2.905,0.358,0.215,0.154,0.09,59.293,5.732,1.433,3,regime A cold; offline MIN = strict upper bound for A and B
+vram_gpu0,B,freq_lru_warmup_pf0.5,3,240,0.0,120,3.56,165.0,2103.8,7.084,6.226,5.553,0.685,0.411,0.293,0.171,113.349,10.957,2.739,3,"regime B online; pin from step-0 prefill counts (tie-broken order), repopulation charged"
+vram_gpu0,B,freq_lru_warmup_s4_pf0.5,3,240,0.0,14,26.56,120.81,1540.4,5.187,4.558,4.066,0.501,0.301,0.215,0.125,82.994,8.023,2.006,3,"regime B online; pin from first 4 forwards counts, repopulation charged"
+vram_gpu0,C,static_freq_prewarm,3,240,2.988,0,49.02,83.25,1061.4,3.574,3.141,2.801,0.346,0.207,0.148,0.086,57.19,5.528,1.382,3,"regime C PREWARMED (labeled); top-N resident at t=0, rejects otherwise"
+vram_gpu0,C,static_layer_freq_prewarm,3,240,1.37,0,29.89,114.5,1459.9,4.916,4.32,3.853,0.475,0.285,0.204,0.119,78.657,7.604,1.901,3,regime C PREWARMED (labeled); per-layer top-B
+vram_gpu0,C,freq_lru_prewarm_pf0.25,3,240,0.747,0,30.96,112.75,1437.6,4.841,4.254,3.794,0.468,0.281,0.201,0.117,77.455,7.487,1.872,3,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.5,3,240,1.494,0,38.73,100.06,1275.8,4.296,3.775,3.367,0.415,0.249,0.178,0.104,68.739,6.645,1.661,3,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.75,3,240,2.241,0,42.86,93.31,1189.7,4.006,3.521,3.14,0.387,0.232,0.166,0.097,64.102,6.197,1.549,3,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.9,3,240,2.689,0,46.27,87.75,1118.8,3.768,3.311,2.953,0.364,0.219,0.156,0.091,60.281,5.827,1.457,3,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.99,3,240,2.951,0,48.68,83.81,1068.6,3.598,3.162,2.82,0.348,0.209,0.149,0.087,57.576,5.566,1.391,3,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,lru_prewarm_topN,3,240,2.988,0,25.68,121.38,1547.5,5.211,4.579,4.084,0.504,0.302,0.216,0.126,83.38,8.06,2.015,3,regime C PREWARMED (labeled); control: LRU given same top-N prewarm
+vram_gpu0,C,belady_same_state_prewarm,3,240,2.988,0,53.96,75.19,958.6,3.228,2.837,2.53,0.312,0.187,0.134,0.078,51.651,4.993,1.248,3,regime C bound; MIN given the same top-slots prewarm
+vram_gpu0,C,belady_pin_same_state_pf0.25,3,240,0.747,0,49.41,82.62,1053.5,3.548,3.118,2.781,0.343,0.206,0.147,0.086,56.76,5.487,1.372,3,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.5,3,240,1.494,0,51.28,79.56,1014.4,3.416,3.002,2.677,0.33,0.198,0.142,0.083,54.656,5.283,1.321,3,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.75,3,240,2.241,0,52.12,78.19,996.9,3.357,2.95,2.631,0.325,0.195,0.139,0.081,53.712,5.192,1.298,3,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.9,3,240,2.689,0,51.74,78.81,1004.9,3.384,2.974,2.652,0.327,0.196,0.14,0.082,54.141,5.234,1.308,3,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.99,3,240,2.951,0,49.56,82.38,1050.3,3.537,3.108,2.772,0.342,0.205,0.147,0.085,56.588,5.47,1.368,3,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,A,lru,3.5,281,0.0,0,26.02,120.81,1540.4,5.187,4.558,4.066,0.501,0.301,0.215,0.125,82.994,8.023,2.006,3.5,regime A cold; plain LRU (current dee host semantics; validated +-1 vs fill-live)
+vram_gpu0,A,engine_priority_lru,3.5,281,0.0,0,12.59,142.75,1820.1,6.129,5.386,4.804,0.592,0.355,0.254,0.148,98.064,9.479,2.37,3.5,regime A cold; production VRAM score (documented artifact)
+vram_gpu0,A,arc,3.5,281,0.0,0,23.8,124.44,1586.6,5.343,4.695,4.188,0.516,0.31,0.221,0.129,85.484,8.263,2.066,3.5,regime A cold
+vram_gpu0,A,lfu,3.5,281,0.0,0,31.53,111.81,1425.6,4.801,4.219,3.763,0.464,0.278,0.199,0.116,76.811,7.425,1.856,3.5,regime A cold
+vram_gpu0,A,freq_x_recency,3.5,281,0.0,0,31.8,111.38,1420.0,4.782,4.202,3.748,0.462,0.277,0.198,0.116,76.51,7.396,1.849,3.5,regime A cold
+vram_gpu0,A,layer_lru,3.5,281,0.0,0,13.82,140.75,1794.6,6.043,5.311,4.737,0.584,0.351,0.25,0.146,96.69,9.347,2.337,3.5,regime A cold; per-layer uniform budgets
+vram_gpu0,A,cost_aware,3.5,281,0.0,0,26.02,120.81,1540.4,5.187,4.558,4.066,0.501,0.301,0.215,0.125,82.994,8.023,2.006,3.5,regime A cold; provably == lru (uniform record size)
+vram_gpu0,A,belady_cold,3.5,281,0.0,0,48.72,83.75,1067.8,3.596,3.16,2.818,0.348,0.209,0.149,0.087,57.533,5.562,1.39,3.5,regime A cold; offline MIN = strict upper bound for A and B
+vram_gpu0,B,freq_lru_warmup_pf0.5,3.5,281,0.0,140,21.47,137.0,1746.8,5.882,5.169,4.61,0.569,0.341,0.244,0.142,94.114,9.098,2.274,3.5,"regime B online; pin from step-0 prefill counts (tie-broken order), repopulation charged"
+vram_gpu0,B,freq_lru_warmup_s4_pf0.5,3.5,281,0.0,9,28.4,117.5,1498.1,5.045,4.433,3.954,0.488,0.293,0.209,0.122,80.718,7.803,1.951,3.5,"regime B online; pin from first 4 forwards counts, repopulation charged"
+vram_gpu0,C,static_freq_prewarm,3.5,281,3.499,0,52.89,76.94,981.0,3.303,2.903,2.589,0.319,0.192,0.137,0.08,52.853,5.109,1.277,3.5,"regime C PREWARMED (labeled); top-N resident at t=0, rejects otherwise"
+vram_gpu0,C,static_layer_freq_prewarm,3.5,281,1.644,0,33.68,108.31,1381.0,4.65,4.087,3.645,0.45,0.27,0.193,0.112,74.406,7.193,1.798,3.5,regime C PREWARMED (labeled); per-layer top-B
+vram_gpu0,C,freq_lru_prewarm_pf0.25,3.5,281,0.872,0,34.56,106.88,1362.7,4.589,4.033,3.597,0.444,0.266,0.19,0.111,73.419,7.097,1.774,3.5,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.5,3.5,281,1.743,0,42.1,94.56,1205.7,4.06,3.568,3.182,0.392,0.235,0.168,0.098,64.961,6.28,1.57,3.5,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.75,3.5,281,2.615,0,47.84,85.19,1086.1,3.657,3.214,2.867,0.354,0.212,0.152,0.088,58.521,5.657,1.414,3.5,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.9,3.5,281,3.138,0,50.4,81.0,1032.8,3.478,3.056,2.726,0.336,0.202,0.144,0.084,55.644,5.379,1.345,3.5,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.99,3.5,281,3.461,0,52.66,77.31,985.7,3.319,2.917,2.602,0.321,0.193,0.138,0.08,53.111,5.134,1.284,3.5,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,lru_prewarm_topN,3.5,281,3.499,0,27.59,118.25,1507.7,5.077,4.462,3.979,0.491,0.294,0.21,0.123,81.233,7.853,1.963,3.5,regime C PREWARMED (labeled); control: LRU given same top-N prewarm
+vram_gpu0,C,belady_same_state_prewarm,3.5,281,3.499,0,57.25,69.81,890.1,2.997,2.634,2.349,0.29,0.174,0.124,0.072,47.958,4.636,1.159,3.5,regime C bound; MIN given the same top-slots prewarm
+vram_gpu0,C,belady_pin_same_state_pf0.25,3.5,281,0.872,0,51.36,79.44,1012.8,3.411,2.997,2.673,0.33,0.198,0.141,0.082,54.57,5.275,1.319,3.5,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.5,3.5,281,1.743,0,53.92,75.25,959.4,3.231,2.839,2.532,0.312,0.187,0.134,0.078,51.694,4.997,1.249,3.5,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.75,3.5,281,2.615,0,55.8,72.19,920.4,3.099,2.724,2.429,0.3,0.18,0.128,0.075,49.59,4.794,1.198,3.5,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.9,3.5,281,3.138,0,55.34,72.94,930.0,3.132,2.752,2.455,0.303,0.182,0.13,0.076,50.105,4.844,1.211,3.5,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.99,3.5,281,3.461,0,53.43,76.06,969.8,3.266,2.87,2.56,0.316,0.189,0.135,0.079,52.252,5.051,1.263,3.5,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,A,lru,4,321,0.0,0,29.85,114.56,1460.7,4.919,4.323,3.855,0.475,0.285,0.204,0.119,78.7,7.608,1.902,4,regime A cold; plain LRU (current dee host semantics; validated +-1 vs fill-live)
+vram_gpu0,A,engine_priority_lru,4,321,0.0,0,13.7,140.94,1797.0,6.051,5.318,4.743,0.585,0.351,0.251,0.146,96.819,9.359,2.34,4,regime A cold; production VRAM score (documented artifact)
+vram_gpu0,A,arc,4,321,0.0,0,27.71,118.06,1505.3,5.069,4.455,3.973,0.49,0.294,0.21,0.123,81.104,7.84,1.96,4,regime A cold
+vram_gpu0,A,lfu,4,321,0.0,0,33.64,108.38,1381.8,4.653,4.089,3.647,0.45,0.27,0.193,0.112,74.449,7.197,1.799,4,regime A cold
+vram_gpu0,A,freq_x_recency,4,321,0.0,0,35.02,106.12,1353.1,4.557,4.004,3.571,0.44,0.264,0.189,0.11,72.904,7.047,1.762,4,regime A cold
+vram_gpu0,A,layer_lru,4,321,0.0,0,17.95,134.0,1708.5,5.753,5.056,4.509,0.556,0.334,0.238,0.139,92.053,8.898,2.225,4,regime A cold; per-layer uniform budgets
+vram_gpu0,A,cost_aware,4,321,0.0,0,29.85,114.56,1460.7,4.919,4.323,3.855,0.475,0.285,0.204,0.119,78.7,7.608,1.902,4,regime A cold; provably == lru (uniform record size)
+vram_gpu0,A,belady_cold,4,321,0.0,0,50.25,81.25,1035.9,3.488,3.066,2.734,0.337,0.202,0.145,0.084,55.816,5.396,1.349,4,regime A cold; offline MIN = strict upper bound for A and B
+vram_gpu0,B,freq_lru_warmup_pf0.5,4,321,0.0,160,22.62,136.38,1738.8,5.855,5.146,4.589,0.566,0.34,0.243,0.142,93.684,9.056,2.264,4,"regime B online; pin from step-0 prefill counts (tie-broken order), repopulation charged"
+vram_gpu0,B,freq_lru_warmup_s4_pf0.5,4,321,0.0,0,29.93,114.44,1459.1,4.913,4.318,3.851,0.475,0.285,0.204,0.119,78.614,7.599,1.9,4,"regime B online; pin from first 4 forwards counts, repopulation charged"
+vram_gpu0,C,static_freq_prewarm,4,321,3.997,0,55.95,71.94,917.2,3.089,2.714,2.421,0.299,0.179,0.128,0.075,49.418,4.777,1.194,4,"regime C PREWARMED (labeled); top-N resident at t=0, rejects otherwise"
+vram_gpu0,C,static_layer_freq_prewarm,4,321,1.917,0,37.35,102.31,1304.5,4.393,3.86,3.443,0.425,0.255,0.182,0.106,70.285,6.794,1.699,4,regime C PREWARMED (labeled); per-layer top-B
+vram_gpu0,C,freq_lru_prewarm_pf0.25,4,321,0.996,0,37.43,102.19,1302.9,4.387,3.856,3.439,0.424,0.254,0.182,0.106,70.199,6.786,1.696,4,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.5,4,321,1.992,0,45.08,89.69,1143.5,3.851,3.384,3.018,0.372,0.223,0.16,0.093,61.612,5.956,1.489,4,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.75,4,321,2.988,0,51.21,79.69,1016.0,3.421,3.007,2.682,0.331,0.198,0.142,0.083,54.742,5.292,1.323,4,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.9,4,321,3.586,0,53.46,76.0,969.0,3.263,2.868,2.558,0.315,0.189,0.135,0.079,52.209,5.047,1.262,4,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.99,4,321,3.947,0,55.64,72.44,923.6,3.11,2.733,2.438,0.301,0.18,0.129,0.075,49.762,4.81,1.203,4,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,lru_prewarm_topN,4,321,3.997,0,32.38,110.44,1408.1,4.742,4.167,3.716,0.458,0.275,0.196,0.115,75.866,7.334,1.833,4,regime C PREWARMED (labeled); control: LRU given same top-N prewarm
+vram_gpu0,C,belady_same_state_prewarm,4,321,3.997,0,60.31,64.81,826.4,2.783,2.446,2.181,0.269,0.161,0.115,0.067,44.524,4.304,1.076,4,regime C bound; MIN given the same top-slots prewarm
+vram_gpu0,C,belady_pin_same_state_pf0.25,4,321,0.996,0,53.27,76.31,973.0,3.277,2.879,2.568,0.317,0.19,0.136,0.079,52.424,5.068,1.267,4,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.5,4,321,1.992,0,56.07,71.75,914.8,3.081,2.707,2.414,0.298,0.179,0.128,0.074,49.289,4.765,1.191,4,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.75,4,321,2.988,0,57.94,68.69,875.8,2.949,2.592,2.312,0.285,0.171,0.122,0.071,47.186,4.561,1.14,4,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.9,4,321,3.586,0,58.09,68.44,872.6,2.938,2.582,2.303,0.284,0.17,0.122,0.071,47.014,4.545,1.136,4,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.99,4,321,3.947,0,56.75,70.62,900.5,3.032,2.665,2.377,0.293,0.176,0.126,0.073,48.517,4.69,1.172,4,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,A,lru,6,481,0.0,0,41.48,95.56,1218.4,4.103,3.606,3.216,0.397,0.238,0.17,0.099,65.648,6.346,1.586,6,regime A cold; plain LRU (current dee host semantics; validated +-1 vs fill-live)
+vram_gpu0,A,engine_priority_lru,6,481,0.0,0,21.78,127.75,1628.8,5.485,4.82,4.299,0.53,0.318,0.227,0.133,87.759,8.483,2.121,6,regime A cold; production VRAM score (documented artifact)
+vram_gpu0,A,arc,6,481,0.0,0,37.66,101.81,1298.1,4.371,3.841,3.426,0.423,0.254,0.181,0.106,69.941,6.761,1.69,6,regime A cold
+vram_gpu0,A,lfu,6,481,0.0,0,41.48,95.56,1218.4,4.103,3.606,3.216,0.397,0.238,0.17,0.099,65.648,6.346,1.586,6,regime A cold
+vram_gpu0,A,freq_x_recency,6,481,0.0,0,41.83,95.0,1211.2,4.079,3.584,3.197,0.394,0.237,0.169,0.099,65.261,6.309,1.577,6,regime A cold
+vram_gpu0,A,layer_lru,6,481,0.0,0,24.11,123.94,1580.2,5.321,4.676,4.171,0.514,0.309,0.22,0.129,85.14,8.23,2.058,6,regime A cold; per-layer uniform budgets
+vram_gpu0,A,cost_aware,6,481,0.0,0,41.48,95.56,1218.4,4.103,3.606,3.216,0.397,0.238,0.17,0.099,65.648,6.346,1.586,6,regime A cold; provably == lru (uniform record size)
+vram_gpu0,A,belady_cold,6,481,0.0,0,50.36,81.06,1033.5,3.48,3.058,2.728,0.336,0.202,0.144,0.084,55.687,5.383,1.346,6,regime A cold; offline MIN = strict upper bound for A and B
+vram_gpu0,B,freq_lru_warmup_pf0.5,6,481,0.0,152,31.92,120.69,1538.8,5.182,4.554,4.061,0.501,0.301,0.215,0.125,82.908,8.014,2.004,6,"regime B online; pin from step-0 prefill counts (tie-broken order), repopulation charged"
+vram_gpu0,B,freq_lru_warmup_s4_pf0.5,6,481,0.0,40,40.41,99.81,1272.6,4.285,3.766,3.359,0.414,0.249,0.178,0.104,68.567,6.628,1.657,6,"regime B online; pin from first 4 forwards counts, repopulation charged"
+vram_gpu0,C,static_freq_prewarm,6,481,5.989,0,68.2,51.94,662.2,2.23,1.96,1.748,0.216,0.129,0.092,0.054,35.679,3.449,0.862,6,"regime C PREWARMED (labeled); top-N resident at t=0, rejects otherwise"
+vram_gpu0,C,static_layer_freq_prewarm,6,481,3.013,0,48.37,84.31,1075.0,3.62,3.181,2.837,0.35,0.21,0.15,0.087,57.919,5.599,1.4,6,regime C PREWARMED (labeled); per-layer top-B
+vram_gpu0,C,freq_lru_prewarm_pf0.25,6,481,1.494,0,47.26,86.12,1098.1,3.698,3.25,2.898,0.357,0.214,0.153,0.089,59.165,5.719,1.43,6,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.5,6,481,2.988,0,54.46,74.38,948.3,3.193,2.806,2.503,0.309,0.185,0.132,0.077,51.093,4.939,1.235,6,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.75,6,481,4.482,0,61.39,63.06,804.0,2.707,2.379,2.122,0.262,0.157,0.112,0.065,43.321,4.188,1.047,6,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.9,6,481,5.379,0,64.98,57.19,729.1,2.455,2.158,1.924,0.237,0.142,0.102,0.059,39.286,3.798,0.949,6,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.99,6,481,5.927,0,67.81,52.56,670.2,2.257,1.983,1.769,0.218,0.131,0.093,0.055,36.108,3.49,0.873,6,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,lru_prewarm_topN,6,481,5.989,0,47.76,85.31,1087.7,3.663,3.219,2.871,0.354,0.212,0.152,0.089,58.606,5.665,1.416,6,regime C PREWARMED (labeled); control: LRU given same top-N prewarm
+vram_gpu0,C,belady_same_state_prewarm,6,481,5.989,0,68.73,51.06,651.0,2.192,1.926,1.718,0.212,0.127,0.091,0.053,35.078,3.391,0.848,6,regime C bound; MIN given the same top-slots prewarm
+vram_gpu0,C,belady_pin_same_state_pf0.25,6,481,1.494,0,54.96,73.56,937.9,3.158,2.776,2.475,0.305,0.183,0.131,0.076,50.535,4.885,1.221,6,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.5,6,481,2.988,0,59.55,66.06,842.3,2.836,2.493,2.223,0.274,0.165,0.118,0.069,45.382,4.387,1.097,6,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.75,6,481,4.482,0,64.14,58.56,746.7,2.514,2.21,1.971,0.243,0.146,0.104,0.061,40.23,3.889,0.972,6,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.9,6,481,5.379,0,66.9,54.06,689.3,2.321,2.04,1.819,0.224,0.135,0.096,0.056,37.139,3.59,0.898,6,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.99,6,481,5.927,0,68.24,51.88,661.4,2.227,1.957,1.746,0.215,0.129,0.092,0.054,35.636,3.445,0.861,6,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,A,lru,8,642,0.0,0,45.62,88.81,1132.4,3.813,3.351,2.989,0.369,0.221,0.158,0.092,61.011,5.898,1.474,8,regime A cold; plain LRU (current dee host semantics; validated +-1 vs fill-live)
+vram_gpu0,A,engine_priority_lru,8,642,0.0,0,31.38,112.06,1428.8,4.811,4.228,3.771,0.465,0.279,0.199,0.116,76.983,7.442,1.86,8,regime A cold; production VRAM score (documented artifact)
+vram_gpu0,A,arc,8,642,0.0,0,45.39,89.19,1137.1,3.829,3.365,3.001,0.37,0.222,0.159,0.093,61.268,5.923,1.481,8,regime A cold
+vram_gpu0,A,lfu,8,642,0.0,0,45.73,88.62,1130.0,3.805,3.344,2.982,0.368,0.221,0.158,0.092,60.882,5.885,1.471,8,regime A cold
+vram_gpu0,A,freq_x_recency,8,642,0.0,0,45.69,88.69,1130.8,3.808,3.346,2.985,0.368,0.221,0.158,0.092,60.925,5.889,1.472,8,regime A cold
+vram_gpu0,A,layer_lru,8,642,0.0,0,30.62,113.31,1444.7,4.865,4.275,3.813,0.47,0.282,0.202,0.118,77.841,7.525,1.881,8,regime A cold; per-layer uniform budgets
+vram_gpu0,A,cost_aware,8,642,0.0,0,45.62,88.81,1132.4,3.813,3.351,2.989,0.369,0.221,0.158,0.092,61.011,5.898,1.474,8,regime A cold; provably == lru (uniform record size)
+vram_gpu0,A,belady_cold,8,642,0.0,0,50.36,81.06,1033.5,3.48,3.058,2.728,0.336,0.202,0.144,0.084,55.687,5.383,1.346,8,regime A cold; offline MIN = strict upper bound for A and B
+vram_gpu0,B,freq_lru_warmup_pf0.5,8,642,0.0,0,42.33,94.19,1200.9,4.044,3.554,3.17,0.391,0.235,0.168,0.098,64.703,6.255,1.564,8,"regime B online; pin from step-0 prefill counts (tie-broken order), repopulation charged"
+vram_gpu0,B,freq_lru_warmup_s4_pf0.5,8,642,0.0,121,45.77,96.12,1225.6,4.127,3.627,3.235,0.399,0.239,0.171,0.1,66.034,6.383,1.596,8,"regime B online; pin from first 4 forwards counts, repopulation charged"
+vram_gpu0,C,static_freq_prewarm,8,642,7.994,0,74.93,40.94,522.0,1.758,1.545,1.378,0.17,0.102,0.073,0.042,28.122,2.719,0.68,8,"regime C PREWARMED (labeled); top-N resident at t=0, rejects otherwise"
+vram_gpu0,C,static_layer_freq_prewarm,8,642,3.835,0,54.73,73.94,942.7,3.175,2.79,2.488,0.307,0.184,0.132,0.077,50.792,4.91,1.227,8,regime C PREWARMED (labeled); per-layer top-B
+vram_gpu0,C,freq_lru_prewarm_pf0.25,8,642,1.992,0,52.05,78.31,998.5,3.362,2.955,2.635,0.325,0.195,0.139,0.081,53.798,5.2,1.3,8,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.5,8,642,3.997,0,60.89,63.88,814.4,2.742,2.41,2.149,0.265,0.159,0.114,0.066,43.88,4.242,1.06,8,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.75,8,642,5.989,0,68.77,51.0,650.2,2.19,1.924,1.716,0.212,0.127,0.091,0.053,35.035,3.387,0.847,8,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.9,8,642,7.184,0,72.45,45.0,573.8,1.932,1.698,1.514,0.187,0.112,0.08,0.047,30.913,2.988,0.747,8,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,freq_lru_prewarm_pf0.99,8,642,7.906,0,74.67,41.38,527.5,1.776,1.561,1.392,0.172,0.103,0.074,0.043,28.423,2.748,0.687,8,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu0,C,lru_prewarm_topN,8,642,7.994,0,59.97,65.38,833.5,2.807,2.467,2.2,0.271,0.163,0.116,0.068,44.91,4.341,1.085,8,regime C PREWARMED (labeled); control: LRU given same top-N prewarm
+vram_gpu0,C,belady_same_state_prewarm,8,642,7.994,0,74.93,40.94,522.0,1.758,1.545,1.378,0.17,0.102,0.073,0.042,28.122,2.719,0.68,8,regime C bound; MIN given the same top-slots prewarm
+vram_gpu0,C,belady_pin_same_state_pf0.25,8,642,1.992,0,56.49,71.06,906.0,3.051,2.681,2.391,0.295,0.177,0.126,0.074,48.817,4.719,1.18,8,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.5,8,642,3.997,0,62.65,61.0,777.8,2.619,2.302,2.053,0.253,0.152,0.109,0.063,41.905,4.051,1.013,8,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.75,8,642,5.989,0,68.77,51.0,650.2,2.19,1.924,1.716,0.212,0.127,0.091,0.053,35.035,3.387,0.847,8,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.9,8,642,7.184,0,72.45,45.0,573.8,1.932,1.698,1.514,0.187,0.112,0.08,0.047,30.913,2.988,0.747,8,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu0,C,belady_pin_same_state_pf0.99,8,642,7.906,0,74.67,41.38,527.5,1.776,1.561,1.392,0.172,0.103,0.074,0.043,28.423,2.748,0.687,8,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,A,lru,1,80,0.0,0,0.0,155.38,1981.0,6.671,5.862,5.229,0.645,0.387,0.276,0.161,106.737,10.318,2.579,1,regime A cold; plain LRU (current dee host semantics; validated +-1 vs fill-live)
+vram_gpu1,A,engine_priority_lru,1,80,0.0,0,5.71,146.5,1867.9,6.29,5.528,4.93,0.608,0.365,0.261,0.152,100.64,9.729,2.432,1,regime A cold; production VRAM score (documented artifact)
+vram_gpu1,A,arc,1,80,0.0,0,0.0,155.38,1981.0,6.671,5.862,5.229,0.645,0.387,0.276,0.161,106.737,10.318,2.579,1,regime A cold
+vram_gpu1,A,lfu,1,80,0.0,0,21.2,122.44,1561.1,5.257,4.62,4.12,0.508,0.305,0.218,0.127,84.11,8.131,2.033,1,regime A cold
+vram_gpu1,A,freq_x_recency,1,80,0.0,0,21.04,122.69,1564.3,5.268,4.629,4.129,0.509,0.306,0.218,0.127,84.282,8.147,2.037,1,regime A cold
+vram_gpu1,A,layer_lru,1,80,0.0,0,0.0,155.38,1981.0,6.671,5.862,5.229,0.645,0.387,0.276,0.161,106.737,10.318,2.579,1,regime A cold; per-layer uniform budgets
+vram_gpu1,A,cost_aware,1,80,0.0,0,0.0,155.38,1981.0,6.671,5.862,5.229,0.645,0.387,0.276,0.161,106.737,10.318,2.579,1,regime A cold; provably == lru (uniform record size)
+vram_gpu1,A,belady_cold,1,80,0.0,0,39.3,94.31,1202.5,4.049,3.559,3.174,0.391,0.235,0.168,0.098,64.789,6.263,1.566,1,regime A cold; offline MIN = strict upper bound for A and B
+vram_gpu1,B,freq_lru_warmup_pf0.5,1,80,0.0,40,2.86,153.44,1956.3,6.588,5.789,5.163,0.637,0.382,0.273,0.159,105.406,10.189,2.547,1,"regime B online; pin from step-0 prefill counts (tie-broken order), repopulation charged"
+vram_gpu1,B,freq_lru_warmup_s4_pf0.5,1,80,0.0,22,10.46,140.5,1791.4,6.032,5.301,4.728,0.583,0.35,0.25,0.146,96.518,9.33,2.333,1,"regime B online; pin from first 4 forwards counts, repopulation charged"
+vram_gpu1,C,static_freq_prewarm,1,80,0.996,0,33.47,103.38,1318.0,4.438,3.9,3.479,0.429,0.257,0.184,0.107,71.015,6.865,1.716,1,"regime C PREWARMED (labeled); top-N resident at t=0, rejects otherwise"
+vram_gpu1,C,static_layer_freq_prewarm,1,80,0.261,0,10.98,138.31,1763.5,5.939,5.219,4.655,0.574,0.344,0.246,0.144,95.015,9.185,2.296,1,regime C PREWARMED (labeled); per-layer top-B
+vram_gpu1,C,freq_lru_prewarm_pf0.25,1,80,0.249,0,11.63,137.31,1750.7,5.895,5.181,4.621,0.57,0.342,0.244,0.142,94.328,9.118,2.28,1,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.5,1,80,0.498,0,20.56,123.44,1573.8,5.3,4.657,4.154,0.512,0.307,0.22,0.128,84.797,8.197,2.049,1,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.75,1,80,0.747,0,27.55,112.56,1435.2,4.833,4.247,3.788,0.467,0.28,0.2,0.117,77.326,7.475,1.869,1,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.9,1,80,0.896,0,31.21,106.88,1362.7,4.589,4.033,3.597,0.444,0.266,0.19,0.111,73.419,7.097,1.774,1,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.99,1,80,0.984,0,33.19,103.81,1323.6,4.457,3.917,3.493,0.431,0.259,0.185,0.108,71.315,6.894,1.723,1,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,lru_prewarm_topN,1,80,0.996,0,0.16,155.12,1977.8,6.66,5.853,5.22,0.644,0.386,0.276,0.161,106.565,10.301,2.575,1,regime C PREWARMED (labeled); control: LRU given same top-N prewarm
+vram_gpu1,C,belady_same_state_prewarm,1,80,0.996,0,41.47,90.94,1159.5,3.905,3.431,3.06,0.377,0.226,0.162,0.094,62.471,6.039,1.51,1,regime C bound; MIN given the same top-slots prewarm
+vram_gpu1,C,belady_pin_same_state_pf0.25,1,80,0.249,0,40.06,93.12,1187.3,3.998,3.514,3.134,0.386,0.232,0.166,0.097,63.973,6.184,1.546,1,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.5,1,80,0.498,0,40.06,93.12,1187.3,3.998,3.514,3.134,0.386,0.232,0.166,0.097,63.973,6.184,1.546,1,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.75,1,80,0.747,0,37.85,96.56,1231.2,4.146,3.643,3.25,0.401,0.24,0.172,0.1,66.335,6.412,1.603,1,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.9,1,80,0.896,0,35.16,100.75,1284.6,4.326,3.801,3.391,0.418,0.251,0.179,0.105,69.211,6.69,1.673,1,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.99,1,80,0.984,0,33.19,103.81,1323.6,4.457,3.917,3.493,0.431,0.259,0.185,0.108,71.315,6.894,1.723,1,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,A,lru,2,160,0.0,0,32.94,104.19,1328.4,4.473,3.931,3.506,0.432,0.259,0.185,0.108,71.573,6.919,1.73,2,regime A cold; plain LRU (current dee host semantics; validated +-1 vs fill-live)
+vram_gpu1,A,engine_priority_lru,2,160,0.0,0,10.14,139.62,1780.2,5.995,5.268,4.699,0.579,0.348,0.248,0.145,95.917,9.272,2.318,2,regime A cold; production VRAM score (documented artifact)
+vram_gpu1,A,arc,2,160,0.0,0,25.14,116.31,1483.0,4.994,4.389,3.914,0.483,0.29,0.207,0.121,79.902,7.724,1.931,2,regime A cold
+vram_gpu1,A,lfu,2,160,0.0,0,32.58,104.75,1335.6,4.498,3.952,3.525,0.435,0.261,0.186,0.109,71.959,6.956,1.739,2,regime A cold
+vram_gpu1,A,freq_x_recency,2,160,0.0,0,33.59,103.19,1315.6,4.43,3.893,3.472,0.428,0.257,0.184,0.107,70.886,6.852,1.713,2,regime A cold
+vram_gpu1,A,layer_lru,2,160,0.0,0,0.24,155.0,1976.2,6.655,5.848,5.216,0.643,0.386,0.276,0.161,106.479,10.293,2.573,2,regime A cold; per-layer uniform budgets
+vram_gpu1,A,cost_aware,2,160,0.0,0,32.94,104.19,1328.4,4.473,3.931,3.506,0.432,0.259,0.185,0.108,71.573,6.919,1.73,2,regime A cold; provably == lru (uniform record size)
+vram_gpu1,A,belady_cold,2,160,0.0,0,51.93,74.69,952.3,3.207,2.818,2.513,0.31,0.186,0.133,0.077,51.307,4.96,1.24,2,regime A cold; offline MIN = strict upper bound for A and B
+vram_gpu1,B,freq_lru_warmup_pf0.5,2,160,0.0,80,5.03,152.56,1945.2,6.55,5.756,5.134,0.633,0.38,0.271,0.158,104.805,10.131,2.533,2,"regime B online; pin from step-0 prefill counts (tie-broken order), repopulation charged"
+vram_gpu1,B,freq_lru_warmup_s4_pf0.5,2,160,0.0,14,20.92,123.75,1577.8,5.313,4.669,4.164,0.514,0.308,0.22,0.128,85.011,8.218,2.054,2,"regime B online; pin from first 4 forwards counts, repopulation charged"
+vram_gpu1,C,static_freq_prewarm,2,160,1.992,0,48.39,80.19,1022.4,3.443,3.026,2.698,0.333,0.2,0.143,0.083,55.086,5.325,1.331,2,"regime C PREWARMED (labeled); top-N resident at t=0, rejects otherwise"
+vram_gpu1,C,static_layer_freq_prewarm,2,160,0.784,0,27.03,113.38,1445.5,4.868,4.278,3.815,0.471,0.282,0.202,0.118,77.884,7.529,1.882,2,regime C PREWARMED (labeled); per-layer top-B
+vram_gpu1,C,freq_lru_prewarm_pf0.25,2,160,0.498,0,38.37,95.75,1220.8,4.111,3.613,3.222,0.397,0.238,0.17,0.099,65.777,6.358,1.59,2,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.5,2,160,0.996,0,40.83,91.94,1172.2,3.947,3.469,3.094,0.382,0.229,0.164,0.095,63.157,6.105,1.526,2,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.75,2,160,1.494,0,42.8,88.88,1133.2,3.816,3.353,2.991,0.369,0.221,0.158,0.092,61.054,5.902,1.475,2,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.9,2,160,1.793,0,45.82,84.19,1073.4,3.615,3.176,2.833,0.349,0.21,0.15,0.087,57.834,5.591,1.398,2,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.99,2,160,1.967,0,48.07,80.69,1028.8,3.464,3.045,2.715,0.335,0.201,0.144,0.084,55.429,5.358,1.34,2,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,lru_prewarm_topN,2,160,1.992,0,33.71,103.0,1313.2,4.422,3.886,3.466,0.427,0.256,0.183,0.107,70.757,6.84,1.71,2,regime C PREWARMED (labeled); control: LRU given same top-N prewarm
+vram_gpu1,C,belady_same_state_prewarm,2,160,1.992,0,55.55,69.06,880.5,2.965,2.606,2.324,0.287,0.172,0.123,0.072,47.443,4.586,1.147,2,regime C bound; MIN given the same top-slots prewarm
+vram_gpu1,C,belady_pin_same_state_pf0.25,2,160,0.498,0,53.34,72.5,924.4,3.113,2.736,2.44,0.301,0.181,0.129,0.075,49.805,4.814,1.204,2,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.5,2,160,0.996,0,54.02,71.44,910.8,3.067,2.695,2.404,0.296,0.178,0.127,0.074,49.075,4.744,1.186,2,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.75,2,160,1.494,0,53.9,71.62,913.2,3.075,2.702,2.41,0.297,0.178,0.127,0.074,49.204,4.756,1.189,2,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.9,2,160,1.793,0,52.33,74.06,944.3,3.18,2.794,2.492,0.307,0.184,0.132,0.077,50.878,4.918,1.23,2,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.99,2,160,1.967,0,48.59,79.88,1018.4,3.429,3.014,2.688,0.332,0.199,0.142,0.083,54.871,5.304,1.326,2,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,A,lru,3,240,0.0,0,40.23,92.88,1184.2,3.988,3.504,3.126,0.385,0.231,0.165,0.096,63.802,6.167,1.542,3,regime A cold; plain LRU (current dee host semantics; validated +-1 vs fill-live)
+vram_gpu1,A,engine_priority_lru,3,240,0.0,0,12.43,136.06,1734.8,5.842,5.134,4.579,0.565,0.339,0.242,0.141,93.47,9.035,2.259,3,regime A cold; production VRAM score (documented artifact)
+vram_gpu1,A,arc,3,240,0.0,0,31.3,106.75,1361.1,4.583,4.028,3.592,0.443,0.266,0.19,0.111,73.333,7.089,1.772,3,regime A cold
+vram_gpu1,A,lfu,3,240,0.0,0,38.86,95.0,1211.2,4.079,3.584,3.197,0.394,0.237,0.169,0.099,65.261,6.309,1.577,3,regime A cold
+vram_gpu1,A,freq_x_recency,3,240,0.0,0,41.67,90.62,1155.5,3.891,3.419,3.05,0.376,0.226,0.161,0.094,62.256,6.018,1.505,3,regime A cold
+vram_gpu1,A,layer_lru,3,240,0.0,0,6.56,145.19,1851.1,6.233,5.478,4.886,0.603,0.362,0.258,0.151,99.738,9.641,2.41,3,regime A cold; per-layer uniform budgets
+vram_gpu1,A,cost_aware,3,240,0.0,0,40.23,92.88,1184.2,3.988,3.504,3.126,0.385,0.231,0.165,0.096,63.802,6.167,1.542,3,regime A cold; provably == lru (uniform record size)
+vram_gpu1,A,belady_cold,3,240,0.0,0,55.99,68.38,871.8,2.936,2.58,2.301,0.284,0.17,0.122,0.071,46.971,4.541,1.135,3,regime A cold; offline MIN = strict upper bound for A and B
+vram_gpu1,B,freq_lru_warmup_pf0.5,3,240,0.0,120,36.32,106.44,1357.1,4.57,4.016,3.582,0.442,0.265,0.189,0.11,73.118,7.068,1.767,3,"regime B online; pin from step-0 prefill counts (tie-broken order), repopulation charged"
+vram_gpu1,B,freq_lru_warmup_s4_pf0.5,3,240,0.0,22,38.82,96.44,1229.6,4.141,3.639,3.245,0.4,0.24,0.172,0.1,66.249,6.404,1.601,3,"regime B online; pin from first 4 forwards counts, repopulation charged"
+vram_gpu1,C,static_freq_prewarm,3,240,2.988,0,58.33,64.75,825.6,2.78,2.443,2.179,0.269,0.161,0.115,0.067,44.481,4.3,1.075,3,"regime C PREWARMED (labeled); top-N resident at t=0, rejects otherwise"
+vram_gpu1,C,static_layer_freq_prewarm,3,240,1.307,0,38.21,96.0,1224.0,4.122,3.622,3.231,0.398,0.239,0.171,0.1,65.948,6.375,1.594,3,regime C PREWARMED (labeled); per-layer top-B
+vram_gpu1,C,freq_lru_prewarm_pf0.25,3,240,0.747,0,46.3,83.44,1063.8,3.582,3.148,2.808,0.346,0.208,0.148,0.087,57.318,5.541,1.385,3,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.5,3,240,1.494,0,50.24,77.31,985.7,3.319,2.917,2.602,0.321,0.193,0.138,0.08,53.111,5.134,1.284,3,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.75,3,240,2.241,0,54.18,71.19,907.6,3.056,2.686,2.395,0.295,0.177,0.127,0.074,48.903,4.727,1.182,3,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.9,3,240,2.689,0,55.47,69.19,882.1,2.97,2.61,2.328,0.287,0.172,0.123,0.072,47.529,4.594,1.149,3,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.99,3,240,2.951,0,57.96,65.31,832.7,2.804,2.464,2.198,0.271,0.163,0.116,0.068,44.867,4.337,1.084,3,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,lru_prewarm_topN,3,240,2.988,0,41.79,90.44,1153.1,3.883,3.412,3.043,0.375,0.225,0.161,0.094,62.127,6.006,1.501,3,regime C PREWARMED (labeled); control: LRU given same top-N prewarm
+vram_gpu1,C,belady_same_state_prewarm,3,240,2.988,0,63.03,57.44,732.3,2.466,2.167,1.933,0.238,0.143,0.102,0.06,39.457,3.814,0.954,3,regime C bound; MIN given the same top-slots prewarm
+vram_gpu1,C,belady_pin_same_state_pf0.25,3,240,0.747,0,58.41,64.62,824.0,2.775,2.438,2.175,0.268,0.161,0.115,0.067,44.395,4.292,1.073,3,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.5,3,240,1.494,0,60.42,61.5,784.1,2.64,2.32,2.07,0.255,0.153,0.109,0.064,42.248,4.084,1.021,3,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.75,3,240,2.241,0,61.22,60.25,768.2,2.587,2.273,2.028,0.25,0.15,0.107,0.063,41.389,4.001,1.0,3,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.9,3,240,2.689,0,61.38,60.0,765.0,2.576,2.264,2.019,0.249,0.149,0.107,0.062,41.218,3.984,0.996,3,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.99,3,240,2.951,0,58.81,64.0,816.0,2.748,2.415,2.154,0.266,0.159,0.114,0.066,43.966,4.25,1.062,3,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,A,lru,3.5,281,0.0,0,42.52,89.31,1138.7,3.835,3.37,3.005,0.371,0.222,0.159,0.093,61.354,5.931,1.483,3.5,regime A cold; plain LRU (current dee host semantics; validated +-1 vs fill-live)
+vram_gpu1,A,engine_priority_lru,3.5,281,0.0,0,13.07,135.06,1722.0,5.799,5.096,4.545,0.561,0.336,0.24,0.14,92.783,8.969,2.242,3.5,regime A cold; production VRAM score (documented artifact)
+vram_gpu1,A,arc,3.5,281,0.0,0,32.82,104.38,1330.8,4.481,3.938,3.512,0.433,0.26,0.186,0.108,71.702,6.931,1.733,3.5,regime A cold
+vram_gpu1,A,lfu,3.5,281,0.0,0,41.71,90.56,1154.7,3.888,3.417,3.048,0.376,0.226,0.161,0.094,62.213,6.014,1.503,3.5,regime A cold
+vram_gpu1,A,freq_x_recency,3.5,281,0.0,0,44.69,85.94,1095.7,3.69,3.242,2.892,0.357,0.214,0.153,0.089,59.036,5.707,1.427,3.5,regime A cold
+vram_gpu1,A,layer_lru,3.5,281,0.0,0,25.74,115.38,1471.0,4.954,4.353,3.882,0.479,0.287,0.205,0.12,79.258,7.662,1.915,3.5,regime A cold; per-layer uniform budgets
+vram_gpu1,A,cost_aware,3.5,281,0.0,0,42.52,89.31,1138.7,3.835,3.37,3.005,0.371,0.222,0.159,0.093,61.354,5.931,1.483,3.5,regime A cold; provably == lru (uniform record size)
+vram_gpu1,A,belady_cold,3.5,281,0.0,0,57.08,66.69,850.3,2.863,2.516,2.244,0.277,0.166,0.119,0.069,45.812,4.428,1.107,3.5,regime A cold; offline MIN = strict upper bound for A and B
+vram_gpu1,B,freq_lru_warmup_pf0.5,3.5,281,0.0,140,37.49,105.88,1349.9,4.546,3.995,3.563,0.439,0.264,0.188,0.11,72.732,7.031,1.758,3.5,"regime B online; pin from step-0 prefill counts (tie-broken order), repopulation charged"
+vram_gpu1,B,freq_lru_warmup_s4_pf0.5,3.5,281,0.0,0,41.23,91.31,1164.2,3.92,3.445,3.073,0.379,0.227,0.162,0.095,62.728,6.064,1.516,3.5,"regime B online; pin from first 4 forwards counts, repopulation charged"
+vram_gpu1,C,static_freq_prewarm,3.5,281,3.499,0,62.03,59.0,752.2,2.533,2.226,1.985,0.245,0.147,0.105,0.061,40.531,3.918,0.979,3.5,"regime C PREWARMED (labeled); top-N resident at t=0, rejects otherwise"
+vram_gpu1,C,static_layer_freq_prewarm,3.5,281,1.569,0,42.52,89.31,1138.7,3.835,3.37,3.005,0.371,0.222,0.159,0.093,61.354,5.931,1.483,3.5,regime C PREWARMED (labeled); per-layer top-B
+vram_gpu1,C,freq_lru_prewarm_pf0.25,3.5,281,0.872,0,48.35,80.25,1023.2,3.446,3.028,2.701,0.333,0.2,0.143,0.083,55.129,5.329,1.332,3.5,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.5,3.5,281,1.743,0,54.22,71.12,906.8,3.054,2.683,2.393,0.295,0.177,0.127,0.074,48.86,4.723,1.181,3.5,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.75,3.5,281,2.615,0,57.8,65.56,835.9,2.815,2.474,2.206,0.272,0.163,0.117,0.068,45.039,4.354,1.088,3.5,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.9,3.5,281,3.138,0,60.14,61.94,789.7,2.659,2.337,2.084,0.257,0.154,0.11,0.064,42.549,4.113,1.028,3.5,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.99,3.5,281,3.461,0,61.79,59.38,757.0,2.549,2.24,1.998,0.246,0.148,0.106,0.062,40.788,3.943,0.986,3.5,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,lru_prewarm_topN,3.5,281,3.499,0,45.17,85.19,1086.1,3.657,3.214,2.867,0.354,0.212,0.152,0.088,58.521,5.657,1.414,3.5,regime C PREWARMED (labeled); control: LRU given same top-N prewarm
+vram_gpu1,C,belady_same_state_prewarm,3.5,281,3.499,0,65.93,52.94,675.0,2.273,1.998,1.782,0.22,0.132,0.094,0.055,36.366,3.515,0.879,3.5,regime C bound; MIN given the same top-slots prewarm
+vram_gpu1,C,belady_pin_same_state_pf0.25,3.5,281,0.872,0,59.9,62.31,794.5,2.675,2.351,2.097,0.259,0.155,0.111,0.065,42.806,4.138,1.034,3.5,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.5,3.5,281,1.743,0,62.71,57.94,738.7,2.488,2.186,1.95,0.24,0.144,0.103,0.06,39.801,3.847,0.962,3.5,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.75,3.5,281,2.615,0,64.64,54.94,700.5,2.359,2.073,1.849,0.228,0.137,0.098,0.057,37.74,3.648,0.912,3.5,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.9,3.5,281,3.138,0,64.08,55.81,711.6,2.396,2.106,1.878,0.232,0.139,0.099,0.058,38.341,3.706,0.927,3.5,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.99,3.5,281,3.461,0,62.51,58.25,742.7,2.501,2.198,1.96,0.242,0.145,0.104,0.06,40.015,3.868,0.967,3.5,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,A,lru,4,321,0.0,0,46.38,83.31,1062.2,3.577,3.143,2.804,0.346,0.207,0.148,0.086,57.232,5.532,1.383,4,regime A cold; plain LRU (current dee host semantics; validated +-1 vs fill-live)
+vram_gpu1,A,engine_priority_lru,4,321,0.0,0,14.12,133.44,1701.3,5.729,5.035,4.49,0.554,0.332,0.237,0.138,91.666,8.861,2.215,4,regime A cold; production VRAM score (documented artifact)
+vram_gpu1,A,arc,4,321,0.0,0,34.67,101.5,1294.1,4.358,3.83,3.416,0.421,0.253,0.181,0.105,69.727,6.74,1.685,4,regime A cold
+vram_gpu1,A,lfu,4,321,0.0,0,43.89,87.19,1111.6,3.743,3.29,2.934,0.362,0.217,0.155,0.09,59.894,5.79,1.447,4,regime A cold
+vram_gpu1,A,freq_x_recency,4,321,0.0,0,46.06,83.81,1068.6,3.598,3.162,2.82,0.348,0.209,0.149,0.087,57.576,5.566,1.391,4,regime A cold
+vram_gpu1,A,layer_lru,4,321,0.0,0,31.86,105.88,1349.9,4.546,3.995,3.563,0.439,0.264,0.188,0.11,72.732,7.031,1.758,4,regime A cold; per-layer uniform budgets
+vram_gpu1,A,cost_aware,4,321,0.0,0,46.38,83.31,1062.2,3.577,3.143,2.804,0.346,0.207,0.148,0.086,57.232,5.532,1.383,4,regime A cold; provably == lru (uniform record size)
+vram_gpu1,A,belady_cold,4,321,0.0,0,57.08,66.69,850.3,2.863,2.516,2.244,0.277,0.166,0.119,0.069,45.812,4.428,1.107,4,regime A cold; offline MIN = strict upper bound for A and B
+vram_gpu1,B,freq_lru_warmup_pf0.5,4,321,0.0,160,38.7,105.25,1341.9,4.519,3.971,3.542,0.437,0.262,0.187,0.109,72.303,6.989,1.747,4,"regime B online; pin from step-0 prefill counts (tie-broken order), repopulation charged"
+vram_gpu1,B,freq_lru_warmup_s4_pf0.5,4,321,0.0,0,44.05,86.94,1108.5,3.733,3.28,2.926,0.361,0.217,0.155,0.09,59.723,5.773,1.443,4,"regime B online; pin from first 4 forwards counts, repopulation charged"
+vram_gpu1,C,static_freq_prewarm,4,321,3.997,0,65.25,54.0,688.5,2.318,2.037,1.817,0.224,0.134,0.096,0.056,37.096,3.586,0.896,4,"regime C PREWARMED (labeled); top-N resident at t=0, rejects otherwise"
+vram_gpu1,C,static_layer_freq_prewarm,4,321,1.83,0,45.98,83.94,1070.2,3.604,3.167,2.825,0.348,0.209,0.149,0.087,57.662,5.574,1.393,4,regime C PREWARMED (labeled); per-layer top-B
+vram_gpu1,C,freq_lru_prewarm_pf0.25,4,321,0.996,0,51.65,75.12,957.8,3.225,2.834,2.528,0.312,0.187,0.134,0.078,51.608,4.989,1.247,4,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.5,4,321,1.992,0,56.52,67.56,861.4,2.901,2.549,2.274,0.28,0.168,0.12,0.07,46.413,4.487,1.122,4,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.75,4,321,2.988,0,61.26,60.19,767.4,2.584,2.271,2.025,0.25,0.15,0.107,0.062,41.346,3.997,0.999,4,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.9,4,321,3.586,0,63.31,57.0,726.8,2.447,2.151,1.918,0.237,0.142,0.101,0.059,39.157,3.785,0.946,4,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.99,4,321,3.947,0,64.92,54.5,694.9,2.34,2.056,1.834,0.226,0.136,0.097,0.057,37.439,3.619,0.905,4,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,lru_prewarm_topN,4,321,3.997,0,49.6,78.31,998.5,3.362,2.955,2.635,0.325,0.195,0.139,0.081,53.798,5.2,1.3,4,regime C PREWARMED (labeled); control: LRU given same top-N prewarm
+vram_gpu1,C,belady_same_state_prewarm,4,321,3.997,0,69.15,47.94,611.2,2.058,1.809,1.613,0.199,0.119,0.085,0.05,32.931,3.183,0.796,4,regime C bound; MIN given the same top-slots prewarm
+vram_gpu1,C,belady_pin_same_state_pf0.25,4,321,0.996,0,60.3,61.69,786.5,2.649,2.327,2.076,0.256,0.154,0.11,0.064,42.377,4.096,1.024,4,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.5,4,321,1.992,0,63.52,56.69,722.8,2.434,2.139,1.908,0.235,0.141,0.101,0.059,38.942,3.764,0.941,4,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.75,4,321,2.988,0,66.29,52.38,667.8,2.249,1.976,1.763,0.217,0.13,0.093,0.054,35.98,3.478,0.87,4,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.9,4,321,3.586,0,67.26,50.88,648.7,2.184,1.92,1.712,0.211,0.127,0.09,0.053,34.949,3.378,0.845,4,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.99,4,321,3.947,0,65.89,53.0,675.8,2.276,2.0,1.784,0.22,0.132,0.094,0.055,36.409,3.52,0.88,4,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,A,lru,6,481,0.0,0,51.61,75.19,958.6,3.228,2.837,2.53,0.312,0.187,0.134,0.078,51.651,4.993,1.248,6,regime A cold; plain LRU (current dee host semantics; validated +-1 vs fill-live)
+vram_gpu1,A,engine_priority_lru,6,481,0.0,0,23.85,118.31,1508.5,5.08,4.464,3.981,0.491,0.295,0.21,0.123,81.276,7.857,1.964,6,regime A cold; production VRAM score (documented artifact)
+vram_gpu1,A,arc,6,481,0.0,0,50.48,76.94,981.0,3.303,2.903,2.589,0.319,0.192,0.137,0.08,52.853,5.109,1.277,6,regime A cold
+vram_gpu1,A,lfu,6,481,0.0,0,51.77,74.94,955.5,3.218,2.828,2.522,0.311,0.187,0.133,0.078,51.479,4.976,1.244,6,regime A cold
+vram_gpu1,A,freq_x_recency,6,481,0.0,0,51.53,75.31,960.2,3.233,2.842,2.534,0.313,0.188,0.134,0.078,51.737,5.001,1.25,6,regime A cold
+vram_gpu1,A,layer_lru,6,481,0.0,0,39.66,93.75,1195.3,4.025,3.537,3.155,0.389,0.233,0.167,0.097,64.403,6.226,1.556,6,regime A cold; per-layer uniform budgets
+vram_gpu1,A,cost_aware,6,481,0.0,0,51.61,75.19,958.6,3.228,2.837,2.53,0.312,0.187,0.134,0.078,51.651,4.993,1.248,6,regime A cold; provably == lru (uniform record size)
+vram_gpu1,A,belady_cold,6,481,0.0,0,57.08,66.69,850.3,2.863,2.516,2.244,0.277,0.166,0.119,0.069,45.812,4.428,1.107,6,regime A cold; offline MIN = strict upper bound for A and B
+vram_gpu1,B,freq_lru_warmup_pf0.5,6,481,0.0,115,48.15,87.75,1118.8,3.768,3.311,2.953,0.364,0.219,0.156,0.091,60.281,5.827,1.457,6,"regime B online; pin from step-0 prefill counts (tie-broken order), repopulation charged"
+vram_gpu1,B,freq_lru_warmup_s4_pf0.5,6,481,0.0,51,51.73,78.19,996.9,3.357,2.95,2.631,0.325,0.195,0.139,0.081,53.712,5.192,1.298,6,"regime B online; pin from first 4 forwards counts, repopulation charged"
+vram_gpu1,C,static_freq_prewarm,6,481,5.989,0,76.43,36.62,467.0,1.573,1.382,1.233,0.152,0.091,0.065,0.038,25.16,2.432,0.608,6,"regime C PREWARMED (labeled); top-N resident at t=0, rejects otherwise"
+vram_gpu1,C,static_layer_freq_prewarm,6,481,2.876,0,56.52,67.56,861.4,2.901,2.549,2.274,0.28,0.168,0.12,0.07,46.413,4.487,1.122,6,regime C PREWARMED (labeled); per-layer top-B
+vram_gpu1,C,freq_lru_prewarm_pf0.25,6,481,1.494,0,57.44,66.12,843.1,2.839,2.495,2.225,0.274,0.165,0.118,0.069,45.425,4.391,1.098,6,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.5,6,481,2.988,0,63.8,56.25,717.2,2.415,2.122,1.893,0.233,0.14,0.1,0.058,38.642,3.735,0.934,6,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.75,6,481,4.482,0,70.88,45.25,576.9,1.943,1.707,1.523,0.188,0.113,0.08,0.047,31.085,3.005,0.751,6,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.9,6,481,5.379,0,74.46,39.69,506.0,1.704,1.497,1.336,0.165,0.099,0.071,0.041,27.264,2.635,0.659,6,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.99,6,481,5.927,0,76.23,36.94,471.0,1.586,1.394,1.243,0.153,0.092,0.066,0.038,25.375,2.453,0.613,6,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,lru_prewarm_topN,6,481,5.989,0,59.01,63.69,812.0,2.734,2.403,2.143,0.264,0.159,0.113,0.066,43.751,4.229,1.057,6,regime C PREWARMED (labeled); control: LRU given same top-N prewarm
+vram_gpu1,C,belady_same_state_prewarm,6,481,5.989,0,76.43,36.62,467.0,1.573,1.382,1.233,0.152,0.091,0.065,0.038,25.16,2.432,0.608,6,regime C bound; MIN given the same top-slots prewarm
+vram_gpu1,C,belady_pin_same_state_pf0.25,6,481,1.494,0,61.91,59.19,754.6,2.541,2.233,1.992,0.246,0.147,0.105,0.061,40.66,3.93,0.983,6,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.5,6,481,2.988,0,66.73,51.69,659.0,2.219,1.95,1.739,0.215,0.129,0.092,0.054,35.507,3.432,0.858,6,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.75,6,481,4.482,0,71.56,44.19,563.4,1.897,1.667,1.487,0.183,0.11,0.079,0.046,30.355,2.934,0.734,6,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.9,6,481,5.379,0,74.46,39.69,506.0,1.704,1.497,1.336,0.165,0.099,0.071,0.041,27.264,2.635,0.659,6,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.99,6,481,5.927,0,76.23,36.94,471.0,1.586,1.394,1.243,0.153,0.092,0.066,0.038,25.375,2.453,0.613,6,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,A,lru,8,642,0.0,0,55.67,68.88,878.2,2.957,2.599,2.318,0.286,0.172,0.123,0.071,47.314,4.574,1.143,8,regime A cold; plain LRU (current dee host semantics; validated +-1 vs fill-live)
+vram_gpu1,A,engine_priority_lru,8,642,0.0,0,37.05,97.81,1247.1,4.2,3.691,3.292,0.406,0.244,0.174,0.101,67.193,6.495,1.624,8,regime A cold; production VRAM score (documented artifact)
+vram_gpu1,A,arc,8,642,0.0,0,55.27,69.5,886.1,2.984,2.622,2.339,0.288,0.173,0.124,0.072,47.744,4.615,1.154,8,regime A cold
+vram_gpu1,A,lfu,8,642,0.0,0,55.67,68.88,878.2,2.957,2.599,2.318,0.286,0.172,0.123,0.071,47.314,4.574,1.143,8,regime A cold
+vram_gpu1,A,freq_x_recency,8,642,0.0,0,55.67,68.88,878.2,2.957,2.599,2.318,0.286,0.172,0.123,0.071,47.314,4.574,1.143,8,regime A cold
+vram_gpu1,A,layer_lru,8,642,0.0,0,44.65,86.0,1096.5,3.692,3.245,2.894,0.357,0.214,0.153,0.089,59.079,5.711,1.428,8,regime A cold; per-layer uniform budgets
+vram_gpu1,A,cost_aware,8,642,0.0,0,55.67,68.88,878.2,2.957,2.599,2.318,0.286,0.172,0.123,0.071,47.314,4.574,1.143,8,regime A cold; provably == lru (uniform record size)
+vram_gpu1,A,belady_cold,8,642,0.0,0,57.08,66.69,850.3,2.863,2.516,2.244,0.277,0.166,0.119,0.069,45.812,4.428,1.107,8,regime A cold; offline MIN = strict upper bound for A and B
+vram_gpu1,B,freq_lru_warmup_pf0.5,8,642,0.0,0,53.98,71.5,911.6,3.07,2.698,2.406,0.297,0.178,0.127,0.074,49.118,4.748,1.187,8,"regime B online; pin from step-0 prefill counts (tie-broken order), repopulation charged"
+vram_gpu1,B,freq_lru_warmup_s4_pf0.5,8,642,0.0,54,55.23,72.94,930.0,3.132,2.752,2.455,0.303,0.182,0.13,0.076,50.105,4.844,1.211,8,"regime B online; pin from first 4 forwards counts, repopulation charged"
+vram_gpu1,C,static_freq_prewarm,8,642,7.994,0,82.9,26.56,338.7,1.141,1.002,0.894,0.11,0.066,0.047,0.028,18.247,1.764,0.441,8,"regime C PREWARMED (labeled); top-N resident at t=0, rejects otherwise"
+vram_gpu1,C,static_layer_freq_prewarm,8,642,3.661,0,62.63,58.06,740.3,2.493,2.191,1.954,0.241,0.145,0.103,0.06,39.887,3.856,0.964,8,regime C PREWARMED (labeled); per-layer top-B
+vram_gpu1,C,freq_lru_prewarm_pf0.25,8,642,1.992,0,62.03,59.0,752.2,2.533,2.226,1.985,0.245,0.147,0.105,0.061,40.531,3.918,0.979,8,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.5,8,642,3.997,0,69.91,46.75,596.1,2.007,1.764,1.573,0.194,0.116,0.083,0.049,32.115,3.104,0.776,8,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.75,8,642,5.989,0,76.43,36.62,467.0,1.573,1.382,1.233,0.152,0.091,0.065,0.038,25.16,2.432,0.608,8,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.9,8,642,7.184,0,80.29,30.62,390.5,1.315,1.156,1.031,0.127,0.076,0.054,0.032,21.038,2.034,0.508,8,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,freq_lru_prewarm_pf0.99,8,642,7.906,0,82.62,27.0,344.2,1.159,1.019,0.908,0.112,0.067,0.048,0.028,18.548,1.793,0.448,8,regime C PREWARMED (labeled); pin + LRU remainder
+vram_gpu1,C,lru_prewarm_topN,8,642,7.994,0,72.0,43.5,554.6,1.868,1.641,1.464,0.181,0.108,0.077,0.045,29.883,2.889,0.722,8,regime C PREWARMED (labeled); control: LRU given same top-N prewarm
+vram_gpu1,C,belady_same_state_prewarm,8,642,7.994,0,82.9,26.56,338.7,1.141,1.002,0.894,0.11,0.066,0.047,0.028,18.247,1.764,0.441,8,regime C bound; MIN given the same top-slots prewarm
+vram_gpu1,C,belady_pin_same_state_pf0.25,8,642,1.992,0,63.52,56.69,722.8,2.434,2.139,1.908,0.235,0.141,0.101,0.059,38.942,3.764,0.941,8,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.5,8,642,3.997,0,69.99,46.62,594.5,2.002,1.759,1.569,0.194,0.116,0.083,0.048,32.03,3.096,0.774,8,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.75,8,642,5.989,0,76.43,36.62,467.0,1.573,1.382,1.233,0.152,0.091,0.065,0.038,25.16,2.432,0.608,8,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.9,8,642,7.184,0,80.29,30.62,390.5,1.315,1.156,1.031,0.127,0.076,0.054,0.032,21.038,2.034,0.508,8,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)
+vram_gpu1,C,belady_pin_same_state_pf0.99,8,642,7.906,0,82.62,27.0,344.2,1.159,1.019,0.908,0.112,0.067,0.048,0.028,18.548,1.793,0.448,8,regime C bound; protected pin + MIN dynamics (contract-matched to freq_lru_prewarm)

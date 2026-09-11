@@ -1,0 +1,48 @@
+[02:34:28] GPU_ALLOC n=2: GPU 0: Tesla T4 (UUID: GPU-12a1f290-abce-ead8-17c9-9d1ec058517e) | GPU 1: Tesla T4 (UUID: GPU-7fb1b110-f4f5-766f-babe-770e6ee7f9d1)
+[02:34:28] GPU compute caps [7.5, 7.5] OK for preinstalled torch
+[02:34:29] RESOURCES[startup] {"/": {"total_gb": 8062.4, "free_gb": 1026.8}, "/tmp": {"total_gb": 8062.4, "free_gb": 1026.8}, "/kaggle/working": {"total_gb": 19.5, "free_gb": 19.5}, "ram_gb": {"MemTotal": 31.3, "MemAvailable": 30.3}}
+[02:34:29] === clone + checkout ===
+[02:34:29] + git clone --branch freebuff/deepseek-v4-flash-0731-t4 --single-branch https://github.com/so-nerdyy/dee.git /tmp/dsv4-native-src
+[02:34:45] pinned commit f017d12b110ae0acc40ac164e123f9330866c6e0
+[02:34:45] [config] run_config.json: cache_dtype=fp4 n_tokens=16
+[02:34:45] [mem:prebuild] {'MemTotal': 31.3, 'MemAvailable': 30.2}
+[02:34:45] === build dee_core + FP4 regression tests (sm_60;sm_75, -j2) ===
+[02:34:46] + cmake -S /tmp/dsv4-native-src/dee.cpp -B /tmp/dsv4-native-src/dee.cpp/build-kaggle -DCMAKE_CUDA_ARCHITECTURES=60;75 -DDEE_CUDA=ON -DDEE_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
+[02:34:52] + cmake --build /tmp/dsv4-native-src/dee.cpp/build-kaggle --target dee_core -j 2
+[02:35:14] [mem:post-dee_core] {'MemTotal': 31.3, 'MemAvailable': 29.9}
+[02:35:14] + cmake --build /tmp/dsv4-native-src/dee.cpp/build-kaggle --target test_deepseek_v4_fp4_cuda -j 2
+[02:35:18] + cmake --build /tmp/dsv4-native-src/dee.cpp/build-kaggle --target test_deepseek_v4_fp4_expert -j 2
+[02:35:23] [mem:post-tests] {'MemTotal': 31.3, 'MemAvailable': 30.3}
+[02:35:24] === build pydee ===
+[02:35:24] + /usr/bin/python3 -m pip install --quiet --user pybind11
+[02:35:29] + /usr/bin/python3 pydee/setup.py build_ext --inplace
+[02:35:48] === download all shards ===
+[02:35:49] [mem:pre-download] {'MemTotal': 31.3, 'MemAvailable': 30.2}
+[02:35:49] [download] complete dataset mount at /kaggle/input/deepseek-v4-flash-0731-shards; using directly (no /tmp staging)
+[02:35:49] [mem:post-download] {'MemTotal': 31.3, 'MemAvailable': 30.2}
+[02:35:49] === P2.2 DEE4 repack benchmark ===
+[02:35:50] P2.2: downloading index from HF: https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731/resolve/9e165c30e2704aec5d9d593cce3eebd58bbef1cb/model.safetensors.index.json
+[02:35:50] P2.2: index downloaded (5602871 bytes)
+[02:37:48] P2.2: DEE4 contiguous 470 MB/s vs safetensors scatter 191 MB/s (2.5x) repack 108s 9.6GiB
+[02:37:52] cuda devices: 2
+[02:38:15] cfg layers/exps/dim/topk: 43 256 4096 6
+[02:38:15] === build native engines (device 0 + 1) ===
+[02:38:15] budget=3.50GiB/GPU host_pack=8.50/8.50GiB batched=False profile=False diagnostics=False mem_avail=29.7GiB mem_total=31.3GiB lru_cap=17.0GiB cache_dtype=fp4
+[02:38:17] engines built (cache_dtype=fp4)
+[02:38:17] === build full model (native FFN) ===
+[02:39:55] model build 97.8s
+[02:39:55] === tokenize + greedy decode ===
+[03:01:16] FATAL Traceback (most recent call last):
+  File "/kaggle/src/script.py", line 890, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/kaggle/src/script.py", line 805, in main
+    toks = model.generate(input_ids, max_new_tokens=N_TOKENS,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/dsv4-native-src/dee.cpp/scripts/deepseek_v4_model.py", line 868, in generate
+    logits = self.forward(input_ids, 0, captures=captures,
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/dsv4-native-src/dee.cpp/scripts/deepseek_v4_model.py", line 828, in forward
+    raise FloatingPointError("non-finite logits")
+FloatingPointError: non-finite logits
+

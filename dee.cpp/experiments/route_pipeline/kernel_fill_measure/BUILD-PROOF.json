@@ -1,0 +1,30 @@
+{
+  "profiler_patch_sha256": "b68da4a91a9408da62552161345ecd1fd3ffed0e30427857be1d9d22b7efcd80",
+  "profiler_patch_base": "9c16529d48a2b7d02cc0830ed0ad8ef2e5c7c592",
+  "profiler_files": [
+    "dee.cpp/src/engine.cpp",
+    "dee.cpp/include/dee/engine.h",
+    "dee.cpp/include/dee/profiling.h",
+    "dee.cpp/src/profiling.cpp",
+    "dee.cpp/pydee/pydee.cpp",
+    "dee.cpp/scripts/deepseek_v4_layer_candidate.py",
+    "dee.cpp/include/dee/host_pack_cache.h",
+    "dee.cpp/src/host_pack_cache.cpp",
+    "dee.cpp/include/dee/expert_store.h",
+    "dee.cpp/src/expert_store.cpp",
+    "dee.cpp/CMakeLists.txt",
+    "dee.cpp/tools/fill_replay.cpp"
+  ],
+  "flavor": "fill",
+  "rule_ids": [
+    "run-id",
+    "profile-guard",
+    "profile-env",
+    "patch-apply",
+    "emission"
+  ],
+  "rules_sha256": "adb2e3288246d3236c7c3b154bffff645532ec40b3bc5801a0b8a3fc62b02c32",
+  "driver_build_id": "12560ebc3aa6-20260909T034737Z",
+  "driver_sha256": "fa2c525a3d054db27d4521cfae9a1df12092c9d33b70383b065e64238e4a0294",
+  "kernel_id": "nivind/dee-cpp-fill-measure-20260909"
+}

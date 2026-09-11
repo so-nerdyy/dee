@@ -1,0 +1,9 @@
+{
+  "archive": "ds10-v3-killed-20260804T2354Z.tar.gz",
+  "bytes": 2198,
+  "archive_sha256": "81078aa90684c99370ff735dcf8344a885919dd1c0c36947d76ca8cc6eeff116",
+  "manifest_sha256": "154803beb53e0f3b4f084107e4dd1634e2cd305e7cad61e0f69fba447db60a0e",
+  "excluded_from_archive": [
+    "archive-metadata.json"
+  ]
+}

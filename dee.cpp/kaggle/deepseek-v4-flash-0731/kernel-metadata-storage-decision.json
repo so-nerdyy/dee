@@ -1,0 +1,13 @@
+{
+  "id": "nivind/dee-cpp-dsv4-storage-decision",
+  "title": "dee-cpp-dsv4-storage-decision",
+  "code_file": "storage_decision.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": false,
+  "enable_internet": true,
+  "enable_network": true,
+  "dataset_sources": ["nivind/deepseek-v4-flash-0731-shards"],
+  "keywords": ["dee.cpp", "storage", "roofline", "decision"]
+}

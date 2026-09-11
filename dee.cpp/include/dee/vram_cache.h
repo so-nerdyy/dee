@@ -13,6 +13,8 @@
 
 #pragma once
 
+#include "dee/profiling.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -44,6 +46,8 @@ struct ExpertBlock {
     int64_t   last_used = 0;        // monotonic tick of last touch
     int       priority  = 0;        // Oracle priority (higher => keep longer)
     bool      resident  = false;
+    uint32_t  pins      = 0;        // DMA or compute users that forbid eviction
+    uint64_t  generation = 0;       // monotonic allocation generation in this cache
 };
 
 // ---------------------------------------------------------------------------
@@ -100,6 +104,20 @@ public:
         uint64_t loads     = 0;  // ensure() had to load (alloc)
         uint64_t evictions = 0;  // blocks evicted to make room
         uint64_t fallbacks = 0;  // sync_fallback stalls (miss at compute time)
+        uint64_t pinned_blocks_skipped = 0;  // eviction candidates rejected due to active pins
+    };
+
+    struct EnsureInfo {
+        bool resident_hit = false;
+        bool evicted = false;
+        ExpertKey evicted_key{-1, -1};
+        uint64_t evicted_generation = 0;
+        uint64_t generation = 0;
+        size_t cache_bytes_before = 0;
+        size_t cache_entries_before = 0;
+        size_t cache_bytes_after = 0;
+        size_t cache_entries_after = 0;
+        uint32_t pin_count_after = 0;
     };
 
     // Create a manager with a `budget_bytes` arena using backend `be`.
@@ -117,6 +135,8 @@ public:
     bool is_resident(int layer, int expert) const;
     void* data(int layer, int expert) const;   // nullptr if not resident
     size_t size_of(int layer, int expert) const;
+    uint64_t generation_of(int layer, int expert) const;
+    uint32_t pin_count(int layer, int expert) const;
 
     // Sync fallback: if the expert is NOT resident, block until it is. In Step 5
     // (host) the block is synchronously allocated by ensure(); this only counts
@@ -128,21 +148,47 @@ public:
     void clear();
 
     const Stats& stats() const { return stats_; }
+    const EnsureInfo& last_ensure_info() const { return last_ensure_info_; }
+    void reset_stats() { stats_ = Stats{}; last_ensure_info_ = EnsureInfo{}; }
+    void set_profiler(StageProfiler* profiler) { profiler_ = profiler; }
+    void set_debug_validation(bool enabled) { debug_validation_ = enabled; }
+    bool debug_validation_enabled() const { return debug_validation_; }
+    bool validate_invariants(std::string* error = nullptr) const;
     size_t  used_bytes() const { return arena_.used(); }
     size_t  budget_bytes() const { return arena_.capacity(); }
     size_t  resident_count() const;
+    size_t  pinned_count() const;
+
+    // A pinned block cannot be evicted. AsyncPrefetcher pins during DMA and
+    // Engine pins while a CUDA compute stream may still dereference the block.
+    bool pin(int layer, int expert);
+    bool unpin(int layer, int expert);
+
+    // Milestone 3 forensic: capture the most recent ensure/evict failure
+    // context so the engine can surface it to Python instead of collapsing
+    // to a single "cannot allocate" line.  Cleared by ensure() on entry;
+    // written on every failure path.
+    void set_last_error(const std::string& m) { last_error_message_ = m; }
+    void clear_last_error() { last_error_message_.clear(); }
+    const std::string& last_error_message() const { return last_error_message_; }
 
 private:
     Arena arena_;
     std::unordered_map<ExpertKey, ExpertBlock, ExpertKeyHash> blocks_;
     int64_t tick_ = 0;
+    uint64_t next_generation_ = 1;
     Stats   stats_{};
+    EnsureInfo last_ensure_info_{};
+    StageProfiler* profiler_ = nullptr;
+    std::string last_error_message_;
+    bool debug_validation_ = false;
 
     ExpertBlock* find_block(int layer, int expert);
     const ExpertBlock* find_block(int layer, int expert) const;
 
     // Evict lowest (last_used + priority*PRIORITY_WEIGHT) until `need` bytes free.
     void evict_until_free(size_t need);
+    bool validate_or_record(const char* context);
 
     // Lower score => evict first. Higher last_used (more recent) OR higher
     // priority (Oracle-predicted) RAISES the score, so both recency and

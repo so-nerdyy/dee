@@ -1,0 +1,14 @@
+{
+  "artifacts": {
+    "SEAL.json": {
+      "bytes": 3281,
+      "sha256": "971fc7eb6f62cc2307e4a7a9154daba8842515346c8cbb5e66c3ad0ad980e5a1"
+    },
+    "recovered-artifact-manifest.json": {
+      "bytes": 30226,
+      "sha256": "259e104df68493aa42a38be3011da005ae16c46580aec1b77af6a812e059897b"
+    }
+  },
+  "result": "PASS",
+  "schema_version": 1
+}
