@@ -139,6 +139,10 @@ public:
     const uint8_t* data() const;
     size_t size() const;
     bool pinned() const;
+    // Borrowed reference into the pooled slot, valid only while this lease is
+    // held (the lease's reference pins the slot payload and its key). Do not
+    // store it past reset(), destruction, or a move — same lifetime class as
+    // HostVictim::key. Callers needing a durable key must copy it.
     const TierExpertKey& key() const;
     uint64_t generation() const { return generation_; }
     void reset();

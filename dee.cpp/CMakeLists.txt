@@ -116,6 +116,7 @@ if(DEE_BUILD_TESTS)
         tests/test_async_prefetcher.cpp
         tests/test_host_pack_cache.cpp
         tests/test_phase2_host_tier.cpp
+        tests/test_phase2_tier_audit.cpp
         tests/test_oracle.cpp
         tests/test_engine.cpp)
     list(APPEND DEE_TEST_SOURCES tests/test_real_router.cpp)
@@ -142,6 +143,7 @@ if(DEE_BUILD_TESTS)
         set_tests_properties(test_phase2_cuda PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
     endif()
     set_tests_properties(test_phase2_host_tier PROPERTIES TIMEOUT 30)
+    set_tests_properties(test_phase2_tier_audit PROPERTIES TIMEOUT 60)
     add_test(
         NAME test_ornith_support
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ornith_support.py)

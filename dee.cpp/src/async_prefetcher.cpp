@@ -54,10 +54,17 @@ long AsyncPrefetcher::find_inflight(int layer, int expert) const {
 }
 
 uint64_t AsyncPrefetcher::map_key(int layer, int expert) const {
-    const auto key = key_id(layer, expert);
-    // Keep legacy behavior when disabled. The experiment preserves all bits
-    // on LLP64 platforms where long is only 32 bits.
-    return experimental_host_tier_ ? key : static_cast<uint64_t>(static_cast<long>(key));
+    // Phase-2 audit M1 hardening: always the full 64-bit key_id, on every
+    // path. The former conditional `experimental ? key : (uint64_t)(long)key`
+    // collapsed all layers sharing an expert id on LLP64 (32-bit long), so
+    // the legacy OFF path could never stage layer>0 experts on Windows — it
+    // failed closed, but the "default-OFF equivalence" it preserved only ever
+    // existed on LP64, where the cast is the identity. The map is internal
+    // state (no wire or persistent format), so the full key is safe for the
+    // legacy path and mandatory for the experimental path; making it
+    // unconditional also removes the coupling where flag persistence was
+    // load-bearing for key width.
+    return key_id(layer, expert);
 }
 
 void AsyncPrefetcher::release_staging(Transfer& transfer) {
@@ -621,7 +628,16 @@ void AsyncPrefetcher::synchronize_all() {
         const auto wait_begin = profiler_ && profiler_->enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
         if (stream_ && !DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(static_cast<cudaStream_t>(stream_)),
                                               "cudaStreamSynchronize(prefetch)")) {
-            if (experimental_host_tier_) std::terminate(); // cannot free leased DMA sources safely
+            // Phase-2 audit L3 hardening: fail-stop only while leased host DMA
+            // sources are actually in flight — an unprovable drain means their
+            // memory cannot be freed safely. A stale armed flag with no managed
+            // transfers keeps the legacy return path instead of upgrading this
+            // failure to a process abort.
+            for (const auto& transfer : inflight_) {
+                if (transfer.managed_source && transfer.host_lease) {
+                    std::terminate(); // cannot free leased DMA sources safely
+                }
+            }
             return;
         }
         if (stream_ && profiler_ && profiler_->enabled()) {
@@ -750,6 +766,13 @@ bool AsyncPrefetcher::cuda_submit_host(long index) {
         // Error only: DMA may have launched before event recording failed.
         // Do not recycle either source or destination until this stream drains.
         if (cudaStreamSynchronize(stream) != cudaSuccess) std::terminate();
+        // Phase-2 audit L4 hardening: the drain proved no in-flight work can
+        // still signal this event, so destroy it now. Otherwise it would sit
+        // on the abandoned transfer until reset() — a bounded event-object
+        // leak per failed submit.
+        DEE_CUDA_CHECK_NAMED(DEE_TA_EVENT_DESTROY(event, "phase2_event"),
+                             "cudaEventDestroy(phase2 failed submit)");
+        transfer.event = nullptr;
         transfer.dma_complete = true;
         return false;
     }

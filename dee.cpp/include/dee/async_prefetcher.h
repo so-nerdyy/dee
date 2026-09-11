@@ -92,12 +92,44 @@ public:
     bool collect_host_sources(bool wait_one = false);
     double experimental_readiness_wait_ms() const { return experimental_readiness_wait_ms_; }
     double experimental_pageable_wait_ms() const { return experimental_pageable_wait_ms_; }
+
+    // Armed-scope generation, bumped on every successful arm. A bound
+    // DeviceExpertTier captures this at construction and re-checks it on every
+    // stage()/wait(): a differing epoch means the armed scope was replaced
+    // underneath the tier (unreachable while the live-tier token works — kept
+    // as defense in depth against future arming paths). NOTE: reset() does
+    // NOT bump the epoch. In this codebase reset() is a routine drain invoked
+    // while the tier is legitimately armed (Engine::reset_runtime_cache,
+    // preload_all_experts, generate() teardown); scope ownership moves only
+    // when a new scope is armed.
+    uint64_t scope_epoch() const { return scope_epoch_; }
+
+private:
+    friend class DeviceExpertTier;
+    // Arms the experimental host-tier path under `scope`. One-shot while a
+    // DeviceExpertTier holds the token: a second arm attempt — including the
+    // audit's drain + reset() + cache clear interleaving — fails closed until
+    // ~DeviceExpertTier releases it. The armed flag and scope intentionally
+    // PERSIST after release (documented one-shot-per-prefetcher semantics):
+    // prefetch_host_lease stays scoped to the last armed scope, and map_key
+    // stays 64-bit — clearing them would reintroduce the LLP64 truncation
+    // for post-teardown prefetches.
     bool enable_experimental_host_tier(const TierExpertKey& scope) {
-        if (!inflight_.empty() || !scope.valid()) return false;
+        if (!inflight_.empty() || !scope.valid() || experimental_tier_live_) return false;
         experimental_host_tier_ = true;
         experimental_scope_ = scope;
+        experimental_tier_live_ = true;
+        ++scope_epoch_;
         return true;
     }
+    // ~DeviceExpertTier hands back the arming token. Scope-matched so a stale
+    // or foreign releaser cannot free a token a newer tier still holds.
+    void release_experimental_host_tier(const TierExpertKey& scope) {
+        if (experimental_tier_live_ && experimental_scope_ == scope)
+            experimental_tier_live_ = false;
+    }
+
+public:
 
     // Issue an async copy of `nbytes` from `src` (WeightMmap host ptr) into the
     // cache slot for (layer, expert). Reserves the VRAM slot via the cache.
@@ -263,6 +295,13 @@ private:
     std::vector<uint64_t> batch_keys_;
     bool experimental_host_tier_ = false;
     TierExpertKey experimental_scope_;
+    // Phase-2 audit hardening: scope exclusivity is enforced for the tier's
+    // whole lifetime, not just at construction. experimental_tier_live_ is
+    // the one-shot arming token (taken by enable_experimental_host_tier,
+    // released only by ~DeviceExpertTier); scope_epoch_ counts armed-scope
+    // generations so a bound tier can detect scope replacement.
+    bool experimental_tier_live_ = false;
+    uint64_t scope_epoch_ = 0;
     double experimental_readiness_wait_ms_ = 0;
     double experimental_pageable_wait_ms_ = 0;
     uint64_t map_key(int layer, int expert) const;

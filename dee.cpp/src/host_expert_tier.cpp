@@ -198,6 +198,10 @@ HostAcquireResult HostExpertTier::acquire(const StorageRecord& record,
     for (size_t i = 0; i < state->slots.size(); ++i) {
         auto& slot = state->slots[i];
         if (slot.phase == HostTierState::Phase::Empty || !(slot.key == record.key)) continue;
+        // Contract (phase-2 audit, intentional — do not "fix" into silent
+        // re-fill): a resident key re-acquired with a different exact_bytes is
+        // permanently Invalid until evict() withdraws the resident copy. The
+        // slot keeps serving the original size to holders of existing leases.
         if (slot.bytes != record.exact_bytes) return {};
         ++slot.references;
         if (slot.phase == HostTierState::Phase::Filling) {

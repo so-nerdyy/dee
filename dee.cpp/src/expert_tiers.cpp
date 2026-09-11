@@ -87,24 +87,44 @@ ColdReadResult ExpertStoreColdAdapter::read(const TierExpertKey& key, uint8_t* d
 DeviceExpertTier::DeviceExpertTier(VramCacheManager& cache, AsyncPrefetcher& prefetcher,
         TierExpertKey scope, std::shared_ptr<const DevicePlacementPolicy> policy)
     : cache_(cache), prefetcher_(prefetcher), scope_(std::move(scope)), policy_(std::move(policy)) {
+    // Phase-2 audit M2 hardening: enable_experimental_host_tier is one-shot
+    // while a tier holds the arming token — a second live DeviceExpertTier on
+    // this prefetcher fails here even after prefetcher.reset() + cache clear.
     if (!scope_.valid() || cache.resident_count() != 0 || prefetcher.in_flight() != 0 ||
         !prefetcher.enable_experimental_host_tier(scope_))
         throw std::invalid_argument("device tier requires an empty exclusive cache and valid scope");
+    scope_epoch_ = prefetcher_.scope_epoch();
     if (policy_) {
-        cache_.set_experimental_eviction_score([scope = scope_, policy = policy_](const ExpertBlock& block) {
-            auto key = scope; key.layer = block.key.layer; key.expert = block.key.expert;
-            return policy->eviction_score(key, block.last_used, block.priority);
-        });
+        try {
+            cache_.set_experimental_eviction_score([scope = scope_, policy = policy_](const ExpertBlock& block) {
+                auto key = scope; key.layer = block.key.layer; key.expert = block.key.expert;
+                return policy->eviction_score(key, block.last_used, block.priority);
+            });
+        } catch (...) {
+            // Do not strand the arming token on a half-constructed tier —
+            // ~DeviceExpertTier does not run when the ctor throws.
+            prefetcher_.release_experimental_host_tier(scope_);
+            throw;
+        }
     }
 }
-DeviceExpertTier::~DeviceExpertTier() { cache_.set_experimental_eviction_score({}); }
+DeviceExpertTier::~DeviceExpertTier() {
+    cache_.set_experimental_eviction_score({});
+    prefetcher_.release_experimental_host_tier(scope_);
+}
 bool DeviceExpertTier::accepts(const TierExpertKey& key) const {
     return key.valid() && key.model == scope_.model && key.representation == scope_.representation;
 }
 bool DeviceExpertTier::stage(const StorageRecord& record, ColdExpertStore& store,
         HostExpertTier& host, const StorageCodec& codec, int route_priority,
         int token, int logical_layer) {
-    if (!accepts(record.key) || record.exact_bytes == 0 ||
+    // Stale-scope guard: if the armed scope generation ever moves under this
+    // tier, fail closed before the resident-hit path can observe blocks
+    // staged under a foreign scope. Unreachable while the one-shot arming
+    // token holds (a second arm cannot succeed while this tier lives); kept
+    // as defense in depth.
+    if (prefetcher_.scope_epoch() != scope_epoch_ || !accepts(record.key) ||
+        record.exact_bytes == 0 ||
         record.exact_bytes > cache_.budget_bytes() || !codec.accepts(record)) {
         ++metrics_.device_failures; return false;
     }
@@ -146,7 +166,7 @@ bool DeviceExpertTier::stage(const StorageRecord& record, ColdExpertStore& store
     return ok;
 }
 bool DeviceExpertTier::wait(const TierExpertKey& key) {
-    if (!accepts(key)) return false;
+    if (prefetcher_.scope_epoch() != scope_epoch_ || !accepts(key)) return false;
     const auto begin = Clock::now();
     const bool ready = prefetcher_.wait(key.layer, key.expert);
     if (!prefetcher_.using_cuda()) metrics_.device_host_wait_ms += elapsed(begin);

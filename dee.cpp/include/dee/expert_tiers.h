@@ -48,9 +48,13 @@ struct TierMetrics {
 };
 
 // Facade over the existing arena and transfer stream, not a second GPU cache.
-// Exclusive to one model/representation/device for its whole lifetime. Same
-// single-caller ownership as Engine/AsyncPrefetcher; host tier is concurrent.
-// Existing Engine compute pins remain the ExactExpertExecutor lifetime fence.
+// Exclusive to one model/representation/device for its whole lifetime —
+// enforced, not just documented: arming a prefetcher is one-shot while a
+// DeviceExpertTier lives (~DeviceExpertTier releases the token), and
+// stage()/wait() fail closed if the armed scope generation ever moves.
+// Same single-caller ownership as Engine/AsyncPrefetcher; host tier is
+// concurrent. Existing Engine compute pins remain the ExactExpertExecutor
+// lifetime fence.
 class DeviceExpertTier {
 public:
     DeviceExpertTier(VramCacheManager&, AsyncPrefetcher&, TierExpertKey scope,
@@ -70,6 +74,10 @@ private:
     TierExpertKey scope_;
     std::shared_ptr<const DevicePlacementPolicy> policy_;
     TierMetrics metrics_;
+    // Armed-scope generation captured at construction; stage()/wait() reject
+    // when prefetcher_.scope_epoch() differs (scope replaced under a live
+    // tier — unreachable while the arming token holds; defense in depth).
+    uint64_t scope_epoch_ = 0;
 };
 
 struct Phase2TierConfig {
