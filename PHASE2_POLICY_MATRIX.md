@@ -41,9 +41,12 @@ SSD bytes/token and per-token/per-response wall columns at
 | freq_lru_prewarm pf0.9 | 58.07 | 70.21 | 76.31 | 81.98 | 87.64 | 99.00 | 100 | 100 |
 | freq_lru_prewarm pf0.99 | 60.21 | 72.33 | 78.58 | 84.80 | 91.04 | 100 | 100 | 100 |
 | lru_prewarm_topN (control) | 43.36 | 53.30 | 66.31 | 78.02 | 88.94 | 100 | 100 | 100 |
-| belady_same_state_prewarm (bound) | 56.83 | 59.11 | 70.68 | 83.02 | 91.14 | 100 | 100 | 100 |
+| belady_same_state_prewarm (bound) | 64.64 | 72.52 | 78.84 | 85.13 | 91.43 | 100 | 100 | 100 |
 | belady_pin_same_state pf0.5 (bound) | 59.93 | 63.07 | 66.23 | 69.39 | 72.52 | 78.84 | 91.43 | 100 |
 | belady_pin_same_state pf0.75 (bound) | 62.03 | 67.80 | 72.52 | 77.25 | 81.98 | 91.43 | 100 | 100 |
+
+*(Figure corrected 2026-09-10: prior row used never-used-distance init;
+exact contract init per `research/phase2-regime-c` @ 643d3559.)*
 
 Every `freq_lru_prewarm(pf)` row is dominated pointwise by its
 contract-matched bound `belady_pin_same_state(pf)` — dominance check PASS.
