@@ -71,7 +71,14 @@ HEADERS_REL = ("dee.cpp/benchmark_reports/deepseek-v4-flash-0731-t4/"
 DATASET_OWNER = "nivind"
 PREFIX_FULL = "dee4-p3-full"
 PREFIX_PILOT = "dee4-p3-pilot"
-SHARD_MOUNT = "/kaggle/input/deepseek-v4-flash-0731-shards"
+# Kaggle now mounts datasets under /kaggle/input/datasets/<owner>/<slug>;
+# the legacy flat path is kept as a fallback for older session types.
+_SHARD_MOUNT_CANDIDATES = [
+    "/kaggle/input/datasets/nivind/deepseek-v4-flash-0731-shards",
+    "/kaggle/input/deepseek-v4-flash-0731-shards",
+]
+SHARD_MOUNT = next((p for p in _SHARD_MOUNT_CANDIDATES
+                    if Path(p).is_dir()), _SHARD_MOUNT_CANDIDATES[0])
 SHARD_GLOB = "model-*-of-*.safetensors"
 EXPECTED_SHARDS = 48
 
