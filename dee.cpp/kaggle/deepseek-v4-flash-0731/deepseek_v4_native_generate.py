@@ -40,12 +40,19 @@ CKPT = Path("/tmp/dsv4-checkpoint")
 # When the checkpoint is published as a Kaggle dataset it mounts read-only at
 # /kaggle/input/<slug>/; prefer that (no download, no disk quota). The local
 # /tmp fallback remains for the 155 GiB-free case.
-DATASET_DIR = Path("/kaggle/input/deepseek-v4-flash-0731-shards")
+# GPU sessions have mounted datasets flat; CPU kernels moved to the nested
+# /kaggle/input/datasets/<owner>/<slug>/ layout (2026-09-12).  Probe both.
+DATASET_DIR = next(
+    (p for p in (
+        Path("/kaggle/input/deepseek-v4-flash-0731-shards"),
+        Path("/kaggle/input/datasets/nivind/deepseek-v4-flash-0731-shards"))
+     if p.is_dir()),
+    Path("/kaggle/input/deepseek-v4-flash-0731-shards"))
 WORK = Path("/kaggle/working")
 HEADERS_DIR = (DEE / "benchmark_reports/deepseek-v4-flash-0731-t4/shard-headers")
 CONFIG = (DEE / "benchmark_reports/deepseek-v4-flash-0731-t4/"
           "official-source/inference/config.json")
-CANONICAL_PROMPT = (
+SEALED_PROMPT = (
     "<\uFF5Cbegin\u2581of\u2581sentence\uFF5C>Who is Alan Turing?"
     "<\uFF5CAssistant\uFF5C>")
 SEALED_TOKEN_IDS = [
@@ -63,6 +70,10 @@ assert SEALED_DECODED_TEXT.encode("utf-8") == (
     b"**Alan Turing (1912\xe2\x80\x931954)**"
     b" was an English mathematician, computer"), (
     "SEALED_DECODED_TEXT corrupted in transit; refusing to judge exactness")
+# GPU-2 arbitrary-prompt runs override the sealed prompt via env; the
+# seal-token gates are only meaningful for the canonical prompt.
+CANONICAL_PROMPT = os.environ.get("NATIVE_PROMPT", SEALED_PROMPT)
+SEAL_APPLICABLE = CANONICAL_PROMPT == SEALED_PROMPT
 N_TOKENS = int(os.environ.get("NATIVE_N_TOKENS", "16"))
 RUN_ID = os.environ.get("NATIVE_RUN_ID", "unconfigured")
 SOURCE_READ_LANES = int(os.environ.get("NATIVE_SOURCE_READ_LANES", "1"))
@@ -180,7 +191,8 @@ def apply_run_config() -> None:
             cfg.get("source_read_queue_depth", SOURCE_READ_QUEUE_DEPTH))
     if CACHE_DTYPE not in {"fp16", "fp4"}:
         raise ValueError(f"unsupported cache_dtype: {CACHE_DTYPE!r}")
-    if EXPERT_STORE_BACKEND not in {"safetensors", "dee4", "dee4_trace"}:
+    if EXPERT_STORE_BACKEND not in {"safetensors", "dee4", "dee4_trace",
+                                    "dee4_segmented"}:
         raise ValueError(
             f"unsupported expert_store: {EXPERT_STORE_BACKEND!r}")
     if DEE4_VALIDATE_SAMPLES <= 0:
@@ -242,6 +254,12 @@ def write_evidence(name: str, payload: dict) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, indent=2), "utf-8")
     temporary.replace(path)
+
+
+class _SkipDee4Prepare(Exception):
+    """Raised after the dee4_segmented fast path sets dee4_store_path; the
+    repack/validate evidence block is skipped entirely for a pre-built
+    segmented store."""
 
 
 class RoutedExpertJournal:
@@ -455,7 +473,7 @@ def classify_full_generation(result: dict) -> tuple[str, dict, bool]:
         for key in engine_keys)
     dee4_contiguous = True
     dee4_integrity = True
-    if EXPERT_STORE_BACKEND in {"dee4", "dee4_trace"}:
+    if EXPERT_STORE_BACKEND in {"dee4", "dee4_trace", "dee4_segmented"}:
         dee4_contiguous = all(
             int(expert_store.get(key, {}).get("source_reads", 0)) > 0
             and int(expert_store.get(key, {}).get("contiguous_source_reads", -1))
@@ -502,8 +520,11 @@ def classify_full_generation(result: dict) -> tuple[str, dict, bool]:
         and all("Tesla T4" in str(line) for line in gpu_lines))
 
     gates = {
-        "exact_16_token_ids": N_TOKENS == 16 and tokens == SEALED_TOKEN_IDS,
-        "exact_decoded_text": result.get("decoded_text") == SEALED_DECODED_TEXT,
+        "exact_16_token_ids": (SEAL_APPLICABLE and N_TOKENS == 16
+                              and tokens == SEALED_TOKEN_IDS),
+        "exact_decoded_text": (SEAL_APPLICABLE
+                              and result.get("decoded_text")
+                              == SEALED_DECODED_TEXT),
         "all_43_layers": int(result.get("layer_count_executed", -1)) == 43,
         "finite_outputs_observed": finite_outputs_observed,
         "finite_outputs": finite_outputs,
@@ -521,12 +542,14 @@ def classify_full_generation(result: dict) -> tuple[str, dict, bool]:
         "route_journal_complete": route_journal_complete,
         "required_performance_hardware": t4_hardware,
     }
-    token_or_text_failed = not (
-        gates["exact_16_token_ids"] and gates["exact_decoded_text"])
+    token_or_text_failed = (SEAL_APPLICABLE and not (
+        gates["exact_16_token_ids"] and gates["exact_decoded_text"]))
     observed_nonfinite = (
         gates["finite_outputs_observed"] and not gates["finite_outputs"])
+    seal_keys = {"exact_16_token_ids", "exact_decoded_text"}
     contract_gates = [value for key, value in gates.items()
-                      if key != "required_performance_hardware"]
+                      if key != "required_performance_hardware"
+                      and (SEAL_APPLICABLE or key not in seal_keys)]
     if token_or_text_failed or observed_nonfinite:
         classification = "REJECT_NUMERICAL"
     elif not all(contract_gates):
@@ -1075,6 +1098,46 @@ def main() -> int:
     dee4_store_path = ""
     dee4_trace_validation = {}
     try:
+        if EXPERT_STORE_BACKEND == "dee4_segmented":
+            # GPU-2 path: serve from a pre-built dee4-v4-segmented store
+            # (46-bucket full universe published as Kaggle datasets).  No
+            # repack — point the native store at the assembled directory.
+            _seg_root = Path(os.environ.get(
+                "NATIVE_DEE4_SEGMENTED_STORE", ""))
+            _meta_path = (_seg_root if _seg_root.name == "metadata.json"
+                          else _seg_root / "metadata.json")
+            if not _meta_path.is_file():
+                raise RuntimeError(
+                    f"dee4_segmented store metadata missing: {_meta_path}")
+            _smeta = json.loads(_meta_path.read_text("utf-8"))
+            if _smeta.get("format") != "dee4-v4-segmented":
+                raise RuntimeError(
+                    f"dee4_segmented store format={_smeta.get('format')!r}")
+            _segs = _smeta.get("segments") or []
+            _missing = [s["file"] for s in _segs
+                        if not (_seg_root / s["file"]).is_file()]
+            _wrong = [
+                f"{s['file']}:{(_seg_root / s['file']).stat().st_size}"
+                for s in _segs
+                if (_seg_root / s["file"]).is_file()
+                and (_seg_root / s["file"]).stat().st_size
+                != int(s["bytes"])]
+            if _missing or _wrong:
+                raise RuntimeError(
+                    f"dee4_segmented store incomplete: "
+                    f"missing={_missing[:3]} wrong_size={_wrong[:3]}")
+            dee4_store_path = str(_meta_path)
+            log(f"DEE4 segmented store armed: {dee4_store_path} "
+                f"segments={len(_segs)} "
+                f"universe={str(_smeta.get('universe_sha256', ''))[:16]}")
+            write_evidence("dee4-segmented-store.json", {
+                "format": _smeta["format"],
+                "metadata_path": dee4_store_path,
+                "n_segments": len(_segs),
+                "universe_sha256": _smeta.get("universe_sha256"),
+                "verify_segment_hashes": True,
+            })
+            raise _SkipDee4Prepare()
         sys.path.insert(0, str(DEE / "kaggle" / "deepseek-v4-flash-0731"))
         from repack_to_dee4 import (
             _filesystem_identity as _storage_identity,
@@ -1300,11 +1363,13 @@ def main() -> int:
             # Component-only evidence must not occupy runtime disk or be
             # mistaken for the serving backend selected by this run.
             shutil.rmtree(_dee4_out)
+    except _SkipDee4Prepare:
+        pass
     except Exception as _e:
         log(f"DEE4 prepare failed: {_e}")
         import traceback as _tb
         _tb.print_exc()
-        if EXPERT_STORE_BACKEND in {"dee4", "dee4_trace"}:
+        if EXPERT_STORE_BACKEND in {"dee4", "dee4_trace", "dee4_segmented"}:
             raise
 
     sys.path.insert(0, str(DEE))
