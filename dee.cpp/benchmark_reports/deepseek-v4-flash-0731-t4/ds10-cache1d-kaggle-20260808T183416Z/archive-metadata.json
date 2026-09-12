@@ -1,0 +1,8 @@
+{
+ "archive": "/kaggle/working/dsv4-ds10-evidence-20260808T183416Z.tar.gz",
+ "archive_sha256": "75b3147f19b6a0950a361a0e7ed50f88c0972c3dd43ab7849ead20a7ca4ed5da",
+ "manifest_sha256": "50c4be76465577ed2c2194e0336e262d292c5f5e21db887148ec78c7288bfe30",
+ "excluded_from_archive": [
+  "archive-metadata.json"
+ ]
+}

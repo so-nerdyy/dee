@@ -1,0 +1,4 @@
+{
+  "bf16_matmul_cuda": true,
+  "float8_cast_cuda": true
+}

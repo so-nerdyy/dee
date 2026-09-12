@@ -1,0 +1,4 @@
+{
+  "classification": "BLOCKED_LIVE_GPU",
+  "next": "run this same entry point on a dual-T4 host; no A/B is specified until live attribution exists"
+}

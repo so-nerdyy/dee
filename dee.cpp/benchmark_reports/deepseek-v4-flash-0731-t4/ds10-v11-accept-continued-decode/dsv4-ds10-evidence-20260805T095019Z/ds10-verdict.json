@@ -1,0 +1,7 @@
+{
+ "verdict": "ACCEPT_DUAL_T4_FIRST_TOKEN",
+ "stage": "v6",
+ "performance_comparable": false,
+ "first_failing_gate": null,
+ "run_id": "20260805T095019Z"
+}

@@ -1,0 +1,45 @@
+{
+  "status": "ok",
+  "tokens": 15,
+  "metrics": {
+    "decode_wall_s": 68.669,
+    "tokens": 15
+  },
+  "generated_ids": [
+    666,
+    95140,
+    96807,
+    343,
+    4470,
+    20,
+    1127,
+    3298,
+    22,
+    22604,
+    515,
+    411,
+    3947,
+    85349,
+    14,
+    6341
+  ],
+  "decoded_text": "**Alan Turing (1912\u20131954)** was an English mathematician, computer",
+  "source_sha": "217a33359b06a0453444a698ec52e4078b77e388",
+  "prompt_hash": "sealed-alan-turing-prompt",
+  "config": {
+    "cache_dtype": "fp4",
+    "expert_store": "dee4_trace",
+    "lanes": 3,
+    "qdepth": 6,
+    "cap_gib_total": 17.0,
+    "profile_stages": false,
+    "DEE_HOST_PROFILE": false
+  },
+  "hardware": {
+    "count": 2,
+    "names": [
+      "Tesla T4",
+      "Tesla T4"
+    ]
+  }
+}

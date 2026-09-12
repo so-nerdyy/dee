@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "result": "PASS",
+  "artifacts": {
+    "full-token-roofline.json": {
+      "bytes": 18137,
+      "sha256": "0b7ded4ae4ef32512838d3e97d5cfebb74e4cb933477094bec7243ca787373ef"
+    },
+    "critical-path-profile.json": {
+      "bytes": 9828,
+      "sha256": "357488c812028d7e43d01f27e381ae69a1766ddc9ea05a7f99ff03bda81cc941"
+    },
+    "ORNITH_FULL_TOKEN_ROOFLINE.md": {
+      "bytes": 6535,
+      "sha256": "2f8ee770f7027f90472cde55fd1685ca1c63d5f574f0ddd6e5b75c061c5f7d23"
+    }
+  }
+}

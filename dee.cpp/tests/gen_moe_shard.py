@@ -17,8 +17,10 @@ safetensors format: [uint64 LE header_len][header JSON][data bytes].
 import struct
 import json
 import os
+import sys
 
-OUT = "/mnt/c/Users/carth/Downloads/dee.cpp/tests/data/ornith_moe256.safetensors"
+OUT = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(
+    os.path.dirname(__file__), "data", "ornith_moe256.safetensors")
 HIDDEN, INTER, NUM_EXPERTS, LAYER = 2048, 64, 256, 0
 
 
@@ -80,6 +82,7 @@ header = {tname: {"dtype": "BF16", "shape": sh, "data_offsets": [st, en]}
 header_json = json.dumps(header, separators=(",", ":"))
 hlen = len(header_json)
 
+os.makedirs(os.path.dirname(OUT), exist_ok=True)
 with open(OUT, "wb") as f:
     f.write(struct.pack("<Q", hlen))
     f.write(header_json.encode("utf-8"))

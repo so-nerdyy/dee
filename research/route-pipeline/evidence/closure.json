@@ -1,0 +1,7 @@
+{
+  "classification": "BLOCKED_LIVE_GPU",
+  "accounted_ms": null,
+  "unknown_ms": null,
+  "closure_fraction": null,
+  "note": "no wall to reconcile without execution"
+}

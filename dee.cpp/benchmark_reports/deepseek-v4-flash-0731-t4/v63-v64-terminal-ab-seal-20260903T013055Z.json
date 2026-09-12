@@ -1,0 +1,147 @@
+{
+  "schema": "dsv4-real-generation-ab-terminal-seal-v1",
+  "sealed_at_utc": "2026-09-03T01:30:55.2781388Z",
+  "scope": "Seals only the already-fetched v63 baseline and v64 candidate terminal bundles. No Kaggle run was launched or restarted; no source, notebook, or runtime file was edited; the fresh bundles were read in place and not overwritten.",
+  "sources": {
+    "baseline": {
+      "bundle": "dee.cpp/tmp/v63-terminal-fetch-20260903T0048Z",
+      "run_id": "p2.3-dee4-trace-record-order-ab1-baseline-q6l3-v63",
+      "git_commit": "236bdb29cf77de6ac741f4f70f3c801a68bba5c4",
+      "raw_files": 18,
+      "raw_bytes": 9788160
+    },
+    "candidate": {
+      "bundle": "dee.cpp/tmp/v64-terminal-fetch-20260903T0120Z",
+      "run_id": "p2.3-dee4-trace-record-order-ab1-candidate-q6l3-v64",
+      "git_commit": "c3182fc4ecfad5f5bae8f8ad548087cc16a1e978",
+      "raw_files": 18,
+      "raw_bytes": 9789332
+    }
+  },
+  "verification": {
+    "git_commits_present_locally": true,
+    "all_18_embedded_artifact_hashes_recomputed_per_bundle": true,
+    "all_18_raw_file_hashes_recomputed_per_bundle": true,
+    "all_18_sealed_contract_gates_true_per_bundle": true,
+    "route_journal_independently_recomputed": "For each bundle, load_trace_selection independently verified canonical JSON, predecessor links, every SHA-256 chain value, contiguous record/forward/layer order, top-k bounds, and selection. The 16 generated checkpoints were then cross-linked to each completed 43-layer route forward, exact chain value, and exact prefix byte count.",
+    "dee4_integrity_independently_checked": "Both bundles contain 2364 dee4-integrity.jsonl records and the same DEE4 v3 metadata/validation/repack identity; success, contiguous indices, and complete integrity records are true.",
+    "hardware_independently_checked": "Each environment.json records exactly two CUDA devices, Tesla T4 and Tesla T4, both compute capability 7.5.",
+    "raw_bundle_preservation": "Read-only audit: no source bundle file was copied, modified, replaced, or deleted."
+  },
+  "correctness_and_execution": {
+    "expected_and_observed_token_ids": [666, 95140, 96807, 343, 4470, 20, 1127, 3298, 22, 22604, 515, 411, 3947, 85349, 14, 6341],
+    "expected_and_observed_decoded_text": "**Alan Turing (1912–1954)** was an English mathematician, computer",
+    "decoded_dash_codepoint": "U+2013",
+    "layers_executed": 43,
+    "finite_outputs": true,
+    "authoritative_router": "torch_cuda_validated_ds9_path",
+    "cpu_expert_execution": false,
+    "bridge_counters_zero": {
+      "numpy_bridge_calls": 0,
+      "full_hidden_d2h_copies": 0,
+      "raw_expert_output_d2h_copies": 0,
+      "hidden_h2d_copies": 0
+    },
+    "engine_fallbacks": {"cuda0": 0, "cuda1": 0},
+    "expert_store": "dee4_trace",
+    "cache_dtype": "fp4",
+    "classification_per_bundle": "ACCEPT_CORRECTNESS"
+  },
+  "route_journals": {
+    "baseline": {
+      "records": 688,
+      "completed_forwards": 16,
+      "layers_per_forward": 43,
+      "topk": 6,
+      "file_sha256": "ea13b233c966c58a755922b792bf09035c51cada98a4a1e1409f3e5bbc24bb61",
+      "final_chain_sha256": "a9fd27dcc07b07d0fbe2d5bf52290e2ff9ea09cfe32819adc481febd4ac7e7d8"
+    },
+    "candidate": {
+      "records": 688,
+      "completed_forwards": 16,
+      "layers_per_forward": 43,
+      "topk": 6,
+      "file_sha256": "ea82068b642320379f5f4e99c87d91eb15d9ec7aafc62148488bd46e94e55816",
+      "final_chain_sha256": "69ab32bef641a997bbb7eb6cea57fe18df6e5e92aefc295d2979251157c23778"
+    }
+  },
+  "dee4": {
+    "format": "dee4-v3-trace",
+    "integrity_records": 2364,
+    "record_bytes": 13369344,
+    "total_bytes": 31605129216,
+    "data_sha256": "c83462ba50d2154a241cabf7d2b8d084e46f2eaa54416a96c90770ca7172d6e8",
+    "v50_trace_journal_sha256": "665aac3e8db570237c6dc6acaf08dc39f2af890e8a04e400ce7154f1a858dae1",
+    "v50_trace_final_chain_sha256": "086f8ca83b6a3c467cdf950096141fa9bc3e55a285d7d1fed8a0ad9913e3eb3d",
+    "v50_selection_sha256": "7f41f8d0351491ce9d4b11b5317257c3dfb3ec282666fcac7cd711aa9bcd99bf",
+    "metadata_validation_repack_success": true
+  },
+  "hardware": {
+    "required_and_observed": "2x Tesla T4",
+    "gpu_count": 2,
+    "compute_capabilities": [7.5, 7.5],
+    "performance_hardware_eligible": true
+  },
+  "metrics": {
+    "baseline_v63": {"total_wall_s": 171.25, "prefill_s": 97.41508, "decode_wall_s": 71.315, "decode_tps": 0.210, "median_inter_token_ms": 4426.90, "p95_inter_token_ms": 6813.72},
+    "candidate_v64": {"total_wall_s": 170.92, "prefill_s": 97.85176, "decode_wall_s": 71.804, "decode_tps": 0.209, "median_inter_token_ms": 4543.59, "p95_inter_token_ms": 6871.42},
+    "candidate_minus_baseline": {
+      "total_wall_s": {"delta": -0.33, "percent": -0.193},
+      "prefill_s": {"delta": 0.43668, "percent": 0.448},
+      "decode_wall_s": {"delta": 0.489, "percent": 0.686},
+      "decode_tps": {"delta": -0.001, "percent": -0.476},
+      "median_inter_token_ms": {"delta": 116.69, "percent": 2.64},
+      "p95_inter_token_ms": {"delta": 57.70, "percent": 0.85}
+    }
+  },
+  "q6_l3_source_read_and_fill_telemetry": {
+    "queue_depth": 6,
+    "lanes": 3,
+    "unchanged_totals": {"storage_bytes": 33169342464, "expert_h2d_bytes": 59413364736},
+    "cuda0": {"read_ms": {"v63": 144304.616, "v64": 143273.052, "candidate_minus_baseline_percent": -0.714852}, "overlap_percent": {"v63": 62.0783, "v64": 62.1657}, "source_read_batches": {"v63": 413, "v64": 413}, "concurrent_source_read_batches": {"v63": 319, "v64": 319}},
+    "cuda1": {"read_ms": {"v63": 112256.363, "v64": 109418.886, "candidate_minus_baseline_percent": -2.527676}, "overlap_percent": {"v63": 62.1333, "v64": 62.1947}, "source_read_batches": {"v63": 351, "v64": 351}, "concurrent_source_read_batches": {"v63": 247, "v64": 247}}
+  },
+  "raw_sha256": {
+    "baseline_v63": {
+      "dee-cpp-dsv4-native-generate.log": "bce58b7ea0eeecc382a8787558a71fb7602f1cde86dbb26fec659ff9e7a62bbf",
+      "dee4-import-validation.json": "75b5773f326038675f40c1c63b02b6f57c7ec640e358ae3f852cc8506ac82593",
+      "dee4-integrity.jsonl": "55129bc080555d57caff1d89899de0e3cd85a8f5cfa57668b1b4ce6b1545fea4",
+      "dee4-metadata.json": "04c84e2d797b753a6ce9a3d926c763aee227bb29a9c5bb2366542401df84a1fb",
+      "dee4-repack_report.json": "34ddaf3e067c71e0eee332d88dc8e5372c56aaba470f923c2e51d2a92f39f5f8",
+      "dee4-trace-validation.json": "063ed2d0a97a226207d87fbd6ed92ade39a84f86947ecf15e0d7795bc7631718",
+      "environment.json": "31df355e3251354ac87727044afb68b9c9d0579c1f2a405870def2f5e939efb1",
+      "generated_checkpoint.jsonl": "c96142ce22795ec0ba7369b445e0140c8af71d962d3e1267acd404d375e54dba",
+      "integrity.json": "50bc8549f52e2efdea2c975e03d0d22a3885a26d16568bbbb6c0189b96a70ddc",
+      "memory.json": "3360619cf35167457b4e616a9bf2d7342fda83b406b4d286d55d791378ba09d1",
+      "model.safetensors.index.json": "98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b",
+      "native-generate-result.json": "7b82443b6689021c19f820826dbf29d47c3fa62ce18b0fce63ea14563c3826f7",
+      "p2.2-dee4-evidence.json": "c0e7625dc21b7dad6e3537c8a46c05d812ab096ae33e42003d615e3af7cb81c6",
+      "profile.json": "2156fd535fcd3b88a0b0406189060db1854bfd8dd775002e13817b8220e2cd81",
+      "progress.log": "a222ce71e10b4c37390e258505fbeae81df773c1712226f41d530dbd14d4b189",
+      "result.json": "7b82443b6689021c19f820826dbf29d47c3fa62ce18b0fce63ea14563c3826f7",
+      "routed_experts.jsonl": "ea13b233c966c58a755922b792bf09035c51cada98a4a1e1409f3e5bbc24bb61",
+      "run_config.json": "605b9834c8c38658f5e72d8ac11f0f4e894285942bfca1c09167ccb3127a0c4d"
+    },
+    "candidate_v64": {
+      "dee-cpp-dsv4-native-generate.log": "7e31f2189fad1d6fcb369749a10f0e2f4b8cf3d0053bf4d1151b38c80437fd0f",
+      "dee4-import-validation.json": "75b5773f326038675f40c1c63b02b6f57c7ec640e358ae3f852cc8506ac82593",
+      "dee4-integrity.jsonl": "55129bc080555d57caff1d89899de0e3cd85a8f5cfa57668b1b4ce6b1545fea4",
+      "dee4-metadata.json": "04c84e2d797b753a6ce9a3d926c763aee227bb29a9c5bb2366542401df84a1fb",
+      "dee4-repack_report.json": "216d4b0ed682289bfe65c5bdd90368712e07aa081a36768e57eea819161f1e1a",
+      "dee4-trace-validation.json": "063ed2d0a97a226207d87fbd6ed92ade39a84f86947ecf15e0d7795bc7631718",
+      "environment.json": "8980416eb4e273ae43be664f8f7804aa5d32736faa17a14f5169f1a0a9580815",
+      "generated_checkpoint.jsonl": "1bd91363fb2f2607c015d3a07d287cf4b2ab5057ae8a7004839e70dd6ae2d36b",
+      "integrity.json": "c2ccf55c5cc2b5c08bd65c1fbe7996313423ffcdba2ad826ea36c7ad125c3c47",
+      "memory.json": "21fbee36e891e6cff2bbb63388a62b9c9fdc68d6dc86dbd118c4c25776830d82",
+      "model.safetensors.index.json": "98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b",
+      "native-generate-result.json": "dd2f00a87a7a6fcf66359b1c880533c17e983c18255848b1cddc0e698dfb77a0",
+      "p2.2-dee4-evidence.json": "ec6e04fd467f037bf2b9009209bc67514e2d5853169eca09bee3cb2ceefbd569",
+      "profile.json": "ceab9de80bccc47b6774be1544ee5ca706be737540c4c08a156d073fc4f3a4c0",
+      "progress.log": "4b3fadfdb2885e6128db7d6a3766bfa66a7de8ca8c2ec346b455de12dfc2ce13",
+      "result.json": "dd2f00a87a7a6fcf66359b1c880533c17e983c18255848b1cddc0e698dfb77a0",
+      "routed_experts.jsonl": "ea82068b642320379f5f4e99c87d91eb15d9ec7aafc62148488bd46e94e55816",
+      "run_config.json": "f9d0380f2460d5da7e24b7ea02ac45226e062c8d990088a77f916eb2071ffe12"
+    }
+  },
+  "interpretation_caveat": "The ordering optimization is not supported as an end-to-end speedup claim by this single unprofiled n=1 pair. Total wall time is slightly lower, but prefill, decode, TPS, median ITL, and p95 ITL worsen. The modest storage-read reductions are directional/mechanistic only and require matched replication before causal or performance conclusions. CUDA1's precise recomputation is -2.527676% (-2.528% when rounded to three decimals), rather than -2.529%."
+}

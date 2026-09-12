@@ -1,0 +1,128 @@
+{
+  "session": "host-sync-fill",
+  "driver": "v2-20260909",
+  "arms": {
+    "FILL": {
+      "exit_code": 0,
+      "wall_s": 1203.5,
+      "wall_min": 20.1,
+      "classification": "ACCEPT_CORRECTNESS",
+      "decode_wall_s": 71.479,
+      "status": "COMPLETE",
+      "error_type": null,
+      "error": "",
+      "cap_check_ok": true,
+      "run_id": "host-sync-profile-17g-20260905-v1",
+      "result_path": "/kaggle/working/native-generate-result.json",
+      "result_found": true,
+      "stdout_lines": 9343,
+      "host_sync_emission": {
+        "engines": true,
+        "py_layers": 43
+      }
+    }
+  },
+  "dry_run_gate": {
+    "status": "PASS",
+    "nvidia_smi": [
+      "Tesla T4, 7.5, 15360 MiB",
+      "Tesla T4, 7.5, 15360 MiB"
+    ],
+    "dataset": "/kaggle/input/datasets/nivind/deepseek-v4-flash-0731-shards",
+    "disk": {
+      "/tmp": {
+        "free_gib": 1026.8,
+        "total_gib": 8062.4
+      },
+      "/kaggle/working": {
+        "free_gib": 19.5,
+        "total_gib": 19.5
+      },
+      "mem_gib": {
+        "MemTotal": 31.35,
+        "MemAvailable": 30.04
+      }
+    }
+  },
+  "variant_proof": {
+    "rules_applied": [
+      "run-id",
+      "profile-guard",
+      "profile-env",
+      "patch-apply",
+      "emission"
+    ],
+    "variant_sha256": "36aa545892978b63cb63c82c28bbccbf0b9b30e81bf3cee68eb481765851df49"
+  },
+  "fill_patch_sha256": "b68da4a91a9408da62552161345ecd1fd3ffed0e30427857be1d9d22b7efcd80",
+  "journal": {
+    "rows": 688,
+    "uses": 5676,
+    "bad_lines": 0,
+    "path": "/kaggle/working/fill/journal.txt"
+  },
+  "fill_build": {
+    "ok": true,
+    "binary": "/tmp/dsv4-native-src/dee.cpp/build-fill/fill_replay"
+  },
+  "fill_matrix": {
+    "bank": "/tmp/dsv4-dee4-v3-trace/metadata.json",
+    "cases": {
+      "replay_production": {
+        "argv": "/tmp/dsv4-native-src/dee.cpp/build-fill/fill_replay --mode replay --bank /tmp/dsv4-dee4-v3-trace/metadata.json --journal /kaggle/working/fill/journal.txt --lanes 3 --qdepth 6 --passes 2 --out /kaggle/working/fill/replay_production.timeline.json",
+        "tag": "replay_production",
+        "exit": 0,
+        "stdout": "{\"replay\":{\"calls\":5676,\"record_bytes\":13369344,\"lanes\":3,\"qdepth\":6,\"pread_service_ms\":650043,\"pread_calls\":6046,\"pread_short_reads\":0,\"pread_bytes\":80831053824,\"mincore_probed_bytes\":80831053824,\"mincore_resident_bytes\":12676456448}}\n",
+        "stderr": "fill_replay: pass 0 done code=0\nfill_replay: pass 1 done code=0\n",
+        "wall_s": 276.3
+      },
+      "replay_lanes1": {
+        "argv": "/tmp/dsv4-native-src/dee.cpp/build-fill/fill_replay --mode replay --bank /tmp/dsv4-dee4-v3-trace/metadata.json --journal /kaggle/working/fill/journal.txt --lanes 1 --qdepth 6 --passes 2 --out /kaggle/working/fill/replay_lanes1.timeline.json",
+        "tag": "replay_lanes1",
+        "exit": 0,
+        "stdout": "{\"replay\":{\"calls\":5676,\"record_bytes\":13369344,\"lanes\":1,\"qdepth\":6,\"pread_service_ms\":213432,\"pread_calls\":6046,\"pread_short_reads\":0,\"pread_bytes\":80831053824,\"mincore_probed_bytes\":80831053824,\"mincore_resident_bytes\":24018305024}}\n",
+        "stderr": "fill_replay: pass 0 done code=0\nfill_replay: pass 1 done code=0\n",
+        "wall_s": 229.7
+      },
+      "replay_qdepth1": {
+        "argv": "/tmp/dsv4-native-src/dee.cpp/build-fill/fill_replay --mode replay --bank /tmp/dsv4-dee4-v3-trace/metadata.json --journal /kaggle/working/fill/journal.txt --lanes 3 --qdepth 1 --passes 2 --out /kaggle/working/fill/replay_qdepth1.timeline.json",
+        "tag": "replay_qdepth1",
+        "exit": 0,
+        "stdout": "{\"replay\":{\"calls\":5676,\"record_bytes\":13369344,\"lanes\":3,\"qdepth\":1,\"pread_service_ms\":202851,\"pread_calls\":6046,\"pread_short_reads\":0,\"pread_bytes\":80831053824,\"mincore_probed_bytes\":80831053824,\"mincore_resident_bytes\":26434957312}}\n",
+        "stderr": "fill_replay: pass 0 done code=0\nfill_replay: pass 1 done code=0\n",
+        "wall_s": 219.2
+      },
+      "rider_seq": {
+        "argv": "/tmp/dsv4-native-src/dee.cpp/build-fill/fill_replay --mode rider --bank /tmp/dsv4-dee4-v3-trace/metadata.json --lanes 8 --pattern seq",
+        "tag": "rider_seq",
+        "exit": 0,
+        "stdout": "{\"rider\":{\"pattern\":\"seq\",\"records\":2364,\"lanes\":[{\"lanes\":1,\"wall_ms\":88890.3,\"gibps\":0.331134},{\"lanes\":2,\"wall_ms\":79585.2,\"gibps\":0.36985},{\"lanes\":3,\"wall_ms\":78055.6,\"gibps\":0.377097},{\"lanes\":4,\"wall_ms\":79746,\"gibps\":0.369104},{\"lanes\":5,\"wall_ms\":81901,\"gibps\":0.359392},{\"lanes\":6,\"wall_ms\":82982.5,\"gibps\":0.354708},{\"lanes\":7,\"wall_ms\":84322.9,\"gibps\":0.34907},{\"lanes\":8,\"wall_ms\":85187.5,\"gibps\":0.345527}]}}\n",
+        "stderr": "fill_replay: rider resolved 2364 of 11008 grid pairs (sparse trace bank)\n",
+        "wall_s": 660.7
+      },
+      "rider_rand": {
+        "argv": "/tmp/dsv4-native-src/dee.cpp/build-fill/fill_replay --mode rider --bank /tmp/dsv4-dee4-v3-trace/metadata.json --lanes 8 --pattern rand",
+        "tag": "rider_rand",
+        "exit": 0,
+        "stdout": "{\"rider\":{\"pattern\":\"rand\",\"records\":2364,\"lanes\":[{\"lanes\":1,\"wall_ms\":79027.5,\"gibps\":0.37246},{\"lanes\":2,\"wall_ms\":64373.2,\"gibps\":0.457249},{\"lanes\":3,\"wall_ms\":61801.2,\"gibps\":0.476279},{\"lanes\":4,\"wall_ms\":58189.9,\"gibps\":0.505836},{\"lanes\":5,\"wall_ms\":85628.3,\"gibps\":0.343748},{\"lanes\":6,\"wall_ms\":59136,\"gibps\":0.497743},{\"lanes\":7,\"wall_ms\":62953,\"gibps\":0.467564},{\"lanes\":8,\"wall_ms\":60775.8,\"gibps\":0.484314}]}}\n",
+        "stderr": "fill_replay: rider resolved 2364 of 11008 grid pairs (sparse trace bank)\n",
+        "wall_s": 532.0
+      }
+    },
+    "status": "ok"
+  },
+  "disk_at_end": {
+    "/tmp": {
+      "free_gib": 996.7,
+      "total_gib": 8062.4
+    },
+    "/kaggle/working": {
+      "free_gib": 19.5,
+      "total_gib": 19.5
+    },
+    "mem_gib": {
+      "MemTotal": 31.35,
+      "MemAvailable": 30.06
+    }
+  }
+}
