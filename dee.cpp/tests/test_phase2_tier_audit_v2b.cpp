@@ -275,7 +275,7 @@ struct StderrCapture {
         saved_fd = AUDIT_DUP(AUDIT_FILENO(stderr));
         tmp = std::tmpfile();
         if (saved_fd < 0 || !tmp) { end(); return false; }
-        ok = AUDIT_DUP2(AUDIT_FILENO(tmp), AUDIT_FILENO(stderr)) == 0;
+        ok = AUDIT_DUP2(AUDIT_FILENO(tmp), AUDIT_FILENO(stderr)) != -1;
         return ok;
     }
     std::string end() {
