@@ -305,30 +305,47 @@ zero post-3335b79 commits touch dee.cpp/src or dee.cpp/include):
 
 RESOLVED LEDGER (campaign doc §9 numbering; PARALLEL lanes — user
 clarified 2026-09-11 the caps are 10 parallel CPU + 2 parallel GPU):
-    CPU 1/10  remote build+host-test gate   RUNNING (build-gate v6 @ 3a6e346 —
-              v4/v5 exposed real Linux-only test bug: POSIX dup2 returns newfd
-              not 0; v2b stderr capture checked ==0 -> 14 false fails; fixed)
+    CPU 1/10  remote build+host-test gate   COMPLETE 2026-09-12 — 21/21 ctests
+              PASS on Linux gcc @ 3a6e346 (dup2 portability fix confirmed)
     CPU 2/10  trace-bank segmentation       SUPERSEDED 2026-09-11 — dee4-v4
               segments are contiguous-per-bucket; sparse trace bank needs a
               new format for ~250s repack savings; CPU-4 already exercises
               segment+publish machinery at full-store scale
-    CPU 3/10  fill_replay remote replay     RUNNING (fill-replay v5 — v4 repack
-              OK 963s via nested mount; driver passed positional 'replay' but
-              tool takes --mode; fixed)
-    CPU 4/10  Phase-3 full-store build      RUNNING (p3 v3 @ 06da5f2 — v2 found
-              in-kernel kaggle 2.0.x dataset_create_version returns empty status
-              on success; remote-verify fallback added)
-    CPU 5/10  p3 resume contingency         held pending CPU-4 outcome
+    CPU 3/10  fill_replay remote replay     COMPLETE — v6 end-to-end: 5,676
+              calls replayed over repacked bank, 2 passes, fill_timeline.json
+              captured (~120-155 ms/12.75 MiB record, ~0.25 GiB/s single-
+              stream, consistent with Phase-1 storage ceiling)
+    CPU 4/10  Phase-3 full-store build      COMPLETE 2026-09-12 — all 46
+              buckets built (157,437,394,944 B / 146.625 GiB, 11,776 records)
+              + published; kernel status ERROR was a false negative: index
+              version-verify raced Kaggle async processing. Mount-sourced,
+              build_wall 11,044 s, zero push errors.
+    CPU 5/10  p3 store audit + b13 repair   COMPLETE 2026-09-12 — audit v3
+              PASS 17/17: all 46 listings/sizes correct, b13+b45 sampled
+              sha256 match journal. b13 was a torn publish (listed 3.42 GB,
+              served 4.64 GB member): reconstructed segment from
+              p3_records ranges + mounted shards (safetensors absolute =
+              8+header_len+data_offset — v1/v2 missed the header base,
+              FAIL_METHOD), b45 control proved method byte-exact, rebuilt
+              sha == journal b686e1b0 (journal was always right), repushed
+              as new dataset version. Kernels: dee-p3-store-audit-cpu5 v3,
+              dee-p3-b13-repair v3.
     CPU 6/10  t_cpu(1) real-geometry bench  COMPLETE — portable-torch
               2,750 ms/expert, ~90x over 25-30 ms bound; CPU-sink lever dead on
               portable path (recorded R5/roadmap)
     CPU 7-10  reserve
-    GPU 1/2   4-arm Phase-2 causal campaign RUNNING (campaign v67 @ 074111e —
+    GPU 1/2   4-arm Phase-2 causal campaign COMPLETE 2026-09-12 — v67 @
+              074111e, ACCEPT_CORRECTNESS: identical routed_experts SHA
+              across all 4 arms (smoke 23696876, reps f20f63ff), drift
+              bracket exact+in-band, tier path ~= baseline wall (~295s).
+              P4 found shards at the LEGACY flat mount (GPU sessions mount
+              flat; the nested path was CPU-kernel-specific). Original:
               v66 aborted on sealed-text transit guard: Kaggle push transcodes
               UTF-8; literal en-dash -> \u2013 escape. NOTE: dataset mount moved
               to /kaggle/input/datasets/<owner>/<slug>/; outer driver uses
               legacy flat path -> P4 falls back to HF download, slower)
-    GPU 2/2   decision tree — HELD pending GPU-1 outcome
+    GPU 2/2   Phase-3 arbitrary-prompt/full-store inference — UNBLOCKED by
+              CPU-5 audit PASS; awaiting preflight-gate sign-off
     NOTE: PHASE3_BUILD_PLAN.md/kernel id "cpu1" is cosmetic; the store
     build is CPU 4/10 in the authoritative ledger.
 
