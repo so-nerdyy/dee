@@ -329,13 +329,15 @@ research/DEE_ROADMAP_REVISED.md. R13 resident-garbage fix integrated into
 integration/phase2-campaign @ 79eac7e (15/15 ctests). Headline synthesis:
 (1) prefetch-hint surface needs lead>=2 AND precision>=0.75 to clear the
 idle-gap bound — k=1 mechanisms worth 0 s on sealed bank; (2) CPU hybrid
-miss execution is the wall-sized post-Phase-2 lever (overlapped break-even
-t_cpu<=~25-30 ms; ~6-9 s stage-enqueue prize); (3) llama.cpp is the only
+miss execution: portable-torch t_cpu(1) MEASURED 2,750 ms/expert (CPU 6/10)
+— ~90x over the ~25-30 ms overlapped bound; portable path dead, only a
+tuned AVX2 kernel (unbuilt) could clear; demoted from near-term lever to
+post-Phase-3 option; (3) llama.cpp is the only
 matched-runnable baseline (one GGUF-conversion CPU batch); (4) MoE-Infinity
 repo already offloads DSv4-Flash FP4 = free cross-validation; (5) request-
 aware caching flips LRU +20-27pp only under multi-request traces. No GPU
 Batch #1 changes — gate_trace instrumentation is non-scored-rep only.
-Ledger still CPU 0/10, GPU 0/2.
+Ledger: CPU 1,3,4,6 launched (parallel); GPU 1 running; see resolved ledger.
 
 ## Financial posture
 
