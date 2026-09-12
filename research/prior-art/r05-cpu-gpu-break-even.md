@@ -37,10 +37,13 @@ pay.** Per-miss, measured on the sealed bank:
   **invariant across sink choice** — a CPU executor still needs the record
   in RAM before it can compute.
 - `T_cpu_path` ≈ `t_d2h_act` (~0.02–0.06 ms, 16 KiB) + `t_cpu(m)` +
-  `t_h2d_out` (~0.01–0.05 ms, 16 KiB) + join. `t_cpu(1)` is **UNKNOWN** at
-  real geometry; DERIVED band: ~2–6 ms for a tuned AVX2/AVX-512 single-core
-  kernel, ~15–40 ms for the portable fp32 reference, ~1–3 ms for a 4-vCPU
-  parallel tile.
+  `t_h2d_out` (~0.01–0.05 ms, 16 KiB) + join. `t_cpu(1)` is **MEASURED
+  (2026-09-11, Kaggle CPU session, kernel dee-tcpu-real-geometry):
+  portable-torch reference p50 ≈ 2,750 ms/expert** — ~90x over the
+  overlapped bound, ~700x over serial. The DERIVED band stands only for
+  kernels that do not exist yet: ~2–6 ms tuned AVX2/AVX-512 single-core,
+  ~1–3 ms 4-vCPU parallel tile — i.e. the CPU-sink lever is viable ONLY
+  via a new tuned dequant+GEMV kernel, never via the portable path.
 
 Therefore:
 
@@ -194,7 +197,7 @@ Per-record service times:
 | pinned gather memcpy (12.75 MiB) | ~0.7–1.3 ms at 10–20 GB/s host copy | DERIVED |
 | activation D2H (16 KiB) | ~0.02–0.06 ms (route-D2H floor 0.022 ms @ 168 B) | DERIVED |
 | result H2D (16 KiB fp32) | ~0.01–0.05 ms | DERIVED |
-| `t_cpu(1)` Kaggle host, real geometry | **UNKNOWN** — DERIVED bounds below | UNKNOWN |
+| `t_cpu(1)` Kaggle host, real geometry | **MEASURED 2026-09-11** — portable-torch `expert_forward_reference` at H=4096/I=2048: **p50 2,750.7 ms, min 2,678.9 ms** (30 reps, threads 1/2/4 within noise — BLAS-bound). ~2.7 s/expert ≈ **18 MFLOP/s effective** — ~90x over the ~25–30 ms overlapped bound, ~700x over serial. Kaggle kernel `nivind/dee-tcpu-real-geometry` v1 @ 79eac7e. | MEASURED |
 
 `t_cpu(1)` bounds for H=4096/I=2048, 25,165,824 params ≈ 50.3 MFLOP:
 
