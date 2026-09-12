@@ -537,9 +537,25 @@ class KagglePublisher:
             str(staging_dir), notes, quiet=self.quiet,
             convert_to_csv=False, delete_old_versions=False,
             dir_mode="skip")
-        if getattr(resp, "status", "") != "ok":
-            raise PublishError(
-                f"dataset version failed: {getattr(resp, 'error', resp)}")
+        if getattr(resp, "status", "") == "ok":
+            return
+        # Older in-kernel kaggle (2.0.x) reports an ambiguous/empty status
+        # even when the version upload succeeded; verify remotely before
+        # failing closed.
+        try:
+            meta = json.loads(
+                (staging_dir / "dataset-metadata.json").read_text())
+            staged = {p.name for p in staging_dir.iterdir()
+                      if p.name != "dataset-metadata.json"}
+            listing = api.dataset_list_files(meta["id"])
+            remote = {getattr(f, "name", getattr(f, "file_name", ""))
+                      for f in (getattr(listing, "files", listing) or [])}
+            if staged and staged <= remote:
+                return
+        except Exception:
+            pass
+        raise PublishError(
+            f"dataset version failed: {getattr(resp, 'error', resp)}")
 
     def publish(
         self,
