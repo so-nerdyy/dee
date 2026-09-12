@@ -282,7 +282,8 @@ IS INSUFFICIENT, ARMS INCLUDED, SUCCESS CRITERIA, FAILURE CRITERIA,
 ARTIFACTS EXPECTED. If a run can't answer a roadmap-relevant question,
 don't spend it.
 
-Current ledger: CPU 0/10, GPU 0/2.
+Current ledger (resolved ledger below is authoritative): CPU lanes
+1,3,4 in-flight + 6 complete; GPU lane 1 in-flight; see resolved ledger.
 
 ## Canonical heads + research-head state (2026-09-11)
 
@@ -304,19 +305,29 @@ zero post-3335b79 commits touch dee.cpp/src or dee.cpp/include):
 
 RESOLVED LEDGER (campaign doc §9 numbering; PARALLEL lanes — user
 clarified 2026-09-11 the caps are 10 parallel CPU + 2 parallel GPU):
-    CPU 1/10  remote build+host-test gate   RUNNING (dee-cpp-cpu-build-gate v1)
+    CPU 1/10  remote build+host-test gate   RUNNING (build-gate v6 @ 3a6e346 —
+              v4/v5 exposed real Linux-only test bug: POSIX dup2 returns newfd
+              not 0; v2b stderr capture checked ==0 -> 14 false fails; fixed)
     CPU 2/10  trace-bank segmentation       SUPERSEDED 2026-09-11 — dee4-v4
               segments are contiguous-per-bucket; sparse trace bank needs a
               new format for ~250s repack savings; CPU-4 already exercises
               segment+publish machinery at full-store scale
-    CPU 3/10  fill_replay remote replay     RUNNING (dee-fill-replay-cpu3 v1)
-    CPU 4/10  Phase-3 full-store build      RUNNING (dee4-p3-store-build-cpu1 v1)
+    CPU 3/10  fill_replay remote replay     RUNNING (fill-replay v5 — v4 repack
+              OK 963s via nested mount; driver passed positional 'replay' but
+              tool takes --mode; fixed)
+    CPU 4/10  Phase-3 full-store build      RUNNING (p3 v3 @ 06da5f2 — v2 found
+              in-kernel kaggle 2.0.x dataset_create_version returns empty status
+              on success; remote-verify fallback added)
     CPU 5/10  p3 resume contingency         held pending CPU-4 outcome
-    CPU 6/10  t_cpu(1) real-geometry bench  RUNNING (dee-tcpu-real-geometry v1)
-              (R5 gating measurement: portable executor, 4096/2048, thread sweep)
+    CPU 6/10  t_cpu(1) real-geometry bench  COMPLETE — portable-torch
+              2,750 ms/expert, ~90x over 25-30 ms bound; CPU-sink lever dead on
+              portable path (recorded R5/roadmap)
     CPU 7-10  reserve
-    GPU 1/2   4-arm Phase-2 causal campaign RUNNING (dee-cpp-dsv4-phase2-campaign
-              v66 @ 79eac7e — A0/A1/A2/A3 + drift bracket, ~2-3.2 h)
+    GPU 1/2   4-arm Phase-2 causal campaign RUNNING (campaign v67 @ 074111e —
+              v66 aborted on sealed-text transit guard: Kaggle push transcodes
+              UTF-8; literal en-dash -> \u2013 escape. NOTE: dataset mount moved
+              to /kaggle/input/datasets/<owner>/<slug>/; outer driver uses
+              legacy flat path -> P4 falls back to HF download, slower)
     GPU 2/2   decision tree — HELD pending GPU-1 outcome
     NOTE: PHASE3_BUILD_PLAN.md/kernel id "cpu1" is cosmetic; the store
     build is CPU 4/10 in the authoritative ledger.
