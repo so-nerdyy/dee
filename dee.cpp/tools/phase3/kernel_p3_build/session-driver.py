@@ -63,7 +63,7 @@ from typing import Any
 
 REPO_URL = "https://github.com/so-nerdyy/dee"
 BRANCH = "research/phase3-build-execution"
-PINNED_COMMIT = "42ed81059fa357161009251fb3791b8be36de994"
+PINNED_COMMIT = "06da5f2f64c69c937e0050b204e2c937b51aa7d7"
 DRIVER_REL = "dee.cpp/tools/phase3/p3_kaggle_job.py"
 HEADERS_REL = ("dee.cpp/benchmark_reports/deepseek-v4-flash-0731-t4/"
                "shard-headers")
