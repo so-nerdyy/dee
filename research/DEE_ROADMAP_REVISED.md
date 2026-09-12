@@ -72,17 +72,21 @@ store build either way.
   the hint engine first means building machinery whose best legal input
   may not exist.
 - **CPU-sink side (R5)**: break-even `t_cpu(1) ≲ 25–30 ms` under worker
-  overlap — a bar the *portable fp32 reference* (~15–40 ms derived) plausibly
-  clears, and a tuned AVX2 kernel (~2–6 ms) clears outright. Prize:
-  ~6–9 s of stage-enqueue + VRAM-churn relief, PLUS the T9 pool revives
-  under its preserved §7(c) CPU-decoupling clause. The exactness contract
-  is settled (gate-equivalence to fp32 reference + deterministic partition
-  + re-seal).
-- **Ordering**: measure `t_cpu(1)` at real geometry (Kaggle CPU batch —
-  CPU 6/10-class) → if ≤~30 ms, build the R6 seam (G1–G3 first cell:
-  synchronous EXECUTE_FROM_HOST on host-API paths — needs zero new sync
-  machinery) → then overlap (G4 submit/join). Predictor work stays gated
-  on gate_trace recall evidence, which costs nothing but a capture run.
+  overlap. **MEASURED 2026-09-11 (CPU 6/10, kernel dee-tcpu-real-geometry):
+  the portable-torch reference runs ~2,750 ms/expert at real geometry —
+  ~90x over the bound. The portable path is dead.** Only a tuned
+  AVX2/AVX-512 dequant+GEMV kernel (~2–6 ms derived, does not exist yet)
+  could clear it. Prize if a kernel is built: ~6–9 s stage-enqueue +
+  VRAM-churn relief, PLUS the T9 pool revives under its §7(c)
+  CPU-decoupling clause. The exactness contract is settled
+  (gate-equivalence to fp32 reference + deterministic partition + re-seal).
+- **Ordering (REVISED by the measurement)**: CPU hybrid is no longer a
+  near-term lever — it requires authoring a tuned kernel first, which is
+  its own work item. Revised sequence: Phase-2 gate → Phase-3
+  arbitrary-prompt → THEN decide between (a) tuned-CPU-kernel authoring
+  (est. days of kernel work + exactness validation, prize ~6–9 s) and
+  (b) predictor-prefetch (needs lead≥2 + precision≥0.75, prize ~8–13 s).
+  Predictor work stays gated on gate_trace recall evidence.
 
 ## 6. What requires multi-request serving traces
 
