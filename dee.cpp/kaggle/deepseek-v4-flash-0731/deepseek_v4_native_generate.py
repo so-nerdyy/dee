@@ -33,7 +33,10 @@ N_SHARDS = 48
 # /kaggle/temp is NOT present on the dual-T4 "medium" container (verified via
 # a disk probe on 2026-08-15); /tmp and / both sit on the ~8 TB root overlay
 # with ~1 TiB free, so stage the 167 GB checkpoint there instead.
-ROOT = Path("/tmp/dsv4-native-src")
+# NATIVE_SOURCE_TREE lets an outer driver hand in a pre-cloned/pre-built
+# tree (GPU-2 session driver): the self-clone of BRANCH is skipped and the
+# existing build-kaggle/pydee artifacts are reused incrementally.
+ROOT = Path(os.environ.get("NATIVE_SOURCE_TREE", "/tmp/dsv4-native-src"))
 DEE = ROOT / "dee.cpp"
 BUILD = DEE / "build-kaggle"
 CKPT = Path("/tmp/dsv4-checkpoint")
@@ -950,10 +953,15 @@ def main() -> int:
     tmp_free = res.get("/tmp", {}).get("free_gb", 0)
 
     log("=== clone + checkout ===")
-    if ROOT.exists():
-        run(["rm", "-rf", str(ROOT)])
-    run(["git", "clone", "--branch", BRANCH, "--single-branch",
-         REPO, str(ROOT)])
+    if os.environ.get("NATIVE_SOURCE_TREE"):
+        if not (DEE / "CMakeLists.txt").is_file():
+            raise RuntimeError(f"NATIVE_SOURCE_TREE invalid: {ROOT}")
+        log(f"reusing driver-provided source tree {ROOT}")
+    else:
+        if ROOT.exists():
+            run(["rm", "-rf", str(ROOT)])
+        run(["git", "clone", "--branch", BRANCH, "--single-branch",
+             REPO, str(ROOT)])
     if COMMIT:
         run(["git", "-C", str(ROOT), "checkout", "--quiet", COMMIT])
     head = subprocess.check_output(
