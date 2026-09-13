@@ -1010,7 +1010,8 @@ bool Dee4ExpertStore::materialize(const ExpertView& view, uint8_t* dst,
         const size_t kPage = 4096;
         const size_t pages = (nbytes + kPage - 1) / kPage;
         std::vector<unsigned char> vec(pages, 0);
-        if (::mincore(mapped + offset, nbytes, vec.data()) == 0) {
+        if (::mincore(const_cast<uint8_t*>(mapped) + offset, nbytes,
+                      vec.data()) == 0) {
             probed_bytes = nbytes;
             size_t resident_pages = 0;
             for (size_t i = 0; i < pages; ++i) resident_pages += (vec[i] & 1u);
