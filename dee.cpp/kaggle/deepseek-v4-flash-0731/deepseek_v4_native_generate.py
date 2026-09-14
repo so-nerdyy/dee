@@ -1507,444 +1507,478 @@ def main() -> int:
     build_s = time.monotonic() - t0
     log(f"model build {build_s:.1f}s")
 
-    log("=== tokenize + greedy decode ===")
-    ids = tokenizer.encode(CANONICAL_PROMPT)
-    input_ids = torch.tensor([ids], device="cuda:0").long()
-    decode_ms: list[float] = []
-    if not eng0.reset_external_profile():
-        raise RuntimeError(
-            "cuda0 external-profile reset failed before measured generation: "
-            f"{eng0.last_error_message() or 'no native diagnostic'}"
-        )
-    if not SINGLE_GPU and not eng1.reset_external_profile():
-        raise RuntimeError(
-            "cuda1 external-profile reset failed before measured generation: "
-            f"{eng1.last_error_message() or 'no native diagnostic'}"
-        )
-    # v12: checkpoint every generated token to /kaggle/working so an OOM kill
-    # (v9/v11 lost ALL tokens) still leaves the exact token stream + timing.
-    # The checkpoint file format is a JSONL of per-token records; the final
-    # RESULT block below mirrors the old single-JSON shape.
-    CHECKPOINT = WORK / "generated_checkpoint.jsonl"
-    cp_handle = open(CHECKPOINT, "w", encoding="utf-8")
-    ROUTE_JOURNAL_PATH = WORK / "routed_experts.jsonl"
-    route_journal = RoutedExpertJournal(
-        ROUTE_JOURNAL_PATH, run_id=RUN_ID, n_layers=cfg.n_layers,
-        topk=cfg.topk)
-    route_step = 0
-    route_start_pos = 0
+    # Multi-prompt mode: NATIVE_PROMPTS_JSON carries a JSON list of prompt
+    # strings; engines + model are built ONCE and every prompt runs through
+    # the same process (one store open+seal per engine, not per prompt).
+    # With the env absent, behavior is identical: one prompt, suffix "".
+    _prompts_json = os.environ.get("NATIVE_PROMPTS_JSON", "")
+    try:
+        PROMPT_LIST = (json.loads(_prompts_json) if _prompts_json else None)
+    except Exception:
+        PROMPT_LIST = None
+    if not PROMPT_LIST:
+        PROMPT_LIST = [CANONICAL_PROMPT]
+    _multi = len(PROMPT_LIST) > 1
 
-    def _route_checkpoint(layer_id: int) -> None:
-        """Persist the exact CPU route buffer already consumed by native."""
-        nonlocal route_step, route_start_pos
-        layer = model.layer(int(layer_id))
-        ids_host = getattr(
-            layer.ffn_fn, "_native_route_ids_host", None)
-        if ids_host is None:
+    def _run_prompt(prompt_text: str, qi: int):
+        global CANONICAL_PROMPT, SEAL_APPLICABLE
+        CANONICAL_PROMPT = prompt_text
+        SEAL_APPLICABLE = prompt_text == SEALED_PROMPT
+        suffix = f"-q{qi}" if _multi else ""
+        log(f"=== prompt {qi}: {len(prompt_text)} chars, "
+            f"seal_applicable={SEAL_APPLICABLE} ===")
+        log("=== tokenize + greedy decode ===")
+        ids = tokenizer.encode(prompt_text)
+        input_ids = torch.tensor([ids], device="cuda:0").long()
+        decode_ms: list[float] = []
+        if not eng0.reset_external_profile():
             raise RuntimeError(
-                f"native route buffer unavailable after layer {layer_id}")
-        if bool(getattr(ids_host, "is_cuda", False)):
-            raise RuntimeError(
-                f"route journal refuses a device read at layer {layer_id}")
-        route_journal.append_layer(
-            step=route_step, start_pos=route_start_pos,
-            layer=int(layer_id), device=str(layer.device),
-            expert_ids=ids_host)
-        if int(layer_id) == cfg.n_layers - 1:
-            route_step += 1
-            route_start_pos = len(ids) + route_step - 1
-
-    def _token_checkpoint(step: int, tok: int) -> None:
-        mem = host_mem_available_gib()
-        rec = {"step": step, "token_id": int(tok),
-               "elapsed_s": round(time.monotonic() - t0, 2),
-               "host_mem_available_gib": round(mem, 2)}
-        # This link is admitted only after the same forward's layer 42 row
-        # has been flushed and fsynced.  A token checkpoint can therefore
-        # never claim a partially journaled route.
-        rec["route_journal"] = route_journal.checkpoint_link(step)
-        # v15 diagnostics: process + system memory breakdown and engine
-        # cache counters, so a v12-style OOM is attributable to a component
-        # (heap vs pinned vs page cache) instead of a mystery "leak".
-        rec["proc"] = process_mem_gib()
-        rec["sys"] = system_mem_gib()
-        try:
-            rec["host_pack0"] = eng0.host_pack_stats()
-            rec["host_pack1"] = eng1.host_pack_stats()
-            _checkpoint_engines = (
-                (("cuda0", eng0),) if SINGLE_GPU
-                else (("cuda0", eng0), ("cuda1", eng1))
+                "cuda0 external-profile reset failed before measured generation: "
+                f"{eng0.last_error_message() or 'no native diagnostic'}"
             )
-            rec["engine_stats"] = {
-                key: json.loads(engine.last_stats_json())
-                for key, engine in _checkpoint_engines
-            }
-            rec["expert_store"] = {
-                key: engine.expert_store_stats()
-                for key, engine in _checkpoint_engines
-            }
-            rec["host_pack"] = {
-                key: engine.host_pack_stats()
-                for key, engine in _checkpoint_engines
-            }
-        except Exception:
-            pass
+        if not SINGLE_GPU and not eng1.reset_external_profile():
+            raise RuntimeError(
+                "cuda1 external-profile reset failed before measured generation: "
+                f"{eng1.last_error_message() or 'no native diagnostic'}"
+            )
+        # v12: checkpoint every generated token to /kaggle/working so an OOM kill
+        # (v9/v11 lost ALL tokens) still leaves the exact token stream + timing.
+        # The checkpoint file format is a JSONL of per-token records; the final
+        # RESULT block below mirrors the old single-JSON shape.
+        CHECKPOINT = WORK / f"generated_checkpoint{suffix}.jsonl"
+        cp_handle = open(CHECKPOINT, "w", encoding="utf-8")
+        ROUTE_JOURNAL_PATH = WORK / f"routed_experts{suffix}.jsonl"
+        route_journal = RoutedExpertJournal(
+            ROUTE_JOURNAL_PATH, run_id=RUN_ID, n_layers=cfg.n_layers,
+            topk=cfg.topk)
+        route_step = 0
+        route_start_pos = 0
+
+        def _route_checkpoint(layer_id: int) -> None:
+            """Persist the exact CPU route buffer already consumed by native."""
+            nonlocal route_step, route_start_pos
+            layer = model.layer(int(layer_id))
+            ids_host = getattr(
+                layer.ffn_fn, "_native_route_ids_host", None)
+            if ids_host is None:
+                raise RuntimeError(
+                    f"native route buffer unavailable after layer {layer_id}")
+            if bool(getattr(ids_host, "is_cuda", False)):
+                raise RuntimeError(
+                    f"route journal refuses a device read at layer {layer_id}")
+            route_journal.append_layer(
+                step=route_step, start_pos=route_start_pos,
+                layer=int(layer_id), device=str(layer.device),
+                expert_ids=ids_host)
+            if int(layer_id) == cfg.n_layers - 1:
+                route_step += 1
+                route_start_pos = len(ids) + route_step - 1
+
+        def _token_checkpoint(step: int, tok: int) -> None:
+            mem = host_mem_available_gib()
+            rec = {"step": step, "token_id": int(tok),
+                   "elapsed_s": round(time.monotonic() - t0, 2),
+                   "host_mem_available_gib": round(mem, 2)}
+            # This link is admitted only after the same forward's layer 42 row
+            # has been flushed and fsynced.  A token checkpoint can therefore
+            # never claim a partially journaled route.
+            rec["route_journal"] = route_journal.checkpoint_link(step)
+            # v15 diagnostics: process + system memory breakdown and engine
+            # cache counters, so a v12-style OOM is attributable to a component
+            # (heap vs pinned vs page cache) instead of a mystery "leak".
+            rec["proc"] = process_mem_gib()
+            rec["sys"] = system_mem_gib()
+            try:
+                rec["host_pack0"] = eng0.host_pack_stats()
+                rec["host_pack1"] = eng1.host_pack_stats()
+                _checkpoint_engines = (
+                    (("cuda0", eng0),) if SINGLE_GPU
+                    else (("cuda0", eng0), ("cuda1", eng1))
+                )
+                rec["engine_stats"] = {
+                    key: json.loads(engine.last_stats_json())
+                    for key, engine in _checkpoint_engines
+                }
+                rec["expert_store"] = {
+                    key: engine.expert_store_stats()
+                    for key, engine in _checkpoint_engines
+                }
+                rec["host_pack"] = {
+                    key: engine.host_pack_stats()
+                    for key, engine in _checkpoint_engines
+                }
+            except Exception:
+                pass
+            try:
+                rec["bridge"] = model.bridge_counters()
+            except Exception:
+                pass
+            cp_handle.write(json.dumps(rec) + "\n")
+            cp_handle.flush()
+            os.fsync(cp_handle.fileno())
+            if step % 4 == 0 or mem < 4.0:
+                log(f"[tok {step}] id={int(tok)} elapsed={rec['elapsed_s']}s "
+                    f"mem_avail={rec['host_mem_available_gib']}GiB")
+                pm = rec.get("proc", {})
+                hp0 = rec.get("host_pack0", {})
+                log(f"[tok {step}] proc={pm} hp0_bytes_gib="
+                    f"{hp0.get('bytes', 0) / (1 << 30):.1f} "
+                    f"hp0_entries={hp0.get('entries', 0)} "
+                    f"hp0_evict={hp0.get('evictions', 0)}")
+
+        t0 = time.monotonic()
         try:
-            rec["bridge"] = model.bridge_counters()
-        except Exception:
-            pass
-        cp_handle.write(json.dumps(rec) + "\n")
-        cp_handle.flush()
-        os.fsync(cp_handle.fileno())
-        if step % 4 == 0 or mem < 4.0:
-            log(f"[tok {step}] id={int(tok)} elapsed={rec['elapsed_s']}s "
-                f"mem_avail={rec['host_mem_available_gib']}GiB")
-            pm = rec.get("proc", {})
-            hp0 = rec.get("host_pack0", {})
-            log(f"[tok {step}] proc={pm} hp0_bytes_gib="
-                f"{hp0.get('bytes', 0) / (1 << 30):.1f} "
-                f"hp0_entries={hp0.get('entries', 0)} "
-                f"hp0_evict={hp0.get('evictions', 0)}")
+            toks = model.generate(
+                input_ids, max_new_tokens=N_TOKENS,
+                decode_timings_ms=decode_ms,
+                post_step_hook=_token_checkpoint,
+                post_layer_hook=_route_checkpoint)
+            wall_s = time.monotonic() - t0
+        finally:
+            route_journal.close()
+            cp_handle.close()
+        log(f"decode done in {wall_s:.1f}s, {len(toks)} tokens")
 
-    t0 = time.monotonic()
-    try:
-        toks = model.generate(
-            input_ids, max_new_tokens=N_TOKENS,
-            decode_timings_ms=decode_ms,
-            post_step_hook=_token_checkpoint,
-            post_layer_hook=_route_checkpoint)
-        wall_s = time.monotonic() - t0
-    finally:
-        route_journal.close()
-        cp_handle.close()
-    log(f"decode done in {wall_s:.1f}s, {len(toks)} tokens")
+        prefill_ms = decode_ms[0] if decode_ms else 0.0
+        decode_only = decode_ms[1:]
+        decode_sum_s = sum(decode_only) / 1000.0
+        decode_tok_s = (len(decode_only) / decode_sum_s
+                        if decode_sum_s > 0 else float("inf"))
+        lat = sorted(decode_only)
+        p50 = lat[len(lat) // 2] if lat else 0.0
+        p95 = lat[min(len(lat) - 1, int(0.95 * len(lat)))] if lat else 0.0
+        text = tokenizer.decode(toks)
 
-    prefill_ms = decode_ms[0] if decode_ms else 0.0
-    decode_only = decode_ms[1:]
-    decode_sum_s = sum(decode_only) / 1000.0
-    decode_tok_s = (len(decode_only) / decode_sum_s
-                    if decode_sum_s > 0 else float("inf"))
-    lat = sorted(decode_only)
-    p50 = lat[len(lat) // 2] if lat else 0.0
-    p95 = lat[min(len(lat) - 1, int(0.95 * len(lat)))] if lat else 0.0
-    text = tokenizer.decode(toks)
-
-    result = {
-        "run_id": RUN_ID,
-        "commit": head,
-        "host_mem_available_gib": round(mem_avail, 2),
-        "host_pack_budget_gib": [round(pack_budget0 / (1 << 30), 2),
-                                  round(pack_budget1 / (1 << 30), 2)],
-        "model_revision": REV,
-        "gpu_environment": gpu_environment,
-        "cache_dtype": CACHE_DTYPE,
-        "expert_store_backend": EXPERT_STORE_BACKEND,
-        "expert_store_path": dee4_store_path,
-        "prompt": CANONICAL_PROMPT,
-        "prompt_len": len(ids),
-        "n_tokens": N_TOKENS,
-        "generated_token_ids": toks,
-        "decoded_text": text,
-        "decoded_fragments": [tokenizer.decode([t]) for t in toks],
-        "build_seconds": round(build_s, 2),
-        "total_wall_seconds": round(wall_s, 2),
-        "prefill_ms": round(prefill_ms, 2),
-        "prefill_tokens": len(ids),
-        "prefill_tok_s": round(len(ids) / (prefill_ms / 1000.0), 3)
-        if prefill_ms > 0 else None,
-        "decode_wall_s": round(decode_sum_s, 3),
-        "decode_tokens": len(decode_only),
-        "decode_tok_s": round(decode_tok_s, 3),
-        "inter_token_latency_ms": {
-            "p50": round(p50, 2),
-            "p95": round(p95, 2),
-            "max": round(max(decode_only), 2) if decode_only else None,
-            "median": round(float(p50), 2),
-        },
-        "decode_timings_ms": [round(t, 2) for t in decode_only],
-        "gpu_memory": gpu_memory_snapshot(),
-        "diagnostics": DIAGNOSTICS,
-        "bridge_counters": model.bridge_counters(),
-        "layer_count_executed": int(
-            model.last_execution.get("layers_executed", -1)),
-        "execution_terminal": dict(model.last_execution),
-        "route_journal": route_journal.summary(),
-        "dee4_trace_validation": dee4_trace_validation,
-    }
-
-    # Stage 0 instrumentation: per-engine expert-cache + host-pack + stage
-    # profile dumps so every run reports WHERE the wall went.
-    try:
-        result["engine_stats"] = {
-            "cuda0": json.loads(eng0.last_stats_json()),
-            "cuda1": json.loads(eng1.last_stats_json()),
-        }
-        result["engine_config"] = {
-            "cuda0": eng0.runtime_config(),
-            "cuda1": eng1.runtime_config(),
-        }
-        result["host_pack"] = {
-            "cuda0": eng0.host_pack_stats(),
-            "cuda1": eng1.host_pack_stats(),
-        }
-        result["expert_store"] = {
-            "cuda0": eng0.expert_store_stats(),
-            "cuda1": eng1.expert_store_stats(),
-        }
-        result["stage_profile"] = {
-            "cuda0": json.loads(eng0.external_profile_json(wall_s * 1000.0)),
-            "cuda1": json.loads(eng1.external_profile_json(wall_s * 1000.0)),
-        }
-        result["model_cuda_stage_profile"] = model.cuda_stage_profile()
-    except Exception as exc:  # never fail the run over instrumentation
-        log(f"instrumentation dump failed: {exc}")
-        result["instrumentation_error"] = repr(exc)
-    try:
-        result["model_runtime_snapshot"] = model.runtime_snapshot()
-    except Exception as exc:
-        log(f"runtime snapshot failed: {exc}")
-        result["runtime_snapshot_error"] = repr(exc)
-
-    classification, gates, performance_eligible = classify_full_generation(result)
-    completed_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    result.update({
-        "status": "COMPLETE",
-        "completed_at_utc": completed_utc,
-        "classification": classification,
-        "performance_eligible": performance_eligible,
-        "hardware_classification": (
-            "ELIGIBLE_2X_TESLA_T4" if performance_eligible
-            else "REJECT_HARDWARE_FOR_PERFORMANCE"),
-        "correctness": {
-            "sealed_contract_gates": gates,
-            "all_non_hardware_gates_pass": all(
-                value for key, value in gates.items()
-                if key != "required_performance_hardware"),
-        },
-    })
-
-    # Derive physical byte/token accounting directly from the live serving
-    # backends. In single-GPU mode cuda1 aliases cuda0 and must not be counted
-    # twice.
-    store_keys = ("cuda0",) if SINGLE_GPU else ("cuda0", "cuda1")
-    stores = result.get("expert_store", {})
-    storage_bytes = sum(
-        int(stores.get(key, {}).get("bytes_requested", 0))
-        for key in store_keys)
-    source_reads = sum(
-        int(stores.get(key, {}).get("source_reads", 0))
-        for key in store_keys)
-    result["byte_accounting"] = {
-        "storage_bytes_total": storage_bytes,
-        "storage_bytes_per_generated_token": (
-            storage_bytes / len(toks) if toks else None),
-        "storage_requests_total": source_reads,
-        "storage_requests_per_generated_token": (
-            source_reads / len(toks) if toks else None),
-        "expert_h2d_bytes_total": sum(
-            int(result.get("engine_stats", {}).get(key, {}).get("h2d_bytes", 0))
-            for key in store_keys),
-    }
-
-    min_host_available = None
-    checkpoint_records = 0
-    checkpoint_rows = []
-    try:
-        for line in CHECKPOINT.read_text("utf-8").splitlines():
-            record = json.loads(line)
-            checkpoint_rows.append(record)
-            available = float(record["host_mem_available_gib"])
-            min_host_available = (
-                available if min_host_available is None
-                else min(min_host_available, available))
-            checkpoint_records += 1
-    except Exception as exc:
-        log(f"checkpoint memory summary failed: {exc}")
-
-    def _checkpoint_total(row: dict, section: str, field: str) -> float:
-        return sum(
-            float(values.get(field, 0))
-            for values in row.get(section, {}).values()
-        )
-
-    per_token_accounting = []
-    previous_totals = {
-        "storage_bytes": 0.0,
-        "storage_requests": 0.0,
-        "source_read_wall_ms": 0.0,
-        "h2d_bytes": 0.0,
-        "h2d_copies": 0.0,
-        "resident_hits": 0.0,
-        "cold_loads": 0.0,
-        "evictions": 0.0,
-        "host_pack_hits": 0.0,
-        "host_pack_misses": 0.0,
-    }
-    for index, row in enumerate(checkpoint_rows):
-        totals = {
-            "storage_bytes": _checkpoint_total(
-                row, "expert_store", "bytes_requested"),
-            "storage_requests": _checkpoint_total(
-                row, "expert_store", "source_reads"),
-            "source_read_wall_ms": _checkpoint_total(
-                row, "expert_store", "read_milliseconds"),
-            "h2d_bytes": _checkpoint_total(row, "engine_stats", "h2d_bytes"),
-            "h2d_copies": _checkpoint_total(row, "engine_stats", "h2d_copies"),
-            "resident_hits": _checkpoint_total(
-                row, "engine_stats", "resident_hits"),
-            "cold_loads": _checkpoint_total(row, "engine_stats", "cold_loads"),
-            "evictions": _checkpoint_total(row, "engine_stats", "evictions"),
-            "host_pack_hits": _checkpoint_total(row, "host_pack", "hits"),
-            "host_pack_misses": _checkpoint_total(row, "host_pack", "misses"),
-        }
-        deltas = {
-            key: max(0.0, value - previous_totals[key])
-            for key, value in totals.items()
-        }
-        previous_totals = totals
-        timing_ms = (
-            float(prefill_ms) if index == 0
-            else float(decode_only[index - 1])
-            if index - 1 < len(decode_only) else None
-        )
-        per_token_accounting.append({
-            "step": int(row.get("step", index)),
-            "phase": "prefill" if index == 0 else "decode",
-            "token_id": int(row.get("token_id", -1)),
-            "wall_ms": round(timing_ms, 3) if timing_ms is not None else None,
-            **{
-                key: int(value) if key != "source_read_wall_ms"
-                else round(value, 3)
-                for key, value in deltas.items()
+        result = {
+            "run_id": RUN_ID,
+            "commit": head,
+            "host_mem_available_gib": round(mem_avail, 2),
+            "host_pack_budget_gib": [round(pack_budget0 / (1 << 30), 2),
+                                      round(pack_budget1 / (1 << 30), 2)],
+            "model_revision": REV,
+            "gpu_environment": gpu_environment,
+            "cache_dtype": CACHE_DTYPE,
+            "expert_store_backend": EXPERT_STORE_BACKEND,
+            "expert_store_path": dee4_store_path,
+            "prompt": prompt_text,
+            "prompt_len": len(ids),
+            "n_tokens": N_TOKENS,
+            "generated_token_ids": toks,
+            "decoded_text": text,
+            "decoded_fragments": [tokenizer.decode([t]) for t in toks],
+            "build_seconds": round(build_s, 2),
+            "total_wall_seconds": round(wall_s, 2),
+            "prefill_ms": round(prefill_ms, 2),
+            "prefill_tokens": len(ids),
+            "prefill_tok_s": round(len(ids) / (prefill_ms / 1000.0), 3)
+            if prefill_ms > 0 else None,
+            "decode_wall_s": round(decode_sum_s, 3),
+            "decode_tokens": len(decode_only),
+            "decode_tok_s": round(decode_tok_s, 3),
+            "inter_token_latency_ms": {
+                "p50": round(p50, 2),
+                "p95": round(p95, 2),
+                "max": round(max(decode_only), 2) if decode_only else None,
+                "median": round(float(p50), 2),
             },
-            "resident_experts": int(_checkpoint_total(
-                row, "engine_stats", "resident_experts")),
+            "decode_timings_ms": [round(t, 2) for t in decode_only],
+            "gpu_memory": gpu_memory_snapshot(),
+            "diagnostics": DIAGNOSTICS,
+            "bridge_counters": model.bridge_counters(),
+            "layer_count_executed": int(
+                model.last_execution.get("layers_executed", -1)),
+            "execution_terminal": dict(model.last_execution),
+            "route_journal": route_journal.summary(),
+            "dee4_trace_validation": dee4_trace_validation,
+        }
+
+        # Stage 0 instrumentation: per-engine expert-cache + host-pack + stage
+        # profile dumps so every run reports WHERE the wall went.
+        try:
+            result["engine_stats"] = {
+                "cuda0": json.loads(eng0.last_stats_json()),
+                "cuda1": json.loads(eng1.last_stats_json()),
+            }
+            result["engine_config"] = {
+                "cuda0": eng0.runtime_config(),
+                "cuda1": eng1.runtime_config(),
+            }
+            result["host_pack"] = {
+                "cuda0": eng0.host_pack_stats(),
+                "cuda1": eng1.host_pack_stats(),
+            }
+            result["expert_store"] = {
+                "cuda0": eng0.expert_store_stats(),
+                "cuda1": eng1.expert_store_stats(),
+            }
+            result["stage_profile"] = {
+                "cuda0": json.loads(eng0.external_profile_json(wall_s * 1000.0)),
+                "cuda1": json.loads(eng1.external_profile_json(wall_s * 1000.0)),
+            }
+            result["model_cuda_stage_profile"] = model.cuda_stage_profile()
+        except Exception as exc:  # never fail the run over instrumentation
+            log(f"instrumentation dump failed: {exc}")
+            result["instrumentation_error"] = repr(exc)
+        try:
+            result["model_runtime_snapshot"] = model.runtime_snapshot()
+        except Exception as exc:
+            log(f"runtime snapshot failed: {exc}")
+            result["runtime_snapshot_error"] = repr(exc)
+
+        classification, gates, performance_eligible = classify_full_generation(result)
+        completed_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        result.update({
+            "status": "COMPLETE",
+            "completed_at_utc": completed_utc,
+            "classification": classification,
+            "performance_eligible": performance_eligible,
+            "hardware_classification": (
+                "ELIGIBLE_2X_TESLA_T4" if performance_eligible
+                else "REJECT_HARDWARE_FOR_PERFORMANCE"),
+            "correctness": {
+                "sealed_contract_gates": gates,
+                "all_non_hardware_gates_pass": all(
+                    value for key, value in gates.items()
+                    if key != "required_performance_hardware"),
+            },
         })
-    result["per_token_accounting"] = per_token_accounting
 
-    storage_read_ms = sum(
-        float(stores.get(key, {}).get("read_milliseconds", 0))
-        for key in store_keys)
-    h2d_gpu_ms = sum(
-        float(result.get("stage_profile", {}).get(key, {})
-              .get("gpu_ms", {}).get("h2d", 0))
-        for key in store_keys)
-    compute_gpu_ms = sum(
-        float(result.get("stage_profile", {}).get(key, {})
-              .get("derived", {}).get("total_gpu_compute_ms", 0))
-        for key in store_keys)
-    generated_count = len(toks)
-    result["measured_roofline"] = {
-        "scope": "whole generation amortized over emitted tokens",
-        "storage": {
-            "bytes_per_emitted_token": (
-                storage_bytes / generated_count if generated_count else None),
-            "observed_source_read_bytes_per_second": (
-                storage_bytes / (storage_read_ms / 1000.0)
-                if storage_read_ms > 0 else None),
-            "roof_tokens_per_second": (
-                generated_count / (storage_read_ms / 1000.0)
-                if storage_read_ms > 0 else None),
-        },
-        "pcie_h2d": {
-            "bytes_per_emitted_token": (
-                result["byte_accounting"]["expert_h2d_bytes_total"]
-                / generated_count if generated_count else None),
-            "observed_bytes_per_second": (
-                result["byte_accounting"]["expert_h2d_bytes_total"]
-                / (h2d_gpu_ms / 1000.0) if h2d_gpu_ms > 0 else None),
-            "roof_tokens_per_second": (
-                generated_count / (h2d_gpu_ms / 1000.0)
-                if h2d_gpu_ms > 0 else None),
-        },
-        "routed_compute": {
-            "measured_gpu_ms_per_emitted_token": (
-                compute_gpu_ms / generated_count if generated_count else None),
-            "roof_tokens_per_second": (
-                generated_count / (compute_gpu_ms / 1000.0)
-                if compute_gpu_ms > 0 else None),
-        },
-        "vram_weight_reads": {
-            "bytes_per_emitted_token": None,
-            "reason": "kernel-level global traffic is not measured by this run",
-        },
-    }
+        # Derive physical byte/token accounting directly from the live serving
+        # backends. In single-GPU mode cuda1 aliases cuda0 and must not be counted
+        # twice.
+        store_keys = ("cuda0",) if SINGLE_GPU else ("cuda0", "cuda1")
+        stores = result.get("expert_store", {})
+        storage_bytes = sum(
+            int(stores.get(key, {}).get("bytes_requested", 0))
+            for key in store_keys)
+        source_reads = sum(
+            int(stores.get(key, {}).get("source_reads", 0))
+            for key in store_keys)
+        result["byte_accounting"] = {
+            "storage_bytes_total": storage_bytes,
+            "storage_bytes_per_generated_token": (
+                storage_bytes / len(toks) if toks else None),
+            "storage_requests_total": source_reads,
+            "storage_requests_per_generated_token": (
+                source_reads / len(toks) if toks else None),
+            "expert_h2d_bytes_total": sum(
+                int(result.get("engine_stats", {}).get(key, {}).get("h2d_bytes", 0))
+                for key in store_keys),
+        }
 
-    profile_payload = {
-        "status": "COMPLETE",
-        "classification": classification,
-        "profile_stages_enabled": PROFILE_STAGES,
-        "build_seconds": result["build_seconds"],
-        "total_wall_seconds": result["total_wall_seconds"],
-        "prefill_ms": result["prefill_ms"],
-        "decode_wall_s": result["decode_wall_s"],
-        "decode_timings_ms": result["decode_timings_ms"],
-        "inter_token_latency_ms": result["inter_token_latency_ms"],
-        "stage_profile": result.get("stage_profile", {}),
-        "model_cuda_stage_profile": result.get("model_cuda_stage_profile", {}),
-        "engine_stats": result.get("engine_stats", {}),
-        "expert_store": result.get("expert_store", {}),
-        "dee4_trace_validation": result.get("dee4_trace_validation", {}),
-        "host_pack": result.get("host_pack", {}),
-        "byte_accounting": result["byte_accounting"],
-        "per_token_accounting": result["per_token_accounting"],
-        "measured_roofline": result["measured_roofline"],
-    }
-    memory_payload = {
-        "status": "COMPLETE",
-        "classification": classification,
-        "process_final_and_peak_gib": process_mem_gib(),
-        "system_final_gib": system_mem_gib(),
-        "gpu_final_and_peak_gib": result["gpu_memory"],
-        "minimum_checkpoint_host_mem_available_gib": min_host_available,
-        "checkpoint_records": checkpoint_records,
-        "cache_budget_bytes_per_gpu": BUDGET_BYTES,
-        "host_pack_budget_bytes": [pack_budget0, pack_budget1],
-    }
+        min_host_available = None
+        checkpoint_records = 0
+        checkpoint_rows = []
+        try:
+            for line in CHECKPOINT.read_text("utf-8").splitlines():
+                record = json.loads(line)
+                checkpoint_rows.append(record)
+                available = float(record["host_mem_available_gib"])
+                min_host_available = (
+                    available if min_host_available is None
+                    else min(min_host_available, available))
+                checkpoint_records += 1
+        except Exception as exc:
+            log(f"checkpoint memory summary failed: {exc}")
 
-    # Publish the five non-integrity artifacts first, then bind their exact
-    # serialized bytes from integrity.json. This avoids a circular hash while
-    # making the evidence package independently verifiable.
-    write_evidence("environment.json", environment_payload)
-    write_evidence("run_config.json", run_config_payload)
-    write_evidence("profile.json", profile_payload)
-    write_evidence("memory.json", memory_payload)
-    write_evidence("result.json", result)
-    integrity_payload.update({
-        "completed_at_utc": completed_utc,
-        "classification": classification,
-        "performance_eligible": performance_eligible,
-        "actual_token_ids": [int(token) for token in toks],
-        "actual_token_ids_sha256": hashlib.sha256(
-            json.dumps([int(token) for token in toks], separators=(",", ":"))
-            .encode("utf-8")).hexdigest(),
-        "actual_decoded_text_sha256": hashlib.sha256(
-            text.encode("utf-8")).hexdigest(),
-        "sealed_contract_gates": gates,
-        "expert_store": result.get("expert_store", {}),
-        "dee4_trace_validation": result.get("dee4_trace_validation", {}),
-        "artifact_sha256": {
-            name: sha256_file(WORK / name)
-            for name in (
-                "environment.json", "run_config.json", "result.json",
-                "profile.json", "memory.json", "routed_experts.jsonl")
-        },
-    })
-    if EXPERT_STORE_BACKEND == "dee4_trace":
-        integrity_payload["artifact_sha256"]["dee4-trace-validation.json"] = (
-            sha256_file(WORK / "dee4-trace-validation.json"))
-    write_evidence("integrity.json", integrity_payload)
-    log("RESULT " + json.dumps(result))
-    (WORK / "native-generate-result.json").write_text(
-        json.dumps(result, indent=2))
+        def _checkpoint_total(row: dict, section: str, field: str) -> float:
+            return sum(
+                float(values.get(field, 0))
+                for values in row.get(section, {}).values()
+            )
 
-    # Clean up the local download only; the dataset mount is read-only and
-    # must not be touched (unlink would raise PermissionError there).
-    if not (DATASET_DIR.is_dir() and Path(shard_paths[0]).parent == DATASET_DIR):
-        for p in shard_paths:
-            Path(p).unlink(missing_ok=True)
-    log(f"=== VERDICT: {classification}; performance_eligible="
-        f"{performance_eligible} ===")
+        per_token_accounting = []
+        previous_totals = {
+            "storage_bytes": 0.0,
+            "storage_requests": 0.0,
+            "source_read_wall_ms": 0.0,
+            "h2d_bytes": 0.0,
+            "h2d_copies": 0.0,
+            "resident_hits": 0.0,
+            "cold_loads": 0.0,
+            "evictions": 0.0,
+            "host_pack_hits": 0.0,
+            "host_pack_misses": 0.0,
+        }
+        for index, row in enumerate(checkpoint_rows):
+            totals = {
+                "storage_bytes": _checkpoint_total(
+                    row, "expert_store", "bytes_requested"),
+                "storage_requests": _checkpoint_total(
+                    row, "expert_store", "source_reads"),
+                "source_read_wall_ms": _checkpoint_total(
+                    row, "expert_store", "read_milliseconds"),
+                "h2d_bytes": _checkpoint_total(row, "engine_stats", "h2d_bytes"),
+                "h2d_copies": _checkpoint_total(row, "engine_stats", "h2d_copies"),
+                "resident_hits": _checkpoint_total(
+                    row, "engine_stats", "resident_hits"),
+                "cold_loads": _checkpoint_total(row, "engine_stats", "cold_loads"),
+                "evictions": _checkpoint_total(row, "engine_stats", "evictions"),
+                "host_pack_hits": _checkpoint_total(row, "host_pack", "hits"),
+                "host_pack_misses": _checkpoint_total(row, "host_pack", "misses"),
+            }
+            deltas = {
+                key: max(0.0, value - previous_totals[key])
+                for key, value in totals.items()
+            }
+            previous_totals = totals
+            timing_ms = (
+                float(prefill_ms) if index == 0
+                else float(decode_only[index - 1])
+                if index - 1 < len(decode_only) else None
+            )
+            per_token_accounting.append({
+                "step": int(row.get("step", index)),
+                "phase": "prefill" if index == 0 else "decode",
+                "token_id": int(row.get("token_id", -1)),
+                "wall_ms": round(timing_ms, 3) if timing_ms is not None else None,
+                **{
+                    key: int(value) if key != "source_read_wall_ms"
+                    else round(value, 3)
+                    for key, value in deltas.items()
+                },
+                "resident_experts": int(_checkpoint_total(
+                    row, "engine_stats", "resident_experts")),
+            })
+        result["per_token_accounting"] = per_token_accounting
+
+        storage_read_ms = sum(
+            float(stores.get(key, {}).get("read_milliseconds", 0))
+            for key in store_keys)
+        h2d_gpu_ms = sum(
+            float(result.get("stage_profile", {}).get(key, {})
+                  .get("gpu_ms", {}).get("h2d", 0))
+            for key in store_keys)
+        compute_gpu_ms = sum(
+            float(result.get("stage_profile", {}).get(key, {})
+                  .get("derived", {}).get("total_gpu_compute_ms", 0))
+            for key in store_keys)
+        generated_count = len(toks)
+        result["measured_roofline"] = {
+            "scope": "whole generation amortized over emitted tokens",
+            "storage": {
+                "bytes_per_emitted_token": (
+                    storage_bytes / generated_count if generated_count else None),
+                "observed_source_read_bytes_per_second": (
+                    storage_bytes / (storage_read_ms / 1000.0)
+                    if storage_read_ms > 0 else None),
+                "roof_tokens_per_second": (
+                    generated_count / (storage_read_ms / 1000.0)
+                    if storage_read_ms > 0 else None),
+            },
+            "pcie_h2d": {
+                "bytes_per_emitted_token": (
+                    result["byte_accounting"]["expert_h2d_bytes_total"]
+                    / generated_count if generated_count else None),
+                "observed_bytes_per_second": (
+                    result["byte_accounting"]["expert_h2d_bytes_total"]
+                    / (h2d_gpu_ms / 1000.0) if h2d_gpu_ms > 0 else None),
+                "roof_tokens_per_second": (
+                    generated_count / (h2d_gpu_ms / 1000.0)
+                    if h2d_gpu_ms > 0 else None),
+            },
+            "routed_compute": {
+                "measured_gpu_ms_per_emitted_token": (
+                    compute_gpu_ms / generated_count if generated_count else None),
+                "roof_tokens_per_second": (
+                    generated_count / (compute_gpu_ms / 1000.0)
+                    if compute_gpu_ms > 0 else None),
+            },
+            "vram_weight_reads": {
+                "bytes_per_emitted_token": None,
+                "reason": "kernel-level global traffic is not measured by this run",
+            },
+        }
+
+        profile_payload = {
+            "status": "COMPLETE",
+            "classification": classification,
+            "profile_stages_enabled": PROFILE_STAGES,
+            "build_seconds": result["build_seconds"],
+            "total_wall_seconds": result["total_wall_seconds"],
+            "prefill_ms": result["prefill_ms"],
+            "decode_wall_s": result["decode_wall_s"],
+            "decode_timings_ms": result["decode_timings_ms"],
+            "inter_token_latency_ms": result["inter_token_latency_ms"],
+            "stage_profile": result.get("stage_profile", {}),
+            "model_cuda_stage_profile": result.get("model_cuda_stage_profile", {}),
+            "engine_stats": result.get("engine_stats", {}),
+            "expert_store": result.get("expert_store", {}),
+            "dee4_trace_validation": result.get("dee4_trace_validation", {}),
+            "host_pack": result.get("host_pack", {}),
+            "byte_accounting": result["byte_accounting"],
+            "per_token_accounting": result["per_token_accounting"],
+            "measured_roofline": result["measured_roofline"],
+        }
+        memory_payload = {
+            "status": "COMPLETE",
+            "classification": classification,
+            "process_final_and_peak_gib": process_mem_gib(),
+            "system_final_gib": system_mem_gib(),
+            "gpu_final_and_peak_gib": result["gpu_memory"],
+            "minimum_checkpoint_host_mem_available_gib": min_host_available,
+            "checkpoint_records": checkpoint_records,
+            "cache_budget_bytes_per_gpu": BUDGET_BYTES,
+            "host_pack_budget_bytes": [pack_budget0, pack_budget1],
+        }
+
+        # Publish the five non-integrity artifacts first, then bind their exact
+        # serialized bytes from integrity.json. This avoids a circular hash while
+        # making the evidence package independently verifiable.
+        write_evidence(f"environment{suffix}.json", environment_payload)
+        write_evidence(f"run_config{suffix}.json", run_config_payload)
+        write_evidence(f"profile{suffix}.json", profile_payload)
+        write_evidence(f"memory{suffix}.json", memory_payload)
+        write_evidence(f"result{suffix}.json", result)
+        integrity_payload.update({
+            "completed_at_utc": completed_utc,
+            "classification": classification,
+            "performance_eligible": performance_eligible,
+            "actual_token_ids": [int(token) for token in toks],
+            "actual_token_ids_sha256": hashlib.sha256(
+                json.dumps([int(token) for token in toks], separators=(",", ":"))
+                .encode("utf-8")).hexdigest(),
+            "actual_decoded_text_sha256": hashlib.sha256(
+                text.encode("utf-8")).hexdigest(),
+            "sealed_contract_gates": gates,
+            "expert_store": result.get("expert_store", {}),
+            "dee4_trace_validation": result.get("dee4_trace_validation", {}),
+            "artifact_sha256": {
+                name: sha256_file(WORK / name)
+                for name in (
+                    f"environment{suffix}.json", f"run_config{suffix}.json", f"result{suffix}.json",
+                    f"profile{suffix}.json", f"memory{suffix}.json", f"routed_experts{suffix}.jsonl")
+            },
+        })
+        if EXPERT_STORE_BACKEND == "dee4_trace":
+            integrity_payload["artifact_sha256"]["dee4-trace-validation.json"] = (
+                sha256_file(WORK / "dee4-trace-validation.json"))
+        write_evidence(f"integrity{suffix}.json", integrity_payload)
+        log("RESULT " + json.dumps(result))
+        (WORK / f"native-generate-result{suffix}.json").write_text(
+            json.dumps(result, indent=2))
+
+        # Clean up the local download only; the dataset mount is read-only and
+        # must not be touched (unlink would raise PermissionError there).
+        if not _multi and not (DATASET_DIR.is_dir() and Path(shard_paths[0]).parent == DATASET_DIR):
+            for p in shard_paths:
+                Path(p).unlink(missing_ok=True)
+        log(f"=== VERDICT: {classification}; performance_eligible="
+            f"{performance_eligible} ===")
+        return {"prompt_index": qi, "classification": classification, "result": result}
+
+    _all_results = []
+    for _qi, _ptext in enumerate(PROMPT_LIST):
+        _all_results.append(_run_prompt(_ptext, _qi))
+    (WORK / "native-generate-all.json").write_text(
+        json.dumps(
+            [{"prompt_index": r["prompt_index"],
+              "classification": r["classification"],
+              "n_tokens": len(r["result"].get("generated_token_ids") or []),
+              "token_ids_sha256": hashlib.sha256(json.dumps(
+                  r["result"].get("generated_token_ids")).encode())
+              .hexdigest()}
+             for r in _all_results], indent=2))
     return 0
 
 

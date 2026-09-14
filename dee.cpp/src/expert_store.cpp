@@ -830,8 +830,12 @@ bool Dee4ExpertStore::open(const std::string& directory_or_metadata,
             // The per-segment sha256 is the segmented format's content seal:
             // a segment whose bytes do not match its declared seal must
             // never be served.  One-time O(total bytes) pass over the
-            // mapped views.
+            // mapped views.  Progress lines make the (potentially long)
+            // seal visible to session drivers instead of a silent block.
+            const auto seal_begin = std::chrono::steady_clock::now();
+            size_t seal_index = 0;
             for (const Segment& segment : segments_) {
+                const auto seg_begin = std::chrono::steady_clock::now();
                 if (sha256_hex(segment.base, segment.size) !=
                     segment.sha256) {
                     last_error_ = "DEE4 segment " + segment.file +
@@ -839,6 +843,19 @@ bool Dee4ExpertStore::open(const std::string& directory_or_metadata,
                     close();
                     return false;
                 }
+                const double seg_s = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - seg_begin).count();
+                const double total_s = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - seal_begin).count();
+                ++seal_index;
+                std::fprintf(stderr,
+                    "[dee4] seal %zu/%zu %s %.2f GiB %.0f MiB/s "
+                    "seg=%.1fs total=%.1fs\n",
+                    seal_index, segments_.size(), segment.file.c_str(),
+                    static_cast<double>(segment.size) / (1 << 30),
+                    segment.size / (1024.0 * 1024.0) /
+                        (seg_s > 0.0 ? seg_s : 1e-9),
+                    seg_s, total_s);
             }
         }
     } else {
