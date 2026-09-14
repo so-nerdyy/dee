@@ -1,0 +1,66 @@
+{
+  "classification": "INVALID_EXPERIMENT",
+  "run_id": "p2.3-fp4-repair-v46",
+  "sealed_at_utc": "2026-08-28T01:31:56.692Z",
+  "kernel": "nivind/dee-cpp-dsv4-native-generate",
+  "kernel_version": 46,
+  "repository": "https://github.com/so-nerdyy/dee.git",
+  "branch": "freebuff/deepseek-v4-flash-0731-t4",
+  "git_commit": "e19c7e2d523c7bd8a65b31c51741f5395c3c3b49",
+  "model_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+  "hardware": {
+    "requested": "2x Tesla T4",
+    "observed_gpu_count": 2,
+    "observed_gpu_names": ["Tesla T4", "Tesla T4"],
+    "performance_hardware_eligible": true
+  },
+  "configuration": {
+    "cache_dtype": "fp4",
+    "expert_store_backend": "safetensors",
+    "n_tokens": 16,
+    "cache_budget_gib_per_gpu": 3.5
+  },
+  "terminal_result": {
+    "stage": "mandatory CUDA admission regression",
+    "tokens_generated": 0,
+    "model_execution_started": false,
+    "exact_token_gate": "NOT_REACHED",
+    "performance_comparison_to_v44": "INVALID",
+    "error": "test_deepseek_v4_fp4_expert exited 1"
+  },
+  "test_result": {
+    "packed_host_api": "PASS",
+    "packed_device_api_call": "EXECUTED",
+    "device_output_finite": true,
+    "device_reference_rel_rmse": 1.0,
+    "failures": [
+      "FP32-to-FP16 test-input conversion rejected a null CUDA stream",
+      "Reference comparison consumed the consequently uninitialized device input"
+    ]
+  },
+  "root_cause": {
+    "status": "ATTRIBUTED_FROM_REMOTE_TEST_LOG",
+    "scope": "test harness only",
+    "file": "dee.cpp/tests/test_deepseek_v4_fp4_expert.cpp",
+    "description": "The new device-API regression passed nullptr to f32_to_f16_cuda. That converter intentionally requires a non-null stream and returned false before launching. The test then continued and compared output produced from an uninitialized FP16 input. This run does not test or refute the engine repair.",
+    "repair": "Use Engine::compute_stream_handle(), require it to be non-null, convert on that stream, and synchronize that stream before invoking the live device-batch API."
+  },
+  "identity": {
+    "prelaunch_manifest": "v46-prelaunch-20260827T032442Z.json",
+    "prelaunch_manifest_sha256": "d4fbad67bd0bf3dda0e9371a0d7203481b4115e3c4164cbe115c3cb46b93b290",
+    "cloned_harness_sha256": "ca13ccf6fa34aba1c9e1fd19d69b9cdff27257c68614d91d0ff30aa8c89958f6",
+    "run_config_sha256": "0658d2d9ae5ff00189c052522f7db342e4d3a3fe6d503d0774b1c8937ad4b828"
+  },
+  "downloaded_evidence": {
+    "directory": "v46-evidence-20260827T0340Z",
+    "dee-cpp-dsv4-native-generate.log": {"bytes": 551261, "sha256": "327cb272ab0a12f9428aac3acdd84bdd8d61ff77ac28fa2c22c0053cb6a81a8d"},
+    "environment.json": {"bytes": 1100, "sha256": "14d5ca73fad429890d0f5fb6f253c7afe7b5223c6c2ff35abc01c65eb5fea9b3"},
+    "error.txt": {"bytes": 387, "sha256": "6934a6dd8f9d07a59e4c5db59fc7f790cf48abd6ed2d4493727d1f72cc76b6a3"},
+    "integrity.json": {"bytes": 2215, "sha256": "aa8fb22e39cdda6d38397268dcd99c33f47b41929685a87c6d005122beb67261"},
+    "memory.json": {"bytes": 1329, "sha256": "e6eb69b4d948db331830fd1d09d5b92c11ac0cbc2a49f8a24620a7a9be6f75dd"},
+    "profile.json": {"bytes": 730, "sha256": "dba1a445bed028a8b469c7531a1761df67627a42fdced7b63c3445d8722ddfbd"},
+    "result.json": {"bytes": 695, "sha256": "aa4138f805fd0474dd113be94d1c4e89cf9dbd1fe66bcea5bc7c43d017e2db9f"},
+    "run_config.json": {"bytes": 611, "sha256": "dcb39f5a9665a3ec369e210b2b8ddba9a2d3441e607d1a8479875ba069814287"},
+    "progress.log": {"bytes": 2177, "sha256": "0b924319c44c3435bfa34857b14363f18d267b001f4cf498217da42f09d102e7"}
+  }
+}

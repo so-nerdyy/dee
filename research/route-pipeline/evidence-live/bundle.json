@@ -1,0 +1,22 @@
+{
+  "classification": "LIVE_ANALYSIS_OK",
+  "pair": {
+    "pair": "VALID",
+    "off_wall_s": 71.447,
+    "on_wall_s": 66.233,
+    "perturbation_s": -5.214,
+    "perturbation_fraction": -0.072977,
+    "tokens": 15,
+    "source_sha": "217a33359b06a0453444a698ec52e4078b77e388"
+  },
+  "records": 688,
+  "closure_status": "OK",
+  "ranking": {
+    "SHARED_OVERLAP": "HOLD",
+    "EVENT_HANDOFF": "PROMOTE",
+    "ROUTE_D2H_NARROW": "HOLD",
+    "HASH_EARLY_STAGING": "HOLD",
+    "C1_C2": "HOLD"
+  },
+  "next": "EVENT_HANDOFF_PROMOTED"
+}

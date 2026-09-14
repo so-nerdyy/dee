@@ -17,6 +17,7 @@
 #pragma once
 
 #include "dee/vram_cache.h"
+#include "dee/host_expert_tier.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -27,13 +28,44 @@ namespace dee {
 
 // A single in-flight weight transfer.
 struct Transfer {
+    HostExpertLease host_lease; // experimental: retained until DMA completion
+    bool managed_source = false;
+    bool dma_complete = false;
     ExpertKey key{};
     void*     dst      = nullptr;  // VRAM arena slot (from VramCacheManager)
-    const void* src    = nullptr;  // WeightMmap host pointer
-    size_t    nbytes   = 0;
+    const void* src    = nullptr;  // stable pageable host staging pointer
+    size_t    nbytes   = 0;        // destination/cache bytes
+    size_t    source_nbytes = 0;   // bytes copied through pinned memory/H2D
+    bool      expand_bf16 = false;
+    bool      cache_fp16 = false;
+    bool      dequantize_int8 = false;
+    bool      dequantize_int4 = false;
+    bool      dequantize_fp4 = false;
+    size_t    projection_elements = 0;
+    float     quant_scales[3] = {1.0f, 1.0f, 1.0f};
+    // FP4 e2m1 (DEEPSEEK_V4): per-projection (out, in) shapes; the scale is a
+    // per-block F8_E8M0 tensor laid out contiguously after the packed weights
+    // inside the single staging buffer (offsets computed at submit time).
+    size_t    fp4_out[3] = {0, 0, 0};
+    size_t    fp4_in[3]  = {0, 0, 0};
+    size_t    fp4_packed_offsets[3] = {0, 0, 0};
+    size_t    fp4_scale_offsets[3]  = {0, 0, 0};
+    // When set, cuda_submit gathers these six non-contiguous mmap regions into
+    // the pinned slot at fp4_packed_offsets/fp4_scale_offsets (single copy, no
+    // intermediate heap staging) instead of copying one contiguous `src`.
+    const void* fp4_region_src[6]    = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    size_t      fp4_region_nbytes[6] = {0, 0, 0, 0, 0, 0};
+    bool      source_pinned = false;
     bool      done     = false;    // mock event "signaled"
     bool      abandoned = false;
     void*     event    = nullptr;  // cudaEvent_t* (DEE_CUDA path only)
+    long      id       = -1;
+    size_t    staging_slot = static_cast<size_t>(-1);
+    bool      cache_pin_held = false;
+    bool      active_counted = false;
+    int       token = -1;
+    int       logical_layer = -1;
+    uint64_t  generation = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -50,36 +82,212 @@ public:
     // (only available when built with DEE_CUDA=ON); otherwise a mock stream.
     bool init(bool use_cuda = false);
 
+    // Experimental packed-byte path. Owns the host lease through the existing
+    // stream/event completion; CUDA fallback for pageable slots waits on this
+    // copy's event. No staging-ring gather and no CPU/GPU dtype conversion.
+    long prefetch_host_lease(const HostExpertLease&, int priority = 0,
+                             int token = -1, int logical_layer = -1);
+    // Reclaim completed host sources; pressure may wait for one DMA event.
+    // Never drops a device pin reserved for a future compute consumer.
+    bool collect_host_sources(bool wait_one = false);
+    double experimental_readiness_wait_ms() const { return experimental_readiness_wait_ms_; }
+    double experimental_pageable_wait_ms() const { return experimental_pageable_wait_ms_; }
+
+    // Armed-scope generation, bumped on every successful arm. A bound
+    // DeviceExpertTier captures this at construction and re-checks it on every
+    // stage()/wait(): a differing epoch means the armed scope was replaced
+    // underneath the tier (unreachable while the live-tier token works — kept
+    // as defense in depth against future arming paths). NOTE: reset() does
+    // NOT bump the epoch. In this codebase reset() is a routine drain invoked
+    // while the tier is legitimately armed (Engine::reset_runtime_cache,
+    // preload_all_experts, generate() teardown); scope ownership moves only
+    // when a new scope is armed.
+    uint64_t scope_epoch() const { return scope_epoch_; }
+
+private:
+    friend class DeviceExpertTier;
+    // phase2_tier_replay replays journal batches against the raw
+    // prefetcher+cache — it needs the armed-scope semantics (full-width
+    // LLP64 keys, scoped host leases) WITHOUT holding the live-tier token,
+    // so its hook arms then immediately releases the token.
+    friend bool dee_replay_arm_scope(AsyncPrefetcher&, const TierExpertKey&);
+    // Arms the experimental host-tier path under `scope`. One-shot while a
+    // DeviceExpertTier holds the token: a second arm attempt — including the
+    // audit's drain + reset() + cache clear interleaving — fails closed until
+    // ~DeviceExpertTier releases it. The armed flag and scope intentionally
+    // PERSIST after release (documented one-shot-per-prefetcher semantics):
+    // prefetch_host_lease stays scoped to the last armed scope, and map_key
+    // stays 64-bit — clearing them would reintroduce the LLP64 truncation
+    // for post-teardown prefetches.
+    bool enable_experimental_host_tier(const TierExpertKey& scope) {
+        if (!inflight_.empty() || !scope.valid() || experimental_tier_live_) return false;
+        experimental_host_tier_ = true;
+        experimental_scope_ = scope;
+        experimental_tier_live_ = true;
+        ++scope_epoch_;
+        return true;
+    }
+    // ~DeviceExpertTier hands back the arming token. Scope-matched so a stale
+    // or foreign releaser cannot free a token a newer tier still holds.
+    void release_experimental_host_tier(const TierExpertKey& scope) {
+        if (experimental_tier_live_ && experimental_scope_ == scope)
+            experimental_tier_live_ = false;
+    }
+
+public:
+
     // Issue an async copy of `nbytes` from `src` (WeightMmap host ptr) into the
     // cache slot for (layer, expert). Reserves the VRAM slot via the cache.
     // Returns a transfer id (>=0) or -1 on failure. `priority` feeds the cache.
     long prefetch(int layer, int expert, const void* src, size_t nbytes,
-                  int priority = 0);
+                  int priority = 0, int token = -1, int logical_layer = -1);
+
+    // CUDA streaming specialization: transfer packed BF16, then expand into
+    // the FP32 cache block on the prefetch stream before signaling readiness.
+    long prefetch_bf16_to_f32(int layer, int expert, const uint16_t* src,
+                              size_t elements, int priority = 0,
+                              int token = -1, int logical_layer = -1,
+                              bool source_pinned = false);
+
+    // Convert packed BF16 source weights into a persistent FP16 cache block.
+    long prefetch_bf16_to_f16(int layer, int expert, const uint16_t* src,
+                              size_t elements, int priority = 0,
+                              int token = -1, int logical_layer = -1,
+                              bool source_pinned = false);
+
+    long prefetch_int8_to_f16(int layer, int expert, const int8_t* src,
+                              size_t elements, size_t projection_elements,
+                              const float scales[3], int priority = 0,
+                              int token = -1, int logical_layer = -1,
+                              bool source_pinned = false);
+
+    long prefetch_int4_to_f16(int layer, int expert, const uint8_t* src,
+                              size_t elements, size_t projection_elements,
+                              const float scales[3], int priority = 0,
+                              int token = -1, int logical_layer = -1,
+                              bool source_pinned = false);
+
+    // DeepSeek-V4-Flash-0731 FP4 e2m1 transfer.  ``src`` is one contiguous
+    // staging buffer holding [gate_packed][up_packed][down_packed] followed by
+    // [gate_scale][up_scale][down_scale]; ``packed_offsets``/``scale_offsets``
+    // are byte offsets into that buffer for each of the three projections,
+    // and ``out``/``in`` are each projection's decoded [out, in] shape
+    // (gate/up [inter, hidden], down [hidden, inter]).  The scale is the
+    // per-block e8m0 tensor, NOT three scalars, which is why this is a
+    // dedicated path rather than reusing prefetch_int4_to_f16.
+    long prefetch_fp4_to_f16(int layer, int expert, const uint8_t* src,
+                             size_t source_nbytes,
+                             const size_t packed_offsets[3],
+                             const size_t scale_offsets[3],
+                             const size_t out[3], const size_t in[3],
+                             int priority = 0, int token = -1,
+                             int logical_layer = -1, bool source_pinned = false);
+
+    // FP4 e2m1 transfer from six non-contiguous mmap regions (gate/up/down
+    // packed weights + their per-block e8m0 scales).  The prefetcher gathers
+    // them into its persistent pinned slot in one pass, then H2Ds + decodes.
+    // `region_src`/`region_nbytes` are ordered gate_w, up_w, down_w,
+    // gate_scale, up_scale, down_scale.
+    long prefetch_fp4_regions_to_f16(int layer, int expert,
+                                     const void* const region_src[6],
+                                     const size_t region_nbytes[6],
+                                     size_t source_nbytes,
+                                     const size_t packed_offsets[3],
+                                     const size_t scale_offsets[3],
+                                     const size_t out[3], const size_t in[3],
+                                     int priority = 0, int token = -1,
+                                     int logical_layer = -1);
+
+    // P2.3 packed FP4 residency: same six-region gather + single-pass H2D as
+    // prefetch_fp4_regions_to_f16, but the destination cache block keeps the
+    // packed e2m1fn bytes + e8m0 scales verbatim (no FP16 expansion on the
+    // transfer stream).  The block layout is identical to the staging buffer:
+    // [gate_packed][up_packed][down_packed][gate_scale][up_scale][down_scale].
+    // The engine decodes the resident block into a bounded FP16 scratch at
+    // compute time via decode_fp4_cache_block_to_scratch.
+    long prefetch_fp4_regions_packed(int layer, int expert,
+                                     const void* const region_src[6],
+                                     const size_t region_nbytes[6],
+                                     size_t source_nbytes,
+                                     const size_t packed_offsets[3],
+                                     const size_t scale_offsets[3],
+                                     int priority = 0, int token = -1,
+                                     int logical_layer = -1);
+
+    // Delimit one logical expert batch for duplicate-request accounting.
+    void begin_batch() { batch_keys_.clear(); }
 
     // Ensure (layer, expert) is resident AND its transfer has completed before
     // compute uses it. Blocks only on this one expert (sync fallback). Returns
     // true if ready.
     bool wait(int layer, int expert);
 
+    // Milestone 2.5 fix (defect #2): make the compute stream wait on this
+    // expert's prefetch transfer *on the device* via cudaStreamWaitEvent,
+    // instead of blocking the host via cudaEventSynchronize.  Lets the host
+    // keep issuing expert H2D / routing while the previous expert's compute
+    // begins only once its weights have landed.  `compute_stream` is the
+    // caller's compute stream (cuBLAS-bearing).  Returns true if ready or
+    // device-side wait was armed; false on lookup failure (caller must fall
+    // back to host wait).  Mirrors wait() but never blocks the host for
+    // an in-flight transfer; only the GPU waits.
+    bool wait_on_stream(int layer, int expert, void* compute_stream);
+
+    // Mark the current residency generation as scheduled for expert compute.
+    // This updates only forensic trace state; it does not change cache policy.
+    void mark_consumed(int layer, int expert);
+
     // Drain all in-flight transfers (e.g. between sequences). Real CUDA path
     // calls cudaStreamSynchronize; mock drains the queue in order.
     void synchronize_all();
 
-    // Drop all in-flight transfers + events (call between sequences to bound
-    // memory + event churn).
+    // Drain then drop all in-flight transfers + events. Events are never
+    // destroyed while their copy can still be executing.
     void reset();
 
     size_t in_flight() const { return inflight_.size(); }
 
     // Stats (mirrors prototype's fallback accounting)
     struct Stats {
-        uint64_t issued     = 0;
+        uint64_t issued     = 0;  // compatibility alias for requests
+        uint64_t requests   = 0;
+        uint64_t resident_hits = 0;
+        uint64_t inflight_hits = 0;
+        uint64_t cold_loads = 0;
+        uint64_t duplicate_requests = 0;
         uint64_t waited     = 0;  // wait() calls
         uint64_t fallbacks  = 0;  // wait() had to block on an unfinished xfer
+        uint64_t mmap_to_pinned_bytes = 0;
+        uint64_t h2d_bytes = 0;
+        uint64_t h2d_copies = 0;
     };
     const Stats& stats() const { return stats_; }
+    bool accounting_valid() const {
+        return stats_.requests == stats_.resident_hits + stats_.inflight_hits + stats_.cold_loads;
+    }
+    bool validate_invariants(std::string* error = nullptr) const;
+    void reset_stats() { stats_ = Stats{}; batch_keys_.clear(); }
+    void set_profiler(StageProfiler* profiler) { profiler_ = profiler; }
+    bool set_ring_size(size_t ring_size) {
+        if (!inflight_.empty() || !staging_slots_.empty() || ring_size == 0) return false;
+        ring_size_ = ring_size;
+        return true;
+    }
+    size_t ring_size() const { return ring_size_; }
+    size_t pinned_staging_bytes() const {
+        size_t total = 0;
+        for (const auto& slot : staging_slots_) total += slot.bytes;
+        return total;
+    }
+    size_t device_staging_bytes() const {
+        size_t total = 0;
+        for (const auto& slot : staging_slots_) total += slot.device_bytes;
+        return total;
+    }
+    size_t staging_slot_count() const { return staging_slots_.size(); }
 
     bool using_cuda() const { return use_cuda_; }
+    void* cuda_stream() const { return stream_; }
 
 private:
     VramCacheManager& cache_;
@@ -88,21 +296,79 @@ private:
 
     // mock backend state
     std::vector<Transfer>        inflight_;   // ordered submission queue
-    std::unordered_map<long, int> key_to_idx_; // ExpertKey -> idx in inflight_
+    std::unordered_map<uint64_t, int> key_to_idx_; // ExpertKey -> idx in inflight_
+    std::vector<uint64_t> batch_keys_;
+    bool experimental_host_tier_ = false;
+    TierExpertKey experimental_scope_;
+    // Phase-2 audit hardening: scope exclusivity is enforced for the tier's
+    // whole lifetime, not just at construction. experimental_tier_live_ is
+    // the one-shot arming token (taken by enable_experimental_host_tier,
+    // released only by ~DeviceExpertTier); scope_epoch_ counts armed-scope
+    // generations so a bound tier can detect scope replacement.
+    bool experimental_tier_live_ = false;
+    uint64_t scope_epoch_ = 0;
+    double experimental_readiness_wait_ms_ = 0;
+    double experimental_pageable_wait_ms_ = 0;
+    uint64_t map_key(int layer, int expert) const;
 
-    // cuda backend handles (only valid when use_cuda_)
-    void*  stream_  = nullptr;  // cudaStream_t*
-    void*  host_buf_ = nullptr; // pinned staging buffer base (optional)
-    size_t host_buf_bytes_ = 0;
+    struct PinnedStagingSlot {
+        void* ptr = nullptr;
+        size_t bytes = 0;
+        void* device_ptr = nullptr;
+        size_t device_bytes = 0;
+        bool busy = false;
+    };
+
+    // CUDA uses a bounded ring. Source data is copied into a pinned slot on
+    // the host, then the pinned slot is copied asynchronously to device. This
+    // avoids describing a pageable mmap as an asynchronous NVMe-to-VRAM path.
+    void* stream_ = nullptr;  // cudaStream_t
+    std::vector<PinnedStagingSlot> staging_slots_;
+    size_t next_staging_slot_ = 0;
+    size_t active_transfers_ = 0;
 
     long   next_id_ = 0;
     Stats  stats_{};
+    StageProfiler* profiler_ = nullptr;
 
     long   find_inflight(int layer, int expert) const;
+    long   prefetch_impl(int layer, int expert, const void* src,
+                         size_t source_nbytes, size_t destination_nbytes,
+                         bool expand_bf16, bool cache_fp16, bool dequantize_int8,
+                         bool dequantize_int4, bool dequantize_fp4,
+                         const size_t* fp4_packed_offsets,
+                         const size_t* fp4_scale_offsets,
+                         const size_t* fp4_out, const size_t* fp4_in,
+                         size_t projection_elements, const float* quant_scales,
+                         bool source_pinned,
+                         int priority, int token,
+                         int logical_layer,
+                         const void* const* fp4_region_src = nullptr,
+                         const size_t* fp4_region_nbytes = nullptr,
+                         const HostExpertLease* host_lease = nullptr);
     void   drain_until(int idx);   // mock: run copies up to idx (inclusive)
     bool   cuda_init();            // guarded real init
-    void   cuda_submit(long idx);  // guarded real submit + event record
-    void   cuda_wait(long idx);    // guarded real event sync
+    bool   cuda_submit(long idx);  // guarded real submit + event record
+    bool   cuda_submit_host(long idx);
+    bool   cuda_wait(long idx, HostWaitReason reason);  // guarded real event sync
+    void   release_staging(Transfer& transfer);
+    bool   release_transfer(Transfer& transfer);
+    long   validate_request_result(long transfer_id, const char* context);
+    void   record_request(RequestKind kind, int token, int logical_layer,
+                           int resolved_layer, int expert, int priority,
+                           int evicted_layer = -1, int evicted_expert = -1,
+                           size_t cache_bytes_before = 0,
+                           size_t cache_entries_before = 0,
+                           size_t cache_bytes_after = 0,
+                           size_t cache_entries_after = 0,
+                           size_t source_bytes = 0,
+                           size_t destination_bytes = 0,
+                           uint64_t transfer_id = 0,
+                           bool source_pinned = false,
+                           uint64_t generation = 0,
+                           uint32_t pin_count = 0,
+                           bool transfer_launched = false,
+                           uint64_t evicted_generation = 0);
 };
 
 } // namespace dee

@@ -1,0 +1,157 @@
+{
+ "journal_sha256": "665aac3e8db570237c6dc6acaf08dc39f2af890e8a04e400ce7154f1a858dae1",
+ "record_bytes": 13369344,
+ "structure": {
+  "requests": 5099,
+  "unique_records": 2364,
+  "forward_steps": 16,
+  "records_freq_ge2": 935,
+  "records_freq_eq1": 1429,
+  "tie_boundary_gib": 11.64,
+  "explanation": "slots >= records_freq_ge2 -> top-N set contains every repeating record; all remaining misses are compulsory first touches of single-use records under BOTH C1 and C2 -> exact tie. Below the boundary C2-MIN can drop late-use pins and admit soon-repeating non-pins; C1 cannot, so C2 > C1 (observed at 8 GiB)."
+ },
+ "contracts": {
+  "C1_bypass_fixed_set": "static top-N prewarm; non-pinned faults are never admitted (reject-admission)",
+  "C2_fetch_on_fault": "same prewarm state, every fault admitted; bound = exact MIN given the initial state",
+  "C3_pin_plus_remainder": "protected pin + dynamic remainder; evaluated in the v4 sim, bounds belady_pin_same_state(pf)"
+ },
+ "rows": [
+  {
+   "budget_gib": 8,
+   "slots": 642,
+   "prewarm_gib": 7.994,
+   "coverage_pct": 60.48,
+   "c1_pin_misses": 2015,
+   "c1_hit_rate_pct": 60.48,
+   "c2_min_misses": 1803,
+   "c2_hit_rate_pct": 64.64,
+   "c2_min_inf_init_misses": 2201,
+   "c2_inf_init_hit_rate_pct": 56.83,
+   "c2_lru_prewarm_misses": 2888,
+   "c2_lru_hit_rate_pct": 43.36,
+   "c1_ssd_MiB_per_token": 1605.7,
+   "prewarm_cost_s_at_bank": {
+    "0.29": 27.6,
+    "0.37": 21.6
+   },
+   "c2_ge_c1": true
+  },
+  {
+   "budget_gib": 12,
+   "slots": 963,
+   "prewarm_gib": 11.99,
+   "coverage_pct": 72.52,
+   "c1_pin_misses": 1401,
+   "c1_hit_rate_pct": 72.52,
+   "c2_min_misses": 1401,
+   "c2_hit_rate_pct": 72.52,
+   "c2_min_inf_init_misses": 2085,
+   "c2_inf_init_hit_rate_pct": 59.11,
+   "c2_lru_prewarm_misses": 2381,
+   "c2_lru_hit_rate_pct": 53.3,
+   "c1_ssd_MiB_per_token": 1116.4,
+   "prewarm_cost_s_at_bank": {
+    "0.29": 41.3,
+    "0.37": 32.4
+   },
+   "c2_ge_c1": true
+  },
+  {
+   "budget_gib": 16,
+   "slots": 1285,
+   "prewarm_gib": 16.0,
+   "coverage_pct": 78.84,
+   "c1_pin_misses": 1079,
+   "c1_hit_rate_pct": 78.84,
+   "c2_min_misses": 1079,
+   "c2_hit_rate_pct": 78.84,
+   "c2_min_inf_init_misses": 1495,
+   "c2_inf_init_hit_rate_pct": 70.68,
+   "c2_lru_prewarm_misses": 1718,
+   "c2_lru_hit_rate_pct": 66.31,
+   "c1_ssd_MiB_per_token": 859.8,
+   "prewarm_cost_s_at_bank": {
+    "0.29": 55.2,
+    "0.37": 43.2
+   },
+   "c2_ge_c1": true
+  },
+  {
+   "budget_gib": 20,
+   "slots": 1606,
+   "prewarm_gib": 19.997,
+   "coverage_pct": 85.13,
+   "c1_pin_misses": 758,
+   "c1_hit_rate_pct": 85.13,
+   "c2_min_misses": 758,
+   "c2_hit_rate_pct": 85.13,
+   "c2_min_inf_init_misses": 866,
+   "c2_inf_init_hit_rate_pct": 83.02,
+   "c2_lru_prewarm_misses": 1121,
+   "c2_lru_hit_rate_pct": 78.02,
+   "c1_ssd_MiB_per_token": 604.0,
+   "prewarm_cost_s_at_bank": {
+    "0.29": 69.0,
+    "0.37": 54.0
+   },
+   "c2_ge_c1": true
+  },
+  {
+   "budget_gib": 24,
+   "slots": 1927,
+   "prewarm_gib": 23.993,
+   "coverage_pct": 91.43,
+   "c1_pin_misses": 437,
+   "c1_hit_rate_pct": 91.43,
+   "c2_min_misses": 437,
+   "c2_hit_rate_pct": 91.43,
+   "c2_min_inf_init_misses": 452,
+   "c2_inf_init_hit_rate_pct": 91.14,
+   "c2_lru_prewarm_misses": 564,
+   "c2_lru_hit_rate_pct": 88.94,
+   "c1_ssd_MiB_per_token": 348.2,
+   "prewarm_cost_s_at_bank": {
+    "0.29": 82.7,
+    "0.37": 64.8
+   },
+   "c2_ge_c1": true
+  },
+  {
+   "budget_gib": 32,
+   "slots": 2570,
+   "prewarm_gib": 32.0,
+   "coverage_pct": 100.0,
+   "c1_pin_misses": 0,
+   "c1_hit_rate_pct": 100.0,
+   "c2_min_misses": 0,
+   "c2_hit_rate_pct": 100.0,
+   "c2_min_inf_init_misses": 0,
+   "c2_inf_init_hit_rate_pct": 100.0,
+   "c2_lru_prewarm_misses": 0,
+   "c2_lru_hit_rate_pct": 100.0,
+   "c1_ssd_MiB_per_token": 0.0,
+   "prewarm_cost_s_at_bank": {
+    "0.29": 110.3,
+    "0.37": 86.5
+   },
+   "c2_ge_c1": true
+  }
+ ],
+ "checks": {
+  "sim_csv_agrees_exact_init": true,
+  "artifact_reproduces_doc_figures": true,
+  "c2_ge_c1_every_budget": true
+ },
+ "doc_figures_explained_by_inf_init": {
+  "8": 56.83,
+  "12": 59.11,
+  "16": 70.68,
+  "20": 83.02,
+  "24": 91.14
+ },
+ "standing_rules": [
+  "regime-C rows are never scored against cold-start rows",
+  "the one-time prewarm read (prewarm_gib GiB) is charged outside the measured window",
+  "24 GiB pooled projects ~29-30 GiB peak RSS vs the 31.35 GiB host limit (memory gate)"
+ ]
+}

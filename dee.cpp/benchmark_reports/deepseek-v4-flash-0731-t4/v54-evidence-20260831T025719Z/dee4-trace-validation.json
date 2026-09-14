@@ -1,0 +1,20 @@
+{
+  "schema": "dee4-v3-trace-validation",
+  "success": true,
+  "format": "dee4-v3-trace",
+  "metadata_path": "/tmp/dsv4-dee4-v3-trace/metadata.json",
+  "data_path": "/tmp/dsv4-dee4-v3-trace/experts.dee4",
+  "data_sha256": "c83462ba50d2154a241cabf7d2b8d084e46f2eaa54416a96c90770ca7172d6e8",
+  "trace_journal_sha256": "665aac3e8db570237c6dc6acaf08dc39f2af890e8a04e400ce7154f1a858dae1",
+  "trace_final_chain_sha256": "086f8ca83b6a3c467cdf950096141fa9bc3e55a285d7d1fed8a0ad9913e3eb3d",
+  "selection_sha256": "7f41f8d0351491ce9d4b11b5317257c3dfb3ec282666fcac7cd711aa9bcd99bf",
+  "trace_record_count": 688,
+  "trace_completed_forwards": 16,
+  "total_experts": 2364,
+  "record_bytes": 13369344,
+  "total_bytes": 31605129216,
+  "record_indices_contiguous": true,
+  "integrity_records_complete": true,
+  "configured_metadata_path": "/tmp/dsv4-dee4-v3-trace/metadata.json",
+  "created_this_run": true
+}

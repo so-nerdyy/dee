@@ -1,0 +1,30 @@
+{
+  "_comment": "GPU Batch #1 (PHASE2-T4, GPU 1/2): 4-arm Phase-2 campaign payload. deepseek_v4_phase2_campaign.py drives the P0-P6 phases; this file is the inner per-rep default (env vars override per arm). phase2_mode stays 'off' so a naked single run is the A0 baseline cell.",
+  "run_id": "p2.3-dee4-trace-fillpool-ab-q8l4-v60",
+  "cache_dtype": "fp4",
+  "expert_store": "dee4_trace",
+  "dee4_trace_path": "/tmp/dsv4-dee4-v3-trace/metadata.json",
+  "dee4_validate_samples": 12,
+  "profile_stages": true,
+  "n_tokens": 16,
+  "source_read_lanes": 4,
+  "source_read_queue_depth": 8,
+  "phase2_mode": "off",
+  "phase2_host_budget_bytes": 9126805504,
+  "phase2_host_dynamic_slots": 682,
+  "phase2_host_policy_slots": 0,
+  "phase2_host_slot_bytes": 0,
+  "phase2_host_alignment": 4096,
+  "phase2_host_try_pin": true,
+  "phase2_model_identity": "",
+  "campaign": {
+    "doc": "PHASE2_T4_CAMPAIGN.md (research/phase2-t4-campaign @ ab358bf)",
+    "driver": "deepseek_v4_phase2_campaign.py",
+    "kernel_metadata": "kernel-metadata-phase2-campaign.json",
+    "arms": ["A0 baseline (off)", "A1 vram_only (vram)",
+             "A2 host_only (host)", "A3 combined (both)"],
+    "reps_per_arm": ["smoke(2 tok)", "r1", "r2", "r3 (16 tok)"],
+    "drift_bracket": "A0.r4",
+    "run_number": "GPU 1/2"
+  }
+}

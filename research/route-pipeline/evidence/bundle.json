@@ -1,0 +1,26 @@
+{
+  "classification": "BLOCKED_LIVE_GPU",
+  "timestamp_utc": "2026-09-05T02:32:13.187103+00:00",
+  "reason": "nvidia-smi absent; torch.cuda unavailable",
+  "environment": {
+    "nvidia_smi": false,
+    "gpus": [],
+    "cuda": false,
+    "torch": "2.7.1+cu118",
+    "sm75_only": false,
+    "live_dual_t4": false
+  },
+  "timings_invented": 0,
+  "artifacts": [
+    "abc-mechanics.json",
+    "candidate-ranking.json",
+    "closure.json",
+    "environment.json",
+    "host-sync-attribution.json",
+    "next-ab.json",
+    "per-layer.csv",
+    "per-token.json",
+    "profile-off",
+    "profile-on"
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "snapshot_kind": "canonical-phase1-seal-provenance",
+  "result": "PASS",
+  "terminal_reason": "ALL_SIX_PASS",
+  "terminal_timestamp_utc": "20260728T220109Z",
+  "source_seal_sha256": "edcf26827c3daae509184b368a1fb0f835eafe98ad1b3ab940427feba86b1958",
+  "source_identity_sha256": "fad9ae6fcd9b00eecb764fb7c103564b15ca7291af1e80733c59981b6a41eb81",
+  "source_validation_summary_sha256": "46c334d73a250041b91c2777095ae0604e4c93df51a74c9e70879ad8241871d1",
+  "identity": {
+    "run_id": "phase1-20260728T220104Z-phase1-host-revalidate",
+    "sealed_integration": "b98696395b51006f71a85c328acacffbf65d29d2",
+    "source_evidence_sha256": "18c3a64a49f7341342e1c98c05694e705b3c85b673e3c95c6679947ce82d8fbf",
+    "source_evidence_run_id": "20260728T183337Z-phase1-redo",
+    "wrapper_classification": "host-side-revalidator-only-imports-canonical-harness",
+    "kaggle_invocations": 0,
+    "orchestrator_invocations": 0
+  },
+  "gates": {
+    "all_six_rows_present": true,
+    "artifact_completeness_all_six": true,
+    "correctness_passes_all_six": true,
+    "generation_aware_transfer_classification": true,
+    "hash_validation_passes": true,
+    "lifetime_passes_all_six": true,
+    "manifest_validation_passes": true,
+    "phase2_skeleton_present": true,
+    "v1_baseline_preserved_unchanged": true,
+    "zero_newly_dropped_timing_events": true,
+    "zero_unresolved_metadata_inconsistencies": true
+  },
+  "per_row_run_ids": [
+    "capacity-8-control",
+    "capacity-8-profiled",
+    "capacity-16-control",
+    "capacity-16-profiled",
+    "capacity-32-control",
+    "capacity-32-profiled"
+  ],
+  "note": "This compact tracked snapshot is anchored to the SHA256 hashes of the canonical downloaded Phase 1 SEAL, IDENTITY, and validation summary. The canonical evidence remains immutable under tmp/m4_ledger_seal_redo."
+}

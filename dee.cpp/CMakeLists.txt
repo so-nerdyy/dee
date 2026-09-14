@@ -1,99 +1,228 @@
 cmake_minimum_required(VERSION 3.18)
 
-project(dee.cpp
-    VERSION 0.1.0
-    DESCRIPTION "Dynamic Expert Eviction inference engine"
-    LANGUAGES C CXX)
+project(dee.cpp VERSION 0.2.0 DESCRIPTION "Dynamic Expert Eviction inference engine" LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# ---------------------------------------------------------------------------
-# Options
-# ---------------------------------------------------------------------------
-option(DEE_CUDA        "Enable CUDA GPU offload (RTX 3090 / sm_86)" OFF)
-option(DEE_BUILD_TESTS "Build unit tests"                          ON)
-option(DEE_BUILD_GGML  "Build + link the vendored ggml backend"   OFF)
+option(DEE_CUDA "Enable the CUDA runtime and kernels" OFF)
+option(DEE_BUILD_TESTS "Build unit tests" ON)
+option(DEE_BUILD_GGML "Build the vendored ggml reference backend" OFF)
+option(DEE_CUDA_VALIDATE "Synchronize CUDA launches close to their call site" OFF)
+option(DEE_BUILD_FILL_REPLAY "Build the fill-path replay/rider tool (host-only)" OFF)
+option(DEE_BUILD_TIER_REPLAY "Build the Phase-2 tier journal replay tool (host-only)" OFF)
 
-# ---------------------------------------------------------------------------
-# CUDA
-# ---------------------------------------------------------------------------
-# DEE_CUDA defaults OFF so the engine builds on CPU-only machines.
-# On the RTX 3090 box, configure with -DDEE_CUDA=ON (requires CUDA Toolkit).
 if(DEE_CUDA)
-    find_package(CUDAToolkit REQUIRED)
     enable_language(CUDA)
-    # Broad consumer/datacenter compatibility: Pascal (sm_60) through Blackwell
-    # (sm_90). The engine logic is hardware-agnostic; ggml-cuda ships native
-    # kernels for all of these. (Production target: RTX 3090 = sm_86.)
-    set(CMAKE_CUDA_ARCHITECTURES "60;70;75;80;86;89;90" CACHE STRING "CUDA architectures" FORCE)
-    add_compile_definitions(DEE_CUDA=1)
-endif()
-
-# ---------------------------------------------------------------------------
-# Vendored ggml (foundation / reference)
-# ---------------------------------------------------------------------------
-# ggml is vendored (see third_party/ggml + third_party/README.md) and is the
-# tensor/compute backend for the FORWARD PASS (later steps). Step 4 is the
-# data layer only (mmap + resolver) and does NOT link ggml, so the project
-# builds without it. Flip DEE_BUILD_GGML=ON when the forward pass is added.
-option(DEE_BUILD_GGML "Build + link the vendored ggml backend" OFF)
-if(DEE_BUILD_GGML)
-    # Drive ggml's own backend options from ours. ggml-cuda only builds when
-    # DEE_CUDA is ON AND the CUDA Toolkit is present.
-    set(GGML_CUDA ${DEE_CUDA} CACHE BOOL "ggml: CUDA backend" FORCE)
-    set(GGML_METAL OFF CACHE BOOL "" FORCE)
-    set(GGML_BLAS   OFF CACHE BOOL "" FORCE)
-    add_subdirectory(third_party/ggml EXCLUDE_FROM_ALL)
-    set(GGML_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml/include)
-    set(GGML_LIB ggml)
-    if(DEE_CUDA)
-        set(GGML_CUDA_LIB ggml-cuda)
+    find_package(CUDAToolkit REQUIRED)
+    set(CMAKE_CUDA_STANDARD 17)
+    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+    # Do not overwrite a caller's architecture selection.  T4 users should
+    # configure -DCMAKE_CUDA_ARCHITECTURES=75; 75 is also our portable default.
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "")
+        set(CMAKE_CUDA_ARCHITECTURES "75" CACHE STRING "CUDA architectures to build for")
     endif()
 endif()
 
-# ---------------------------------------------------------------------------
-# dee.cpp core library
-# ---------------------------------------------------------------------------
-file(GLOB DEE_SRC CONFIGURE_DEPENDS src/*.cpp)
-add_library(dee_core STATIC ${DEE_SRC})
-target_include_directories(dee_core PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+set(DEE_CORE_SOURCES
+    src/dee.cpp
+    src/json_min.cpp
+    src/profiling.cpp
+    src/weight_mmap.cpp
+    src/expert_store.cpp
+    src/vram_cache.cpp
+    src/async_prefetcher.cpp
+    src/host_pack_cache.cpp
+    src/host_expert_tier.cpp
+    src/expert_tiers.cpp
+    src/pt_loader.cpp
+    src/oracle.cpp
+    src/engine.cpp
+    src/trace_alloc.cpp)
+
+add_library(dee_core STATIC ${DEE_CORE_SOURCES})
+set_target_properties(dee_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(dee_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_options(dee_core PRIVATE
+    $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
+    $<$<CXX_COMPILER_ID:MSVC>:/W4>)
+
 find_package(ZLIB REQUIRED)
-target_link_libraries(dee_core PUBLIC ZLIB::ZLIB)
+find_package(Threads REQUIRED)
+target_link_libraries(dee_core PUBLIC ZLIB::ZLIB Threads::Threads)
+
 if(DEE_CUDA)
-    # Compile the real CUDA SwiGLU kernels with nvcc and link the CUDA runtime.
-    file(GLOB DEE_CUDA_SRC CONFIGURE_DEPENDS src/*.cu)
-    target_sources(dee_core PRIVATE ${DEE_CUDA_SRC})
-    target_link_libraries(dee_core PUBLIC CUDA::cudart)
+    target_sources(dee_core PRIVATE
+        src/cuda_convert.cu
+        src/rmsnorm_cuda.cu
+        src/swiglu_cuda.cu)
+    target_compile_definitions(dee_core PUBLIC DEE_CUDA=1)
+    if(DEE_CUDA_VALIDATE)
+        target_compile_definitions(dee_core PUBLIC DEE_CUDA_VALIDATE=1)
+    endif()
+    target_link_libraries(dee_core PUBLIC CUDA::cudart CUDA::cublas)
+    set_target_properties(dee_core PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 endif()
+
 if(DEE_BUILD_GGML)
-    target_include_directories(dee_core PUBLIC ${GGML_INCLUDE_DIR})
-    target_link_libraries(dee_core PUBLIC ${GGML_LIB})
+    set(GGML_CUDA ${DEE_CUDA} CACHE BOOL "ggml CUDA backend" FORCE)
+    set(GGML_METAL OFF CACHE BOOL "" FORCE)
+    set(GGML_BLAS OFF CACHE BOOL "" FORCE)
+    add_subdirectory(third_party/ggml EXCLUDE_FROM_ALL)
+    target_include_directories(dee_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml/include)
+    target_link_libraries(dee_core PUBLIC ggml)
     if(DEE_CUDA)
-        target_link_libraries(dee_core PUBLIC ${GGML_CUDA_LIB} CUDA::cudart)
+        target_link_libraries(dee_core PUBLIC ggml-cuda)
     endif()
 endif()
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-if(DEE_BUILD_TESTS)
-    enable_testing()
-    file(GLOB DEE_TESTS CONFIGURE_DEPENDS tests/*.cpp)
-    foreach(t ${DEE_TESTS})
-        get_filename_component(tname ${t} NAME_WE)
-        add_executable(${tname} ${t})
-        target_link_libraries(${tname} PRIVATE dee_core)
-        add_test(NAME ${tname} COMMAND ${tname})
-        # tests reference repo-relative paths (tests/data/...); run from source root
-        set_tests_properties(${tname} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-    endforeach()
-endif()
-
-# ---------------------------------------------------------------------------
-# CLI benchmark driver (Step 8)
-# ---------------------------------------------------------------------------
 add_executable(dee_cli main.cpp)
 target_link_libraries(dee_cli PRIVATE dee_core)
+
+# Fill-path replay/rider (research/route-pipeline): replays production
+# expert-record access through the real store/cache objects. Host-only by
+# construction (no CUDA sources); default OFF so sealed builds are unaffected.
+if(DEE_BUILD_FILL_REPLAY)
+    add_executable(fill_replay tools/fill_replay.cpp)
+    target_link_libraries(fill_replay PRIVATE dee_core)
+endif()
+
+# GPU Batch #1 P3 microbench (PHASE2_T4_CAMPAIGN section 3.3): measures the
+# pinned-direct host-lease H2D submission path vs the legacy gather-copy path
+# at the production 12.75 MiB record size. Built only for CUDA toolchains
+# (the Kaggle job is the intended executor); the source is #ifdef-clean so a
+# manual DEE_CUDA=OFF compile still exercises the mock-stream decomposition.
+if(DEE_CUDA)
+    add_executable(pinned_direct_bench tools/pinned_direct_bench.cpp)
+    target_link_libraries(pinned_direct_bench PRIVATE dee_core)
+endif()
+
+# Phase-2 tier replay: drives the real HostExpertTier / VramCacheManager /
+# AsyncPrefetcher / DeviceExpertTier with the sealed route journal to compare
+# realized counters against the Python policy simulator. Host-only; default
+# OFF so sealed builds are unaffected.
+if(DEE_BUILD_TIER_REPLAY)
+    add_executable(phase2_tier_replay tools/phase2_tier_replay.cpp)
+    target_link_libraries(phase2_tier_replay PRIVATE dee_core)
+endif()
+
+if(DEE_BUILD_TESTS)
+    enable_testing()
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_custom_target(dee_test_assets
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/gen_synthetic_shard.py
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/layer0_shard.safetensors
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/gen_moe_shard.py
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/ornith_moe256.safetensors
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/gen_split_router_shards.py
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/split-router
+        BYPRODUCTS
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/layer0_shard.safetensors
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/ornith_moe256.safetensors
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/split-router/split-a.safetensors
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/split-router/split-b.safetensors
+        COMMENT "Generating deterministic safetensors test shards")
+    set(DEE_TEST_SOURCES
+        tests/test_smoke.cpp
+        tests/test_weight_mmap.cpp
+        tests/test_expert_store.cpp
+        tests/test_deepseek_v4_resolver.cpp
+        tests/test_deepseek_v4_fp4_decode.cpp
+        tests/test_vram_cache.cpp
+        tests/test_async_prefetcher.cpp
+        tests/test_host_pack_cache.cpp
+        tests/test_phase2_host_tier.cpp
+        tests/test_phase2_tier_audit.cpp
+        tests/test_phase2_tier_audit_v2b.cpp
+        tests/test_oracle.cpp
+        tests/test_engine.cpp)
+    list(APPEND DEE_TEST_SOURCES tests/test_real_router.cpp)
+    if(DEE_CUDA)
+        list(APPEND DEE_TEST_SOURCES
+            tests/test_swiglu_cuda.cpp
+            tests/test_rmsnorm_cuda.cpp
+            tests/test_router_cuda.cpp
+            tests/test_expert_batch_cuda.cpp
+            tests/test_profiling_cuda.cpp
+            tests/test_deepseek_v4_fp4_cuda.cpp
+            tests/test_deepseek_v4_fp4_expert.cpp)
+        list(APPEND DEE_TEST_SOURCES tests/test_phase2_cuda.cpp)
+    endif()
+    foreach(test_source IN LISTS DEE_TEST_SOURCES)
+        get_filename_component(test_name ${test_source} NAME_WE)
+        add_executable(${test_name} ${test_source})
+        target_link_libraries(${test_name} PRIVATE dee_core)
+        add_dependencies(${test_name} dee_test_assets)
+        add_test(NAME ${test_name} COMMAND ${test_name})
+        set_tests_properties(${test_name} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+    if(DEE_CUDA)
+        set_tests_properties(test_phase2_cuda PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+    endif()
+    set_tests_properties(test_phase2_host_tier PROPERTIES TIMEOUT 30)
+    set_tests_properties(test_phase2_tier_audit PROPERTIES TIMEOUT 60)
+
+    # Legacy cuda_submit event-leak regression. Compiles the REAL DEE_CUDA
+    # code paths (async_prefetcher + its dependencies) against tests/cuda_stub
+    # — a mock CUDA runtime with per-call fault injection — so the failure-path
+    # drain + event-destroy cleanup actually executes under ctest with no
+    # toolkit. CPU-only builds only: a real toolkit build exercises the shipped
+    # path via test_phase2_cuda, and the stub must never shadow real headers.
+    if(NOT DEE_CUDA)
+        add_executable(test_legacy_submit_event_leak
+            tests/test_legacy_submit_event_leak.cpp
+            tests/cuda_stub/cuda_stub.cpp
+            src/async_prefetcher.cpp
+            src/vram_cache.cpp
+            src/profiling.cpp
+            src/trace_alloc.cpp
+            src/host_expert_tier.cpp)
+        target_include_directories(test_legacy_submit_event_leak PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cuda_stub
+            ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        target_compile_definitions(test_legacy_submit_event_leak PRIVATE DEE_CUDA=1)
+        target_compile_options(test_legacy_submit_event_leak PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
+            $<$<CXX_COMPILER_ID:MSVC>:/W4>)
+        target_link_libraries(test_legacy_submit_event_leak PRIVATE
+            ZLIB::ZLIB Threads::Threads)
+        add_test(NAME test_legacy_submit_event_leak
+                 COMMAND test_legacy_submit_event_leak)
+        set_tests_properties(test_legacy_submit_event_leak PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} TIMEOUT 60)
+    endif()
+    add_test(
+        NAME test_ornith_support
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ornith_support.py)
+    set_tests_properties(test_ornith_support PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(
+        NAME test_deepseek_v4_support
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_deepseek_v4_support.py)
+    set_tests_properties(test_deepseek_v4_support PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(
+        NAME test_deepseek_v4_cache
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_deepseek_v4_cache.py)
+    set_tests_properties(test_deepseek_v4_cache PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(
+        NAME test_deepseek_v4_moe_reference
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_deepseek_v4_moe_reference.py)
+    set_tests_properties(test_deepseek_v4_moe_reference PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(
+        NAME test_deepseek_v4_contract
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_deepseek_v4_contract.py)
+    set_tests_properties(test_deepseek_v4_contract PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(
+        NAME test_dee4_repack
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dee4_repack.py)
+    set_tests_properties(test_dee4_repack PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+endif()
+
+add_custom_target(lightning_t4_benchmark
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/scripts/setup_lightning_t4.sh --benchmark
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    USES_TERMINAL
+    COMMENT "Prepare assets, build sm_75 CUDA binary, and run the DEE benchmark")

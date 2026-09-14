@@ -1,0 +1,4 @@
+{
+  "classification": "BLOCKED_LIVE_GPU",
+  "note": "matched validation not executed without a live GPU"
+}

@@ -41,6 +41,7 @@ int main() {
 
     dee::VramCacheManager mgr;
     check("init manager", mgr.init(BUDGET, host_backend()));
+    mgr.set_debug_validation(true);
     check("budget correct", mgr.budget_bytes() == BUDGET);
 
     // --- Load 4 experts: all fit, no eviction ---
@@ -52,6 +53,9 @@ int main() {
     check("used == budget", mgr.used_bytes() == BUDGET);
     check("0 evictions so far", mgr.stats().evictions == 0);
     check("4 loads", mgr.stats().loads == 4);
+    const uint64_t e0_first_generation = mgr.generation_of(0, 0);
+    check("first residency generation is nonzero", e0_first_generation != 0);
+    check("initial cache invariants valid", mgr.validate_invariants());
 
     // Write a marker into each block's data and confirm it round-trips.
     for (int e = 0; e < 4; ++e) {
@@ -81,16 +85,64 @@ int main() {
     check("E3 protected by priority", mgr.is_resident(0, 3));
     check("evictions now 3", mgr.stats().evictions == 3);
 
+    // --- Experimental VRAM repair: actual recency ignores staging priority ---
+    dee::VramCacheManager plain_lru;
+    check("init experimental plain-LRU manager", plain_lru.init(BLK * 2, host_backend()));
+    plain_lru.set_experimental_plain_lru(true);
+    check("plain-LRU load E0 with high staging priority",
+          plain_lru.ensure(0, 0, BLK, 100));
+    check("plain-LRU load E1", plain_lru.ensure(0, 1, BLK, 0));
+    plain_lru.touch(0, 0); // E0 is newer even though its priority is higher.
+    check("plain-LRU load E2 evicts by recency", plain_lru.ensure(0, 2, BLK, 0));
+    check("plain-LRU retains recent E0", plain_lru.is_resident(0, 0));
+    check("plain-LRU evicts older E1", !plain_lru.is_resident(0, 1));
+    check("plain-LRU switch is observable", plain_lru.experimental_plain_lru());
+
     // --- sync_fallback semantics ---
     // E0 was evicted earlier; reaching it at compute time = a fallback + reload.
     check("sync_fallback on evicted E0", mgr.sync_fallback(0, 0, BLK, 0));
     check("fallback counted", mgr.stats().fallbacks == 1);
     check("E0 resident again", mgr.is_resident(0, 0));
+    check("reloaded E0 receives a newer generation",
+          mgr.generation_of(0, 0) > e0_first_generation);
+
+    // --- A pinned block is skipped, reported, and never selected as victim. ---
+    dee::VramCacheManager pinned_mgr;
+    check("init pinned-skip manager", pinned_mgr.init(BLK * 2, host_backend()));
+    check("load pinned-skip E0", pinned_mgr.ensure(0, 0, BLK, 0));
+    check("load pinned-skip E1", pinned_mgr.ensure(0, 1, BLK, 0));
+    check("pin E0", pinned_mgr.pin(0, 0));
+    check("load E2 while E0 pinned", pinned_mgr.ensure(0, 2, BLK, 0));
+    check("pinned E0 survived", pinned_mgr.is_resident(0, 0));
+    check("unpinned E1 was evicted", !pinned_mgr.is_resident(0, 1));
+    check("pinned candidate skip counted", pinned_mgr.stats().pinned_blocks_skipped >= 1);
+    check("balanced unpin succeeds", pinned_mgr.unpin(0, 0));
+    check("unpin underflow is reported", !pinned_mgr.unpin(0, 0));
+    check("unpin underflow leaves diagnostic", !pinned_mgr.last_error_message().empty());
+
+    // A large allocation may require more than one victim. Generation remains
+    // monotonic and the arena/range accounting must stay valid.
+    dee::VramCacheManager multi_mgr;
+    check("init multi-victim manager", multi_mgr.init(BLK * 2, host_backend()));
+    multi_mgr.set_debug_validation(true);
+    check("multi load E0", multi_mgr.ensure(0, 0, BLK / 2));
+    check("multi load E1", multi_mgr.ensure(0, 1, BLK / 2));
+    check("multi load E2", multi_mgr.ensure(0, 2, BLK / 2));
+    check("multi load E3", multi_mgr.ensure(0, 3, BLK / 2));
+    // Make the tail-adjacent blocks the first three LRU victims so their holes
+    // coalesce into one range large enough for the replacement.
+    multi_mgr.touch(0, 2);
+    multi_mgr.touch(0, 1);
+    multi_mgr.touch(0, 0);
+    check("large load evicts multiple blocks", multi_mgr.ensure(0, 4, BLK + BLK / 2));
+    check("multi-victim eviction count", multi_mgr.stats().evictions == 3);
+    check("multi-victim invariants valid", multi_mgr.validate_invariants());
 
     // --- clear ---
     mgr.clear();
     check("clear empties cache", mgr.resident_count() == 0);
     check("clear frees budget", mgr.used_bytes() == 0);
+    check("clear leaves invariants valid", mgr.validate_invariants());
 
     printf("=== %s ===\n", g_fail == 0 ? "ALL PASS" : "FAILURES");
     return g_fail == 0 ? 0 : 1;

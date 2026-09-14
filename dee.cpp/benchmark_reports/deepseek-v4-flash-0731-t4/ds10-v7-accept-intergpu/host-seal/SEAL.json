@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "result": "PASS",
+  "terminal_verdict": "ACCEPT_INTERGPU",
+  "stage": "v3",
+  "performance_comparable": false,
+  "evidence_dir": "dsv4-ds10-evidence-20260805T014345Z",
+  "identity": {
+    "repository_commit": "38b321b5e65a80c3e0d47937f4194475cee7a63e",
+    "stage": "v3",
+    "harness_sha256": "3b68d22747a30de95dbb290ef9c0051bc61936102aa6f2a97080c55a8e212a5f",
+    "module_count": 9
+  },
+  "manifest": {
+    "path": "ds10-artifact-manifest.json",
+    "sha256": "6cf8a278da6024f9b102c94ab3cbdb006893a3f8aecb644b6f2497337441ad0a",
+    "artifact_count": 14
+  },
+  "archive": {
+    "path": "dsv4-ds10-evidence-20260805T014345Z.tar.gz",
+    "bytes": 64948,
+    "sha256": "a1f9b39eba4c736ba5ed0c05197416041831c4f585fd791e138c48f1bb40c2d1",
+    "member_count": 16
+  },
+  "gates": {
+    "dual_t4": true,
+    "performance_not_comparable": true,
+    "verdict": true,
+    "layer_order": true,
+    "handoff": true,
+    "runtime": true
+  },
+  "failed_gates": []
+}
