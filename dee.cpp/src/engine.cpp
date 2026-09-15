@@ -3494,7 +3494,15 @@ bool Engine::init(const EngineConfig& cfg) {
     if (deepseek_v4) {
         if (!cfg_.expert_store_path.empty()) {
             auto store = std::make_unique<Dee4ExpertStore>();
-            if (!store->open(cfg_.expert_store_path)) {
+            dee::Dee4OpenOptions store_opts;
+            // DEE4_STORE_SKIP_SEAL=1: session drivers that already sealed the
+            // store out-of-band can skip the per-open O(total bytes) hash.
+            // Structural checks (existence/size/table) always apply.
+            if (const char* skip = std::getenv("DEE4_STORE_SKIP_SEAL");
+                skip && skip[0] == '1') {
+                store_opts.verify_segment_hashes = false;
+            }
+            if (!store->open(cfg_.expert_store_path, store_opts)) {
                 std::fprintf(stderr,
                              "[engine] cannot open DEE4 expert store %s: %s\n",
                              cfg_.expert_store_path.c_str(),

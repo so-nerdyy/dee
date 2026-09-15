@@ -1969,7 +1969,19 @@ def main() -> int:
 
     _all_results = []
     for _qi, _ptext in enumerate(PROMPT_LIST):
-        _all_results.append(_run_prompt(_ptext, _qi))
+        try:
+            _all_results.append(_run_prompt(_ptext, _qi))
+        except Exception as _exc:
+            # One prompt's failure must not kill the remaining prompts.
+            log(f"prompt {_qi} failed: {_exc!r}")
+            _all_results.append({"prompt_index": _qi,
+                                 "classification": "ERROR",
+                                 "error": repr(_exc)[:400],
+                                 "result": {}})
+            (WORK / f"native-generate-result-q{_qi}.json").write_text(
+                json.dumps({"classification": "ERROR",
+                            "error": repr(_exc)[:400],
+                            "generated_token_ids": []}, indent=2))
     (WORK / "native-generate-all.json").write_text(
         json.dumps(
             [{"prompt_index": r["prompt_index"],
@@ -2064,4 +2076,8 @@ if __name__ == "__main__":
             json.dumps(terminal, indent=2))
         # Exit 0 so Kaggle snapshots /kaggle/working (error-exit kernels drop
         # their output/log, which is why the earlier failures were undiagnosable).
-        sys.exit(0)
+        # os._exit, not sys.exit: evidence is already durably written, and the
+        # interpreter teardown (engine destructors, CUDA teardown, non-daemon
+        # fill threads) can hang indefinitely after a mid-generation fault --
+        # v11's a1 burned 4h that way.
+        os._exit(0)
