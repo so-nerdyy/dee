@@ -98,6 +98,11 @@ public:
     virtual bool materialize(const ExpertView& view, uint8_t* dst,
                              size_t nbytes) const;
     virtual const char* materialization_mode() const { return "mmap_memcpy"; }
+    // True when materialize() can serve views that lack a single contiguous
+    // record buffer (e.g. per-tensor safetensors regions) via positional
+    // reads.  The bounded multi-lane path may then accept non-contiguous
+    // views; the produced record bytes are identical either way.
+    virtual bool can_gather_materialize() const { return false; }
 
     // Called by the consumer around the actual source-to-host-L2 copy.  This
     // deliberately measures page-fault/storage wait rather than the cheap
@@ -157,6 +162,14 @@ public:
     bool get(int layer, int expert, ExpertView* out) override;
     const char* backend_name() const override { return "safetensors"; }
     const std::string& integrity_identity() const override { return identity_; }
+    // Gathers the six tensor regions (gate/up/down packed weights then
+    // scales) into one record buffer via pread() on the owning shard's fd
+    // (POSIX) or a per-region memcpy elsewhere.  Byte-identical to the
+    // view-by-view fill either way.
+    bool materialize(const ExpertView& view, uint8_t* dst,
+                     size_t nbytes) const override;
+    const char* materialization_mode() const override;
+    bool can_gather_materialize() const override;
 
 private:
     TensorResolver* resolver_ = nullptr;

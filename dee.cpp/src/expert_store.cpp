@@ -378,6 +378,74 @@ bool SafetensorsExpertStore::get(int layer, int expert, ExpertView* out) {
     return true;
 }
 
+const char* SafetensorsExpertStore::materialization_mode() const {
+#ifdef _WIN32
+    return "gather_memcpy";
+#else
+    return "pread_gather";
+#endif
+}
+
+bool SafetensorsExpertStore::can_gather_materialize() const {
+    return resolver_ != nullptr;
+}
+
+bool SafetensorsExpertStore::materialize(const ExpertView& view,
+                                         uint8_t* dst, size_t nbytes) const {
+    if (!dst || nbytes == 0 || !resolver_) return false;
+    const TensorView* regions[6] = {
+        &view.weights[0], &view.weights[1], &view.weights[2],
+        &view.scales[0], &view.scales[1], &view.scales[2]};
+    size_t total = 0;
+    for (const TensorView* r : regions) {
+        if (!r->ok()) return false;
+        total += r->nbytes;
+    }
+    if (total != nbytes) return false;
+#ifdef _WIN32
+    // No positional reads on this build; gather straight from the resolved
+    // views.  Byte-identical output, page faults included.
+    size_t off = 0;
+    for (const TensorView* r : regions) {
+        std::memcpy(dst + off, r->data, r->nbytes);
+        off += r->nbytes;
+    }
+    return true;
+#else
+    const auto read_begin = std::chrono::steady_clock::now();
+    size_t off = 0;
+    uint64_t short_reads = 0;
+    for (const TensorView* r : regions) {
+        WeightMmap* shard = resolver_->find_shard(r->data, r->nbytes);
+        if (!shard) return false;
+        const int fd = shard->fd();
+        if (fd < 0) return false;
+        const size_t file_off = static_cast<size_t>(r->data - shard->base());
+        size_t copied = 0;
+        while (copied < r->nbytes) {
+            const size_t remaining = r->nbytes - copied;
+            if (file_off + copied > static_cast<size_t>(
+                    std::numeric_limits<off_t>::max())) {
+                return false;
+            }
+            const ssize_t count = ::pread(
+                fd, dst + off + copied, remaining,
+                static_cast<off_t>(file_off + copied));
+            if (count < 0 && errno == EINTR) continue;
+            if (count <= 0) return false;
+            if (static_cast<size_t>(count) < remaining) ++short_reads;
+            copied += static_cast<size_t>(count);
+        }
+        off += r->nbytes;
+    }
+    const uint64_t service_ns = static_cast<uint64_t>(
+        std::chrono::duration<double, std::nano>(
+            std::chrono::steady_clock::now() - read_begin).count());
+    note_pread_service(service_ns, nbytes, short_reads, 0, 0);
+    return true;
+#endif
+}
+
 Dee4ExpertStore::Dee4ExpertStore() = default;
 
 Dee4ExpertStore::~Dee4ExpertStore() { close(); }

@@ -369,4 +369,20 @@ TensorView TensorResolver::resolve_tensor(const std::string& name) const {
     return TensorView{}; // !ok()
 }
 
+WeightMmap* TensorResolver::find_shard(const void* data, size_t nbytes) const {
+    if (!data || nbytes == 0) return nullptr;
+    const uintptr_t p = reinterpret_cast<uintptr_t>(data);
+    for (auto* sh : shards_) {
+        if (!sh || !sh->is_open()) continue;
+        const uintptr_t base = reinterpret_cast<uintptr_t>(sh->base());
+        if (!base) continue;
+        if (p >= base &&
+            p - base <= sh->file_size() &&
+            nbytes <= sh->file_size() - (p - base)) {
+            return sh;
+        }
+    }
+    return nullptr;
+}
+
 } // namespace dee

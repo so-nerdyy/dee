@@ -2823,11 +2823,22 @@ bool Engine::prepare_fp4_experts(
                 continue;
             }
             if (!expert_store_->get(source_layer, expert, &views[index]) ||
-                views[index].contiguous_data == nullptr ||
-                views[index].contiguous_nbytes == 0 ||
                 !configure_fp4_quantized(views[index], &metadata[index]) ||
-                metadata[index].fp4_total_nbytes !=
-                    views[index].contiguous_nbytes) {
+                metadata[index].fp4_total_nbytes == 0) {
+                std::fprintf(stderr,
+                    "[engine] bounded DEE4 materialization cannot resolve exact record (%d,%d)\n",
+                    source_layer, expert);
+                return false;
+            }
+            // Contiguous stores (dee4) must back the view with the full
+            // record; gather-capable stores (safetensors pread) may serve
+            // per-tensor regions -- materialize() produces identical bytes.
+            const bool resolvable =
+                (views[index].contiguous_data != nullptr &&
+                 views[index].contiguous_nbytes ==
+                     metadata[index].fp4_total_nbytes) ||
+                expert_store_->can_gather_materialize();
+            if (!resolvable) {
                 std::fprintf(stderr,
                     "[engine] bounded DEE4 materialization cannot resolve exact record (%d,%d)\n",
                     source_layer, expert);
@@ -2855,9 +2866,12 @@ bool Engine::prepare_fp4_experts(
             if (results[index].fill_executed) {
                 ++filled;
                 summed_read_ms += results[index].fill_milliseconds;
+                const bool contiguous =
+                    views[index].contiguous_data != nullptr;
                 expert_store_->record_source_read(
                     requests[index].nbytes,
-                    results[index].fill_milliseconds, 1, true);
+                    results[index].fill_milliseconds,
+                    contiguous ? 1 : 6, contiguous);
             }
             const uint64_t key = requests[index].key;
             auto existing = staging_int8_.find(key);
@@ -2963,6 +2977,12 @@ const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int exp
                 fill_ok = false;
                 return;
             }
+        } else if (expert_store_ &&
+                   expert_store_->can_gather_materialize() &&
+                   expert_store_->materialize(expert_view, dst, n)) {
+            // Non-contiguous per-tensor views gathered via positional reads:
+            // identical record bytes, no page faults on mounted filesystems.
+            off = n;
         } else {
             for (int r = 0; r < 6; ++r) {
                 if (off + sources[r]->nbytes > n) {

@@ -4,10 +4,12 @@
 // metadata/file-size checks.  No CUDA or real checkpoint is required.
 
 #include "dee/expert_store.h"
+#include "dee/weight_mmap.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -208,12 +210,119 @@ void test_trace_index_lookup_and_fail_closed() {
     std::filesystem::remove_all(directory);
 }
 
+// Minimal safetensors shard: one expert (layer 7, expert 3) with six
+// regions of distinct byte patterns.  Verifies that gather materialization
+// produces [w1|w3|w2|s1|s3|s2] byte-identical to the view memcpy.
+void write_safetensors_fixture(const std::filesystem::path& file,
+                               std::vector<uint8_t>* expected_record) {
+    // w1 gate [4,8] I8=32B, w3 up [4,8] I8=32B, w2 down [4,8] I8=32B,
+    // scales [4,2] F8=8B each -> record = 32*3 + 8*3 = 120 B.
+    const size_t region_bytes[6] = {32, 32, 32, 8, 8, 8};
+    const char* names[6] = {
+        "layers.7.ffn.experts.3.w1.weight",
+        "layers.7.ffn.experts.3.w3.weight",
+        "layers.7.ffn.experts.3.w2.weight",
+        "layers.7.ffn.experts.3.w1.scale",
+        "layers.7.ffn.experts.3.w3.scale",
+        "layers.7.ffn.experts.3.w2.scale"};
+    const char* dtypes[6] = {"I8", "I8", "I8", "F8_E8M0", "F8_E8M0", "F8_E8M0"};
+    const char* shapes[6] = {"[4,8]", "[4,8]", "[4,8]",
+                             "[4,2]", "[4,2]", "[4,2]"};
+
+    std::vector<uint8_t> payload;
+    size_t offsets[6];
+    for (int i = 0; i < 6; ++i) {
+        offsets[i] = payload.size();
+        for (size_t b = 0; b < region_bytes[i]; ++b) {
+            payload.push_back(static_cast<uint8_t>((i * 37 + b) & 0xff));
+        }
+    }
+    if (expected_record) *expected_record = payload;
+
+    std::string header = "{";
+    for (int i = 0; i < 6; ++i) {
+        if (i) header += ",";
+        header += "\"" + std::string(names[i]) + "\":{\"dtype\":\""
+            + dtypes[i] + "\",\"shape\":" + shapes[i]
+            + ",\"data_offsets\":[" + std::to_string(offsets[i]) + ","
+            + std::to_string(offsets[i] + region_bytes[i]) + "]}";
+    }
+    header += "}";
+
+    std::ofstream out(file, std::ios::binary);
+    const uint64_t hlen = header.size();
+    out.write(reinterpret_cast<const char*>(&hlen), 8);
+    out.write(header.data(), static_cast<std::streamsize>(header.size()));
+    out.write(reinterpret_cast<const char*>(payload.data()),
+              static_cast<std::streamsize>(payload.size()));
+}
+
+void test_safetensors_gather_materialize() {
+    const auto directory = make_test_dir();
+    const auto shard_path = directory / "model-test.safetensors";
+    std::vector<uint8_t> expected;
+    write_safetensors_fixture(shard_path, &expected);
+
+    dee::WeightMmap mmap;
+    check(mmap.open(shard_path.string()), "safetensors fixture opens");
+    dee::TensorResolver resolver;
+    resolver.set_model(dee::TensorResolver::Model::DEEPSEEK_V4);
+    resolver.register_shard(&mmap);
+
+    dee::SafetensorsExpertStore store(&resolver);
+    check(store.can_gather_materialize(),
+          "safetensors store advertises gather materialization");
+
+    dee::ExpertView view;
+    check(store.get(7, 3, &view), "v4 expert resolves");
+    check(view.ok(), "resolved view complete");
+    check(view.contiguous_data == nullptr,
+          "safetensors view is non-contiguous");
+
+    std::vector<uint8_t> gathered(expected.size(), 0xee);
+    check(store.materialize(view, gathered.data(), gathered.size()),
+          "gather materialize succeeds");
+    check(gathered == expected,
+          "gathered record is byte-identical to w1|w3|w2|s1|s3|s2");
+
+    std::vector<uint8_t> manual(expected.size(), 0x00);
+    {
+        size_t off = 0;
+        const dee::TensorView* regions[6] = {
+            &view.weights[0], &view.weights[1], &view.weights[2],
+            &view.scales[0], &view.scales[1], &view.scales[2]};
+        for (const dee::TensorView* r : regions) {
+            std::memcpy(manual.data() + off, r->data, r->nbytes);
+            off += r->nbytes;
+        }
+    }
+    check(gathered == manual, "gather output equals per-region memcpy");
+
+    // fail-closed: wrong nbytes, broken view, null resolver
+    check(!store.materialize(view, gathered.data(), gathered.size() - 1),
+          "short buffer rejected");
+    dee::ExpertView broken = view;
+    broken.weights[1].data = nullptr;
+    check(!store.materialize(broken, gathered.data(), gathered.size()),
+          "incomplete view rejected");
+    dee::SafetensorsExpertStore null_store(nullptr);
+    check(!null_store.can_gather_materialize(),
+          "null resolver cannot gather");
+    check(!null_store.materialize(view, gathered.data(), gathered.size()),
+          "null resolver materialize fails closed");
+
+    store.stats();  // telemetry must not crash
+    mmap.close();
+    std::filesystem::remove_all(directory);
+}
+
 }  // namespace
 
 int main() {
     test_arithmetic_lookup_and_stats();
     test_data_size_mismatch_fails_closed();
     test_trace_index_lookup_and_fail_closed();
+    test_safetensors_gather_materialize();
     if (g_failures == 0) {
         std::printf("ALL PASS\n");
         return 0;
