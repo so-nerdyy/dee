@@ -66,6 +66,11 @@ public:
     // Base address of the mmap'd region (valid only while open).
     const uint8_t* base() const { return base_; }
 
+    // POSIX fd backing the mapping (-1 when closed / non-POSIX build).
+    // Exposed so a resolved view can be re-read via pread() without page
+    // faults: file offset = (view.data - base()).
+    int fd() const { return fd_; }
+
     // Parse the safetensors header (called automatically by open()).
     bool parse_header();
 
@@ -135,6 +140,12 @@ public:
 
     // Resolve any exact checkpoint tensor name across the registered shards.
     TensorView resolve_tensor(const std::string& tensor_name) const;
+
+    // Find the registered shard whose mapping fully contains
+    // [data, data+nbytes).  Returns nullptr when no shard owns the range.
+    // Used to translate a resolved view back into (fd, file offset) for
+    // positional reads.
+    WeightMmap* find_shard(const void* data, size_t nbytes) const;
 
     // Build the canonical tensor name for the Ornith/Qwen3.5-MoE architecture.
     static std::string expert_tensor_name(int layer, int expert, Kind kind);

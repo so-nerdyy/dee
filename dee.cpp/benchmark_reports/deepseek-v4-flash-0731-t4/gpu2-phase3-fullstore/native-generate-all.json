@@ -1,0 +1,20 @@
+[
+  {
+    "prompt_index": 0,
+    "classification": "ACCEPT_CORRECTNESS",
+    "n_tokens": 16,
+    "token_ids_sha256": "4537a0525e7743daa18e3f8c19e9c57bcea3b2f65a59a00be0113c855aad7c1c"
+  },
+  {
+    "prompt_index": 1,
+    "classification": "ACCEPT_CORRECTNESS",
+    "n_tokens": 16,
+    "token_ids_sha256": "15897d13b715af60b7e4e7907ff81fe76fab776ac89250d0597eb6f240072d7e"
+  },
+  {
+    "prompt_index": 2,
+    "classification": "ACCEPT_CORRECTNESS",
+    "n_tokens": 16,
+    "token_ids_sha256": "bb9324463d679add172e7bb19e24e67415c3d604a5abf73bf77cf728073a41be"
+  }
+]
