@@ -1,0 +1,98 @@
+
+--- vram=3.50GiB fp16 (74 slots) policy=priority_lru | host=8.50GiB per-device consult=eager qd=6 regime=cold persist=1 ---
+prompt dev       req  vHit vCold   vEv  hHit hMiss   hEv  vHit%  hHit%   e2e% belady
+q0     cuda:0   2841    97  2744  2670  1147  1694  1012   3.4%  40.4%  40.4%    763
+q0     cuda:1   2671    65  2606  2532  1385  1286   604   2.4%  51.9%  51.9%    979
+q0     pooled   5512   162  5350  5202  2532  2980  1616   2.9%  45.9%  45.9%   1742
+q1     cuda:0   2836   156  2680  2680  1335  1501  1501   5.5%  47.1%  47.1%    906
+q1     cuda:1   2666   131  2535  2535  1389  1277  1277   4.9%  52.1%  52.1%    956
+q1     pooled   5502   287  5215  5215  2724  2778  2778   5.2%  49.5%  49.5%   1862
+q2     cuda:0   2763    76  2687  2687  1337  1426  1426   2.8%  48.4%  48.4%    802
+q2     cuda:1   2621    26  2595  2595  1424  1197  1197   1.0%  54.3%  54.3%    934
+q2     pooled   5384   102  5282  5282  2761  2623  2623   1.9%  51.3%  51.3%   1736
+
+=== anchor gate: result-a1-q0.json (journal sha 591072115feb -> prompt q0) ===
+  cuda:0:
+    prefetch_issued  anchor=    2841 sim=    2841 delta=+0 OK
+    resident_hits    anchor=      97 sim=      97 delta=+0 OK
+    cold_loads       anchor=    2744 sim=    2744 delta=+0 OK
+    evictions        anchor=    2670 sim=    2670 delta=+0 OK
+    host.hits        anchor=    1147 sim=    1147 (cum) delta=+0 OK
+    host.misses      anchor=    1694 sim=    1694 (cum) delta=+0 OK
+    host.evictions   anchor=    1012 sim=    1012 (cum) delta=+0 OK
+    host.entries   anchor=     682 sim=     682 delta=+0 OK
+  cuda:1:
+    prefetch_issued  anchor=    2671 sim=    2671 delta=+0 OK
+    resident_hits    anchor=      65 sim=      65 delta=+0 OK
+    cold_loads       anchor=    2606 sim=    2606 delta=+0 OK
+    evictions        anchor=    2532 sim=    2532 delta=+0 OK
+    host.hits        anchor=    1385 sim=    1385 (cum) delta=+0 OK
+    host.misses      anchor=    1286 sim=    1286 (cum) delta=+0 OK
+    host.evictions   anchor=     604 sim=     604 (cum) delta=+0 OK
+    host.entries   anchor=     682 sim=     682 delta=+0 OK
+    pooled fwd0 host_misses anchor=    1642 sim=    1642 delta=+0 OK
+    pooled fwd0 host_hits   anchor=       0 sim=       0 delta=+0 OK
+    pooled fwd0 cold_loads  anchor=    1642 sim=    1642 delta=+0 OK
+    pooled fwd0 requests    anchor=    1642 sim=    1642 delta=+0 OK
+    fwd00 pooled: requests 1642vs1642 (d=+0) | cold_loads 1642vs1642 (d=+0) | host_hits 0vs0 (d=+0) | host_misses 1642vs1642 (d=+0)
+    fwd01 pooled: requests 258vs258 (d=+0) | cold_loads 249vs249 (d=+0) | host_hits 162vs162 (d=+0) | host_misses 96vs96 (d=+0)
+    fwd02 pooled: requests 258vs258 (d=+0) | cold_loads 246vs246 (d=+0) | host_hits 152vs152 (d=+0) | host_misses 106vs106 (d=+0)
+    fwd03 pooled: requests 258vs258 (d=+0) | cold_loads 254vs254 (d=+0) | host_hits 163vs163 (d=+0) | host_misses 95vs95 (d=+0)
+
+=== anchor gate: result-a1-q1.json (journal sha 0d4f1a12e469 -> prompt q1) ===
+  cuda:0:
+    prefetch_issued  anchor=    2836 sim=    2836 delta=+0 OK
+    resident_hits    anchor=     156 sim=     156 delta=+0 OK
+    cold_loads       anchor=    2680 sim=    2680 delta=+0 OK
+    evictions        anchor=    2680 sim=    2680 delta=+0 OK
+    host.hits        anchor=    2482 sim=    2482 (cum) delta=+0 OK
+    host.misses      anchor=    3195 sim=    3195 (cum) delta=+0 OK
+    host.evictions   anchor=    2513 sim=    2513 (cum) delta=+0 OK
+    host.entries   anchor=     682 sim=     682 delta=+0 OK
+  cuda:1:
+    prefetch_issued  anchor=    2666 sim=    2666 delta=+0 OK
+    resident_hits    anchor=     131 sim=     131 delta=+0 OK
+    cold_loads       anchor=    2535 sim=    2535 delta=+0 OK
+    evictions        anchor=    2535 sim=    2535 delta=+0 OK
+    host.hits        anchor=    2774 sim=    2774 (cum) delta=+0 OK
+    host.misses      anchor=    2563 sim=    2563 (cum) delta=+0 OK
+    host.evictions   anchor=    1881 sim=    1881 (cum) delta=+0 OK
+    host.entries   anchor=     682 sim=     682 delta=+0 OK
+    pooled fwd0 host_misses anchor=    4507 sim=    4507 delta=+0 OK
+    pooled fwd0 host_hits   anchor=    2637 sim=    2637 delta=+0 OK
+    pooled fwd0 cold_loads  anchor=    1614 sim=    1614 delta=+0 OK
+    pooled fwd0 requests    anchor=    1632 sim=    1632 delta=+0 OK
+    fwd00 pooled: requests 1632vs1632 (d=+0) | cold_loads 1614vs1614 (d=+0) | host_hits 2637vs2637 (d=+0) | host_misses 4507vs4507 (d=+0)
+    fwd01 pooled: requests 258vs258 (d=+0) | cold_loads 249vs249 (d=+0) | host_hits 154vs154 (d=+0) | host_misses 104vs104 (d=+0)
+    fwd02 pooled: requests 258vs258 (d=+0) | cold_loads 253vs253 (d=+0) | host_hits 176vs176 (d=+0) | host_misses 82vs82 (d=+0)
+    fwd03 pooled: requests 258vs258 (d=+0) | cold_loads 248vs248 (d=+0) | host_hits 194vs194 (d=+0) | host_misses 64vs64 (d=+0)
+
+=== anchor gate: result-a1-q2.json (journal sha ee0808ddfc21 -> prompt q2) ===
+  cuda:0:
+    prefetch_issued  anchor=    2763 sim=    2763 delta=+0 OK
+    resident_hits    anchor=      76 sim=      76 delta=+0 OK
+    cold_loads       anchor=    2687 sim=    2687 delta=+0 OK
+    evictions        anchor=    2687 sim=    2687 delta=+0 OK
+    host.hits        anchor=    3819 sim=    3819 (cum) delta=+0 OK
+    host.misses      anchor=    4621 sim=    4621 (cum) delta=+0 OK
+    host.evictions   anchor=    3939 sim=    3939 (cum) delta=+0 OK
+    host.entries   anchor=     682 sim=     682 delta=+0 OK
+  cuda:1:
+    prefetch_issued  anchor=    2621 sim=    2621 delta=+0 OK
+    resident_hits    anchor=      26 sim=      26 delta=+0 OK
+    cold_loads       anchor=    2595 sim=    2595 delta=+0 OK
+    evictions        anchor=    2595 sim=    2595 delta=+0 OK
+    host.hits        anchor=    4198 sim=    4198 (cum) delta=+0 OK
+    host.misses      anchor=    3760 sim=    3760 (cum) delta=+0 OK
+    host.evictions   anchor=    3078 sim=    3078 (cum) delta=+0 OK
+    host.entries   anchor=     682 sim=     682 delta=+0 OK
+    pooled fwd0 host_misses anchor=    7072 sim=    7072 delta=+0 OK
+    pooled fwd0 host_hits   anchor=    5456 sim=    5456 delta=+0 OK
+    pooled fwd0 cold_loads  anchor=    1503 sim=    1503 delta=+0 OK
+    pooled fwd0 requests    anchor=    1514 sim=    1514 delta=+0 OK
+    fwd00 pooled: requests 1514vs1514 (d=+0) | cold_loads 1503vs1503 (d=+0) | host_hits 5456vs5456 (d=+0) | host_misses 7072vs7072 (d=+0)
+    fwd01 pooled: requests 258vs258 (d=+0) | cold_loads 242vs242 (d=+0) | host_hits 169vs169 (d=+0) | host_misses 89vs89 (d=+0)
+    fwd02 pooled: requests 258vs258 (d=+0) | cold_loads 249vs249 (d=+0) | host_hits 164vs164 (d=+0) | host_misses 94vs94 (d=+0)
+    fwd03 pooled: requests 258vs258 (d=+0) | cold_loads 253vs253 (d=+0) | host_hits 175vs175 (d=+0) | host_misses 83vs83 (d=+0)
+
+ANCHOR GATE: PASS (tol=0)

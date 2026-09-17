@@ -1,0 +1,36 @@
+
+--- vram=3.50GiB fp4 (281 slots) policy=priority_lru | host=8.50GiB per-device consult=eager qd=8 regime=cold persist=1 ---
+prompt dev       req  vHit vCold   vEv  hHit hMiss   hEv  vHit%  hHit%   e2e% belady
+routed_experts cuda:0   2613   328  2285  2004  1223  1390   708  12.6%  46.8%  46.8%   1273
+routed_experts cuda:1   2486   327  2159  1878  1395  1091   409  13.2%  56.1%  56.1%   1419
+routed_experts pooled   5099   655  4444  3882  2618  2481  1117  12.8%  51.3%  51.3%   2692
+
+=== anchor gate: result.json (journal sha 437884a0f36a -> prompt routed_experts) ===
+  cuda:0:
+    prefetch_issued  anchor=    2613 sim=    2613 delta=+0 OK
+    resident_hits    anchor=     328 sim=     328 delta=+0 OK
+    cold_loads       anchor=    2285 sim=    2285 delta=+0 OK
+    evictions        anchor=    2004 sim=    2004 delta=+0 OK
+    host.hits        anchor=    1223 sim=    1223 (cum) delta=+0 OK
+    host.misses      anchor=    1390 sim=    1390 (cum) delta=+0 OK
+    host.evictions   anchor=     708 sim=     708 (cum) delta=+0 OK
+    host.entries   anchor=     682 sim=     682 delta=+0 OK
+  cuda:1:
+    prefetch_issued  anchor=    2486 sim=    2486 delta=+0 OK
+    resident_hits    anchor=     327 sim=     327 delta=+0 OK
+    cold_loads       anchor=    2159 sim=    2159 delta=+0 OK
+    evictions        anchor=    1878 sim=    1878 delta=+0 OK
+    host.hits        anchor=    1395 sim=    1395 (cum) delta=+0 OK
+    host.misses      anchor=    1091 sim=    1091 (cum) delta=+0 OK
+    host.evictions   anchor=     409 sim=     409 (cum) delta=+0 OK
+    host.entries   anchor=     682 sim=     682 delta=+0 OK
+    pooled fwd0 host_misses anchor=    1229 sim=    1229 delta=+0 OK
+    pooled fwd0 host_hits   anchor=       0 sim=       0 delta=+0 OK
+    pooled fwd0 cold_loads  anchor=    1229 sim=    1229 delta=+0 OK
+    pooled fwd0 requests    anchor=    1229 sim=    1229 delta=+0 OK
+    fwd00 pooled: requests 1229vs1229 (d=+0) | cold_loads 1229vs1229 (d=+0) | host_hits 0vs0 (d=+0) | host_misses 1229vs1229 (d=+0)
+    fwd01 pooled: requests 258vs258 (d=+0) | cold_loads 191vs191 (d=+0) | host_hits 162vs162 (d=+0) | host_misses 96vs96 (d=+0)
+    fwd02 pooled: requests 258vs258 (d=+0) | cold_loads 184vs184 (d=+0) | host_hits 189vs189 (d=+0) | host_misses 69vs69 (d=+0)
+    fwd03 pooled: requests 258vs258 (d=+0) | cold_loads 187vs187 (d=+0) | host_hits 178vs178 (d=+0) | host_misses 80vs80 (d=+0)
+
+ANCHOR GATE: PASS (tol=0)

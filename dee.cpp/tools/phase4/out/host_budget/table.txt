@@ -1,0 +1,30 @@
+
+--- vram=3.50GiB fp16 (74 slots) policy=priority_lru | host=0.00GiB per-device consult=eager qd=6 regime=cold persist=1 ---
+prompt dev       req  vHit vCold   vEv  hHit hMiss   hEv  vHit%  hHit%   e2e% belady
+q0     cuda:0   2841    97  2744  2670     0     0     0   3.4%   0.0%   3.4%    763
+q0     cuda:1   2671    65  2606  2532     0     0     0   2.4%   0.0%   2.4%    979
+q0     pooled   5512   162  5350  5202     0     0     0   2.9%   0.0%   2.9%   1742
+
+--- vram=3.50GiB fp16 (74 slots) policy=priority_lru | host=4.00GiB per-device consult=eager qd=6 regime=cold persist=1 ---
+prompt dev       req  vHit vCold   vEv  hHit hMiss   hEv  vHit%  hHit%   e2e% belady
+q0     cuda:0   2841    97  2744  2670   781  2060  1739   3.4%  27.5%  27.5%    763
+q0     cuda:1   2671    65  2606  2532  1127  1544  1223   2.4%  42.2%  42.2%    979
+q0     pooled   5512   162  5350  5202  1908  3604  2962   2.9%  34.6%  34.6%   1742
+
+--- vram=3.50GiB fp16 (74 slots) policy=priority_lru | host=8.50GiB per-device consult=eager qd=6 regime=cold persist=1 ---
+prompt dev       req  vHit vCold   vEv  hHit hMiss   hEv  vHit%  hHit%   e2e% belady
+q0     cuda:0   2841    97  2744  2670  1147  1694  1012   3.4%  40.4%  40.4%    763
+q0     cuda:1   2671    65  2606  2532  1385  1286   604   2.4%  51.9%  51.9%    979
+q0     pooled   5512   162  5350  5202  2532  2980  1616   2.9%  45.9%  45.9%   1742
+
+--- vram=3.50GiB fp16 (74 slots) policy=priority_lru | host=17.00GiB per-device consult=eager qd=6 regime=cold persist=1 ---
+prompt dev       req  vHit vCold   vEv  hHit hMiss   hEv  vHit%  hHit%   e2e% belady
+q0     cuda:0   2841    97  2744  2670  1344  1497   132   3.4%  47.3%  47.3%    763
+q0     cuda:1   2671    65  2606  2532  1461  1210     0   2.4%  54.7%  54.7%    979
+q0     pooled   5512   162  5350  5202  2805  2707   132   2.9%  50.9%  50.9%   1742
+
+--- vram=3.50GiB fp16 (74 slots) policy=priority_lru | host=32.00GiB per-device consult=eager qd=6 regime=cold persist=1 ---
+prompt dev       req  vHit vCold   vEv  hHit hMiss   hEv  vHit%  hHit%   e2e% belady
+q0     cuda:0   2841    97  2744  2670  1347  1494     0   3.4%  47.4%  47.4%    763
+q0     cuda:1   2671    65  2606  2532  1461  1210     0   2.4%  54.7%  54.7%    979
+q0     pooled   5512   162  5350  5202  2808  2704     0   2.9%  50.9%  50.9%   1742
