@@ -80,6 +80,15 @@ public:
     // Drop clean source pages for a resolved view after its bytes have been
     // copied into a private cache. This bounds the file-cache residency of a
     // very large checkpoint without invalidating the mmap or its metadata.
+    //
+    // SCOPE: only ranges inside THIS shard's mapping are covered — a range
+    // outside [base_, base_+size_) returns false.  Callers that walk every
+    // registered shard (the engine's DEE_RELEASE_MMAP_PAGES loop) therefore
+    // cover safetensors weight files only; dee4 segment mmaps are owned by
+    // Dee4ExpertStore, not by a WeightMmap, and are a silent no-op here.
+    // Use ExpertStore::release_source_pages(view) for a backend-agnostic
+    // release that also reaches dee4 segment files.  POSIX only; always
+    // returns false on Windows.
     bool discard_source_pages(const void* data, size_t nbytes) const;
 
     // Raw header map (tensor name -> meta). Exposed for debugging/tests.

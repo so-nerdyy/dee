@@ -476,6 +476,57 @@ void test_small_segmented_store() {
           "segmented backend telemetry identity");
     check(stats.lookup_failures == 4, "segmented failures recorded");
 
+    // materialize_ex on the segmented path: per-fill byte/syscall/residency
+    // accounting with the same fail-closed identity checks.
+    check(store.get(3, 2, &view), "boundary record resolves for ex fill");
+    dee::MaterializeResult mr;
+    std::fill(dst.begin(), dst.end(), static_cast<uint8_t>(0xee));
+    check(store.materialize_ex(view, dst.data(), dst.size(), &mr) &&
+              mr.success && mr.bytes_read == kSmallRecordBytes &&
+              dst == expected,
+          "segmented materialize_ex fills the exact record");
+#ifdef _WIN32
+    check(mr.pread_calls == 0 && mr.resident_bytes == 0,
+          "Windows segmented fill reports no syscalls/residency");
+#else
+    check(mr.pread_calls >= 1,
+          "segmented pread fill reports its syscall count");
+    check(mr.resident_bytes <= kSmallRecordBytes,
+          "segmented residency probe is capped at the record");
+#endif
+    const dee::ExpertStoreStats pre_fail = store.stats();
+    check(!store.materialize_ex(forged, dst.data(), dst.size(), nullptr),
+          "forged segmented view fails closed through materialize_ex");
+    check(store.stats().materialize_failures ==
+              pre_fail.materialize_failures + 1,
+          "segmented fill failure is counted");
+
+    // release_source_pages: 70-byte records are not page-exact, so this
+    // no-ops with false on POSIX and is a platform no-op on Windows.
+    size_t released = 777;
+    check(!store.release_source_pages(view, &released) && released == 0,
+          "non-page-exact segmented release no-ops cleanly");
+
+    // seal_reads_through_page_cache: chunked-pread seal on POSIX, mmap-walk
+    // fallback on Windows — either way the same seals verify.
+    dee::Dee4OpenOptions seal_opts;
+    seal_opts.seal_reads_through_page_cache = true;
+    dee::Dee4ExpertStore seal_store;
+    check(seal_store.open(dir.string(), seal_opts),
+          "segmented store opens with pread-through seal");
+    dee::ExpertView seal_view;
+    check(seal_store.get(0, 0, &seal_view) && seal_view.ok() &&
+              seal_view.contiguous_data[0] == small_byte(0, 0),
+          "pread-sealed store serves records");
+    seal_store.close();
+
+    // reset_stats zeroes the segmented store's counters too.
+    store.reset_stats();
+    const dee::ExpertStoreStats cleared = store.stats();
+    check(cleared.materialize_calls == 0 && cleared.materialize_failures == 0 &&
+              cleared.lookups == 0 && cleared.source_reads == 0,
+          "reset_stats clears segmented counters");
+
     store.close();
     std::filesystem::remove_all(dir);
 }

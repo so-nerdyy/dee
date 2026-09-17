@@ -162,6 +162,93 @@ void test_arithmetic_lookup_and_stats() {
     std::filesystem::remove_all(directory);
 }
 
+// materialize_ex(): per-fill bytes/syscall/residency accounting, failure
+// counting, release_source_pages graceful no-op, reset_stats zeroing.
+void test_materialize_ex_and_stats_reset() {
+    const auto directory = make_test_dir();
+    write_fixture(directory);  // 4 records x 40 B, dee4-v2
+
+    dee::Dee4ExpertStore store;
+    check(store.open(directory.string()), "fixture opens for materialize_ex");
+
+    dee::ExpertView view;
+    check(store.get(7, 1, &view), "view resolves for materialize_ex");
+
+    std::vector<uint8_t> dst(40, 0xee);
+    dee::MaterializeResult mr;
+    check(store.materialize_ex(view, dst.data(), dst.size(), &mr),
+          "materialize_ex succeeds on a valid view");
+    check(mr.success && mr.bytes_read == 40,
+          "materialize_ex reports full byte count");
+#ifdef _WIN32
+    check(mr.pread_calls == 0 && mr.resident_bytes == 0,
+          "Windows memcpy path reports no syscalls/residency");
+#else
+    check(mr.pread_calls >= 1, "pread path reports its syscall count");
+    check(mr.resident_bytes <= 40, "residency probe is capped at record");
+#endif
+    check(dst.front() == 120 && dst.back() == 159,
+          "materialize_ex bytes match the record");
+
+    // nullptr out-pointer: same fill, no result.
+    std::fill(dst.begin(), dst.end(), static_cast<uint8_t>(0xee));
+    check(store.materialize_ex(view, dst.data(), dst.size(), nullptr) &&
+              dst.front() == 120,
+          "materialize_ex accepts a null result pointer");
+
+    // materialize() forwards through the same funnel: one counter domain.
+    check(store.materialize(view, dst.data(), dst.size()),
+          "materialize still fills through materialize_ex");
+
+    // Forged view: same size, wrong record pointer -> fail closed, counted.
+    dee::ExpertView forged = view;
+    forged.record_index = 1;
+    dee::MaterializeResult bad;
+    check(!store.materialize_ex(forged, dst.data(), dst.size(), &bad) &&
+              !bad.success && bad.bytes_read == 0,
+          "forged view fails closed through materialize_ex");
+
+    dee::ExpertStoreStats stats = store.stats();
+    check(stats.materialize_calls == 4 && stats.materialize_failures == 1,
+          "materialize call/failure counters are exact");
+    check(stats.pread_short_read_events == stats.pread_short_reads,
+          "short-read event alias mirrors the historical counter");
+    store.record_source_read_failure();
+    check(store.stats().source_read_failures == 1,
+          "source_read_failure records at the fill level");
+
+    // release_source_pages: 40-byte records are not page-exact, so this is a
+    // graceful no-op on POSIX and a platform no-op on Windows — either way
+    // it must return false with zero bytes released, never crash.
+    size_t released = 777;
+    check(!store.release_source_pages(view, &released) && released == 0,
+          "non-page-exact/unsupported release no-ops cleanly");
+    dee::ExpertView forged_rel = view;
+    forged_rel.record_index = 1;
+    released = 777;
+    check(!store.release_source_pages(forged_rel, &released) &&
+              released == 0,
+          "forged view cannot release another record's pages");
+
+    // reset_stats zeroes every counter and clears retained latency samples.
+    store.reset_stats();
+    const dee::ExpertStoreStats cleared = store.stats();
+    check(cleared.lookups == 0 && cleared.lookup_failures == 0 &&
+              cleared.source_reads == 0 && cleared.source_read_failures == 0 &&
+              cleared.bytes_requested == 0 && cleared.materialize_calls == 0 &&
+              cleared.materialize_failures == 0 && cleared.pread_calls == 0 &&
+              cleared.pread_bytes == 0 && cleared.mincore_probed_bytes == 0 &&
+              cleared.mincore_resident_bytes == 0 &&
+              cleared.p50_read_ms == 0.0 && cleared.read_milliseconds == 0.0,
+          "reset_stats zeroes the whole stats surface");
+    check(store.materialize_ex(view, dst.data(), dst.size(), nullptr) &&
+              store.stats().materialize_calls == 1,
+          "counters restart cleanly after reset_stats");
+
+    store.close();
+    std::filesystem::remove_all(directory);
+}
+
 void test_data_size_mismatch_fails_closed() {
     const auto directory = make_test_dir();
     write_fixture(directory, 159);
@@ -311,6 +398,45 @@ void test_safetensors_gather_materialize() {
     check(!null_store.materialize(view, gathered.data(), gathered.size()),
           "null resolver materialize fails closed");
 
+    // materialize_ex on the gather path: same bytes, per-fill accounting.
+    dee::MaterializeResult mr;
+    std::fill(gathered.begin(), gathered.end(), static_cast<uint8_t>(0xee));
+    check(store.materialize_ex(view, gathered.data(), gathered.size(), &mr) &&
+              mr.success && mr.bytes_read == expected.size() &&
+              gathered == expected,
+          "gather materialize_ex succeeds with exact byte count");
+#ifdef _WIN32
+    check(mr.pread_calls == 0, "memcpy gather reports no pread syscalls");
+#else
+    check(mr.pread_calls >= 6, "pread gather counts per-region syscalls");
+#endif
+    const dee::ExpertStoreStats pre_fail = store.stats();
+    check(!store.materialize_ex(broken, gathered.data(), gathered.size(),
+                                nullptr),
+          "broken view fails closed through materialize_ex");
+    check(store.stats().materialize_failures ==
+              pre_fail.materialize_failures + 1,
+          "gather failure increments materialize_failures");
+
+    // release_source_pages delegates to per-shard discard_source_pages.
+    // Windows always returns false; POSIX releases all six region ranges
+    // (120 B total) or fails gracefully — never a crash, never bogus bytes.
+    size_t released = 777;
+    const bool rel_ok = store.release_source_pages(view, &released);
+#ifdef _WIN32
+    check(!rel_ok && released == 0,
+          "Windows release_source_pages is a clean no-op");
+#else
+    check(rel_ok ? released == expected.size()
+                 : released <= expected.size(),
+          "gather release reports the bytes it actually dropped");
+#endif
+
+    store.reset_stats();
+    check(store.stats().materialize_calls == 0 &&
+              store.stats().materialize_failures == 0,
+          "reset_stats clears gather-side counters");
+
     store.stats();  // telemetry must not crash
     mmap.close();
     std::filesystem::remove_all(directory);
@@ -320,6 +446,7 @@ void test_safetensors_gather_materialize() {
 
 int main() {
     test_arithmetic_lookup_and_stats();
+    test_materialize_ex_and_stats_reset();
     test_data_size_mismatch_fails_closed();
     test_trace_index_lookup_and_fail_closed();
     test_safetensors_gather_materialize();

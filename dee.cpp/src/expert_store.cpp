@@ -223,6 +223,45 @@ std::string sha256_hex(const uint8_t* data, size_t size) {
     return hash.hexdigest();
 }
 
+#ifndef _WIN32
+// Hash `size` bytes of an open file through chunked positional reads instead
+// of walking its mmap.  With `drop_pages`, each chunk's file range is
+// fadvise(DONTNEED)'d right after hashing so an O(100 GiB) seal pass cannot
+// flood the page cache.  The digest is identical to hashing the mapped
+// bytes.  Returns false on any read error (the caller fails closed).
+bool sha256_hex_pread(int fd, size_t size, bool drop_pages,
+                      std::string* out) {
+    Sha256 hash;
+    constexpr size_t kChunk = 8u << 20;  // 8 MiB
+    std::vector<uint8_t> buffer(kChunk);
+    size_t offset = 0;
+    while (offset < size) {
+        const size_t want = std::min(kChunk, size - offset);
+        size_t copied = 0;
+        while (copied < want) {
+            if (offset + copied > static_cast<size_t>(
+                    std::numeric_limits<off_t>::max())) {
+                return false;
+            }
+            const ssize_t count = ::pread(
+                fd, buffer.data() + copied, want - copied,
+                static_cast<off_t>(offset + copied));
+            if (count < 0 && errno == EINTR) continue;
+            if (count <= 0) return false;
+            copied += static_cast<size_t>(count);
+        }
+        hash.update(buffer.data(), want);
+        if (drop_pages) {
+            (void)::posix_fadvise(fd, static_cast<off_t>(offset), want,
+                                  POSIX_FADV_DONTNEED);
+        }
+        offset += want;
+    }
+    *out = hash.hexdigest();
+    return true;
+}
+#endif
+
 }  // namespace
 
 void ExpertStore::record_lookup(bool success) {
@@ -245,12 +284,75 @@ void ExpertStore::record_source_read(size_t bytes, double milliseconds,
 
 bool ExpertStore::materialize(const ExpertView& view, uint8_t* dst,
                               size_t nbytes) const {
-    if (!dst || !view.contiguous_data || view.contiguous_nbytes != nbytes ||
-        nbytes == 0) {
-        return false;
+    // The virtual seam moved to materialize_ex(); keep forwarding so every
+    // fill — through either entry point — funnels into the per-fill
+    // counters exactly once.
+    return materialize_ex(view, dst, nbytes, nullptr);
+}
+
+bool ExpertStore::materialize_ex(const ExpertView& view, void* dst,
+                                 size_t nbytes,
+                                 MaterializeResult* out) const {
+    // Base store: the resolved view IS the record, so the fill is a plain
+    // memcpy off the mmap.  No syscalls and no residency probe exist at
+    // this level, hence the zeroed best-effort fields.
+    MaterializeResult result;
+    if (dst && view.contiguous_data &&
+        view.contiguous_nbytes == nbytes && nbytes != 0) {
+        std::memcpy(dst, view.contiguous_data, nbytes);
+        result.success = true;
+        result.bytes_read = nbytes;
     }
-    std::memcpy(dst, view.contiguous_data, nbytes);
-    return true;
+    return complete_materialize(out, result);
+}
+
+bool ExpertStore::complete_materialize(
+        MaterializeResult* out, const MaterializeResult& result) const {
+    if (out) *out = result;
+    materialize_calls_.fetch_add(1, std::memory_order_relaxed);
+    if (!result.success) {
+        materialize_failures_.fetch_add(1, std::memory_order_relaxed);
+    }
+    return result.success;
+}
+
+bool ExpertStore::release_source_pages(const ExpertView& view,
+                                       size_t* bytes_released) const {
+    // Base store has no releasable file-backed source beyond the consumer's
+    // own mapping; WeightMmap::discard_source_pages covers that case at the
+    // mmap level.  See the header for the dee4 page-cache gap this API
+    // exists to close.
+    (void)view;
+    if (bytes_released) *bytes_released = 0;
+    return false;
+}
+
+void ExpertStore::record_source_read_failure() {
+    ++source_read_failures_;
+}
+
+void ExpertStore::reset_stats() {
+    // Caller-thread contract identical to stats()/record_source_read(): the
+    // plain counters and the latency vector are reset without locking, so
+    // this must run when no fill/lookup is in flight (prompt boundary).
+    lookups_ = 0;
+    lookup_failures_ = 0;
+    source_reads_ = 0;
+    contiguous_source_reads_ = 0;
+    source_regions_ = 0;
+    bytes_requested_ = 0;
+    source_read_failures_ = 0;
+    read_milliseconds_ = 0.0;
+    read_latencies_ms_.clear();
+    source_read_batches_ = 0;
+    concurrent_source_read_batches_ = 0;
+    max_source_read_queue_depth_ = 0;
+    max_source_read_lanes_ = 0;
+    source_read_batch_wall_ms_ = 0.0;
+    source_read_overlap_ms_ = 0.0;
+    read_telemetry(/*reset=*/true);
+    materialize_calls_.store(0, std::memory_order_relaxed);
+    materialize_failures_.store(0, std::memory_order_relaxed);
 }
 
 void ExpertStore::record_source_read_batch(
@@ -274,8 +376,16 @@ void ExpertStore::note_pread_service(uint64_t service_ns, uint64_t bytes,
                                       uint64_t short_reads,
                                       uint64_t probed_bytes,
                                       uint64_t resident_bytes) const {
+    note_pread_service_ex(service_ns, 1, bytes, short_reads, probed_bytes,
+                          resident_bytes);
+}
+
+void ExpertStore::note_pread_service_ex(
+        uint64_t service_ns, uint64_t calls, uint64_t bytes,
+        uint64_t short_reads, uint64_t probed_bytes,
+        uint64_t resident_bytes) const {
     pread_service_ns_.fetch_add(service_ns, std::memory_order_relaxed);
-    pread_calls_.fetch_add(1, std::memory_order_relaxed);
+    pread_calls_.fetch_add(calls, std::memory_order_relaxed);
     pread_short_reads_.fetch_add(short_reads, std::memory_order_relaxed);
     pread_bytes_.fetch_add(bytes, std::memory_order_relaxed);
     mincore_probed_bytes_.fetch_add(probed_bytes, std::memory_order_relaxed);
@@ -311,6 +421,7 @@ ExpertStoreStats ExpertStore::stats() const {
     result.contiguous_source_reads = contiguous_source_reads_;
     result.source_regions = source_regions_;
     result.bytes_requested = bytes_requested_;
+    result.source_read_failures = source_read_failures_;
     result.read_milliseconds = read_milliseconds_;
     result.materialization_mode = materialization_mode();
     result.source_read_batches = source_read_batches_;
@@ -323,10 +434,17 @@ ExpertStoreStats ExpertStore::stats() const {
         static_cast<double>(pread_service_ns_.load(std::memory_order_relaxed)) / 1e6;
     result.pread_calls = pread_calls_.load(std::memory_order_relaxed);
     result.pread_short_reads = pread_short_reads_.load(std::memory_order_relaxed);
+    // Explicit-name alias for the same event counter (see the stats field
+    // comment): pread() calls returning fewer bytes than requested.
+    result.pread_short_read_events = result.pread_short_reads;
     result.pread_bytes = pread_bytes_.load(std::memory_order_relaxed);
     result.mincore_probed_bytes = mincore_probed_bytes_.load(std::memory_order_relaxed);
     result.mincore_resident_bytes =
         mincore_resident_bytes_.load(std::memory_order_relaxed);
+    result.materialize_calls =
+        materialize_calls_.load(std::memory_order_relaxed);
+    result.materialize_failures =
+        materialize_failures_.load(std::memory_order_relaxed);
     if (read_milliseconds_ > 0.0) {
         result.source_read_overlap_percent =
             std::min(100.0, 100.0 * source_read_overlap_ms_ /
@@ -390,60 +508,132 @@ bool SafetensorsExpertStore::can_gather_materialize() const {
     return resolver_ != nullptr;
 }
 
-bool SafetensorsExpertStore::materialize(const ExpertView& view,
-                                         uint8_t* dst, size_t nbytes) const {
-    if (!dst || nbytes == 0 || !resolver_) return false;
+bool SafetensorsExpertStore::materialize_ex(const ExpertView& view,
+                                            void* dst, size_t nbytes,
+                                            MaterializeResult* out) const {
+    MaterializeResult result;
     const TensorView* regions[6] = {
         &view.weights[0], &view.weights[1], &view.weights[2],
         &view.scales[0], &view.scales[1], &view.scales[2]};
     size_t total = 0;
-    for (const TensorView* r : regions) {
-        if (!r->ok()) return false;
-        total += r->nbytes;
+    bool valid = dst != nullptr && nbytes != 0 && resolver_ != nullptr;
+    if (valid) {
+        for (const TensorView* r : regions) {
+            if (!r->ok()) { valid = false; break; }
+            total += r->nbytes;
+        }
     }
-    if (total != nbytes) return false;
+    if (!valid || total != nbytes) {
+        return complete_materialize(out, result);
+    }
+    uint8_t* dst_bytes = static_cast<uint8_t*>(dst);
 #ifdef _WIN32
     // No positional reads on this build; gather straight from the resolved
     // views.  Byte-identical output, page faults included.
     size_t off = 0;
     for (const TensorView* r : regions) {
-        std::memcpy(dst + off, r->data, r->nbytes);
+        std::memcpy(dst_bytes + off, r->data, r->nbytes);
         off += r->nbytes;
     }
-    return true;
+    result.success = true;
+    result.bytes_read = nbytes;
+    return complete_materialize(out, result);
 #else
     const auto read_begin = std::chrono::steady_clock::now();
     size_t off = 0;
+    size_t copied = 0;  // in-progress region; off counts completed regions
     uint64_t short_reads = 0;
+    uint64_t calls = 0;
+    uint64_t probed_bytes = 0;
+    uint64_t resident_bytes = 0;
+    bool ok = true;
     for (const TensorView* r : regions) {
         WeightMmap* shard = resolver_->find_shard(r->data, r->nbytes);
-        if (!shard) return false;
+        if (!shard || shard->fd() < 0) { ok = false; break; }
         const int fd = shard->fd();
-        if (fd < 0) return false;
         const size_t file_off = static_cast<size_t>(r->data - shard->base());
-        size_t copied = 0;
+#ifdef __linux__
+        // Same mincore residency probe as the dee4 fill, per region: each
+        // region is contiguous inside one shard mapping so the probe is
+        // exact.  Profiling-only; never affects the read.
+        {
+            const size_t kPage = 4096;
+            const size_t pages = (r->nbytes + kPage - 1) / kPage;
+            std::vector<unsigned char> vec(pages, 0);
+            if (::mincore(const_cast<uint8_t*>(r->data), r->nbytes,
+                          vec.data()) == 0) {
+                probed_bytes += r->nbytes;
+                size_t resident_pages = 0;
+                for (size_t i = 0; i < pages; ++i) {
+                    resident_pages += (vec[i] & 1u);
+                }
+                resident_bytes += std::min(r->nbytes, resident_pages * kPage);
+            }
+        }
+#endif
+        copied = 0;
         while (copied < r->nbytes) {
             const size_t remaining = r->nbytes - copied;
             if (file_off + copied > static_cast<size_t>(
                     std::numeric_limits<off_t>::max())) {
-                return false;
+                ok = false;
+                break;
             }
+            ++calls;
             const ssize_t count = ::pread(
-                fd, dst + off + copied, remaining,
+                fd, dst_bytes + off + copied, remaining,
                 static_cast<off_t>(file_off + copied));
             if (count < 0 && errno == EINTR) continue;
-            if (count <= 0) return false;
+            if (count <= 0) { ok = false; break; }
             if (static_cast<size_t>(count) < remaining) ++short_reads;
             copied += static_cast<size_t>(count);
         }
-        off += r->nbytes;
+        // Fold the (possibly partial) region progress into the running
+        // total so off is always "bytes actually delivered" on any exit.
+        off += copied;
+        if (!ok) break;
     }
     const uint64_t service_ns = static_cast<uint64_t>(
         std::chrono::duration<double, std::nano>(
             std::chrono::steady_clock::now() - read_begin).count());
-    note_pread_service(service_ns, nbytes, short_reads, 0, 0);
-    return true;
+    // Partial telemetry is recorded on failure too: the fill still consumed
+    // real pread service, and hiding it would undercount read pressure.
+    note_pread_service_ex(service_ns, calls, off, short_reads,
+                          probed_bytes, resident_bytes);
+    result.success = ok;
+    result.bytes_read = off;
+    result.pread_calls = static_cast<size_t>(calls);
+    result.resident_bytes = static_cast<size_t>(resident_bytes);
+    return complete_materialize(out, result);
 #endif
+}
+
+bool SafetensorsExpertStore::release_source_pages(
+        const ExpertView& view, size_t* bytes_released) const {
+    if (bytes_released) *bytes_released = 0;
+    if (!resolver_) return false;
+    const TensorView* regions[6] = {
+        &view.weights[0], &view.weights[1], &view.weights[2],
+        &view.scales[0], &view.scales[1], &view.scales[2]};
+    // Each region maps inside one shard's WeightMmap; discard_source_pages
+    // already performs fadvise(DONTNEED) + madvise(DONTNEED) on exactly
+    // that file range (and is a graceful false on Windows).  Regions are
+    // not page-aligned in general, so discard_source_pages widens each end
+    // to page granularity — adjacent tensors' pages may be dropped too,
+    // which is safe (release never invalidates readability).
+    size_t released = 0;
+    bool all_ok = true;
+    for (const TensorView* r : regions) {
+        if (!r->ok()) { all_ok = false; break; }
+        WeightMmap* shard = resolver_->find_shard(r->data, r->nbytes);
+        if (!shard || !shard->discard_source_pages(r->data, r->nbytes)) {
+            all_ok = false;
+            break;
+        }
+        released += r->nbytes;
+    }
+    if (bytes_released) *bytes_released = released;
+    return all_ok;
 }
 
 Dee4ExpertStore::Dee4ExpertStore() = default;
@@ -904,8 +1094,26 @@ bool Dee4ExpertStore::open(const std::string& directory_or_metadata,
             size_t seal_index = 0;
             for (const Segment& segment : segments_) {
                 const auto seg_begin = std::chrono::steady_clock::now();
-                if (sha256_hex(segment.base, segment.size) !=
-                    segment.sha256) {
+                std::string digest;
+#ifndef _WIN32
+                if (options.seal_reads_through_page_cache &&
+                    segment.fd >= 0) {
+                    // Chunked pread + trailing DONTNEED: same digest, but the
+                    // seal's footprint stays ~8 MiB instead of flooding the
+                    // page cache with the whole segment.
+                    if (!sha256_hex_pread(segment.fd, segment.size,
+                                          /*drop_pages=*/true, &digest)) {
+                        last_error_ = "DEE4 segment " + segment.file +
+                                      " seal read failed";
+                        close();
+                        return false;
+                    }
+                } else
+#endif
+                {
+                    digest = sha256_hex(segment.base, segment.size);
+                }
+                if (digest != segment.sha256) {
                     last_error_ = "DEE4 segment " + segment.file +
                                   " sha256 mismatch";
                     close();
@@ -1053,12 +1261,15 @@ bool Dee4ExpertStore::get_layout_reference(int preferred_layer,
     return get(record.layer, record.expert, out);
 }
 
-bool Dee4ExpertStore::materialize(const ExpertView& view, uint8_t* dst,
-                                  size_t nbytes) const {
+bool Dee4ExpertStore::materialize_ex(const ExpertView& view, void* dst,
+                                     size_t nbytes,
+                                     MaterializeResult* out) const {
+    MaterializeResult result;
+    uint8_t* dst_bytes = static_cast<uint8_t*>(dst);
     if (!dst || nbytes == 0 || nbytes != record_bytes_ ||
         view.contiguous_nbytes != record_bytes_ ||
         view.record_index >= stored_records_) {
-        return false;
+        return complete_materialize(out, result);
     }
     // Resolve the backing store the same way get() did: one file for the
     // monolithic formats, the owning segment for dee4-v4-segmented.
@@ -1068,7 +1279,7 @@ bool Dee4ExpertStore::materialize(const ExpertView& view, uint8_t* dst,
     size_t offset = static_cast<size_t>(view.record_index) * record_bytes_;
     if (segmented_) {
         const Segment* segment = find_segment(view.record_index);
-        if (!segment) return false;
+        if (!segment) return complete_materialize(out, result);
         fd = segment->fd;
         mapped = segment->base;
         mapped_size = segment->size;
@@ -1076,15 +1287,17 @@ bool Dee4ExpertStore::materialize(const ExpertView& view, uint8_t* dst,
     }
     if (!mapped || offset > mapped_size || nbytes > mapped_size - offset ||
         view.contiguous_data != mapped + offset) {
-        return false;
+        return complete_materialize(out, result);
     }
 #ifdef _WIN32
-    std::memcpy(dst, view.contiguous_data, nbytes);
-    return true;
+    std::memcpy(dst_bytes, view.contiguous_data, nbytes);
+    result.success = true;
+    result.bytes_read = nbytes;
+    return complete_materialize(out, result);
 #else
     if (fd < 0 || offset > static_cast<size_t>(
             std::numeric_limits<off_t>::max())) {
-        return false;
+        return complete_materialize(out, result);
     }
     // Profiling-only page-cache residency probe (mincore): two cheap syscalls
     // per 12.75 MiB record (~microseconds vs ~90 ms reads). Never affects IO.
@@ -1108,25 +1321,96 @@ bool Dee4ExpertStore::materialize(const ExpertView& view, uint8_t* dst,
     const auto read_begin = std::chrono::steady_clock::now();
     size_t copied = 0;
     uint64_t short_reads = 0;
+    uint64_t calls = 0;
+    bool ok = true;
     while (copied < nbytes) {
         const size_t remaining = nbytes - copied;
         if (offset + copied > static_cast<size_t>(
                 std::numeric_limits<off_t>::max())) {
-            return false;
+            ok = false;
+            break;
         }
+        ++calls;
         const ssize_t count = ::pread(
-            fd, dst + copied, remaining,
+            fd, dst_bytes + copied, remaining,
             static_cast<off_t>(offset + copied));
         if (count < 0 && errno == EINTR) continue;
-        if (count <= 0) return false;
+        if (count <= 0) { ok = false; break; }
         if (static_cast<size_t>(count) < remaining) ++short_reads;
         copied += static_cast<size_t>(count);
     }
     const uint64_t service_ns = static_cast<uint64_t>(
         std::chrono::duration<double, std::nano>(
             std::chrono::steady_clock::now() - read_begin).count());
-    note_pread_service(service_ns, copied, short_reads, probed_bytes,
-                       resident_bytes);
+    // Partial telemetry is recorded on failure too: the fill still consumed
+    // real pread service (and the failure itself is counted by
+    // complete_materialize).  Success-only accounting would silently drop
+    // the most expensive reads from the profile.
+    note_pread_service_ex(service_ns, calls, copied, short_reads,
+                          probed_bytes, resident_bytes);
+    result.success = ok;
+    result.bytes_read = copied;
+    result.pread_calls = static_cast<size_t>(calls);
+    result.resident_bytes = static_cast<size_t>(resident_bytes);
+    return complete_materialize(out, result);
+#endif
+}
+
+bool Dee4ExpertStore::release_source_pages(const ExpertView& view,
+                                           size_t* bytes_released) const {
+    if (bytes_released) *bytes_released = 0;
+#ifdef _WIN32
+    // No fadvise/madvise analogue on this build.
+    (void)view;
+    return false;
+#else
+    // Same resolution and identity check as materialize_ex: releasing pages
+    // for a view that does not match the record index must fail closed.
+    if (record_bytes_ == 0 || view.contiguous_nbytes != record_bytes_ ||
+        view.record_index >= stored_records_) {
+        return false;
+    }
+    int fd = fd_;
+    const uint8_t* mapped = base_;
+    size_t mapped_size = size_;
+    size_t offset = static_cast<size_t>(view.record_index) * record_bytes_;
+    if (segmented_) {
+        const Segment* segment = find_segment(view.record_index);
+        if (!segment) return false;
+        fd = segment->fd;
+        mapped = segment->base;
+        mapped_size = segment->size;
+        offset = (view.record_index - segment->first_record) * record_bytes_;
+    }
+    if (!mapped || fd < 0 || offset > mapped_size ||
+        record_bytes_ > mapped_size - offset ||
+        view.contiguous_data != mapped + offset) {
+        return false;
+    }
+    // fadvise/madvise take page-granular ranges: the record extent must be
+    // page-exact or DONTNEED would spill into neighbouring records.  The
+    // real store is page-exact (record_bytes = 4096 * 3264 and every record
+    // offset is a record_bytes multiple off a page-aligned base); synthetic
+    // fixtures with odd strides land here instead — no-op + false.
+    const long page_size = ::sysconf(_SC_PAGESIZE);
+    if (page_size <= 0) return false;
+    const size_t page = static_cast<size_t>(page_size);
+    if ((offset % page) != 0 || (record_bytes_ % page) != 0 ||
+        (reinterpret_cast<uintptr_t>(mapped) % page) != 0 ||
+        offset > static_cast<size_t>(std::numeric_limits<off_t>::max())) {
+        return false;
+    }
+    // POSIX_FADV_DONTNEED drops the clean file-backed page-cache pages (the
+    // authoritative release for the 146 GiB segment files); madvise
+    // additionally invalidates the resident PTEs of the shared mapping so a
+    // later touch re-faults instead of reusing the cached page.  Both are
+    // best-effort and never affect readability.
+    const int advise = ::posix_fadvise(fd, static_cast<off_t>(offset),
+                                       record_bytes_, POSIX_FADV_DONTNEED);
+    (void)::madvise(const_cast<uint8_t*>(mapped) + offset, record_bytes_,
+                    MADV_DONTNEED);
+    if (advise != 0) return false;
+    if (bytes_released) *bytes_released = record_bytes_;
     return true;
 #endif
 }
