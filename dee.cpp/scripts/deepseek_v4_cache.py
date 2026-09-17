@@ -24,6 +24,7 @@ layout of the C++ manager.
 
 from __future__ import annotations
 
+import enum
 import sys
 import time
 from dataclasses import dataclass, field
@@ -35,6 +36,42 @@ except ImportError:  # pragma: no cover - cache tests require torch
     torch = None
 
 PRIORITY_WEIGHT = 1 << 20
+
+
+class EvictionPolicy(enum.Enum):
+    """Mirror of C++ ``dee::EvictionPolicy`` (same semantics, same default).
+
+    RankPriority — legacy score ``last_use + priority * PRIORITY_WEIGHT``.
+    Recency      — strict LRU by ``last_use``; priority kept for telemetry.
+    """
+
+    RankPriority = "rank_priority"
+    Recency = "recency"
+
+
+_EVICTION_POLICY_ALIASES = {
+    "rank_priority": EvictionPolicy.RankPriority,
+    "rankpriority": EvictionPolicy.RankPriority,
+    "priority": EvictionPolicy.RankPriority,
+    "legacy": EvictionPolicy.RankPriority,
+    "recency": EvictionPolicy.Recency,
+    "lru": EvictionPolicy.Recency,
+}
+
+
+@dataclass(frozen=True)
+class EvictedVictim:
+    """One block evicted during a single reserve() eviction pass.
+
+    Mirror of C++ ``dee::EvictedVictim``; ``DeepSeekExpertCache.last_evicted``
+    carries ALL victims in eviction order (the C++ ``EnsureInfo::evicted``
+    list), and ``last_evicted_key``/``last_evicted_generation`` keep the LAST
+    victim like the C++ scalar back-compat fields.
+    """
+
+    layer: int
+    expert_id: int
+    generation: int
 
 
 @dataclass
@@ -58,6 +95,11 @@ class DeepSeekExpertEntry:
     payload: Any = None  # resident tensors (dict[name, torch.Tensor] for fp16)
     generation: int = 0
     resident: bool = False
+    # Bytes reserved for this slot at reserve() time — the mirror of C++
+    # ``ExpertBlock::size``. Immutable while resident (unlike resident_bytes,
+    # which load()/stage() may re-attach); used by the same-key different-size
+    # fail-closed guard.
+    slot_bytes: int = 0
 
     def resident_bytes_total(self) -> int:
         return self.resident_bytes + self.scratch_bytes
@@ -70,13 +112,24 @@ class DeepSeekExpertCache:
       - ``ensure(layer, expert, nbytes, priority)`` makes room and reserves a
         slot (evicting lowest-score resident blocks that are not pinned).
       - ``touch`` advances recency; ``pin/unpin`` forbid eviction.
+      - ``evict_key`` invalidates one resident, unpinned block (counted via
+        ``invalidations``, NOT ``evictions``).
       - ``sync_fallback`` records a stall when compute reaches a miss.
+      - ``set_eviction_policy`` selects RankPriority (default, legacy) or
+        Recency (strict LRU) victim scoring.
       - Stats counters: ensures, hits, loads, evictions, fallbacks,
-        pinned_blocks_skipped; plus DS8 counters (h2d_bytes, prepack_bytes,
-        wait_ms, checksum_failures, peak_resident_bytes, requests).
+        pinned_blocks_skipped (once per distinct pinned block per reserve),
+        budget_rejections (nbytes > budget, rejected before evicting),
+        size_mismatches (same-key different-size hit, fail-closed),
+        invalidations (evict_key removals); plus DS8 counters (h2d_bytes,
+        prepack_bytes, wait_ms, checksum_failures, peak_resident_bytes,
+        requests).
+      - ``last_evicted`` exposes ALL victims of the most recent eviction
+        pass in order (the C++ ``EnsureInfo::evicted`` list).
     """
 
-    def __init__(self, budget_bytes: int, *, device: str = "cpu") -> None:
+    def __init__(self, budget_bytes: int, *, device: str = "cpu",
+                 eviction_policy: "EvictionPolicy | str" = EvictionPolicy.RankPriority) -> None:
         if budget_bytes <= 0:
             raise ValueError(f"cache budget must be positive, got {budget_bytes}")
         self.budget_bytes = int(budget_bytes)
@@ -84,6 +137,13 @@ class DeepSeekExpertCache:
         self.entries: dict[tuple[int, int], DeepSeekExpertEntry] = {}
         self.tick = 0
         self.next_generation = 1
+        self._eviction_policy = EvictionPolicy.RankPriority
+        self.set_eviction_policy(eviction_policy)
+        # Victim surface mirroring C++ EnsureInfo: all victims of the most
+        # recent eviction pass (in order) + last-victim scalars.
+        self.last_evicted: list[EvictedVictim] = []
+        self.last_evicted_key: tuple[int, int] | None = None
+        self.last_evicted_generation: int = 0
         # Independently tracked used bytes (maintained on reserve/evict/clear)
         # so validate_invariants can detect accounting drift -- deriving it
         # from the entries themselves would make the check tautological.
@@ -91,6 +151,7 @@ class DeepSeekExpertCache:
         self.stats: dict[str, Any] = {
             "ensures": 0, "hits": 0, "loads": 0, "evictions": 0,
             "fallbacks": 0, "pinned_blocks_skipped": 0,
+            "budget_rejections": 0, "size_mismatches": 0, "invalidations": 0,
             "h2d_bytes": 0, "prepack_bytes": 0, "wait_ms": 0.0,
             "checksum_failures": 0, "requests": 0,
         }
@@ -117,8 +178,30 @@ class DeepSeekExpertCache:
         return sum(1 for e in self.entries.values()
                    if e.resident and e.pin_count > 0)
 
+    @property
+    def eviction_policy(self) -> EvictionPolicy:
+        return self._eviction_policy
+
+    def set_eviction_policy(self, policy: "EvictionPolicy | str") -> None:
+        """Select the victim-scoring policy (mirrors C++ set_eviction_policy).
+
+        Accepts the enum or a config-style string (``rank_priority`` /
+        ``lru`` / ``recency`` and a few aliases).
+        """
+        if isinstance(policy, EvictionPolicy):
+            self._eviction_policy = policy
+            return
+        if isinstance(policy, str):
+            resolved = _EVICTION_POLICY_ALIASES.get(policy.strip().lower())
+            if resolved is not None:
+                self._eviction_policy = resolved
+                return
+        raise ValueError(f"unknown eviction policy: {policy!r}")
+
     def _score(self, entry: DeepSeekExpertEntry) -> int:
-        # Higher score => kept longer (recency + Oracle priority boost).
+        # Higher score => kept longer.
+        if self._eviction_policy is EvictionPolicy.Recency:
+            return entry.last_use_sequence  # strict LRU; priority is telemetry
         return entry.last_use_sequence + entry.eviction_priority * PRIORITY_WEIGHT
 
     # ---- core API --------------------------------------------------------
@@ -148,14 +231,42 @@ class DeepSeekExpertCache:
         """
         self.stats["ensures"] += 1
         self.stats["requests"] += 1
+        # Reset the victim surface for this pass (mirrors EnsureInfo reset).
+        self.last_evicted = []
+        self.last_evicted_key = None
+        self.last_evicted_generation = 0
         k = self.key(layer, expert_id)
         existing = self.entries.get(k)
         if existing is not None and existing.resident:
+            # Fail closed on a same-key/different-size hit: the resident slot
+            # cannot serve a differently-sized request (mirrors the C++
+            # block.size != nbytes guard; no recency/priority mutation).
+            if existing.slot_bytes != int(nbytes):
+                self.stats["size_mismatches"] += 1
+                raise RuntimeError(
+                    f"DeepSeekExpertCache::reserve(layer={layer} "
+                    f"expert={expert_id}) hit-size mismatch: resident slot is "
+                    f"{existing.slot_bytes} bytes but request wants "
+                    f"{int(nbytes)} bytes (rejected, fail-closed)"
+                )
             self.stats["hits"] += 1
             existing.last_use_sequence = self.tick
             self.tick += 1
             existing.eviction_priority = priority
             return existing
+
+        # Early-reject an allocation that can never fit BEFORE evicting
+        # (the C++ ensure() rejects nbytes > budget_bytes() up front so
+        # residents are preserved).
+        if int(nbytes) > self.budget_bytes:
+            self.stats["budget_rejections"] += 1
+            raise RuntimeError(
+                f"DeepSeekExpertCache::reserve(layer={layer} "
+                f"expert={expert_id} nbytes={int(nbytes)}) rejected: "
+                f"requested {int(nbytes)} bytes exceeds budget "
+                f"{self.budget_bytes} bytes (rejected before eviction; "
+                f"{self.resident_count()} residents preserved)"
+            )
 
         self._evict_until_free(nbytes)
         used = self.used_bytes()
@@ -172,6 +283,7 @@ class DeepSeekExpertCache:
             scale_bytes=meta.get("scale_bytes", 0),
             scratch_bytes=meta.get("scratch_bytes", 0),
             resident_bytes=int(nbytes),
+            slot_bytes=int(nbytes),
             last_use_sequence=self.tick,
             eviction_priority=priority,
             generation=self.next_generation,
@@ -235,9 +347,31 @@ class DeepSeekExpertCache:
         entry.pin_count -= 1
         return True
 
+    def evict_key(self, layer: int, expert_id: int) -> bool:
+        """Invalidate one block iff resident AND unpinned (mirror of C++
+        ``evict_key``).  This is an invalidation, not an LRU eviction:
+        counted via ``stats["invalidations"]``; ``stats["evictions"]`` is
+        deliberately untouched.  Returns False (no partial, nothing counted)
+        when the key is absent or currently pinned."""
+        k = self.key(layer, expert_id)
+        entry = self.entries.get(k)
+        if entry is None or not entry.resident or entry.pin_count > 0:
+            return False
+        self._used_bytes -= entry.resident_bytes_total()
+        self.entries.pop(k)
+        self.stats["invalidations"] += 1
+        if self.debug_validation:
+            self.validate_invariants()
+        return True
+
     def sync_fallback(self, layer: int, expert_id: int, nbytes: int, *,
                       priority: int = 0) -> bool:
-        if self.is_resident(layer, expert_id):
+        entry = self.entries.get(self.key(layer, expert_id))
+        if entry is not None and entry.resident:
+            # Same fail-closed size guard as the C++ sync_fallback hit path.
+            if entry.slot_bytes != int(nbytes):
+                self.stats["size_mismatches"] += 1
+                return False
             return True
         self.stats["fallbacks"] += 1
         try:
@@ -254,6 +388,11 @@ class DeepSeekExpertCache:
 
     # ---- eviction --------------------------------------------------------
     def _evict_until_free(self, need: int) -> None:
+        # Each distinct pinned-skipped block is counted at most once per pass
+        # (the pinned set cannot grow inside this loop, so without the dedup
+        # one pinned block would count once per scan iteration — mirroring
+        # the C++ fix).
+        counted_pinned: set[tuple[int, int]] = set()
         while self.free_bytes() < need:
             victim: DeepSeekExpertEntry | None = None
             worst = -1
@@ -262,7 +401,10 @@ class DeepSeekExpertCache:
                 if not entry.resident:
                     continue
                 if entry.pin_count > 0:
-                    self.stats["pinned_blocks_skipped"] += 1
+                    k = self.key(entry.layer, entry.expert_id)
+                    if k not in counted_pinned:
+                        counted_pinned.add(k)
+                        self.stats["pinned_blocks_skipped"] += 1
                     continue
                 score = self._score(entry)
                 if first or score < worst:
@@ -272,6 +414,13 @@ class DeepSeekExpertCache:
             if victim is None:
                 return  # caller raises with full diagnostics
             self._used_bytes -= victim.resident_bytes_total()
+            # Record EVERY victim in order; the scalars keep the LAST victim
+            # (mirrors EnsureInfo::evicted + evicted_key/evicted_generation).
+            self.last_evicted.append(EvictedVictim(
+                layer=victim.layer, expert_id=victim.expert_id,
+                generation=victim.generation))
+            self.last_evicted_key = self.key(victim.layer, victim.expert_id)
+            self.last_evicted_generation = victim.generation
             self.entries.pop(self.key(victim.layer, victim.expert_id))
             self.stats["evictions"] += 1
         if self.debug_validation:

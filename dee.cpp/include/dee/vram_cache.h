@@ -37,6 +37,32 @@ struct ExpertKeyHash {
     }
 };
 
+// Eviction policy selector (Phase-4 repair, A/B-able at runtime):
+//   RankPriority — legacy score: last_used + priority*PRIORITY_WEIGHT. The
+//                  priority term is request position in the live batched
+//                  path (descending expert-ID order), so one rank step is
+//                  worth ~2^20 recency ticks (~4000 tokens).
+//   Recency      — pure LRU by last_used; the priority term is ignored for
+//                  eviction but still stored on the block for telemetry.
+enum class EvictionPolicy { RankPriority, Recency };
+
+// One block evicted during a single ensure() eviction pass. EnsureInfo
+// carries ALL victims in eviction order (multi-victim evictions used to
+// expose only the last one via evicted_key).
+struct EvictedVictim {
+    int layer;
+    int expert;
+    std::uint64_t generation;
+};
+
+// Victim list that also reads as a bool ("was anything evicted this pass").
+// Existing consumers test `info.evicted ? ... : ...` / `if (info.evicted)`;
+// keeping contextual bool conversion here lets them compile unchanged while
+// new consumers iterate the full victim list.
+struct EvictedVictimList : std::vector<EvictedVictim> {
+    operator bool() const { return !this->empty(); }
+};
+
 // A resident expert block: a slice of the arena + bookkeeping for eviction.
 struct ExpertBlock {
     ExpertKey key{};
@@ -105,13 +131,20 @@ public:
         uint64_t evictions = 0;  // blocks evicted to make room
         uint64_t fallbacks = 0;  // sync_fallback stalls (miss at compute time)
         uint64_t pinned_blocks_skipped = 0;  // eviction candidates rejected due to active pins
+                                             // (counted once per distinct block per ensure() call)
+        uint64_t budget_rejections = 0;      // ensure() rejected nbytes > budget before evicting
+        uint64_t size_mismatches = 0;        // ensure() hit rejected: resident size != nbytes
+        uint64_t invalidations = 0;          // evict_key() removals (invalidation, not LRU eviction)
     };
 
     struct EnsureInfo {
         bool resident_hit = false;
-        bool evicted = false;
-        ExpertKey evicted_key{-1, -1};
-        uint64_t evicted_generation = 0;
+        // ALL victims of this ensure's eviction pass, in eviction order.
+        // Cleared at the start of each ensure()/eviction pass. Also usable
+        // in bool context ("was anything evicted") for legacy consumers.
+        EvictedVictimList evicted;
+        ExpertKey evicted_key{-1, -1};      // LAST victim only (backward compat)
+        uint64_t evicted_generation = 0;    // LAST victim's generation (backward compat)
         uint64_t generation = 0;
         size_t cache_bytes_before = 0;
         size_t cache_entries_before = 0;
@@ -164,6 +197,19 @@ public:
     bool pin(int layer, int expert);
     bool unpin(int layer, int expert);
 
+    // Invalidation (NOT an LRU eviction): remove the block iff it is resident
+    // AND pins==0. Frees the arena range and erases the map entry; returns
+    // true. If the key is absent or currently pinned, nothing is removed and
+    // false is returned (no partial). Counted via Stats::invalidations —
+    // stats_.evictions is deliberately untouched. Used by the prefetcher to
+    // invalidate a block whose submit/fill failed.
+    bool evict_key(int layer, int expert);
+
+    // Eviction-policy flag (Phase-4 A/B). Default is RankPriority for legacy
+    // compatibility; the engine config selects Recency explicitly.
+    void set_eviction_policy(EvictionPolicy p) { eviction_policy_ = p; }
+    EvictionPolicy eviction_policy() const { return eviction_policy_; }
+
     // Milestone 3 forensic: capture the most recent ensure/evict failure
     // context so the engine can surface it to Python instead of collapsing
     // to a single "cannot allocate" line.  Cleared by ensure() on entry;
@@ -182,19 +228,22 @@ private:
     StageProfiler* profiler_ = nullptr;
     std::string last_error_message_;
     bool debug_validation_ = false;
+    EvictionPolicy eviction_policy_ = EvictionPolicy::RankPriority;
 
     ExpertBlock* find_block(int layer, int expert);
     const ExpertBlock* find_block(int layer, int expert) const;
 
-    // Evict lowest (last_used + priority*PRIORITY_WEIGHT) until `need` bytes free.
+    // Evict lowest-scored blocks until `need` bytes free (score depends on
+    // eviction_policy_).
     void evict_until_free(size_t need);
     bool validate_or_record(const char* context);
 
-    // Lower score => evict first. Higher last_used (more recent) OR higher
-    // priority (Oracle-predicted) RAISES the score, so both recency and
-    // Oracle prediction keep an expert resident longer.
+    // Lower score => evict first. Under RankPriority higher last_used OR
+    // higher priority RAISES the score (both keep an expert resident longer).
+    // Under Recency the priority term is ignored — strict LRU by last_used.
     static constexpr int64_t PRIORITY_WEIGHT = 1 << 20;
     int64_t eviction_score(const ExpertBlock& b) const {
+        if (eviction_policy_ == EvictionPolicy::Recency) return b.last_used;
         return b.last_used + (int64_t)b.priority * PRIORITY_WEIGHT;
     }
 };

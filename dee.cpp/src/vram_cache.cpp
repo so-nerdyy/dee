@@ -98,6 +98,14 @@ const ExpertBlock* VramCacheManager::find_block(int layer, int expert) const {
 }
 
 void VramCacheManager::evict_until_free(size_t need) {
+    // An eviction pass starts with a clean victim list (ensure() already
+    // reset EnsureInfo; clear again here so a direct call is also safe).
+    last_ensure_info_.evicted.clear();
+    // Each distinct pinned-skipped block is counted at most once per pass.
+    // The pinned set cannot grow inside this loop (blocks_ only shrinks and
+    // no pin/unpin runs here), so without this dedup one pinned block would
+    // be counted once per scan *iteration*.
+    std::unordered_set<ExpertKey, ExpertKeyHash> pinned_already_counted;
     int iteration = 0;
     int pinned_skipped_total = 0;
     while (arena_.free_space() < need && !blocks_.empty()) {
@@ -111,9 +119,11 @@ void VramCacheManager::evict_until_free(size_t need) {
             ExpertBlock& b = kv.second;
             if (!b.resident) continue;
             if (b.pins != 0) {
-                ++stats_.pinned_blocks_skipped;
                 ++pinned_skipped_this_iter;
-                if (profiler_) profiler_->note_pinned_skip();
+                if (pinned_already_counted.insert(b.key).second) {
+                    ++stats_.pinned_blocks_skipped;
+                    if (profiler_) profiler_->note_pinned_skip();
+                }
                 continue;
             }
             int64_t s = eviction_score(b);
@@ -143,17 +153,22 @@ void VramCacheManager::evict_until_free(size_t need) {
             (long long)worst, victim->priority,
             (long long)victim->last_used, arena_.free_space());
         arena_.free(victim->offset, victim->size);
-        last_ensure_info_.evicted = true;
-        last_ensure_info_.evicted_key = victim->key;
+        // Record EVERY victim in order (multi-victim safe); the scalar
+        // evicted_key/evicted_generation keep the LAST victim for legacy
+        // consumers.
+        const ExpertKey victim_key = victim->key;
+        last_ensure_info_.evicted.push_back(
+            EvictedVictim{victim_key.layer, victim_key.expert, victim->generation});
+        last_ensure_info_.evicted_key = victim_key;
         last_ensure_info_.evicted_generation = victim->generation;
         if (profiler_) {
             profiler_->note_generation_evicted(
-                victim->key.layer, victim->key.expert, victim->generation);
+                victim_key.layer, victim_key.expert, victim->generation);
         }
         victim->resident = false;
         victim->ptr = nullptr;
         // remove from map so a later ensure re-loads it
-        blocks_.erase(ExpertKey{victim->key.layer, victim->key.expert});
+        blocks_.erase(victim_key);
         ++stats_.evictions;
         if (profiler_) profiler_->note_eviction();
     }
@@ -175,6 +190,23 @@ bool VramCacheManager::ensure(int layer, int expert, size_t nbytes, int priority
             lookup_begin, lookup_end, -1, layer, expert);
     }
     if (b && b->resident) {
+        // Fail closed on a same-key/different-size hit: serving the resident
+        // block for a differently-sized request would return wrong-sized
+        // data. No state is mutated on this reject (no recency/priority
+        // refresh) so the failure has no cache side effects.
+        if (b->size != nbytes) {
+            ++stats_.size_mismatches;
+            char msg[256];
+            std::snprintf(msg, sizeof(msg),
+                "VramCacheManager::ensure(layer=%d expert=%d) hit-size mismatch: "
+                "resident block is %zuB but request wants %zuB (rejected, "
+                "fail-closed)", layer, expert, b->size, nbytes);
+            last_error_message_ = msg;
+            std::fprintf(stderr, "[dee-cache %s:%d] %s\n", __FILE__, __LINE__, msg);
+            last_ensure_info_.cache_bytes_after = arena_.used();
+            last_ensure_info_.cache_entries_after = resident_count();
+            return false;
+        }
         last_ensure_info_.resident_hit = true;
         b->last_used = ++tick_;
         b->priority  = priority;
@@ -184,6 +216,23 @@ bool VramCacheManager::ensure(int layer, int expert, size_t nbytes, int priority
         last_ensure_info_.cache_entries_after = resident_count();
         last_ensure_info_.pin_count_after = b->pins;
         return !debug_validation_ || validate_or_record("ensure resident hit");
+    }
+    // Early-reject an allocation that can never fit BEFORE evicting: an
+    // oversized ensure used to drain every resident block and then fail
+    // anyway. Residents must survive this reject untouched.
+    if (nbytes > budget_bytes()) {
+        ++stats_.budget_rejections;
+        char msg[256];
+        std::snprintf(msg, sizeof(msg),
+            "VramCacheManager::ensure(layer=%d expert=%d nbytes=%zu) rejected: "
+            "requested %zuB exceeds arena budget %zuB (rejected before "
+            "eviction; %zu residents preserved)", layer, expert, nbytes,
+            nbytes, arena_.capacity(), resident_count());
+        last_error_message_ = msg;
+        std::fprintf(stderr, "[dee-cache %s:%d] %s\n", __FILE__, __LINE__, msg);
+        last_ensure_info_.cache_bytes_after = arena_.used();
+        last_ensure_info_.cache_entries_after = resident_count();
+        return false;
     }
     // not resident -> evict to make room, then allocate
     const auto eviction_begin = profiler_ && profiler_->enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
@@ -298,7 +347,23 @@ uint32_t VramCacheManager::pin_count(int layer, int expert) const {
 }
 
 bool VramCacheManager::sync_fallback(int layer, int expert, size_t nbytes, int priority) {
-    if (is_resident(layer, expert)) return true;
+    const ExpertBlock* b = find_block(layer, expert);
+    if (b && b->resident) {
+        // Fail closed on a same-key/different-size hit (same contract as
+        // ensure()'s resident path).
+        if (b->size != nbytes) {
+            ++stats_.size_mismatches;
+            char msg[256];
+            std::snprintf(msg, sizeof(msg),
+                "VramCacheManager::sync_fallback(layer=%d expert=%d) hit-size "
+                "mismatch: resident block is %zuB but request wants %zuB "
+                "(rejected, fail-closed)", layer, expert, b->size, nbytes);
+            last_error_message_ = msg;
+            std::fprintf(stderr, "[dee-cache %s:%d] %s\n", __FILE__, __LINE__, msg);
+            return false;
+        }
+        return true;
+    }
     ++stats_.fallbacks;
     return ensure(layer, expert, nbytes, priority);
 }
@@ -356,6 +421,34 @@ bool VramCacheManager::unpin(int layer, int expert) {
     }
     --b->pins;
     return !debug_validation_ || validate_or_record("unpin");
+}
+
+bool VramCacheManager::evict_key(int layer, int expert) {
+    ExpertBlock* b = find_block(layer, expert);
+    if (!b || !b->resident) {
+        last_error_message_ = "VramCacheManager::evict_key: no resident block";
+        return false;
+    }
+    if (b->pins != 0) {
+        // Pinned: refuse without any partial removal and without counting.
+        std::ostringstream message;
+        message << "VramCacheManager::evict_key refused: block pinned"
+                << " layer=" << layer << " expert=" << expert
+                << " pins=" << b->pins;
+        last_error_message_ = message.str();
+        return false;
+    }
+    const ExpertKey key = b->key;
+    const size_t off = b->offset;
+    const size_t size = b->size;
+    const uint64_t generation = b->generation;
+    arena_.free(off, size);
+    if (profiler_) {
+        profiler_->note_generation_evicted(key.layer, key.expert, generation);
+    }
+    blocks_.erase(key);
+    ++stats_.invalidations;
+    return !debug_validation_ || validate_or_record("evict_key");
 }
 
 bool VramCacheManager::validate_invariants(std::string* error) const {
