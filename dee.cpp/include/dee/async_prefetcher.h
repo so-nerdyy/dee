@@ -173,6 +173,22 @@ public:
     // device-side wait was armed; false on lookup failure (caller must fall
     // back to host wait).  Mirrors wait() but never blocks the host for
     // an in-flight transfer; only the GPU waits.
+    //
+    // Phase-4 repair (audit R1): arming marks the transfer done and drops the
+    // DST cache pin — event ordering protects the consumer there — but the
+    // pinned SOURCE staging slot and the completion event stay owned by the
+    // transfer until retire_completed() observes the event fire
+    // (cudaEventQuery).  Only then may the host overwrite the slot buffer; a
+    // queued-but-incomplete H2D must never race a new six-region gather into
+    // the same pinned memory.
+    //
+    // Counter parity with wait(): `waited` counts every readiness-wait call
+    // (an armed device-side wait is still a wait — same semantic bucket), and
+    // `fallbacks` counts calls that could not be satisfied from a live
+    // transfer (never staged, abandoned, or the device wait unarmable/arm
+    // failure — the caller falls back to a host wait).  On the mock backend
+    // there is no device stream to arm, so it degrades to wait(), which
+    // performs the mock drain; accounting classes are identical.
     bool wait_on_stream(int layer, int expert, void* compute_stream);
 
     // Mark the current residency generation as scheduled for expert compute.
@@ -189,6 +205,27 @@ public:
 
     size_t in_flight() const { return inflight_.size(); }
 
+    // Test/telemetry accessor: staging slots still owned by transfers whose
+    // completion has NOT been observed. Under CUDA these are busy pinned ring
+    // slots; under the mock backend each pending cold transfer models one
+    // virtual occupant so the R1 slot-lifetime invariant is testable without a
+    // toolkit. A slot may only be reused after retire_completed() (or a
+    // blocking wait/drain) observes the transfer's completion event.
+    size_t staging_slots_in_use() const { return active_transfers_; }
+
+    // Phase-4 (R1): retire transfers whose copy completion is now observable —
+    // releases the pinned staging slot and destroys the completion event, so
+    // slots can be re-picked and cudaEvents do not leak over long decodes.
+    // Called automatically at the top of wait(), wait_on_stream(),
+    // cuda_wait(), cuda_submit(), and synchronize_all(); public so tests and
+    // the engine can also force a retirement pass. inflight_ stays append-only
+    // (key_to_idx_ maps into it); retirement frees slot+event resources only.
+    void retire_completed();
+
+    // Test hook: the next submitted transfer fails as if the backend launch
+    // failed, exercising the submit-failure invalidation path. One-shot.
+    void debug_fail_next_submit() { debug_fail_next_submit_ = true; }
+
     // Stats (mirrors prototype's fallback accounting)
     struct Stats {
         uint64_t issued     = 0;  // compatibility alias for requests
@@ -197,8 +234,18 @@ public:
         uint64_t inflight_hits = 0;
         uint64_t cold_loads = 0;
         uint64_t duplicate_requests = 0;
-        uint64_t waited     = 0;  // wait() calls
-        uint64_t fallbacks  = 0;  // wait() had to block on an unfinished xfer
+        uint64_t waited     = 0;  // readiness waits: wait() + wait_on_stream()
+        uint64_t fallbacks  = 0;  // waits with no usable live transfer
+                                  // (never staged / abandoned / unarmable)
+        uint64_t submit_failures = 0;        // launches that failed to queue
+                                             // (incl. debug-injected failures)
+        uint64_t submit_failed_residents = 0;// abandoned dst blocks that could
+                                             // not be invalidated (resident
+                                             // garbage may be served as a hit)
+        uint64_t stream_errors = 0;          // prefetch stream/event errors:
+                                             // copy completion became unprovable
+        uint64_t transfers_abandoned = 0;    // transfers retired without proven
+                                             // completion (fail-stop)
         uint64_t mmap_to_pinned_bytes = 0;
         uint64_t h2d_bytes = 0;
         uint64_t h2d_copies = 0;
@@ -238,8 +285,11 @@ private:
 
     // mock backend state
     std::vector<Transfer>        inflight_;   // ordered submission queue
-    std::unordered_map<long, int> key_to_idx_; // ExpertKey -> idx in inflight_
-    std::vector<long> batch_keys_;
+    // ExpertKey -> idx in inflight_.  Phase-4 (audit A10): the packed
+    // (layer<<32)|expert key needs 64 bits — `long` is 32-bit under Windows
+    // LLP64 and silently collided layers.  Use a fixed-width key throughout.
+    std::unordered_map<std::uint64_t, int> key_to_idx_;
+    std::vector<std::uint64_t> batch_keys_;
 
     struct PinnedStagingSlot {
         void* ptr = nullptr;
@@ -281,6 +331,12 @@ private:
     bool   cuda_wait(long idx, HostWaitReason reason);  // guarded real event sync
     void   release_staging(Transfer& transfer);
     bool   release_transfer(Transfer& transfer);
+    // Fail-stop teardown for a transfer whose copy can never be trusted:
+    // destroy the completion event, free the staging slot, drop the dst cache
+    // pin, erase the live-key mapping, and evict the destination block so
+    // uninitialized/partial bytes can never be served as a cache hit.
+    void   abandon_transfer(Transfer& transfer);
+    bool   debug_fail_next_submit_ = false;
     long   validate_request_result(long transfer_id, const char* context);
     void   record_request(RequestKind kind, int token, int logical_layer,
                            int resolved_layer, int expert, int priority,

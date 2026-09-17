@@ -7,6 +7,8 @@
 #include <cstring>
 #include <limits>
 #include <sstream>
+#include <type_traits>
+#include <unordered_map>
 #include <unordered_set>
 
 #ifdef DEE_CUDA
@@ -18,9 +20,34 @@
 namespace dee {
 namespace {
 
-size_t key_id(int layer, int expert) {
-    return (static_cast<size_t>(static_cast<uint32_t>(layer)) << 32) |
+std::uint64_t key_id(int layer, int expert) {
+    return (static_cast<std::uint64_t>(static_cast<uint32_t>(layer)) << 32) |
            static_cast<uint32_t>(expert);
+}
+
+// Phase-4 (audit R4): erase EVERY victim key an ensure() produced, not just
+// the last one.  EnsureInfo gains an `evicted` victim list
+// (std::vector<EvictedVictim>, eviction order) when the parallel B0b cache
+// repair lands; before that it is a bool flag plus the legacy last-victim
+// fields (`evicted_key`/`evicted_generation`, which remain).  The dependent
+// decltype keeps this compiling against either shape — no preprocessor gate —
+// and consumes `evicted` when non-empty, else the legacy single-victim field.
+template <typename EnsureInfoT>
+void erase_evicted_keys(const EnsureInfoT& info,
+                        std::unordered_map<std::uint64_t, int>& key_to_idx) {
+    if constexpr (std::is_same_v<std::decay_t<decltype(info.evicted)>, bool>) {
+        // Legacy EnsureInfo: only the final victim is exposed.
+        if (info.evicted) {
+            key_to_idx.erase(key_id(info.evicted_key.layer, info.evicted_key.expert));
+        }
+    } else {
+        for (const auto& victim : info.evicted) {
+            key_to_idx.erase(key_id(victim.layer, victim.expert));
+        }
+        if (info.evicted.empty() && info.evicted_key.layer >= 0) {
+            key_to_idx.erase(key_id(info.evicted_key.layer, info.evicted_key.expert));
+        }
+    }
 }
 
 }  // namespace
@@ -49,7 +76,7 @@ bool AsyncPrefetcher::init(bool use_cuda) {
 }
 
 long AsyncPrefetcher::find_inflight(int layer, int expert) const {
-    const auto it = key_to_idx_.find(static_cast<long>(key_id(layer, expert)));
+    const auto it = key_to_idx_.find(key_id(layer, expert));
     return it == key_to_idx_.end() ? -1 : it->second;
 }
 
@@ -73,6 +100,84 @@ bool AsyncPrefetcher::release_transfer(Transfer& transfer) {
         transfer.cache_pin_held = false;
     }
     return true;
+}
+
+// Phase-4 (audit R1/M6): retire transfers whose copy completion is now
+// observable.  A pinned SOURCE staging slot may only be freed after the
+// transfer's event has actually fired — until then a queued H2D can still be
+// reading the slot buffer, so reusing it would land a new expert's bytes in an
+// old expert's cache block.  Retire also destroys the completion event, which
+// bounds OS event resources over long decodes (inflight_ itself stays
+// append-only; only the slot+event resources are reclaimed here).
+void AsyncPrefetcher::retire_completed() {
+    for (auto& transfer : inflight_) {
+#ifdef DEE_CUDA
+        if (use_cuda_ && transfer.event) {
+            const cudaError_t rc =
+                cudaEventQuery(static_cast<cudaEvent_t>(transfer.event));
+            if (rc == cudaErrorNotReady) {
+                continue;  // H2D still queued: pinned source slot stays busy.
+            }
+            if (rc != cudaSuccess) {
+                // Completion is unprovable (broken stream/context): abandon
+                // fail-stop so the destination block is invalidated rather
+                // than served as a hit.
+                std::fprintf(stderr,
+                    "[dee-prefetch] retire_completed: cudaEventQuery failed "
+                    "(rc=%d) for transfer %ld — abandoning\n",
+                    static_cast<int>(rc), transfer.id);
+                ++stats_.stream_errors;
+                abandon_transfer(transfer);
+                continue;
+            }
+            // Observed complete: the source slot may finally be recycled and
+            // the event is no longer needed.  The dst cache pin is NOT touched
+            // — that lifetime belongs to the consumer's wait().
+            release_staging(transfer);
+            DEE_CUDA_CHECK_NAMED(
+                DEE_TA_EVENT_DESTROY(static_cast<cudaEvent_t>(transfer.event), "transfer"),
+                "cudaEventDestroy(retired prefetch)");
+            transfer.event = nullptr;
+            continue;
+        }
+#endif
+        // Mock path (and any event-less transfer): drain_until() runs the copy
+        // synchronously, so `done` is already a proven completion observation.
+        if (transfer.done) release_staging(transfer);
+    }
+}
+
+// Fail-stop teardown for a transfer whose copy can never be trusted (submit
+// failure, unprovable stream state).  Releases every resource the transfer
+// holds and, crucially, invalidates the destination cache block: after a
+// failed launch the block is resident but uninitialized, and a later same-key
+// request would otherwise hit it and serve garbage bytes.
+void AsyncPrefetcher::abandon_transfer(Transfer& transfer) {
+    if (transfer.abandoned) return;
+    transfer.abandoned = true;
+    ++stats_.transfers_abandoned;
+#ifdef DEE_CUDA
+    if (transfer.event) {
+        DEE_CUDA_CHECK_NAMED(
+            DEE_TA_EVENT_DESTROY(static_cast<cudaEvent_t>(transfer.event), "transfer"),
+            "cudaEventDestroy(abandoned prefetch)");
+        transfer.event = nullptr;
+    }
+#endif
+    release_transfer(transfer);  // staging slot + dst cache pin
+    // Erase the live-key mapping only if it still names THIS transfer.
+    const auto it = key_to_idx_.find(key_id(transfer.key.layer, transfer.key.expert));
+    if (it != key_to_idx_.end() && it->second >= 0 &&
+        static_cast<size_t>(it->second) < inflight_.size() &&
+        &inflight_[static_cast<size_t>(it->second)] == &transfer) {
+        key_to_idx_.erase(it);
+    }
+    if (!cache_.evict_key(transfer.key.layer, transfer.key.expert)) {
+        // evict_key refuses pinned/absent blocks; the pin was just dropped, so
+        // a false here means the block already went away or a concurrent pin
+        // raced in — either way it can still be served, so flag it.
+        ++stats_.submit_failed_residents;
+    }
 }
 
 bool AsyncPrefetcher::validate_invariants(std::string* error) const {
@@ -99,8 +204,7 @@ bool AsyncPrefetcher::validate_invariants(std::string* error) const {
             return fail("multiple expert keys map to the same transfer");
         }
         const Transfer& transfer = inflight_[static_cast<size_t>(index)];
-        if (entry.first != static_cast<long>(
-                key_id(transfer.key.layer, transfer.key.expert))) {
+        if (entry.first != key_id(transfer.key.layer, transfer.key.expert)) {
             return fail("transfer key does not match mapped transfer expert");
         }
         if (transfer.abandoned) {
@@ -347,7 +451,7 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
     }
     const size_t cache_bytes_before = cache_.used_bytes();
     const size_t cache_entries_before = profiler_ ? cache_.resident_count() : 0;
-    const long request_key = static_cast<long>(key_id(layer, expert));
+    const std::uint64_t request_key = key_id(layer, expert);
     if (std::find(batch_keys_.begin(), batch_keys_.end(), request_key) != batch_keys_.end()) {
         ++stats_.duplicate_requests;
         if (profiler_) profiler_->note_duplicate_request();
@@ -386,7 +490,7 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
                            prior.generation, cache_.pin_count(layer, expert), false);
             return validate_request_result(prior.id, "resident transfer reuse");
         }
-        key_to_idx_.erase(static_cast<long>(key_id(layer, expert)));
+        key_to_idx_.erase(key_id(layer, expert));
     }
     if (cache_.is_resident(layer, expert)) {
         if (!cache_.ensure(layer, expert, destination_nbytes, priority)) return -1;
@@ -437,9 +541,27 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
     }
     if (!cache_.ensure(layer, expert, destination_nbytes, priority)) return -1;
     const VramCacheManager::EnsureInfo ensure_info = cache_.last_ensure_info();
-    if (ensure_info.evicted) {
-        key_to_idx_.erase(static_cast<long>(
-            key_id(ensure_info.evicted_key.layer, ensure_info.evicted_key.expert)));
+    // R4: drop every victim's stale key (all victims when EnsureInfo carries
+    // the list; the legacy last-victim field otherwise).
+    erase_evicted_keys(ensure_info, key_to_idx_);
+    // Safety net on top of the per-ensure record: a mapped transfer whose
+    // block is no longer resident is stale regardless of how many victims the
+    // ensure could describe (the legacy API recorded only the last one, and a
+    // pinned-then-unpinned transfer may have been evicted by an earlier
+    // ensure).  Pinned in-flight transfers cannot be evicted, so this only
+    // ever removes genuinely-dead entries.
+    for (auto it = key_to_idx_.begin(); it != key_to_idx_.end();) {
+        const int mapped = it->second;
+        if (mapped < 0 || static_cast<size_t>(mapped) >= inflight_.size()) {
+            it = key_to_idx_.erase(it);
+            continue;
+        }
+        const Transfer& t = inflight_[static_cast<size_t>(mapped)];
+        if (t.abandoned || !cache_.is_resident(t.key.layer, t.key.expert)) {
+            it = key_to_idx_.erase(it);
+        } else {
+            ++it;
+        }
     }
     void* dst = cache_.data(layer, expert);
     if (!dst || !cache_.pin(layer, expert)) return -1;
@@ -470,22 +592,41 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
     transfer.source_pinned = source_pinned;
     transfer.id = next_id_++;
     transfer.cache_pin_held = true;
+    if (!use_cuda_) {
+        // Mock backend: there is no pinned ring, but each pending cold
+        // transfer still models one virtual staging occupant so the
+        // slot-lifetime invariant (no reuse before observed completion) is
+        // testable via staging_slots_in_use().
+        transfer.active_counted = true;
+        ++active_transfers_;
+    }
     transfer.token = token;
     transfer.logical_layer = logical_layer;
     transfer.generation = ensure_info.generation;
     inflight_.push_back(transfer);
     const long index = static_cast<long>(inflight_.size() - 1);
-    key_to_idx_[static_cast<long>(key_id(layer, expert))] = static_cast<int>(index);
+    key_to_idx_[key_id(layer, expert)] = static_cast<int>(index);
 
-    if (use_cuda_ && !cuda_submit(index)) {
-        release_transfer(inflight_[index]);
-        inflight_[index].abandoned = true;
-        key_to_idx_.erase(static_cast<long>(key_id(layer, expert)));
+    bool submit_ok = true;
+    if (use_cuda_ && !cuda_submit(index)) submit_ok = false;
+    if (debug_fail_next_submit_) {
+        debug_fail_next_submit_ = false;  // one-shot test hook
+        submit_ok = false;
+    }
+    if (!submit_ok) {
+        // The ensure() above left a resident, uninitialized block.  Abandon
+        // the transfer AND invalidate the block so a later same-key request
+        // can never hit garbage (audit R5 / A2-M7).
+        ++stats_.submit_failures;
+        abandon_transfer(inflight_[index]);
         return -1;
     }
+    // evicted_key remains populated under both EnsureInfo shapes (legacy
+    // last-victim fields are kept by the B0b victim-list change).
+    const ExpertKey last_victim = ensure_info.evicted_key;
     record_request(RequestKind::ColdLoad, token, logical_layer, layer, expert, priority,
-                   ensure_info.evicted ? ensure_info.evicted_key.layer : -1,
-                   ensure_info.evicted ? ensure_info.evicted_key.expert : -1,
+                   last_victim.layer >= 0 ? last_victim.layer : -1,
+                   last_victim.layer >= 0 ? last_victim.expert : -1,
                    cache_bytes_before, cache_entries_before,
                    cache_.used_bytes(), cache_.resident_count(),
                    source_nbytes, destination_nbytes,
@@ -507,6 +648,7 @@ void AsyncPrefetcher::drain_until(int index) {
 }
 
 bool AsyncPrefetcher::wait(int layer, int expert) {
+    retire_completed();
     ++stats_.waited;
     const long index = find_inflight(layer, expert);
     if (index < 0 || index >= static_cast<long>(inflight_.size())) {
@@ -515,7 +657,12 @@ bool AsyncPrefetcher::wait(int layer, int expert) {
     }
     Transfer& transfer = inflight_[index];
     if (transfer.abandoned) return false;
-    if (transfer.done) {
+    if (transfer.done && !transfer.event) {
+        // Completion already observed (drained, waited, or retired).  A
+        // `done` transfer that still holds a live event — one whose
+        // wait_on_stream arm has not been observed complete — must NOT take
+        // this path: releasing here would free its staging slot while the H2D
+        // can still be queued (R1).  Fall through to cuda_wait instead.
         release_transfer(transfer);
         return cache_.is_resident(layer, expert);
     }
@@ -527,20 +674,46 @@ bool AsyncPrefetcher::wait(int layer, int expert) {
 }
 
 bool AsyncPrefetcher::wait_on_stream(int layer, int expert, void* compute_stream) {
+    retire_completed();
 #ifdef DEE_CUDA
     const long index = find_inflight(layer, expert);
-    if (index < 0 || index >= static_cast<long>(inflight_.size())) return false;
+    if (index < 0 || index >= static_cast<long>(inflight_.size())) {
+        // Never staged: a readiness wait that finds no transfer is the
+        // sync_fallback class — same accounting as wait().
+        ++stats_.waited;
+        ++stats_.fallbacks;
+        return false;
+    }
     Transfer& transfer = inflight_[index];
-    if (transfer.abandoned) return false;
-    if (transfer.done) {
-        // Already complete: no device wait needed, just release ownership.
+    if (transfer.abandoned) {
+        ++stats_.waited;
+        ++stats_.fallbacks;
+        return false;
+    }
+    if (transfer.done && !transfer.event) {
+        // Completion already observed: no device wait needed, just release
+        // ownership.  A `done` transfer holding a live event was armed earlier
+        // but not yet observed complete — re-arming is idempotent, so it falls
+        // through to the arm path (its staging slot stays held either way).
+        ++stats_.waited;
         release_transfer(transfer);
         return cache_.is_resident(layer, expert);
     }
-    if (!use_cuda_ || !transfer.event || !compute_stream) {
-        // No event/stream to arm against: fall back to the host-blocking wait.
+    if (!use_cuda_ || !transfer.event) {
+        // No device machinery to arm against (mock-mode run under a CUDA
+        // build, or a transfer retired before arming): plain host wait, with
+        // wait()'s own accounting — not an extra fallback.
         return wait(layer, expert);
     }
+    if (!compute_stream) {
+        // Caller gave no stream to arm on: host-blocking fallback.  The wait
+        // still happens (via wait()), but the inability to arm is a fallback.
+        ++stats_.fallbacks;
+        return wait(layer, expert);
+    }
+    // An armed device-side wait is still a wait: count it in the same bucket
+    // as wait() (Phase-4 counter parity — wait_on_stream used to count neither).
+    ++stats_.waited;
     // Arm the device-side dependency: the compute stream will not advance past
     // the next cuBLAS GEMM until this expert's H2D + dtype-convert has landed
     // in the cache arena. The HOST does not block here, so it can keep issuing
@@ -560,11 +733,17 @@ bool AsyncPrefetcher::wait_on_stream(int layer, int expert, void* compute_stream
             cudaStreamWaitEvent(static_cast<cudaStream_t>(compute_stream),
                                 static_cast<cudaEvent_t>(transfer.event), 0),
             "cudaStreamWaitEvent(prefetch completion on compute stream)")) {
+        ++stats_.fallbacks;  // arming failed: caller falls back to host wait
         return false;
     }
-    // The H2D/conversion is in flight on the prefetch stream; once it signals,
-    // the staging slot's host source can be recycled (the data lives in the
-    // device cache arena, independent of the staging slot).
+    // Phase-4 (R1): the transfer's pinned SOURCE staging slot and completion
+    // event stay held past this point — the H2D may still be QUEUED on the
+    // prefetch stream, so freeing the slot now would let a later submit
+    // overwrite the buffer the pending copy still reads.  retire_completed()
+    // releases both only after cudaEventQuery proves the event fired.  The DST
+    // cache pin release below is safe: event ordering protects the compute
+    // consumer, and an evicted-then-recycled dst simply gets a new H2D queued
+    // behind this one on the same stream.
     //
     // Milestone 3 fix: drop the prefetch transfer's cache pin here.
     // Earlier design assumed a later wait()/synchronize_all() would release;
@@ -572,15 +751,16 @@ bool AsyncPrefetcher::wait_on_stream(int layer, int expert, void* compute_stream
     // leaking pins=1 (field-measured at 992s on dual-T4). Engine re-pins the
     // block before launching cuBLAS, so transient pins==0 is race-free.
     transfer.done = true;
-    release_staging(transfer);
     if (transfer.cache_pin_held) {
         cache_.unpin(transfer.key.layer, transfer.key.expert);
         transfer.cache_pin_held = false;
     }
     return cache_.is_resident(layer, expert);
 #else
-    (void)layer; (void)expert; (void)compute_stream;
-    return false;
+    // Mock backend: there is no device stream to arm, so degrade to wait() —
+    // it performs the mock drain — keeping readiness accounting identical.
+    (void)compute_stream;
+    return wait(layer, expert);
 #endif
 }
 
@@ -591,27 +771,62 @@ void AsyncPrefetcher::mark_consumed(int layer, int expert) {
 }
 
 void AsyncPrefetcher::synchronize_all() {
+    retire_completed();
     if (use_cuda_) {
 #ifdef DEE_CUDA
-        const auto wait_begin = profiler_ && profiler_->enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
-        if (stream_ && !DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(static_cast<cudaStream_t>(stream_)),
-                                              "cudaStreamSynchronize(prefetch)")) return;
-        if (stream_ && profiler_ && profiler_->enabled()) {
-            const auto wait_end = StageProfiler::now();
-            const double wait_ms = std::chrono::duration<double, std::milli>(
-                wait_end - wait_begin).count();
-            profiler_->add_cpu_ms(CpuStage::Synchronization, wait_ms);
-            profiler_->note_host_wait(HostWaitReason::PrefetchDrain, wait_begin, wait_end);
-            profiler_->note_host_synchronization();
-            profiler_->cuda_collect_ready();
-        }
-#endif
-        for (auto& transfer : inflight_) {
-            if (!transfer.done && !transfer.abandoned) {
-                transfer.done = true;
-                release_transfer(transfer);
+        bool stream_ok = true;
+        if (stream_) {
+            const auto wait_begin = profiler_ && profiler_->enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
+            stream_ok = DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(static_cast<cudaStream_t>(stream_)),
+                                             "cudaStreamSynchronize(prefetch)");
+            if (stream_ok && profiler_ && profiler_->enabled()) {
+                const auto wait_end = StageProfiler::now();
+                const double wait_ms = std::chrono::duration<double, std::milli>(
+                    wait_end - wait_begin).count();
+                profiler_->add_cpu_ms(CpuStage::Synchronization, wait_ms);
+                profiler_->note_host_wait(HostWaitReason::PrefetchDrain, wait_begin, wait_end);
+                profiler_->note_host_synchronization();
+                profiler_->cuda_collect_ready();
             }
         }
+        if (stream_ok) {
+            // Every queued copy is now provably complete: a second retire pass
+            // frees every staging slot and destroys every completion event,
+            // then the sweep marks the transfers done and drops the consumer
+            // cache pins (retire deliberately leaves those to wait()).
+            retire_completed();
+            for (auto& transfer : inflight_) {
+                if (!transfer.done && !transfer.abandoned) {
+                    transfer.done = true;
+                    release_transfer(transfer);
+                }
+            }
+        } else {
+            // Fail-stop (Phase-4 audit): a failed stream sync leaves the
+            // completion state of queued copies UNPROVABLE — the old early
+            // `return` kept those events alive so reset() could later destroy
+            // events with copies still pending, and it left resident blocks
+            // that may hold partial bytes servable as hits.  Conservative
+            // choice: abandon every transfer that still carries an unproven
+            // completion (live event, or never marked done) — releasing its
+            // slot/event/pin and invalidating its destination block — and
+            // count the fault.  Transfers whose completion was already proven
+            // (done, event destroyed) are left resident; a broken prefetch
+            // stream fails subsequent CUDA work closed anyway.
+            ++stats_.stream_errors;
+            size_t abandoned = 0;
+            for (auto& transfer : inflight_) {
+                if (transfer.abandoned) continue;
+                if (transfer.done && !transfer.event) continue;  // proven earlier
+                abandon_transfer(transfer);
+                ++abandoned;
+            }
+            std::fprintf(stderr,
+                "[dee-prefetch] synchronize_all: prefetch stream sync failed; "
+                "abandoned %zu unproven transfer(s) and invalidated their "
+                "destination blocks\n", abandoned);
+        }
+#endif
     } else {
         drain_until(static_cast<int>(inflight_.size()) - 1);
     }
@@ -649,6 +864,10 @@ bool AsyncPrefetcher::cuda_init() {
 
 bool AsyncPrefetcher::cuda_submit(long index) {
 #ifdef DEE_CUDA
+    // R1: MUST run before slot selection — a slot is only free once its
+    // previous owner's completion event has been observed; freeing it earlier
+    // lets this gather overwrite a buffer a queued H2D still reads.
+    retire_completed();
     if (!stream_ || index < 0 || index >= static_cast<long>(inflight_.size())) return false;
     Transfer& transfer = inflight_[index];
 
@@ -670,11 +889,16 @@ bool AsyncPrefetcher::cuda_submit(long index) {
         chosen = staging_slots_.size() - 1;
     }
     if (chosen == static_cast<size_t>(-1)) {
-        // A bounded ring is full. Complete the oldest outstanding transfer
-        // before reusing its host memory; no CUDA copy can retain that slot.
+        // A bounded ring is full. Retire once more (events may have fired
+        // since the top-of-submit pass), then complete the oldest transfer
+        // still holding a slot before reusing its host memory; no CUDA copy
+        // can retain that slot afterwards.  Armed transfers (done=true but
+        // event live, slot still owned) are included — waiting on their event
+        // is a valid way to prove completion.
+        retire_completed();
         for (long pending_index = 0; pending_index < static_cast<long>(inflight_.size()); ++pending_index) {
             Transfer& pending = inflight_[pending_index];
-            if (!pending.done && pending.staging_slot < staging_slots_.size()) {
+            if (!pending.abandoned && pending.staging_slot < staging_slots_.size()) {
                 if (!cuda_wait(pending_index, HostWaitReason::StagingSlot)) return false;
                 break;
             }
@@ -811,11 +1035,24 @@ bool AsyncPrefetcher::cuda_submit(long index) {
 
 bool AsyncPrefetcher::cuda_wait(long index, HostWaitReason reason) {
 #ifdef DEE_CUDA
+    // Retire first: this transfer's event may already be complete (freeing its
+    // slot without a blocking sync), and other finished transfers' slots come
+    // back for the ring.
+    retire_completed();
     if (index < 0 || index >= static_cast<long>(inflight_.size())) return false;
     Transfer& transfer = inflight_[index];
+    if (transfer.abandoned) return false;  // retire may have abandoned it
     const auto wait_begin = profiler_ && profiler_->enabled() ? StageProfiler::now() : StageProfiler::TimePoint{};
     if (transfer.event && !DEE_CUDA_CHECK_NAMED(cudaEventSynchronize(static_cast<cudaEvent_t>(transfer.event)),
                                                  "cudaEventSynchronize(prefetch completion)")) return false;
+    if (transfer.event) {
+        // Completion is now proven: destroy the event here so long decodes do
+        // not accumulate cudaEvents between retire passes.
+        DEE_CUDA_CHECK_NAMED(
+            DEE_TA_EVENT_DESTROY(static_cast<cudaEvent_t>(transfer.event), "transfer"),
+            "cudaEventDestroy(waited prefetch)");
+        transfer.event = nullptr;
+    }
     if (profiler_ && profiler_->enabled()) {
         const auto wait_end = StageProfiler::now();
         const double wait_ms = std::chrono::duration<double, std::milli>(
