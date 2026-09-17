@@ -55,6 +55,32 @@ public:
         double fill_batch_wall_ms = 0.0;
         double fill_worker_ms = 0.0;
         double fill_overlap_ms = 0.0;
+        // Phase-4 fail-closed + single-lane instrumentation parity.  All are
+        // additive; every field above keeps its established semantics.
+        // fill_failures: single-lane get() fills that returned false or
+        //   threw (nothing is published, so no later lookup can be served a
+        //   poisoned zeroed entry).  Also bumped if a reservation insert
+        //   itself fails.  Batch fill failures roll back the whole batch and
+        //   are not counted here.
+        // alloc_failures: get() reservation allocation failures
+        //   (entry.bytes.resize throwing, e.g. bad_alloc).  Kept separate
+        //   from fill_failures so capacity OOM is distinguishable from a
+        //   store-side read failure.
+        // size_mismatches: same-key requests refused because the resident
+        //   entry's payload size differs (get hit path, and the get_batch
+        //   request scan).  Each is also counted as a miss on the get() path.
+        // budget_rejections: requests refused because they cannot be admitted
+        //   under the byte budget: oversize get(), oversize or capacity-
+        //   exceeding get_batch requests, and a get_batch whose victim scan
+        //   finds every resident protected by the batch itself.
+        // scalar_fills / scalar_fill_ms: executed single-lane get() fills
+        //   (attempted count + wall milliseconds, success or failure).
+        uint64_t fill_failures = 0;
+        uint64_t alloc_failures = 0;
+        uint64_t size_mismatches = 0;
+        uint64_t budget_rejections = 0;
+        uint64_t scalar_fills = 0;
+        double scalar_fill_ms = 0.0;
     };
 
     using BatchFill = bool (*)(void* context, uint8_t* dst, size_t nbytes);
@@ -95,9 +121,35 @@ public:
     // Return a pointer to `nbytes` of cached bytes for `key`, running
     // `fill(dst, nbytes)` on a miss (fill must copy exactly nbytes).  Returns
     // nullptr when the entry cannot fit the budget or allocation fails.
+    //
+    // Fail-closed contract: a fill that returns false or throws publishes
+    // NOTHING — no reservation is left behind, the miss is counted exactly
+    // once, and fill_failures is incremented — so a later lookup can never be
+    // served a poisoned zeroed entry (the pre-repair defect this overload
+    // exists to fix).  A resident entry that is not ready, or whose payload
+    // size differs from `nbytes`, is likewise refused: nullptr, counted as a
+    // miss, plus size_mismatches when the size differs.  Allocation failure
+    // during reservation returns nullptr and counts alloc_failures.
     const uint8_t* get(
         uint64_t key, size_t nbytes,
-        const std::function<void(uint8_t* dst, size_t n)>& fill);
+        const std::function<bool(uint8_t* dst, size_t n)>& fill);
+
+    // Legacy void-fill form kept so existing callers compile unchanged: a
+    // thin delegate that treats fill completion as success (a throw still
+    // fails closed via the bool overload).  New callers that can report
+    // failure should prefer the bool-fill overload so a failed
+    // materialization cannot publish a readable zeroed entry.
+    const uint8_t* get(
+        uint64_t key, size_t nbytes,
+        const std::function<void(uint8_t* dst, size_t n)>& fill) {
+        if (!fill) return nullptr;
+        const std::function<bool(uint8_t* dst, size_t n)> wrapper =
+            [&fill](uint8_t* dst, size_t n) -> bool {
+                fill(dst, n);
+                return true;
+            };
+        return get(key, nbytes, wrapper);
+    }
 
     // Atomically reserve all unique misses, then materialize them through the
     // persistent bounded lane pool. Cache/LRU mutation stays on the caller;
@@ -129,6 +181,15 @@ public:
         fill_ctx_token_ = token;
         fill_ctx_layer_ = layer;
         fill_ctx_device_ = device;
+    }
+    // Optional eviction observer (default nullptr = no observation): invoked
+    // once per evicted key with (key, payload nbytes) from both the get()
+    // LRU-eviction path and the get_batch() victim loop, on the caller thread
+    // after the victim has been removed.  Rollback removals of never-ready
+    // reservations and clear() are not evictions and are not observed.
+    void set_evict_observer(
+        std::function<void(uint64_t key, std::size_t nbytes)> cb) {
+        evict_observer_ = std::move(cb);
     }
 
 private:
@@ -166,6 +227,7 @@ private:
     int fill_ctx_token_ = -1;
     int fill_ctx_layer_ = -1;
     int fill_ctx_device_ = -1;
+    std::function<void(uint64_t key, std::size_t nbytes)> evict_observer_;
 
     void stop_fill_workers();
     void fill_worker_loop();

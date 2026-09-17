@@ -117,21 +117,31 @@ bool HostPackCache::is_batch_key(
 
 const uint8_t* HostPackCache::get(
     uint64_t key, size_t nbytes,
-    const std::function<void(uint8_t* dst, size_t n)>& fill) {
+    const std::function<bool(uint8_t* dst, size_t n)>& fill) {
     if (nbytes == 0 || !fill) return nullptr;
     auto found = map_.find(key);
     if (found != map_.end()) {
+        const Entry& resident = found->second.first;
+        if (!resident.ready || resident.nbytes != nbytes) {
+            // Fail closed: never serve an unready reservation or a same-key
+            // entry whose payload size differs from this request.  Counted
+            // as a miss; a payload-size mismatch is additionally attributed.
+            ++stats_.misses;
+            if (resident.nbytes != nbytes) ++stats_.size_mismatches;
+            return nullptr;
+        }
         // Refresh LRU position; never evict the entry we are about to return.
         lru_.erase(found->second.second);
         lru_.push_front(key);
         found->second.second = lru_.begin();
         ++stats_.hits;
-        return found->second.first.bytes.data();
+        return resident.bytes.data();
     }
 
     ++stats_.misses;
     if (nbytes > budget_bytes_) {
         // Cannot ever fit; do not allocate.
+        ++stats_.budget_rejections;
         return nullptr;
     }
     while (used_bytes_ + nbytes > budget_bytes_ && !lru_.empty()) {
@@ -139,18 +149,55 @@ const uint8_t* HostPackCache::get(
         lru_.pop_back();
         auto victim = map_.find(victim_key);
         if (victim == map_.end()) continue;
-        used_bytes_ -= victim->second.first.nbytes;
+        const size_t victim_nbytes = victim->second.first.nbytes;
+        used_bytes_ -= victim_nbytes;
         map_.erase(victim);
         ++stats_.evictions;
+        if (evict_observer_) evict_observer_(victim_key, victim_nbytes);
     }
     Entry entry;
-    entry.bytes.resize(nbytes);
+    try {
+        entry.bytes.resize(nbytes);
+    } catch (...) {
+        // Allocation failure: nothing is published, the miss is already
+        // counted.  Refresh derived stats for any victims evicted above.
+        ++stats_.alloc_failures;
+        stats_.bytes = used_bytes_;
+        stats_.entries = map_.size();
+        return nullptr;
+    }
     entry.nbytes = nbytes;
-    fill(entry.bytes.data(), nbytes);
+    const auto fill_begin = std::chrono::steady_clock::now();
+    bool fill_ok = false;
+    try {
+        fill_ok = fill(entry.bytes.data(), nbytes);
+    } catch (...) {
+        fill_ok = false;
+    }
+    ++stats_.scalar_fills;
+    stats_.scalar_fill_ms += std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - fill_begin).count();
+    if (!fill_ok) {
+        // Fail closed: a fill reporting false or throwing never publishes a
+        // readable entry, so no later lookup can be served poisoned bytes.
+        ++stats_.fill_failures;
+        stats_.bytes = used_bytes_;
+        stats_.entries = map_.size();
+        return nullptr;
+    }
 
     lru_.push_front(key);
     auto inserted = map_.emplace(
         key, std::make_pair(std::move(entry), lru_.begin()));
+    if (!inserted.second) {
+        // Cannot happen for a key already screened above; fail closed and
+        // drop the duplicate LRU front rather than corrupting the index.
+        lru_.pop_front();
+        ++stats_.fill_failures;
+        stats_.bytes = used_bytes_;
+        stats_.entries = map_.size();
+        return nullptr;
+    }
     used_bytes_ += nbytes;
     stats_.bytes = used_bytes_;
     stats_.entries = map_.size();
@@ -182,7 +229,12 @@ bool HostPackCache::get_batch(
     size_t unique_misses = 0;
     for (size_t index = 0; index < count; ++index) {
         const BatchRequest& request = requests[index];
-        if (request.nbytes == 0 || request.nbytes > budget_bytes_) return false;
+        if (request.nbytes == 0) return false;
+        if (request.nbytes > budget_bytes_) {
+            // Request can never be admitted under the byte budget.
+            ++stats_.budget_rejections;
+            return false;
+        }
         size_t duplicate = index;
         for (size_t prior = 0; prior < index; ++prior) {
             if (requests[prior].key == request.key) {
@@ -197,7 +249,11 @@ bool HostPackCache::get_batch(
         }
         auto found = map_.find(request.key);
         if (found != map_.end() && found->second.first.ready) {
-            if (found->second.first.nbytes != request.nbytes) return false;
+            if (found->second.first.nbytes != request.nbytes) {
+                // Same-key different-size request: fail closed like get().
+                ++stats_.size_mismatches;
+                return false;
+            }
             lru_.erase(found->second.second);
             lru_.push_front(request.key);
             found->second.second = lru_.begin();
@@ -207,8 +263,11 @@ bool HostPackCache::get_batch(
             results[index].success = true;
             continue;
         }
-        if (!request.fill ||
-            additional_bytes > budget_bytes_ - request.nbytes) {
+        if (!request.fill) return false;
+        if (additional_bytes > budget_bytes_ - request.nbytes) {
+            // The unique misses of this batch alone exceed the byte budget;
+            // the request set can never be admitted.
+            ++stats_.budget_rejections;
             return false;
         }
         additional_bytes += request.nbytes;
@@ -227,14 +286,24 @@ bool HostPackCache::get_batch(
                 break;
             }
         }
-        if (victim == lru_.end()) return false;
+        if (victim == lru_.end()) {
+            // Every resident is a protected batch key; the request set
+            // cannot be admitted under the byte budget.  Refresh derived
+            // stats for victims already removed above before bailing.
+            ++stats_.budget_rejections;
+            stats_.bytes = used_bytes_;
+            stats_.entries = map_.size();
+            return false;
+        }
         const uint64_t victim_key = *victim;
         auto found = map_.find(victim_key);
         lru_.erase(victim);
         if (found == map_.end()) continue;
-        used_bytes_ -= found->second.first.nbytes;
+        const size_t victim_nbytes = found->second.first.nbytes;
+        used_bytes_ -= victim_nbytes;
         map_.erase(found);
         ++stats_.evictions;
+        if (evict_observer_) evict_observer_(victim_key, victim_nbytes);
     }
 
     try {
@@ -257,7 +326,22 @@ bool HostPackCache::get_batch(
                 requests[index].key,
                 std::make_pair(std::move(entry), lru_.begin()));
             if (!inserted.second) {
+                // The key was already resident (e.g. an unready reservation
+                // predating this batch).  Drop the duplicate LRU front and
+                // roll back every reservation this call already published,
+                // mirroring the bad_alloc handler, before failing closed.
                 lru_.pop_front();
+                for (size_t r = 0; r < count; ++r) {
+                    if (!results[r].fill_executed) continue;
+                    auto prior = map_.find(requests[r].key);
+                    if (prior == map_.end()) continue;
+                    used_bytes_ -= prior->second.first.nbytes;
+                    lru_.erase(prior->second.second);
+                    map_.erase(prior);
+                    results[r] = {};
+                }
+                stats_.bytes = used_bytes_;
+                stats_.entries = map_.size();
                 return false;
             }
             used_bytes_ += requests[index].nbytes;
@@ -439,6 +523,12 @@ void HostPackCache::clear() {
     stats_.fill_batch_wall_ms = 0.0;
     stats_.fill_worker_ms = 0.0;
     stats_.fill_overlap_ms = 0.0;
+    stats_.fill_failures = 0;
+    stats_.alloc_failures = 0;
+    stats_.size_mismatches = 0;
+    stats_.budget_rejections = 0;
+    stats_.scalar_fills = 0;
+    stats_.scalar_fill_ms = 0.0;
 }
 
 }  // namespace dee

@@ -13,8 +13,10 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -66,6 +68,13 @@ bool batch_fill(void* raw, uint8_t* dst, size_t n) {
     pattern_fill(dst, n, context->key);
     context->active->fetch_sub(1);
     return !context->fail;
+}
+
+// Trivially-succeeding batch fill for capacity/rejection tests.
+bool ok_fill(void* /*context*/, uint8_t* dst, size_t n) {
+    if (!dst) return false;
+    std::memset(dst, 0xC3, n);
+    return true;
 }
 
 void test_basic_hit_miss() {
@@ -299,6 +308,233 @@ void test_source_order_preserves_request_identity() {
     }
 }
 
+void test_scalar_fill_false_is_not_published() {
+    dee::HostPackCache cache;
+    cache.set_budget(1024);
+    bool succeed = false;
+    int fill_calls = 0;
+    const std::function<bool(uint8_t*, size_t)> fill =
+        [&](uint8_t* dst, size_t n) -> bool {
+            ++fill_calls;
+            if (!succeed) return false;
+            pattern_fill(dst, n, 42);
+            return true;
+        };
+    check(cache.get(42, 256, fill) == nullptr,
+          "fill returning false fails the get");
+    check(!cache.contains(42) && cache.get_if_present(42) == nullptr,
+          "failed fill publishes no readable entry");
+    check(cache.stats().misses == 1 && cache.stats().hits == 0 &&
+          cache.stats().fill_failures == 1 && cache.stats().entries == 0,
+          "failed fill counts one miss + one fill failure, no entry");
+    succeed = true;
+    const uint8_t* data = cache.get(42, 256, fill);
+    check(data != nullptr && matches_pattern(data, 256, 42),
+          "a later successful fill caches real bytes");
+    check(fill_calls == 2 && cache.stats().misses == 2 &&
+          cache.stats().entries == 1,
+          "recovery re-runs the fill instead of serving a poisoned hit");
+    check(cache.get(42, 256, fill) == data && fill_calls == 2,
+          "post-recovery hit serves the recovered bytes");
+}
+
+void test_scalar_fill_throw_is_not_published() {
+    dee::HostPackCache cache;
+    cache.set_budget(1024);
+    bool should_throw = true;
+    const std::function<bool(uint8_t*, size_t)> fill =
+        [&](uint8_t* dst, size_t n) -> bool {
+            if (should_throw) throw std::runtime_error("fill boom");
+            pattern_fill(dst, n, 7);
+            return true;
+        };
+    check(cache.get(7, 128, fill) == nullptr,
+          "throwing fill fails the get");
+    check(!cache.contains(7), "throwing fill publishes nothing");
+    check(cache.stats().fill_failures == 1 && cache.stats().misses == 1,
+          "throw counted as fill failure + miss");
+    should_throw = false;
+    check(cache.get(7, 128, fill) != nullptr && cache.contains(7),
+          "post-throw fill caches normally");
+    // The legacy void-fill delegate must contain throws the same way.
+    check(cache.get(8, 128, [](uint8_t*, size_t) {
+              throw std::runtime_error("void fill boom");
+          }) == nullptr,
+          "void-fill delegate converts a throw into fail-closed nullptr");
+    check(!cache.contains(8) && cache.stats().fill_failures == 2,
+          "void-fill throw publishes nothing and counts a failure");
+}
+
+void test_same_key_size_mismatch_fails_closed() {
+    dee::HostPackCache cache;
+    cache.set_budget(1024);
+    const std::function<bool(uint8_t*, size_t)> fill =
+        [](uint8_t* dst, size_t n) -> bool {
+            pattern_fill(dst, n, 5);
+            return true;
+        };
+    const uint8_t* data = cache.get(5, 128, fill);
+    check(data != nullptr, "resident insert at 128 bytes");
+    check(cache.get(5, 256, fill) == nullptr,
+          "same-key different-size bool fill returns nullptr");
+    check(cache.get(5, 512, [](uint8_t*, size_t) {}) == nullptr,
+          "same-key different-size void fill returns nullptr");
+    check(cache.stats().size_mismatches == 2 &&
+          cache.stats().misses == 3 && cache.stats().hits == 0,
+          "mismatches counted as misses plus size_mismatches");
+    const uint8_t* again = cache.get(5, 128, fill);
+    check(again == data && matches_pattern(again, 128, 5),
+          "original entry still served intact at its own size");
+    check(cache.stats().hits == 1, "matching-size hit still counted");
+    // get_batch fails the same request closed as well.
+    dee::HostPackCache::BatchRequest request{5, 64, &ok_fill, nullptr};
+    dee::HostPackCache::BatchResult result;
+    check(!cache.get_batch(&request, 1, &result),
+          "batch same-key different-size rejected");
+    check(cache.stats().size_mismatches == 3, "batch mismatch counted");
+    check(cache.get_if_present(5) == data,
+          "mismatched batch leaves resident entry intact");
+}
+
+void test_budget_rejection_counters() {
+    dee::HostPackCache cache;
+    cache.set_budget(128);
+    check(cache.get(1, 256, [](uint8_t*, size_t) {}) == nullptr,
+          "oversize get rejected");
+    check(cache.stats().budget_rejections == 1 &&
+          cache.stats().misses == 1 && cache.stats().entries == 0,
+          "oversize get counted once as miss + budget rejection");
+    // Batch-level oversize reject.
+    dee::HostPackCache::BatchRequest big{2, 256, &ok_fill, nullptr};
+    dee::HostPackCache::BatchResult big_result;
+    check(!cache.get_batch(&big, 1, &big_result),
+          "oversize batch request rejected");
+    check(cache.stats().budget_rejections == 2,
+          "batch oversize request counted as budget rejection");
+    // Batch capacity reject: individually-legal misses that together exceed
+    // the budget.
+    dee::HostPackCache::BatchRequest pair[2] = {
+        {3, 96, &ok_fill, nullptr},
+        {4, 96, &ok_fill, nullptr},
+    };
+    dee::HostPackCache::BatchResult pair_results[2];
+    check(!cache.get_batch(pair, 2, pair_results),
+          "batch whose unique misses exceed budget is rejected");
+    check(cache.stats().budget_rejections == 3 &&
+          cache.stats().entries == 0,
+          "batch capacity reject counted, nothing published");
+}
+
+void test_evict_observer_reports_victims() {
+    dee::HostPackCache cache;
+    cache.set_budget(512);  // two 256-byte entries
+    std::vector<std::pair<uint64_t, size_t>> evicted;
+    cache.set_evict_observer(
+        [&](uint64_t key, size_t nbytes) {
+            evicted.emplace_back(key, nbytes);
+        });
+    auto put = [&](uint64_t key) {
+        return cache.get(key, 256, [key](uint8_t* dst, size_t n) {
+            pattern_fill(dst, n, key);
+        });
+    };
+    check(put(1) != nullptr && put(2) != nullptr, "two residents fit");
+    check(evicted.empty(), "no eviction before overflow");
+    check(put(3) != nullptr, "overflow insert succeeds");
+    check(evicted.size() == 1 && evicted[0].first == 1 &&
+          evicted[0].second == 256,
+          "observer reports the exact LRU victim key and size");
+    check(put(4) != nullptr, "second overflow insert succeeds");
+    check(evicted.size() == 2 && evicted[1].first == 2 &&
+          evicted[1].second == 256,
+          "observer reports the second victim");
+    // The batch victim loop observes evictions identically.
+    dee::HostPackCache::BatchRequest request{9, 256, &ok_fill, nullptr};
+    dee::HostPackCache::BatchResult result;
+    check(cache.get_batch(&request, 1, &result),
+          "batch insert over a full cache succeeds");
+    check(evicted.size() == 3 && evicted[2].first == 3 &&
+          evicted[2].second == 256,
+          "batch-path victim observed with key and size");
+    check(cache.stats().evictions == 3,
+          "observer calls match the eviction counter exactly");
+    const size_t observed_before_clear = evicted.size();
+    cache.clear();
+    check(evicted.size() == observed_before_clear,
+          "clear() is not reported as eviction");
+}
+
+void test_scalar_fill_instrumentation() {
+    dee::HostPackCache cache;
+    cache.set_budget(1024);
+    check(cache.stats().scalar_fills == 0 &&
+          cache.stats().scalar_fill_ms == 0.0,
+          "scalar fill counters start at zero");
+    cache.get(1, 128, [](uint8_t* dst, size_t n) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        std::memset(dst, 0x5A, n);
+    });
+    check(cache.stats().scalar_fills == 1 &&
+          cache.stats().scalar_fill_ms > 0.0,
+          "single-lane miss counts the fill and its wall time");
+    cache.get(1, 128, [](uint8_t*, size_t) {});
+    check(cache.stats().scalar_fills == 1,
+          "hits do not count as scalar fills");
+    const std::function<bool(uint8_t*, size_t)> bad =
+        [](uint8_t*, size_t) -> bool { return false; };
+    cache.get(2, 128, bad);
+    check(cache.stats().scalar_fills == 2 &&
+          cache.stats().fill_failures == 1,
+          "failed scalar fills are still instrumented");
+    // Batch fills keep their own counters; they must not alias scalar ones.
+    dee::HostPackCache::BatchRequest request{3, 128, &ok_fill, nullptr};
+    dee::HostPackCache::BatchResult result;
+    check(cache.get_batch(&request, 1, &result),
+          "batch fill succeeds alongside scalar stats");
+    check(cache.stats().scalar_fills == 2 &&
+          cache.stats().fill_requests == 1,
+          "batch fills stay out of the scalar counters");
+}
+
+void test_batch_allprotected_stats_coherence() {
+    dee::HostPackCache cache;
+    cache.set_budget(768);  // three 256-byte entries
+    auto put = [&](uint64_t key) {
+        return cache.get(key, 256, [key](uint8_t* dst, size_t n) {
+            pattern_fill(dst, n, key);
+        });
+    };
+    check(put(1) != nullptr && put(2) != nullptr && put(3) != nullptr,
+          "cache filled to budget");
+    check(cache.stats().entries == 3 && cache.stats().bytes == 768,
+          "pre-batch accounting exact");
+    // Keys 1 and 2 hit (and become protected batch keys); keys 4 and 5 are
+    // misses needing 512 bytes.  Evicting 3 frees only 256, then every
+    // remaining resident is protected -> the batch must fail closed while
+    // stats still reflect the one real eviction.
+    dee::HostPackCache::BatchRequest requests[4] = {
+        {1, 256, &ok_fill, nullptr},
+        {2, 256, &ok_fill, nullptr},
+        {4, 256, &ok_fill, nullptr},
+        {5, 256, &ok_fill, nullptr},
+    };
+    dee::HostPackCache::BatchResult results[4];
+    check(!cache.get_batch(requests, 4, results),
+          "all-protected victim set fails the batch closed");
+    check(cache.stats().evictions == 1 &&
+          cache.stats().bytes == 512 && cache.stats().entries == 2,
+          "stats reflect the partial eviction on early return");
+    check(cache.contains(1) && cache.contains(2) && !cache.contains(3) &&
+          !cache.contains(4) && !cache.contains(5),
+          "map contents match the reported stats exactly");
+    check(cache.stats().budget_rejections == 1,
+          "all-protected reject counted as budget rejection");
+    // The cache keeps serving coherently afterwards.
+    check(put(6) != nullptr && cache.stats().entries == 3 &&
+          cache.stats().bytes == 768,
+          "post-reject inserts behave normally");
+}
+
 }  // namespace
 
 int main() {
@@ -309,6 +545,13 @@ int main() {
     test_bounded_batch_fill_and_rollback();
     test_batch_duplicate_is_single_materialization();
     test_source_order_preserves_request_identity();
+    test_scalar_fill_false_is_not_published();
+    test_scalar_fill_throw_is_not_published();
+    test_same_key_size_mismatch_fails_closed();
+    test_budget_rejection_counters();
+    test_evict_observer_reports_victims();
+    test_scalar_fill_instrumentation();
+    test_batch_allprotected_stats_coherence();
     if (g_failures == 0) {
         std::printf("ALL PASS\n");
         return 0;
