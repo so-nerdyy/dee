@@ -284,6 +284,10 @@ def arm_env(arm):
         "NATIVE_SOURCE_READ_QUEUE_DEPTH": str(arm["queue_depth"]),
         "NATIVE_CACHE_RESET": arm["cache_reset"],
         "NATIVE_TRACE_REQUESTS": arm["trace_requests"],
+        # Fixed-length workload: no eos early-stop, so every prompt yields
+        # exactly n_tokens decode steps (acceptance gate is n_tokens==128;
+        # identical across arms so exactness comparison is unaffected).
+        "NATIVE_IGNORE_EOS": "1",
         # trace_requests needs profile_stages; the runner would auto-enable
         # it loudly anyway, but set it explicitly so the resolved manifest
         # shows intent rather than fallback.

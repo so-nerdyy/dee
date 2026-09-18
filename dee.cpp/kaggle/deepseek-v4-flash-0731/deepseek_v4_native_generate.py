@@ -170,6 +170,13 @@ ARM_ID = os.environ.get("NATIVE_ARM_ID", "").strip()
 # reset ExpertStore counters before EVERY prompt.  The OS page cache is
 # never cleared either way (logged loudly at each cold reset).
 CACHE_RESET = os.environ.get("NATIVE_CACHE_RESET", "warm").strip().lower()
+# IGNORE_EOS: "1" disables generate()'s eos early-stop so every prompt
+# produces exactly N_TOKENS decode steps -- the campaign's fixed-length
+# workload semantics (uniform 128-forward streams make wall/ITL and the
+# driver's n_tokens acceptance gate comparable across arms/prompts).
+# Exactness is unaffected: tokens remain the deterministic greedy output;
+# only the stopping rule changes.  Default "0" = natural stop (legacy).
+IGNORE_EOS = os.environ.get("NATIVE_IGNORE_EOS", "0") == "1"
 # v15: return to v8-PROVEN storage behavior.  v13's discard_source_pages
 # (posix_fadvise + MADV_DONTNEED on the shared mmap after every pack fill)
 # re-introduced the v10 behavior that v12 measured as OOM + re-fault
@@ -199,7 +206,7 @@ def apply_run_config() -> None:
     global PROFILE_STAGES, RUN_ID, DEE4_TRACE_PATH
     global SOURCE_READ_LANES, SOURCE_READ_QUEUE_DEPTH
     global TRACE_REQUESTS, EVICTION_POLICY, HOST_CACHE_MODE
-    global ARM_ID, CACHE_RESET
+    global ARM_ID, CACHE_RESET, IGNORE_EOS
     cfg_path = DEE / "kaggle/deepseek-v4-flash-0731/run_config.json"
     if not cfg_path.is_file():
         log(f"[config] run_config.json not found at {cfg_path}; using defaults")
@@ -241,6 +248,8 @@ def apply_run_config() -> None:
         ARM_ID = str(cfg.get("arm_id", ARM_ID)).strip()
     if not os.environ.get("NATIVE_CACHE_RESET"):
         CACHE_RESET = str(cfg.get("cache_reset", CACHE_RESET)).strip().lower()
+    if not os.environ.get("NATIVE_IGNORE_EOS"):
+        IGNORE_EOS = bool(cfg.get("ignore_eos", IGNORE_EOS))
     if CACHE_DTYPE not in {"fp16", "fp4"}:
         raise ValueError(f"unsupported cache_dtype: {CACHE_DTYPE!r}")
     if EXPERT_STORE_BACKEND not in {"safetensors", "dee4", "dee4_trace",
@@ -272,7 +281,8 @@ def apply_run_config() -> None:
         f"trace_requests={TRACE_REQUESTS} "
         f"eviction_policy={EVICTION_POLICY} "
         f"host_cache_mode={HOST_CACHE_MODE} "
-        f"cache_reset={CACHE_RESET}"
+        f"cache_reset={CACHE_RESET} "
+        f"ignore_eos={IGNORE_EOS}"
     )
 # P2.4 (2026-08-23): the dual-T4 pool has been exhausted for ~12 consecutive
 # launches (Kaggle hands out 1x P100 instead).  SINGLE_GPU runs the full
@@ -1109,6 +1119,7 @@ def main() -> int:
         "host_cache_mode": HOST_CACHE_MODE,
         "cache_reset": CACHE_RESET,
         "trace_requests": TRACE_REQUESTS,
+        "ignore_eos": IGNORE_EOS,
         "source_read_lanes": SOURCE_READ_LANES,
         "source_read_queue_depth": SOURCE_READ_QUEUE_DEPTH,
         "force_tmp": FORCE_TMP,
@@ -1540,6 +1551,7 @@ def main() -> int:
         ("host_cache_mode", HOST_CACHE_MODE),
         ("cache_reset", CACHE_RESET),
         ("trace_requests", TRACE_REQUESTS),
+        ("ignore_eos", IGNORE_EOS),
         ("profile_stages", PROFILE_STAGES),
         ("diagnostics", DIAGNOSTICS),
         ("use_batched_experts", USE_BATCHED_EXPERTS),
@@ -1779,6 +1791,7 @@ def main() -> int:
                 "host_cache_mode": HOST_CACHE_MODE,
                 "cache_reset": CACHE_RESET,
                 "trace_requests": TRACE_REQUESTS,
+                "ignore_eos": IGNORE_EOS,
                 "profile_stages": PROFILE_STAGES,
                 "diagnostics": DIAGNOSTICS,
                 "use_batched_experts": USE_BATCHED_EXPERTS,
@@ -1898,6 +1911,7 @@ def main() -> int:
         try:
             toks = model.generate(
                 input_ids, max_new_tokens=N_TOKENS,
+                eos_id=(-1 if IGNORE_EOS else 1),
                 decode_timings_ms=decode_ms,
                 post_step_hook=_token_checkpoint,
                 post_layer_hook=_route_checkpoint)
@@ -1963,6 +1977,7 @@ def main() -> int:
             "host_cache_mode": HOST_CACHE_MODE,
             "cache_reset": CACHE_RESET,
             "trace_requests": TRACE_REQUESTS,
+            "ignore_eos": IGNORE_EOS,
         }
 
         # Stage 0 instrumentation: per-engine expert-cache + host-pack + stage

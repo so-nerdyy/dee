@@ -14,5 +14,6 @@
   "eviction_policy": "rank_priority",
   "host_cache_mode": "lru",
   "cache_reset": "warm",
-  "trace_requests": false
+  "trace_requests": false,
+  "ignore_eos": false
 }
