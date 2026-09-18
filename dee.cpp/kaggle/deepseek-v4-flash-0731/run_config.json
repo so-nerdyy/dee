@@ -8,5 +8,11 @@
   "profile_stages": true,
   "n_tokens": 16,
   "source_read_lanes": 3,
-  "source_read_queue_depth": 6
+  "source_read_queue_depth": 6,
+  "_comment_phase4": "Phase-4 arm-matrix knobs (applied only when the matching NATIVE_* env var is absent; env always wins). arm_id is metadata only -- run_id stays constant across arms so route journals hash-compare. trace_requests requires profile_stages (auto-enabled loudly if NATIVE_PROFILE is unset). host_cache_mode=bypass clamps the host pack to one record + lanes=1. cache_reset: warm|cold.",
+  "arm_id": "",
+  "eviction_policy": "rank_priority",
+  "host_cache_mode": "lru",
+  "cache_reset": "warm",
+  "trace_requests": false
 }

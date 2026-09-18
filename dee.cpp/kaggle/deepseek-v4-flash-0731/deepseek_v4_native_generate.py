@@ -137,6 +137,39 @@ USE_BATCHED_EXPERTS = os.environ.get("NATIVE_BATCHED", "0") == "1"
 # timing-event allocation. Run a separate diagnostic pass with both enabled.
 PROFILE_STAGES = os.environ.get("NATIVE_PROFILE", "0") == "1"
 DIAGNOSTICS = os.environ.get("NATIVE_DIAGNOSTICS", "0") == "1"
+# ── Phase-4 arm-matrix knobs (kickoff §8, Wave-B B2) ─────────────────────
+# TRACE_REQUESTS -> EngineConfig.trace_requests: emit one RequestTraceRecord
+# per expert request (token/layer/kind/occupancy/evicted/reuse_distance).
+# The records serialize into external_profile_json["trace"], which the
+# runner also mirrors into a durable cache_events{suffix}.jsonl sink.
+# Requires profile_stages; if NATIVE_PROFILE is not "1" the runner
+# auto-enables it with a loud log (see main()).
+TRACE_REQUESTS = os.environ.get("NATIVE_TRACE_REQUESTS", "0") == "1"
+# EVICTION_POLICY -> EngineConfig.eviction_policy ("lru"|"rank_priority").
+# The pydee binding is being added by a parallel workstream;
+# build_native_engine applies it via hasattr-fallback so this harness is
+# correct under both old and new binaries.  "rank_priority" is the legacy
+# Phase-3 behavior (descending expert-ID priority), kept for A/B.
+EVICTION_POLICY = os.environ.get(
+    "NATIVE_EVICTION_POLICY", "rank_priority").strip().lower()
+# HOST_CACHE_MODE -> EngineConfig.host_cache_mode ("lru"|"bypass").
+# "bypass" = pack budget clamped to exactly one packed record (a bounce
+# buffer that avoids both caching and the FUSE mmap-fallback death path)
+# with source read lanes forced to 1 -- enforced below so the contract
+# holds even when the engine binding is absent.
+HOST_CACHE_MODE = os.environ.get(
+    "NATIVE_HOST_CACHE_MODE", "lru").strip().lower()
+# ARM_ID: run-metadata only.  NEVER folded into RUN_ID: run_id is inside
+# the route-journal canonical hash payload, so it must stay constant
+# across arms for journals to hash-compare.
+ARM_ID = os.environ.get("NATIVE_ARM_ID", "").strip()
+# CACHE_RESET: "warm" (default) = today's behavior: only the external
+# profile (measurement counters + trace) resets at each prompt boundary;
+# VRAM arena / host pack / store stats persist across prompts.  "cold" =
+# additionally evict the VRAM arena + host pack + fp4 staging metadata and
+# reset ExpertStore counters before EVERY prompt.  The OS page cache is
+# never cleared either way (logged loudly at each cold reset).
+CACHE_RESET = os.environ.get("NATIVE_CACHE_RESET", "warm").strip().lower()
 # v15: return to v8-PROVEN storage behavior.  v13's discard_source_pages
 # (posix_fadvise + MADV_DONTNEED on the shared mmap after every pack fill)
 # re-introduced the v10 behavior that v12 measured as OOM + re-fault
@@ -165,6 +198,8 @@ def apply_run_config() -> None:
     global CACHE_DTYPE, N_TOKENS, EXPERT_STORE_BACKEND, DEE4_VALIDATE_SAMPLES
     global PROFILE_STAGES, RUN_ID, DEE4_TRACE_PATH
     global SOURCE_READ_LANES, SOURCE_READ_QUEUE_DEPTH
+    global TRACE_REQUESTS, EVICTION_POLICY, HOST_CACHE_MODE
+    global ARM_ID, CACHE_RESET
     cfg_path = DEE / "kaggle/deepseek-v4-flash-0731/run_config.json"
     if not cfg_path.is_file():
         log(f"[config] run_config.json not found at {cfg_path}; using defaults")
@@ -192,6 +227,20 @@ def apply_run_config() -> None:
     if not os.environ.get("NATIVE_SOURCE_READ_QUEUE_DEPTH"):
         SOURCE_READ_QUEUE_DEPTH = int(
             cfg.get("source_read_queue_depth", SOURCE_READ_QUEUE_DEPTH))
+    # Phase-4 knobs follow the same contract: committed values apply only
+    # when the env var is absent (env always wins when set).
+    if not os.environ.get("NATIVE_TRACE_REQUESTS"):
+        TRACE_REQUESTS = bool(cfg.get("trace_requests", TRACE_REQUESTS))
+    if not os.environ.get("NATIVE_EVICTION_POLICY"):
+        EVICTION_POLICY = str(
+            cfg.get("eviction_policy", EVICTION_POLICY)).strip().lower()
+    if not os.environ.get("NATIVE_HOST_CACHE_MODE"):
+        HOST_CACHE_MODE = str(
+            cfg.get("host_cache_mode", HOST_CACHE_MODE)).strip().lower()
+    if not os.environ.get("NATIVE_ARM_ID"):
+        ARM_ID = str(cfg.get("arm_id", ARM_ID)).strip()
+    if not os.environ.get("NATIVE_CACHE_RESET"):
+        CACHE_RESET = str(cfg.get("cache_reset", CACHE_RESET)).strip().lower()
     if CACHE_DTYPE not in {"fp16", "fp4"}:
         raise ValueError(f"unsupported cache_dtype: {CACHE_DTYPE!r}")
     if EXPERT_STORE_BACKEND not in {"safetensors", "dee4", "dee4_trace",
@@ -204,15 +253,26 @@ def apply_run_config() -> None:
         raise ValueError("source_read_lanes must be in [1, 8]")
     if not 1 <= SOURCE_READ_QUEUE_DEPTH <= 256:
         raise ValueError("source_read_queue_depth must be in [1, 256]")
+    if EVICTION_POLICY not in {"lru", "rank_priority"}:
+        raise ValueError(f"unsupported eviction_policy: {EVICTION_POLICY!r}")
+    if HOST_CACHE_MODE not in {"lru", "bypass"}:
+        raise ValueError(f"unsupported host_cache_mode: {HOST_CACHE_MODE!r}")
+    if CACHE_RESET not in {"warm", "cold"}:
+        raise ValueError(f"unsupported cache_reset: {CACHE_RESET!r}")
     log(
         "[config] run_config.json: "
-        f"run_id={RUN_ID} cache_dtype={CACHE_DTYPE} n_tokens={N_TOKENS} "
+        f"run_id={RUN_ID} arm_id={ARM_ID or 'none'} "
+        f"cache_dtype={CACHE_DTYPE} n_tokens={N_TOKENS} "
         f"expert_store={EXPERT_STORE_BACKEND} "
         f"dee4_trace_path={DEE4_TRACE_PATH} "
         f"dee4_validate_samples={DEE4_VALIDATE_SAMPLES} "
         f"source_read_lanes={SOURCE_READ_LANES} "
         f"source_read_queue_depth={SOURCE_READ_QUEUE_DEPTH} "
-        f"profile_stages={PROFILE_STAGES}"
+        f"profile_stages={PROFILE_STAGES} "
+        f"trace_requests={TRACE_REQUESTS} "
+        f"eviction_policy={EVICTION_POLICY} "
+        f"host_cache_mode={HOST_CACHE_MODE} "
+        f"cache_reset={CACHE_RESET}"
     )
 # P2.4 (2026-08-23): the dual-T4 pool has been exhausted for ~12 consecutive
 # launches (Kaggle hands out 1x P100 instead).  SINGLE_GPU runs the full
@@ -947,7 +1007,7 @@ def _ntfy(msg: str) -> None:
 
 
 def main() -> int:
-    global FORCE_TMP
+    global FORCE_TMP, PROFILE_STAGES, SOURCE_READ_LANES
     gpu_environment = check_gpu_allocation()
     res = log_host_resources("startup")
     tmp_free = res.get("/tmp", {}).get("free_gb", 0)
@@ -968,6 +1028,16 @@ def main() -> int:
         ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
     log(f"pinned commit {head}")
     apply_run_config()
+    # trace_requests serialization lives inside the stage profiler, so the
+    # request trace requires profile_stages.  Per the Phase-4 contract we
+    # auto-enable it (loudly) rather than fail: the arm wants the event
+    # stream, and a silent no-trace run would be worse than measured
+    # overhead.  The driver also sets NATIVE_PROFILE=1 explicitly.
+    if TRACE_REQUESTS and not PROFILE_STAGES:
+        PROFILE_STAGES = True
+        log("[p4] NATIVE_TRACE_REQUESTS=1 requires profile_stages but "
+            "NATIVE_PROFILE was not '1': auto-enabled PROFILE_STAGES "
+            "(stage profiling is now inside the measured wall)")
 
     # Storage geometry is backend-specific. Safetensors execution may stage
     # the full 153-GiB checkpoint into /tmp only with very large headroom.
@@ -1023,6 +1093,7 @@ def main() -> int:
     run_config_payload = {
         "recorded_at_utc": launch_utc,
         "run_id": RUN_ID,
+        "arm_id": ARM_ID or None,
         "cache_dtype": CACHE_DTYPE,
         "expert_store": EXPERT_STORE_BACKEND,
         "dee4_trace_path": str(DEE4_TRACE_PATH),
@@ -1034,6 +1105,12 @@ def main() -> int:
         "host_pack_requested_bytes": [
             HOST_PACK_CACHE_BYTES_GPU0, HOST_PACK_CACHE_BYTES_GPU1],
         "host_pack_runtime_cap_gib_total": 17.0,
+        "eviction_policy": EVICTION_POLICY,
+        "host_cache_mode": HOST_CACHE_MODE,
+        "cache_reset": CACHE_RESET,
+        "trace_requests": TRACE_REQUESTS,
+        "source_read_lanes": SOURCE_READ_LANES,
+        "source_read_queue_depth": SOURCE_READ_QUEUE_DEPTH,
         "force_tmp": FORCE_TMP,
         "source_path": str(source_run_config),
         "source_sha256": sha256_file(source_run_config),
@@ -1432,6 +1509,54 @@ def main() -> int:
             pack_budget1 = max(0, int(total_cap * (1.0 - share0)))
         pack_budget0 = min(pack_budget0, HOST_PACK_CACHE_BYTES_GPU0)
         pack_budget1 = min(pack_budget1, HOST_PACK_CACHE_BYTES_GPU1)
+    # host_cache_mode=bypass (kickoff §7): the pack degenerates to a
+    # one-record bounce buffer with source lanes forced to 1 -- an honest
+    # "host cache off" arm that still avoids the FUSE mmap-fallback path.
+    # Enforced harness-side (after the RAM clamp so it wins) because older
+    # pydee binaries lack the EngineConfig.host_cache_mode binding;
+    # build_native_engine re-enforces it at cfg assembly as well.
+    P4_ONE_RECORD_BYTES = 13_369_344  # one packed dee4 expert record
+    if HOST_CACHE_MODE == "bypass":
+        if pack_budget0 > P4_ONE_RECORD_BYTES \
+                or pack_budget1 > P4_ONE_RECORD_BYTES:
+            log(f"[p4] host_cache_mode=bypass: clamping host pack budgets "
+                f"{pack_budget0}/{pack_budget1} -> {P4_ONE_RECORD_BYTES} "
+                f"(exactly one record; bounce buffer, no caching)")
+            pack_budget0 = min(pack_budget0, P4_ONE_RECORD_BYTES)
+            pack_budget1 = min(pack_budget1, P4_ONE_RECORD_BYTES)
+        if SOURCE_READ_LANES != 1:
+            log(f"[p4] host_cache_mode=bypass: forcing source_read_lanes "
+                f"{SOURCE_READ_LANES} -> 1 (bounce-buffer contract)")
+            SOURCE_READ_LANES = 1
+    # Loud resolved-knob printout (one line per knob) so a watcher can
+    # attribute any later behavior to the exact armed configuration.
+    log("=== Phase-4 resolved knobs ===")
+    for _knob, _value in (
+        ("run_id", RUN_ID),
+        ("arm_id", ARM_ID or "none"),
+        ("cache_dtype", CACHE_DTYPE),
+        ("expert_store", EXPERT_STORE_BACKEND),
+        ("eviction_policy", EVICTION_POLICY),
+        ("host_cache_mode", HOST_CACHE_MODE),
+        ("cache_reset", CACHE_RESET),
+        ("trace_requests", TRACE_REQUESTS),
+        ("profile_stages", PROFILE_STAGES),
+        ("diagnostics", DIAGNOSTICS),
+        ("use_batched_experts", USE_BATCHED_EXPERTS),
+        ("n_tokens", N_TOKENS),
+        ("budget_bytes_per_gpu", BUDGET_BYTES),
+        ("host_pack_bytes_gpu0_requested", HOST_PACK_CACHE_BYTES_GPU0),
+        ("host_pack_bytes_gpu1_requested", HOST_PACK_CACHE_BYTES_GPU1),
+        ("host_pack_bytes_gpu0_effective", pack_budget0),
+        ("host_pack_bytes_gpu1_effective", pack_budget1),
+        ("source_read_lanes", SOURCE_READ_LANES),
+        ("source_read_queue_depth", SOURCE_READ_QUEUE_DEPTH),
+        ("single_gpu", SINGLE_GPU),
+        ("force_tmp", FORCE_TMP),
+        ("mem_avail_gib", round(mem_avail, 2)),
+        ("mem_total_gib", round(mem_total, 2)),
+    ):
+        log(f"[p4cfg] {_knob} = {_value}")
     log(f"budget={BUDGET_BYTES/2**30:.2f}GiB/GPU host_pack="
         f"{pack_budget0/2**30:.2f}/{pack_budget1/2**30:.2f}GiB "
         f"batched={USE_BATCHED_EXPERTS} profile={PROFILE_STAGES} "
@@ -1456,7 +1581,10 @@ def main() -> int:
             cache_dtype=CACHE_DTYPE,
             source_read_lanes=SOURCE_READ_LANES,
             source_read_queue_depth=SOURCE_READ_QUEUE_DEPTH,
-            expert_store_path=dee4_store_path)
+            expert_store_path=dee4_store_path,
+            trace_requests=TRACE_REQUESTS,
+            eviction_policy=EVICTION_POLICY,
+            host_cache_mode=HOST_CACHE_MODE)
         eng1 = eng0
         log(f"engines built SINGLE_GPU budget={single_budget/2**30:.2f}GiB "
             f"host_pack={single_pack/2**30:.2f}GiB cache_dtype={CACHE_DTYPE}")
@@ -1469,7 +1597,10 @@ def main() -> int:
             cache_dtype=CACHE_DTYPE,
             source_read_lanes=SOURCE_READ_LANES,
             source_read_queue_depth=SOURCE_READ_QUEUE_DEPTH,
-            expert_store_path=dee4_store_path)
+            expert_store_path=dee4_store_path,
+            trace_requests=TRACE_REQUESTS,
+            eviction_policy=EVICTION_POLICY,
+            host_cache_mode=HOST_CACHE_MODE)
         eng1 = vm.build_native_engine(
             shard_paths, device_id=1, budget_bytes=BUDGET_BYTES,
             host_pack_cache_bytes=pack_budget1,
@@ -1478,7 +1609,10 @@ def main() -> int:
             cache_dtype=CACHE_DTYPE,
             source_read_lanes=SOURCE_READ_LANES,
             source_read_queue_depth=SOURCE_READ_QUEUE_DEPTH,
-            expert_store_path=dee4_store_path)
+            expert_store_path=dee4_store_path,
+            trace_requests=TRACE_REQUESTS,
+            eviction_policy=EVICTION_POLICY,
+            host_cache_mode=HOST_CACHE_MODE)
         log(f"engines built (cache_dtype={CACHE_DTYPE})")
 
     log("=== build full model (native FFN) ===")
@@ -1531,6 +1665,42 @@ def main() -> int:
         ids = tokenizer.encode(prompt_text)
         input_ids = torch.tensor([ids], device="cuda:0").long()
         decode_ms: list[float] = []
+        _p4_engines = (
+            (("cuda0", eng0),) if SINGLE_GPU
+            else (("cuda0", eng0), ("cuda1", eng1))
+        )
+        # NATIVE_CACHE_RESET=cold: per-prompt cold start.  In addition to the
+        # measurement reset below, evict the VRAM arena + host pack + fp4
+        # staging metadata and re-zero the ExpertStore counters.  The pinned
+        # bindings (clear_host_cache/reset_store_stats) are being added by a
+        # parallel workstream -> getattr fallback + loud log under old bins.
+        # Runs for EVERY prompt (including q0) so the semantics are uniform.
+        # NOTE: the OS page cache is NOT cleared -- evicted segment pages may
+        # still re-fault quickly on local-disk profiles (moot on the Kaggle
+        # FUSE mount, which shows ~0.2% mincore residency).
+        if CACHE_RESET == "cold":
+            for _ck, _ce in _p4_engines:
+                if not _ce.reset_runtime_cache():
+                    raise RuntimeError(
+                        f"{_ck} reset_runtime_cache failed (cold reset): "
+                        f"{_ce.last_error_message() or 'no native diagnostic'}")
+                _clear_host = getattr(_ce, "clear_host_cache", None)
+                if _clear_host is None:
+                    log(f"[p4] {_ck}: pydee binary lacks "
+                        "clear_host_cache(); host pack + fp4 staging "
+                        "metadata NOT cleared (old binary)")
+                else:
+                    _clear_host()
+                _reset_store = getattr(_ce, "reset_store_stats", None)
+                if _reset_store is None:
+                    log(f"[p4] {_ck}: pydee binary lacks "
+                        "reset_store_stats(); ExpertStore counters stay "
+                        "process-cumulative (old binary)")
+                else:
+                    _reset_store()
+            log(f"[p4] NATIVE_CACHE_RESET=cold: VRAM arena + host pack + "
+                f"fp4 staging + store stats reset before prompt {qi}; "
+                f"OS page cache NOT cleared")
         if not eng0.reset_external_profile():
             raise RuntimeError(
                 "cuda0 external-profile reset failed before measured generation: "
@@ -1541,6 +1711,100 @@ def main() -> int:
                 "cuda1 external-profile reset failed before measured generation: "
                 f"{eng1.last_error_message() or 'no native diagnostic'}"
             )
+        # Prompt-scoped counter baseline.  host_pack_stats() /
+        # expert_store_stats() return PROCESS-CUMULATIVE counters that no
+        # reset touches, while previous_totals re-zeros per prompt -- so
+        # without a baseline the first checkpoint row of every prompt
+        # re-attributes all prior prompts' counters to step 0.  Snapshot
+        # AFTER the resets: reset_external_profile() already zeroes the
+        # prefetcher/cache stats feeding engine_stats (so those baselines
+        # come out 0, matching the reset semantics), and the cold-reset
+        # above has already cleared the pack/store counters when armed.
+        prompt_start_counters = {"host_pack": {}, "expert_store": {},
+                                 "engine_stats": {}}
+        try:
+            # Key set mirrors the result sections ("cuda0","cuda1" always;
+            # eng1 aliases eng0 in single-GPU mode so its delta computes
+            # identically rather than falling back to zero-baseline).
+            for _ck, _ce in (("cuda0", eng0), ("cuda1", eng1)):
+                prompt_start_counters["host_pack"][_ck] = dict(
+                    _ce.host_pack_stats())
+                prompt_start_counters["expert_store"][_ck] = dict(
+                    _ce.expert_store_stats())
+                prompt_start_counters["engine_stats"][_ck] = json.loads(
+                    _ce.last_stats_json())
+        except Exception as _snap_exc:
+            log(f"[p4] prompt-start counter snapshot failed: {_snap_exc!r}")
+        # Token attribution (kickoff §6.3): RequestTraceRecord.token is
+        # stamped from Engine.current_token_ at request-emission time, so
+        # the value must be armed BEFORE each forward's layer loop.  It is
+        # sticky and reset_external_profile() sets it back to -1, so we
+        # re-arm it here (prefill = journal forward_step 0) and advance it
+        # inside _token_checkpoint (which runs after each forward) so the
+        # NEXT forward's records carry its own step (decode = 1..N-1,
+        # matching the route journal's forward_step).
+        def _set_forward_token(step: int) -> None:
+            for _ck, _ce in _p4_engines:
+                try:
+                    _ce.set_external_token(int(step))
+                except Exception as _tok_exc:
+                    log(f"[p4] {_ck} set_external_token({step}) failed: "
+                        f"{_tok_exc!r}")
+        _set_forward_token(0)
+        # arm_config{suffix}.json: the fully RESOLVED effective config for
+        # this arm+prompt (kickoff §8).  Written BEFORE generation so it
+        # survives a mid-run kill, then integrity-hashed with the other
+        # artifacts.  arm_id is metadata only -- run_id stays constant
+        # across arms so route journals hash-compare.
+        _engine_rc = {}
+        try:
+            _engine_rc = {
+                _ck: _ce.runtime_config() for _ck, _ce in _p4_engines}
+        except Exception as _rc_exc:
+            log(f"[p4] engine runtime_config snapshot failed: {_rc_exc!r}")
+        arm_config_payload = {
+            "recorded_at_utc": launch_utc,
+            "schema": "phase4-arm-config/v1",
+            "arm_id": ARM_ID or None,
+            "run_id": RUN_ID,
+            "git_commit": head,
+            "prompt_index": qi,
+            "prompt_sha256": hashlib.sha256(
+                prompt_text.encode("utf-8")).hexdigest(),
+            "resolved": {
+                "cache_dtype": CACHE_DTYPE,
+                "expert_store": EXPERT_STORE_BACKEND,
+                "expert_store_path": dee4_store_path,
+                "eviction_policy": EVICTION_POLICY,
+                "host_cache_mode": HOST_CACHE_MODE,
+                "cache_reset": CACHE_RESET,
+                "trace_requests": TRACE_REQUESTS,
+                "profile_stages": PROFILE_STAGES,
+                "diagnostics": DIAGNOSTICS,
+                "use_batched_experts": USE_BATCHED_EXPERTS,
+                "n_tokens": N_TOKENS,
+                "budget_bytes_per_gpu": BUDGET_BYTES,
+                "host_pack_cache_bytes_requested": [
+                    HOST_PACK_CACHE_BYTES_GPU0,
+                    HOST_PACK_CACHE_BYTES_GPU1],
+                "host_pack_cache_bytes_effective": [
+                    pack_budget0, pack_budget1],
+                "source_read_lanes": SOURCE_READ_LANES,
+                "source_read_queue_depth": SOURCE_READ_QUEUE_DEPTH,
+                "single_gpu": SINGLE_GPU,
+                "force_tmp": FORCE_TMP,
+                "dee4_validate_samples": DEE4_VALIDATE_SAMPLES,
+                "dee4_store_skip_seal": os.environ.get(
+                    "DEE4_STORE_SKIP_SEAL", "0") == "1",
+                "device_split": getattr(model, "split", None),
+                "n_prompts": len(PROMPT_LIST),
+            },
+            "engine_runtime_config": _engine_rc,
+            "native_env": {
+                k: v for k, v in sorted(os.environ.items())
+                if k.startswith(("NATIVE_", "DEE_", "DEE4_"))},
+        }
+        write_evidence(f"arm_config{suffix}.json", arm_config_payload)
         # v12: checkpoint every generated token to /kaggle/working so an OOM kill
         # (v9/v11 lost ALL tokens) still leaves the exact token stream + timing.
         # The checkpoint file format is a JSONL of per-token records; the final
@@ -1575,6 +1839,10 @@ def main() -> int:
                 route_start_pos = len(ids) + route_step - 1
 
         def _token_checkpoint(step: int, tok: int) -> None:
+            # This hook fires AFTER forward `step` completed; arm the token
+            # index for the NEXT forward (journal forward_step = step+1)
+            # before any of its requests can be emitted.
+            _set_forward_token(step + 1)
             mem = host_mem_available_gib()
             rec = {"step": step, "token_id": int(tok),
                    "elapsed_s": round(time.monotonic() - t0, 2),
@@ -1651,6 +1919,7 @@ def main() -> int:
 
         result = {
             "run_id": RUN_ID,
+            "arm_id": ARM_ID or None,
             "commit": head,
             "host_mem_available_gib": round(mem_avail, 2),
             "host_pack_budget_gib": [round(pack_budget0 / (1 << 30), 2),
@@ -1690,6 +1959,10 @@ def main() -> int:
             "execution_terminal": dict(model.last_execution),
             "route_journal": route_journal.summary(),
             "dee4_trace_validation": dee4_trace_validation,
+            "eviction_policy": EVICTION_POLICY,
+            "host_cache_mode": HOST_CACHE_MODE,
+            "cache_reset": CACHE_RESET,
+            "trace_requests": TRACE_REQUESTS,
         }
 
         # Stage 0 instrumentation: per-engine expert-cache + host-pack + stage
@@ -1725,6 +1998,76 @@ def main() -> int:
             log(f"runtime snapshot failed: {exc}")
             result["runtime_snapshot_error"] = repr(exc)
 
+        # cache_events{suffix}.jsonl: durable per-request event sink for the
+        # Phase-4 telemetry contract.  When trace_requests is on, the stage
+        # profiler's "trace" array (one RequestTraceRecord per expert
+        # request) is mirrored here -- one JSON object per line:
+        # {engine, device, seq, <record fields>}.  The file is integrity-
+        # hashed below and retrieved per arm by the session driver.
+        cache_events_name = f"cache_events{suffix}.jsonl"
+        cache_events_meta = {
+            "enabled": bool(TRACE_REQUESTS),
+            "artifact": cache_events_name if TRACE_REQUESTS else None,
+            "records": 0,
+        }
+        if TRACE_REQUESTS:
+            try:
+                _seq = 0
+                _ce_path = WORK / cache_events_name
+                with _ce_path.open("w", encoding="utf-8") as _cef:
+                    for _ck, _ce in _p4_engines:
+                        _dev = (result.get("engine_config", {})
+                                .get(_ck, {}).get("device_id", _ck))
+                        _trace = (result.get("stage_profile", {})
+                                  .get(_ck, {}) or {}).get("trace") or []
+                        for _rec in _trace:
+                            _cef.write(json.dumps(
+                                {"engine": _ck, "device": _dev,
+                                 "seq": _seq, **_rec},
+                                separators=(",", ":")) + "\n")
+                            _seq += 1
+                cache_events_meta.update({
+                    "records": _seq,
+                    "bytes": _ce_path.stat().st_size,
+                    "sha256": sha256_file(_ce_path),
+                })
+                log(f"[p4] cache_events{suffix}.jsonl: {_seq} records "
+                    f"({_ce_path.stat().st_size} bytes)")
+            except Exception as _ce_exc:
+                log(f"[p4] cache_events dump failed: {_ce_exc!r}")
+                cache_events_meta["error"] = repr(_ce_exc)
+        result["cache_events"] = cache_events_meta
+
+        # Prompt-scoped counter deltas: the top-level host_pack /
+        # expert_store / engine_stats sections stay PROCESS-CUMULATIVE
+        # (classify_full_generation's store gates read cumulative
+        # source_reads/lookup_failures), so per-prompt views live here
+        # alongside the cumulative copies under a cumulative_ prefix.
+        result["cumulative_counters_at_prompt_start"] = prompt_start_counters
+        result["cumulative_host_pack"] = result.get("host_pack", {})
+        result["cumulative_expert_store"] = result.get("expert_store", {})
+        result["cumulative_engine_stats"] = result.get("engine_stats", {})
+        _end_counters = {
+            "host_pack": result.get("host_pack", {}),
+            "expert_store": result.get("expert_store", {}),
+            "engine_stats": result.get("engine_stats", {}),
+        }
+        _prompt_scoped = {}
+        for _section in ("host_pack", "expert_store", "engine_stats"):
+            _prompt_scoped[_section] = {}
+            for _ck, _end_vals in _end_counters[_section].items():
+                _start_vals = (
+                    prompt_start_counters.get(_section, {}).get(_ck, {}))
+                _delta = {}
+                for _f, _v in (_end_vals or {}).items():
+                    if (isinstance(_v, (int, float))
+                            and isinstance(_start_vals.get(_f), (int, float))):
+                        _delta[_f] = _v - _start_vals[_f]
+                    else:
+                        _delta[_f] = _v
+                _prompt_scoped[_section][_ck] = _delta
+        result["prompt_scoped_counters"] = _prompt_scoped
+
         classification, gates, performance_eligible = classify_full_generation(result)
         completed_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         result.update({
@@ -1745,14 +2088,27 @@ def main() -> int:
 
         # Derive physical byte/token accounting directly from the live serving
         # backends. In single-GPU mode cuda1 aliases cuda0 and must not be counted
-        # twice.
+        # twice.  The per-token values are PROMPT-SCOPED deltas (process-
+        # cumulative counters minus the prompt-start snapshot); the raw
+        # cumulative values are kept under a cumulative_ prefix.
         store_keys = ("cuda0",) if SINGLE_GPU else ("cuda0", "cuda1")
         stores = result.get("expert_store", {})
-        storage_bytes = sum(
+        cum_storage_bytes = sum(
             int(stores.get(key, {}).get("bytes_requested", 0))
             for key in store_keys)
-        source_reads = sum(
+        cum_source_reads = sum(
             int(stores.get(key, {}).get("source_reads", 0))
+            for key in store_keys)
+        cum_h2d_bytes = sum(
+            int(result.get("engine_stats", {}).get(key, {}).get("h2d_bytes", 0))
+            for key in store_keys)
+        _psc_store = _prompt_scoped.get("expert_store", {})
+        _psc_eng = _prompt_scoped.get("engine_stats", {})
+        storage_bytes = sum(
+            int(_psc_store.get(key, {}).get("bytes_requested", 0))
+            for key in store_keys)
+        source_reads = sum(
+            int(_psc_store.get(key, {}).get("source_reads", 0))
             for key in store_keys)
         result["byte_accounting"] = {
             "storage_bytes_total": storage_bytes,
@@ -1762,8 +2118,13 @@ def main() -> int:
             "storage_requests_per_generated_token": (
                 source_reads / len(toks) if toks else None),
             "expert_h2d_bytes_total": sum(
-                int(result.get("engine_stats", {}).get(key, {}).get("h2d_bytes", 0))
+                int(_psc_eng.get(key, {}).get("h2d_bytes", 0))
                 for key in store_keys),
+            "cumulative_storage_bytes_total": cum_storage_bytes,
+            "cumulative_storage_requests_total": cum_source_reads,
+            "cumulative_expert_h2d_bytes_total": cum_h2d_bytes,
+            "scope": ("prompt_scoped deltas from cumulative engine "
+                      "counters minus the prompt-start snapshot"),
         }
 
         min_host_available = None
@@ -1788,17 +2149,34 @@ def main() -> int:
             )
 
         per_token_accounting = []
+        # Seed previous_totals from the prompt-start cumulative snapshot so
+        # the FIRST checkpoint row's delta is this prompt's own traffic, not
+        # the process-wide sum of every earlier prompt (the old re-zero
+        # silently re-attributed all prior counters to step 0).  Sum over
+        # the same key set the checkpoint rows use (_p4_engines: cuda0 only
+        # in single-GPU mode) so the baseline never double-counts the
+        # cuda0/cuda1 alias.
+        _p4_baseline_keys = tuple(key for key, _ in _p4_engines)
+        def _baseline_total(section: str, field: str) -> float:
+            return sum(
+                float(prompt_start_counters.get(section, {})
+                      .get(key, {}).get(field, 0))
+                for key in _p4_baseline_keys
+            )
         previous_totals = {
-            "storage_bytes": 0.0,
-            "storage_requests": 0.0,
-            "source_read_wall_ms": 0.0,
-            "h2d_bytes": 0.0,
-            "h2d_copies": 0.0,
-            "resident_hits": 0.0,
-            "cold_loads": 0.0,
-            "evictions": 0.0,
-            "host_pack_hits": 0.0,
-            "host_pack_misses": 0.0,
+            "storage_bytes": _baseline_total(
+                "expert_store", "bytes_requested"),
+            "storage_requests": _baseline_total(
+                "expert_store", "source_reads"),
+            "source_read_wall_ms": _baseline_total(
+                "expert_store", "read_milliseconds"),
+            "h2d_bytes": _baseline_total("engine_stats", "h2d_bytes"),
+            "h2d_copies": _baseline_total("engine_stats", "h2d_copies"),
+            "resident_hits": _baseline_total("engine_stats", "resident_hits"),
+            "cold_loads": _baseline_total("engine_stats", "cold_loads"),
+            "evictions": _baseline_total("engine_stats", "evictions"),
+            "host_pack_hits": _baseline_total("host_pack", "hits"),
+            "host_pack_misses": _baseline_total("host_pack", "misses"),
         }
         for index, row in enumerate(checkpoint_rows):
             totals = {
@@ -1842,8 +2220,11 @@ def main() -> int:
             })
         result["per_token_accounting"] = per_token_accounting
 
+        # Prompt-scoped read wall: cumulative read_milliseconds minus the
+        # prompt-start snapshot, matching the per-prompt stage_profile
+        # windows the h2d/compute terms already use.
         storage_read_ms = sum(
-            float(stores.get(key, {}).get("read_milliseconds", 0))
+            float(_psc_store.get(key, {}).get("read_milliseconds", 0))
             for key in store_keys)
         h2d_gpu_ms = sum(
             float(result.get("stage_profile", {}).get(key, {})
@@ -1930,10 +2311,20 @@ def main() -> int:
         write_evidence(f"profile{suffix}.json", profile_payload)
         write_evidence(f"memory{suffix}.json", memory_payload)
         write_evidence(f"result{suffix}.json", result)
+        _artifact_names = [
+            f"environment{suffix}.json", f"run_config{suffix}.json",
+            f"result{suffix}.json", f"profile{suffix}.json",
+            f"memory{suffix}.json", f"routed_experts{suffix}.jsonl",
+            f"arm_config{suffix}.json",
+        ]
+        # cache_events is a trace-only artifact; hash it only when written.
+        if (WORK / cache_events_name).is_file():
+            _artifact_names.append(cache_events_name)
         integrity_payload.update({
             "completed_at_utc": completed_utc,
             "classification": classification,
             "performance_eligible": performance_eligible,
+            "arm_id": ARM_ID or None,
             "actual_token_ids": [int(token) for token in toks],
             "actual_token_ids_sha256": hashlib.sha256(
                 json.dumps([int(token) for token in toks], separators=(",", ":"))
@@ -1943,11 +2334,10 @@ def main() -> int:
             "sealed_contract_gates": gates,
             "expert_store": result.get("expert_store", {}),
             "dee4_trace_validation": result.get("dee4_trace_validation", {}),
+            "cache_events": result.get("cache_events", {}),
             "artifact_sha256": {
                 name: sha256_file(WORK / name)
-                for name in (
-                    f"environment{suffix}.json", f"run_config{suffix}.json", f"result{suffix}.json",
-                    f"profile{suffix}.json", f"memory{suffix}.json", f"routed_experts{suffix}.jsonl")
+                for name in _artifact_names
             },
         })
         if EXPERT_STORE_BACKEND == "dee4_trace":

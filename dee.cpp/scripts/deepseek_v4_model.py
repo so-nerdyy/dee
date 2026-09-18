@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 import urllib.error
 import urllib.request
@@ -1269,7 +1270,10 @@ def build_native_engine(shard_paths: list[str], *,
                         cache_dtype: str = "fp16",
                         source_read_lanes: int = 1,
                         source_read_queue_depth: int = 6,
-                        expert_store_path: str = "") -> Any:
+                        expert_store_path: str = "",
+                        trace_requests: Optional[bool] = None,
+                        eviction_policy: Optional[str] = None,
+                        host_cache_mode: Optional[str] = None) -> Any:
     """Build one pydee.Engine (FP4 transfer, FP16 or packed-FP4 device cache)
     that streams routed experts for the full DeepSeek-V4-Flash-0731 model.
 
@@ -1283,12 +1287,51 @@ def build_native_engine(shard_paths: list[str], *,
     checkpoint's packed e2m1fn bytes + e8m0 scales (12.75 MiB/expert instead of
     48 MiB FP16), expanding into a bounded scratch at compute time.  This is a
     performance experiment; the default "fp16" is the sealed exact path.
+
+    Phase-4 knobs (each falls back to its NATIVE_* env var when None):
+      trace_requests -> cfg.trace_requests (per-request cache-event trace;
+      lands in external_profile_json["trace"], needs profile_stages);
+      eviction_policy -> cfg.eviction_policy ("lru"|"rank_priority");
+      host_cache_mode -> cfg.host_cache_mode ("lru"|"bypass"; "bypass"
+      additionally clamps host_pack_cache_bytes to one packed record and
+      forces source_read_lanes=1 -- the bounce-buffer contract).
+    The eviction_policy/host_cache_mode pydee fields are being added in
+    parallel, so they are applied via hasattr-fallback with a loud log:
+    this function stays correct under both old and new binaries.
     """
     import pydee
     if pydee.Engine is None:
         raise RuntimeError("pydee compiled binding not importable")
     if cache_dtype not in ("fp16", "fp4"):
         raise ValueError(f"cache_dtype must be 'fp16' or 'fp4', got {cache_dtype!r}")
+    if trace_requests is None:
+        trace_requests = os.environ.get("NATIVE_TRACE_REQUESTS", "0") == "1"
+    if eviction_policy is None:
+        eviction_policy = os.environ.get(
+            "NATIVE_EVICTION_POLICY", "rank_priority").strip().lower()
+    if host_cache_mode is None:
+        host_cache_mode = os.environ.get(
+            "NATIVE_HOST_CACHE_MODE", "lru").strip().lower()
+    if eviction_policy not in ("lru", "rank_priority"):
+        raise ValueError(
+            f"eviction_policy must be 'lru' or 'rank_priority', got {eviction_policy!r}")
+    if host_cache_mode not in ("lru", "bypass"):
+        raise ValueError(
+            f"host_cache_mode must be 'lru' or 'bypass', got {host_cache_mode!r}")
+    if host_cache_mode == "bypass":
+        # Bounce-buffer contract (kickoff §7): pack budget = exactly one
+        # packed dee4 record, single source read lane.  Enforced at cfg
+        # assembly so it holds for every caller under old binaries too.
+        _one_record = 13_369_344
+        if host_pack_cache_bytes > _one_record:
+            print(f"[build_native_engine] host_cache_mode=bypass: clamping "
+                  f"host_pack_cache_bytes {host_pack_cache_bytes} -> "
+                  f"{_one_record} (one record)", flush=True)
+            host_pack_cache_bytes = _one_record
+        if source_read_lanes != 1:
+            print(f"[build_native_engine] host_cache_mode=bypass: forcing "
+                  f"source_read_lanes {source_read_lanes} -> 1", flush=True)
+            source_read_lanes = 1
     cfg = pydee.configure(
         shard_path=shard_paths[0], num_experts=num_experts,
         num_layers=num_layers, hidden=hidden, inter=inter,
@@ -1303,5 +1346,18 @@ def build_native_engine(shard_paths: list[str], *,
     cfg.source_read_queue_depth = int(source_read_queue_depth)
     cfg.use_batched_experts = use_batched_experts
     cfg.profile_stages = profile_stages
+    cfg.trace_requests = bool(trace_requests)
     cfg.profile_timeline = False
+    # eviction_policy / host_cache_mode are pinned additions arriving in a
+    # parallel pydee build; apply via hasattr so an old binary still works
+    # (loudly -- a silently ignored policy knob would corrupt the arm A/B).
+    for _field, _value in (("eviction_policy", eviction_policy),
+                           ("host_cache_mode", host_cache_mode)):
+        if hasattr(cfg, _field):
+            setattr(cfg, _field, _value)
+        else:
+            print(f"[build_native_engine] WARNING: EngineConfig lacks "
+                  f"{_field} binding; requested {_value!r} ignored "
+                  f"(old pydee binary -- cache behavior falls back to the "
+                  f"compiled-in default)", flush=True)
     return pydee.new_engine(cfg)
