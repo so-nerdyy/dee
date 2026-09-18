@@ -204,6 +204,7 @@ void StageProfiler::configure(bool enabled, bool trace_enabled,
     token_working_sets_.clear();
     trace_.clear();
     predictions_.clear();
+    host_resolution_pending_.clear();
 }
 
 void StageProfiler::note_cpu_timeline(CpuTimelineKind kind, TimePoint begin,
@@ -295,6 +296,12 @@ void StageProfiler::add_oracle_ms(OracleStage stage, double milliseconds) {
     oracle_ms_[static_cast<size_t>(stage)] += milliseconds;
 }
 
+void StageProfiler::set_host_resolution(int resolved_layer, int expert,
+                                        HostResolution resolution) {
+    if (!enabled_) return;
+    host_resolution_pending_[physical_key(resolved_layer, expert)] = resolution;
+}
+
 void StageProfiler::note_request(int token, int logical_layer, int resolved_layer,
                                  int expert, RequestKind kind,
                                  int evicted_layer, int evicted_expert, int priority,
@@ -316,6 +323,22 @@ void StageProfiler::note_request(int token, int logical_layer, int resolved_laye
     if (kind == RequestKind::ColdLoad) unique_loaded_.insert(key);
     if (token >= 0) token_working_sets_[token].insert(key);
 
+    // Consume the engine's host-tier stamp for this key (Phase-4 B0d).  An
+    // unstamped record derives its host resolution from the request kind: a
+    // resident/in-flight hit never consulted the host pack tier, while a cold
+    // load without a stamp is reported Unknown (the FP4 path always stamps,
+    // so Unknown flags a non-FP4 or anomalous record rather than a silent
+    // mis-attribution).
+    HostResolution host_resolution = HostResolution::Unknown;
+    const auto stamped = host_resolution_pending_.find(key);
+    if (stamped != host_resolution_pending_.end()) {
+        host_resolution = stamped->second;
+        host_resolution_pending_.erase(stamped);
+    } else if (kind == RequestKind::ResidentHit ||
+               kind == RequestKind::InflightHit) {
+        host_resolution = HostResolution::GpuResidentNotConsulted;
+    }
+
     const auto previous = last_request_index_.find(key);
     if (previous != last_request_index_.end() && kind != RequestKind::ColdLoad) {
         ++repeated_hits_;
@@ -334,7 +357,15 @@ void StageProfiler::note_request(int token, int logical_layer, int resolved_laye
         record.logical_layer = logical_layer;
         record.resolved_layer = resolved_layer;
         record.expert = expert;
-        record.kind = kind;
+        // Emit HostHit when VRAM missed but the bounded host pack supplied
+        // the payload.  The incoming kind stays ColdLoad for all upstream
+        // accounting (unique_loaded_, reuse distance, prefetcher counters);
+        // only the emitted record kind is upgraded.
+        record.kind = (kind == RequestKind::ColdLoad &&
+                       host_resolution == HostResolution::HostHit)
+            ? RequestKind::HostHit
+            : kind;
+        record.host_resolution = host_resolution;
         record.cache_bytes_before = cache_bytes_before;
         record.cache_entries_before = cache_entries_before;
         record.cache_bytes_after = cache_bytes_after;
@@ -1140,6 +1171,19 @@ const char* request_kind_name(RequestKind kind) {
         case RequestKind::ResidentHit: return "resident";
         case RequestKind::InflightHit: return "inflight";
         case RequestKind::ColdLoad: return "cold";
+        case RequestKind::HostHit: return "host_hit";
+    }
+    return "unknown";
+}
+
+const char* host_resolution_name(HostResolution resolution) {
+    switch (resolution) {
+        case HostResolution::Unknown: return "unknown";
+        case HostResolution::GpuResidentNotConsulted:
+            return "gpu_resident_not_consulted";
+        case HostResolution::HostHit: return "host_hit";
+        case HostResolution::StorageMiss: return "storage_miss";
+        case HostResolution::MmapFallback: return "mmap_fallback";
     }
     return "unknown";
 }
@@ -1345,6 +1389,8 @@ std::string stage_profile_json(const StageProfile& profile, bool include_trace) 
                 << ",\"resolved_shard_layer\":" << record.resolved_layer
                 << ",\"expert\":" << record.expert
                 << ",\"kind\":\"" << request_kind_name(record.kind) << '\"'
+                << ",\"host_resolution\":\""
+                << host_resolution_name(record.host_resolution) << '\"'
                 << ",\"cache_bytes_before\":" << record.cache_bytes_before
                 << ",\"cache_entries_before\":" << record.cache_entries_before
                 << ",\"cache_bytes_after\":" << record.cache_bytes_after

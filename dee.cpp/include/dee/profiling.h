@@ -45,7 +45,35 @@ enum class GpuStage : size_t {
     Count
 };
 
-enum class RequestKind : uint8_t { ResidentHit, InflightHit, ColdLoad };
+// Phase-4 (B0d): HostHit is emitted when the request missed VRAM but the
+// bounded host pack cache supplied the payload (a cold load served from host
+// DRAM instead of the source store).  StageProfiler::note_request upgrades a
+// ColdLoad record to HostHit at emit time when the engine-stamped host
+// resolution says so, keeping the prefetcher's own resident/inflight/cold
+// accounting unchanged.
+enum class RequestKind : uint8_t { ResidentHit, InflightHit, ColdLoad, HostHit };
+
+// Host-tier outcome attached to every request trace record (Phase-4 B0d).
+// The engine stamps the resolution that applied to the (layer, expert) key
+// immediately before issuing the prefetch so the emitted record can carry an
+// honest host-tier attribution:
+//   GpuResidentNotConsulted - VRAM served the request; the host pack tier was
+//                             never consulted for it.
+//   HostHit                 - the host pack cache supplied the payload (no
+//                             source-store materialization for this request).
+//   StorageMiss             - the host pack missed and the payload was
+//                             materialized from the expert store.
+//   MmapFallback            - host-pack admission/fill failed (or was refused)
+//                             and the request fell back to raw mmap regions.
+//   Unknown                 - no host-tier resolution was stamped (never
+//                             produced on the FP4 path).
+enum class HostResolution : uint8_t {
+    Unknown,
+    GpuResidentNotConsulted,
+    HostHit,
+    StorageMiss,
+    MmapFallback
+};
 
 enum class HostWaitReason : size_t {
     CacheReadiness,
@@ -145,6 +173,10 @@ struct RequestTraceRecord {
     bool transfer_launched = false;
     bool consumed = false;
     bool evicted_before_use = false;
+    // Host-tier outcome for this request (Phase-4 B0d). Populated from the
+    // engine-stamped pending resolution (set_host_resolution) or derived from
+    // `kind` when no stamp exists; never silently Unknown on the FP4 path.
+    HostResolution host_resolution = HostResolution::Unknown;
 };
 
 struct TimelineRecord {
@@ -389,6 +421,12 @@ public:
                        uint64_t evicted_generation = 0);
     void note_generation_evicted(int resolved_layer, int expert, uint64_t generation);
     void note_transfer_consumed(int resolved_layer, int expert, uint64_t generation);
+    // Phase-4 (B0d): stamp the host-tier resolution that applied to the
+    // (resolved_layer, expert) key the engine is about to prefetch.  The next
+    // note_request for that key consumes the stamp into the emitted record;
+    // an unstamped record derives a kind-based default.  No-op when disabled.
+    void set_host_resolution(int resolved_layer, int expert,
+                             HostResolution resolution);
     void note_prediction(int token, int logical_layer, int resolved_layer,
                          const std::vector<int>& experts);
     void note_eviction(uint64_t count = 1) { evictions_ += count; }
@@ -501,6 +539,11 @@ private:
     std::vector<RequestTraceRecord> trace_;
     std::vector<std::vector<uint64_t>> predictions_;
     uint64_t timing_events_dropped_ = 0;
+    // Phase-4 (B0d): host-tier resolutions stamped by the engine before the
+    // matching prefetch request is recorded. Keyed by physical_key
+    // (resolved_layer, expert); consumed on first use so a stale stamp can
+    // never silently misattribute a later request.
+    std::unordered_map<uint64_t, HostResolution> host_resolution_pending_;
 
     // Host/sync profiler state (all inert unless enabled_).
     int host_token_ = -1;
@@ -558,6 +601,7 @@ private:
 const char* cpu_stage_name(CpuStage stage);
 const char* gpu_stage_name(GpuStage stage);
 const char* request_kind_name(RequestKind kind);
+const char* host_resolution_name(HostResolution resolution);
 const char* oracle_stage_name(OracleStage stage);
 const char* host_wait_reason_name(HostWaitReason reason);
 const char* cpu_timeline_kind_name(CpuTimelineKind kind);

@@ -84,6 +84,8 @@ PYBIND11_MODULE(pydee_core, m) {
         .def_readwrite("device_id", &dee::EngineConfig::device_id)
         .def_readwrite("budget_bytes", &dee::EngineConfig::budget_bytes)
         .def_readwrite("host_pack_cache_bytes", &dee::EngineConfig::host_pack_cache_bytes)
+        .def_readwrite("eviction_policy", &dee::EngineConfig::eviction_policy)
+        .def_readwrite("host_cache_mode", &dee::EngineConfig::host_cache_mode)
         .def_readwrite("source_read_lanes", &dee::EngineConfig::source_read_lanes)
         .def_readwrite("source_read_queue_depth", &dee::EngineConfig::source_read_queue_depth)
         .def_readwrite("use_batched_experts", &dee::EngineConfig::use_batched_experts)
@@ -116,6 +118,8 @@ PYBIND11_MODULE(pydee_core, m) {
                 dee::weight_transfer_dtype_name(cfg.transfer_dtype);
             result["budget_bytes"] = cfg.budget_bytes;
             result["host_pack_cache_bytes"] = cfg.host_pack_cache_bytes;
+            result["eviction_policy"] = cfg.eviction_policy;
+            result["host_cache_mode"] = cfg.host_cache_mode;
             result["source_read_lanes"] = cfg.source_read_lanes;
             result["source_read_queue_depth"] = cfg.source_read_queue_depth;
             result["expert_store_path"] = cfg.expert_store_path;
@@ -144,6 +148,13 @@ PYBIND11_MODULE(pydee_core, m) {
             result["fill_batch_wall_ms"] = hp.fill_batch_wall_ms;
             result["fill_worker_ms"] = hp.fill_worker_ms;
             result["fill_overlap_ms"] = hp.fill_overlap_ms;
+            // Phase-4 (B0d) fail-closed instrumentation.
+            result["fill_failures"] = hp.fill_failures;
+            result["alloc_failures"] = hp.alloc_failures;
+            result["size_mismatches"] = hp.size_mismatches;
+            result["budget_rejections"] = hp.budget_rejections;
+            result["scalar_fills"] = hp.scalar_fills;
+            result["scalar_fill_ms"] = hp.scalar_fill_ms;
             return result;
         })
         .def("expert_store_stats", [](const dee::Engine& self) -> py::dict {
@@ -182,6 +193,11 @@ PYBIND11_MODULE(pydee_core, m) {
         })
         .def("reset_runtime_cache", &dee::Engine::reset_runtime_cache,
              "Evict all streamed experts and reset live cache/transfer counters.")
+        .def("clear_host_cache", &dee::Engine::clear_host_cache,
+             "Drop every host-pack entry and staged FP4 pointer/generation so "
+             "the next call re-materializes cold; also resets store telemetry.")
+        .def("reset_store_stats", &dee::Engine::reset_store_stats,
+             "Zero the ExpertStore counters only; the host cache stays warm.")
         .def("validate_cache_invariants", [](const dee::Engine& self) {
             std::string error;
             const bool valid = self.validate_cache_invariants(&error);
@@ -722,6 +738,8 @@ PYBIND11_MODULE(pydee_core, m) {
                << s.device_moe_raw_workspace_bytes
                << ",\"device_moe_pointer_batch_workspace_bytes\":"
                << s.device_moe_pointer_batch_workspace_bytes
+               << ",\"device_fp4_decode_scratch_bytes\":"
+               << s.device_fp4_decode_scratch_bytes
                << ",\"d2d_gather_copies\":" << s.d2d_gather_copies
                << ",\"d2d_gather_bytes\":" << s.d2d_gather_bytes
                << ",\"d2d_scatter_copies\":" << s.d2d_scatter_copies

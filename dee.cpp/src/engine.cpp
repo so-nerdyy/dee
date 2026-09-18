@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <numeric>
 #include <unordered_set>
@@ -275,6 +276,10 @@ bool Engine::moe_forward_experts(int layer, const float* h_in, float* experts_ou
     if ((size_t)K * (size_t)hidden_ > std::numeric_limits<size_t>::max() / sizeof(float)) return false;
     std::memset(experts_out, 0, (size_t)K * (size_t)hidden_ * sizeof(float));
     const int source_layer = avail_layer(layer);
+    if (source_layer < 0) {
+        std::fprintf(stderr, "[engine] layer %d has no resolvable source layer\n", layer);
+        return false;
+    }
 #ifdef DEE_CUDA
     if (cfg_.use_cuda) {
         if (!DEE_CUDA_CHECK_NAMED(cudaSetDevice(cfg_.device_id), "cudaSetDevice(external MoE)")) return false;
@@ -550,9 +555,11 @@ bool Engine::moe_forward_batch(int layer, const float* h_in, int tokens,
         for (int expert = 0; expert < cfg_.num_experts; ++expert) {
             if (!groups[static_cast<size_t>(expert)].empty()) active_experts.push_back(expert);
         }
+        const int source_layer = avail_layer(layer);
+        if (source_layer < 0) return false;
         if (profiler_.enabled()) {
             profiler_.add_cpu(CpuStage::BatchConstruction, batch_begin);
-            profiler_.note_prediction(current_token_, layer, avail_layer(layer),
+            profiler_.note_prediction(current_token_, layer, source_layer,
                                       active_experts);
         }
         std::vector<float> host_input(max_group_tokens * static_cast<size_t>(hidden_));
@@ -560,7 +567,6 @@ bool Engine::moe_forward_batch(int layer, const float* h_in, int tokens,
         peak_transient_host_bytes_ = std::max(
             peak_transient_host_bytes_,
             (host_input.size() + host_output.size()) * sizeof(float));
-        const int source_layer = avail_layer(layer);
         const int cache_batch = std::max(
             1, static_cast<int>(cache_.budget_bytes() / cache_blob_bytes_));
         for (size_t first = 0; first < active_experts.size();
@@ -865,12 +871,16 @@ bool Engine::moe_forward_batch_device_impl(
     for (int expert = 0; expert < cfg_.num_experts; ++expert) {
         if (!groups[static_cast<size_t>(expert)].empty()) active_experts.push_back(expert);
     }
+    const int source_layer = avail_layer(layer);
+    if (source_layer < 0) {
+        set_last_error("moe_forward_batch_device: layer has no resolvable source layer");
+        return false;
+    }
     if (profiler_.enabled()) {
         profiler_.add_cpu(CpuStage::BatchConstruction, batch_begin);
-        profiler_.note_prediction(current_token_, layer, avail_layer(layer),
+        profiler_.note_prediction(current_token_, layer, source_layer,
                                   active_experts);
     }
-    const int source_layer = avail_layer(layer);
     const int cache_batch = std::max(
         1, static_cast<int>(cache_.budget_bytes() / cache_blob_bytes_));
 
@@ -878,6 +888,25 @@ bool Engine::moe_forward_batch_device_impl(
     auto* d_experts_out_f32 = static_cast<float*>(d_experts_out);
     const size_t hidden_half = static_cast<size_t>(hidden_) * sizeof(uint16_t);
     const size_t hidden_float = static_cast<size_t>(hidden_) * sizeof(float);
+
+    // Phase-4 (B0d): failure-time retirement for deferred cache pins.  A
+    // mid-call abort must not leak pins: synchronize the stream so every
+    // queued GEMM that reads a pinned block is proven done, then unpin
+    // through the synced drain.  A failed sync cannot prove completion —
+    // keep the pins held and poison retirement until a later full stream
+    // synchronization (reset/teardown) succeeds; identical contract to the
+    // pointer-batched path's synchronize_and_unpin.
+    const auto fail_retire = [&]() -> bool {
+        if (moe_deferred_unpin_keys_.empty()) return true;
+        if (DEE_CUDA_CHECK_NAMED(
+                cudaStreamSynchronize(compute_stream_),
+                "cudaStreamSynchronize(MoE deferred unpin failure cleanup)")) {
+            return drain_moe_deferred_unpin(true);
+        }
+        moe_chunk_completion_event_valid_ = false;
+        moe_deferred_retirement_poisoned_ = true;
+        return false;
+    };
 
     for (size_t first = 0; first < active_experts.size();
          first += static_cast<size_t>(cache_batch)) {
@@ -888,13 +917,19 @@ bool Engine::moe_forward_batch_device_impl(
             HostSpanGuard fill_guard(host_prof, HostSpan::FillWait);
             if (!prepare_fp4_experts(
                     source_layer, active_experts.data() + first,
-                    last - first)) return false;
+                    last - first)) {
+                fail_retire();
+                return false;
+            }
         }
         {
             HostSpanGuard enqueue_guard(host_prof, HostSpan::StageEnqueueWait);
             for (size_t i = first; i < last; ++i) {
                 if (!stage_expert(layer, source_layer, active_experts[i],
-                                  static_cast<int>(active_experts.size() - i))) return false;
+                                  static_cast<int>(active_experts.size() - i))) {
+                    fail_retire();
+                    return false;
+                }
             }
         }
         for (size_t i = first; i < last; ++i) {
@@ -943,6 +978,7 @@ bool Engine::moe_forward_batch_device_impl(
                                 cudaMemcpyDeviceToDevice,
                                 compute_stream_),
                             "cudaMemcpyAsync(MoE batch D2D gather)")) {
+                        fail_retire();
                         return false;
                     }
                     ++stats_.d2d_gather_copies;
@@ -955,6 +991,7 @@ bool Engine::moe_forward_batch_device_impl(
                     !profiler_.cuda_end(
                         gather_ticket,
                         static_cast<void*>(compute_stream_))) {
+                    fail_retire();
                     return false;
                 }
             }
@@ -964,8 +1001,18 @@ bool Engine::moe_forward_batch_device_impl(
             {
                 HostSpanGuard readiness_guard(host_prof, HostSpan::ReadinessWait);
                 if (!prefetcher_.wait_on_stream(source_layer, expert, compute_stream_) &&
-                    !prefetcher_.wait(source_layer, expert)) return false;
-                if (!cache_.pin(source_layer, expert)) return false;
+                    !prefetcher_.wait(source_layer, expert)) {
+                    fail_retire();
+                    return false;
+                }
+                if (!cache_.pin(source_layer, expert)) {
+                    fail_retire();
+                    return false;
+                }
+                // Phase-4 (B0d): the pin retires only after this chunk's
+                // queued compute is proven complete (chunk-end event record +
+                // drain), never immediately after enqueue.
+                moe_deferred_unpin_keys_.emplace_back(source_layer, expert);
             }
 
             const void* d_blob = cache_.data(source_layer, expert);
@@ -999,7 +1046,7 @@ bool Engine::moe_forward_batch_device_impl(
                     profiler_.enabled() ? &profiler_ : nullptr);
             }
             if (!computed) {
-                cache_.unpin(source_layer, expert);
+                fail_retire();
                 return false;
             }
             prefetcher_.mark_consumed(source_layer, expert);
@@ -1034,7 +1081,7 @@ bool Engine::moe_forward_batch_device_impl(
                                 cudaMemcpyDeviceToDevice,
                                 compute_stream_),
                             "cudaMemcpyAsync(MoE batch D2D scatter)")) {
-                        cache_.unpin(source_layer, expert);
+                        fail_retire();
                         return false;
                     }
                     ++stats_.d2d_scatter_copies;
@@ -1047,11 +1094,37 @@ bool Engine::moe_forward_batch_device_impl(
                     !profiler_.cuda_end(
                         scatter_ticket,
                         static_cast<void*>(compute_stream_))) {
-                    cache_.unpin(source_layer, expert);
+                    fail_retire();
                     return false;
                 }
             }
-            cache_.unpin(source_layer, expert);
+            // The pin stays held in moe_deferred_unpin_keys_ until the chunk
+            // completion record below proves this expert's queued GEMM done.
+        }
+        // Record chunk completion covering every deferred pin listed so far
+        // (stream ordering also covers leftovers a prior synchronize_output=
+        // false call left armed).  Pins retire through drain_moe_deferred_
+        // unpin() — the next chunk's stage_expert, the output sync below, or
+        // a later call — never before their compute provably finished.
+        if (!moe_deferred_unpin_keys_.empty()) {
+            if (!moe_chunk_complete_event_ &&
+                !DEE_CUDA_CHECK_NAMED(
+                    DEE_TA_EVENT_CREATE_FLAGS(
+                        &moe_chunk_complete_event_,
+                        cudaEventDisableTiming,
+                        "moe_chunk_complete_event_"),
+                    "cudaEventCreate(MoE chunk pin completion)")) {
+                moe_chunk_complete_event_ = nullptr;
+                fail_retire();
+                return false;
+            }
+            if (!DEE_CUDA_CHECK_NAMED(
+                    cudaEventRecord(moe_chunk_complete_event_, compute_stream_),
+                    "cudaEventRecord(MoE chunk pin completion)")) {
+                fail_retire();
+                return false;
+            }
+            moe_chunk_completion_event_valid_ = true;
         }
     }
 
@@ -1065,7 +1138,17 @@ bool Engine::moe_forward_batch_device_impl(
             ? StageProfiler::now() : StageProfiler::TimePoint{};
         if (!DEE_CUDA_CHECK_NAMED(
                 cudaStreamSynchronize(compute_stream_),
-                "cudaStreamSynchronize(device MoE batch)")) return false;
+                "cudaStreamSynchronize(device MoE batch)")) {
+            // No event can prove the queued GEMMs finished after a failed
+            // stream sync — keep the deferred pins held (poisoned) rather
+            // than release blocks whose compute state is unknown.
+            moe_chunk_completion_event_valid_ = false;
+            moe_deferred_retirement_poisoned_ = true;
+            return false;
+        }
+        // The stream sync just proved every deferred pin's compute finished;
+        // retire them now so no stale pin escapes this call.
+        if (!drain_moe_deferred_unpin(true)) return false;
         if (profiler_.enabled()) {
             const auto output_sync_end = StageProfiler::now();
             profiler_.add_cpu_ms(
@@ -1318,6 +1401,46 @@ bool Engine::drain_pointer_batch_pending(bool compute_stream_synchronized) {
     pointer_batch_pending_source_layer_ = -1;
     pointer_batch_completion_event_valid_ = false;
     pointer_batch_retirement_poisoned_ = !unpinned;
+    return unpinned;
+}
+
+// Phase-4 (B0d): retire the per-expert batched path's deferred cache pins.
+// Mirrors drain_pointer_batch_pending exactly: when the caller has not
+// already proven compute-stream completion, block on the chunk-completion
+// event recorded after the last pin's GEMM was enqueued.  Keys are
+// (layer, expert) pairs — leftover pins from a different layer cannot be
+// mis-released.  Missing/invalid event coverage poisons retirement (pins
+// stay held) until a full stream sync re-proves completion.
+bool Engine::drain_moe_deferred_unpin(bool compute_stream_synchronized) {
+    if (moe_deferred_retirement_poisoned_ && !compute_stream_synchronized) {
+        return false;
+    }
+    if (moe_deferred_unpin_keys_.empty()) {
+        if (compute_stream_synchronized) {
+            moe_chunk_completion_event_valid_ = false;
+            moe_deferred_retirement_poisoned_ = false;
+        }
+        return !moe_deferred_retirement_poisoned_;
+    }
+    if (!compute_stream_synchronized) {
+        if (!moe_chunk_complete_event_ ||
+            !moe_chunk_completion_event_valid_ ||
+            !DEE_CUDA_CHECK_NAMED(
+                cudaEventSynchronize(moe_chunk_complete_event_),
+                "cudaEventSynchronize(MoE chunk pin completion)")) {
+            moe_deferred_retirement_poisoned_ = true;
+            return false;
+        }
+    }
+    bool unpinned = true;
+    for (const auto& key : moe_deferred_unpin_keys_) {
+        if (!cache_.unpin(key.first, key.second)) {
+            unpinned = false;
+        }
+    }
+    moe_deferred_unpin_keys_.clear();
+    moe_chunk_completion_event_valid_ = false;
+    moe_deferred_retirement_poisoned_ = !unpinned;
     return unpinned;
 }
 #endif
@@ -1695,6 +1818,10 @@ bool Engine::moe_forward_pointer_batched_device_impl(
     }
 
     const int source_layer = avail_layer(layer);
+    if (source_layer < 0) {
+        set_last_error("pointer-batched expert layer has no resolvable source layer");
+        return false;
+    }
     prefetcher_.begin_batch();
     if (!prepare_fp4_experts(
             source_layer, h_expert_ids, selections)) {
@@ -1925,9 +2052,10 @@ bool Engine::moe_forward_combined_device_impl(
     // The pointer table is pinned host memory and expert cache blocks are
     // shared across calls. Retire their previous compute-stream use after the
     // current ID copy has had a chance to overlap it, but before any cache
-    // staging or pointer-table overwrite.
-    if (!drain_pointer_batch_pending()) {
-        set_last_error("failed to retire prior pointer-batched expert work");
+    // staging or pointer-table overwrite.  The deferred per-expert batch pins
+    // retire the same way (Phase-4 B0d).
+    if (!drain_pointer_batch_pending() || !drain_moe_deferred_unpin()) {
+        set_last_error("failed to retire prior deferred expert cache pins");
         return false;
     }
 
@@ -2063,6 +2191,11 @@ EngineStats Engine::runtime_stats() const {
     result.peak_transient_host_bytes = peak_transient_host_bytes_;
     result.device_expert_cache_reserved_bytes = cache_.budget_bytes();
     result.device_prefetch_staging_bytes = prefetcher_.device_staging_bytes();
+    // P2.3/Phase-4: honest device ledger — the bounded FP16 scratch that
+    // decodes one packed FP4 cache block per expert is real reserved VRAM
+    // (Fp4E2m1 mode only; 0 otherwise).
+    result.device_fp4_decode_scratch_bytes =
+        d_fp4_decode_scratch_ ? d_fp4_decode_scratch_bytes_ : 0;
 #ifdef DEE_CUDA
     if (cfg_.use_cuda) {
         result.host_moe_dispatch_bytes = h_moe_expert_ids_i64_
@@ -2164,7 +2297,10 @@ bool Engine::reset_runtime_cache() {
         if (compute_stream_ &&
             !DEE_CUDA_CHECK_NAMED(cudaStreamSynchronize(compute_stream_),
                                   "cudaStreamSynchronize(reset runtime cache)")) return false;
-        if (!drain_pointer_batch_pending(true)) return false;
+        // The stream sync above proves all queued compute finished; retire
+        // both deferred pin sets before the cache clear drops their blocks.
+        if (!drain_pointer_batch_pending(true) ||
+            !drain_moe_deferred_unpin(true)) return false;
     }
 #endif
     prefetcher_.reset();
@@ -2174,6 +2310,40 @@ bool Engine::reset_runtime_cache() {
     stats_.peak_vram = 0;
     stats_.current_vram = 0;
     stats_.resident_experts = 0;
+    return true;
+}
+
+bool Engine::reset_store_stats() {
+    // Zero every ExpertStore counter (lookups, reads, latency samples,
+    // lock-free pread telemetry, materialize entry/exit counts).  The host
+    // pack cache stays warm — inert on a null store.
+    if (expert_store_) expert_store_->reset_stats();
+    return true;
+}
+
+bool Engine::clear_host_cache() {
+    pack_cache_.clear();
+    // clear() drops pack entries without firing the eviction observer, so
+    // invalidate the staged FP4 metadata directly: fp4_regions pointers into
+    // released pack storage must never survive, and prepared_generation is
+    // reset so the next call re-resolves through the full path (re-pointing
+    // regions from a fresh pack fill or the mmap fallback) instead of being
+    // served stale pointers by the prepared fast path.
+    for (auto& entry : staging_int8_) {
+        QuantizedExpert& quantized = entry.second;
+        for (int r = 0; r < 6; ++r) {
+            quantized.fp4_regions[r] = {nullptr, 0};
+            quantized.fp4_region_nbytes[r] = 0;
+        }
+        quantized.prepared_generation = 0;
+        quantized.host_resolution = HostResolution::Unknown;
+    }
+    // Disarm the prepared fast path globally so no entry can match a
+    // generation minted before the clear.
+    fp4_prepare_generation_ = 0;
+    // Related store telemetry is part of the same cold-start contract: reset
+    // it so the next call's materialization accounting starts clean.
+    if (expert_store_) expert_store_->reset_stats();
     return true;
 }
 
@@ -2198,6 +2368,11 @@ bool Engine::reset_external_profile() {
                 "[profile] reset external profile left pending CUDA samples\n");
             return false;
         }
+        // The stream sync above proves all queued compute finished; retire
+        // both deferred pin sets so the next epoch's cache operations cannot
+        // be blocked by stale pins (Phase-4 B0d).
+        if (!drain_pointer_batch_pending(true) ||
+            !drain_moe_deferred_unpin(true)) return false;
     }
 #endif
     cache_.reset_stats();
@@ -2303,6 +2478,7 @@ bool Engine::route_topk_batch(int layer, const float* h_in, int tokens,
     if (!h_in || !router_logits || !routing_weights || !experts ||
         tokens <= 0 || cfg_.topk <= 0 || cfg_.topk > cfg_.num_experts) return false;
     const int source_layer = avail_layer(layer);
+    if (source_layer < 0) return false;
 
 #ifdef DEE_CUDA
     if (cfg_.use_cuda) {
@@ -2466,10 +2642,42 @@ bool Engine::route_topk_batch(int layer, const float* h_in, int tokens,
 }
 
 int Engine::avail_layer(int layer) const {
-    // synthetic single-layer shard exposes only layer 0; map everything to it.
-    // (Real multi-layer shards return `layer` directly.)
-    TensorView requested = resolver_.resolve_expert(layer, 0, TensorResolver::GATE_PROJ);
-    return requested.ok() ? layer : cfg_.base_layer;
+    // Phase-4 (B0d) fail-closed source-layer resolution.  The returned layer
+    // must name weights the active backend can actually serve:
+    //   - An opened dee4 store is authoritative for routed experts: a layer
+    //     outside its covered window maps to cfg_.base_layer ONLY when the
+    //     base layer is itself inside the window (the layer-local engine
+    //     contract).  A resolver probe would be wrong here — dee4 segment
+    //     files are invisible to the shard resolver, and shard-only dee4
+    //     deployments may not carry expert tensors at all.
+    //   - Shard-backed experts (safetensors store or no store) keep the
+    //     legacy probe: a resolvable gate_proj for (layer, 0) proves the
+    //     layer exists; the base-layer substitute is allowed only when the
+    //     base layer resolves too.
+    // A layer that resolves nowhere returns -1 so callers fail instead of
+    // silently staging a foreign layer's weights.
+    if (expert_store_ &&
+        std::strncmp(expert_store_->backend_name(), "dee4", 4) == 0) {
+        const auto* store =
+            static_cast<const Dee4ExpertStore*>(expert_store_.get());
+        const int lo = store->start_layer();
+        const int hi = lo + store->num_layers();
+        if (layer >= lo && layer < hi) return layer;
+        if (cfg_.base_layer >= lo && cfg_.base_layer < hi) {
+            return cfg_.base_layer;
+        }
+        return -1;
+    }
+    if (layer >= 0 &&
+        resolver_.resolve_expert(layer, 0, TensorResolver::GATE_PROJ).ok()) {
+        return layer;
+    }
+    if (cfg_.base_layer >= 0 &&
+        resolver_.resolve_expert(
+            cfg_.base_layer, 0, TensorResolver::GATE_PROJ).ok()) {
+        return cfg_.base_layer;
+    }
+    return -1;
 }
 
 const float* Engine::get_staging(int source_layer, int expert) {
@@ -2783,8 +2991,14 @@ void Engine::point_fp4_regions(
 bool Engine::fill_fp4_record(
         void* context, uint8_t* dst, size_t nbytes) {
     auto* fill = static_cast<Fp4FillContext*>(context);
-    return fill && fill->store && fill->view &&
-        fill->store->materialize(*fill->view, dst, nbytes);
+    if (!fill || !fill->store || !fill->view) return false;
+    if (fill->store->materialize(*fill->view, dst, nbytes)) return true;
+    // The view resolved but the read failed: count it in the store's
+    // failure-only counter so honest latency percentiles are not skewed.
+    // The host pack cache treats a false fill as fail-closed (the reservation
+    // is rolled back; nothing readable is published).
+    fill->store->record_source_read_failure();
+    return false;
 }
 
 bool Engine::prepare_fp4_experts(
@@ -2889,6 +3103,12 @@ bool Engine::prepare_fp4_experts(
             }
             point_fp4_regions(target, results[index].data);
             target->prepared_generation = generation;
+            // Phase-4 (B0d): record the host-tier outcome that produced these
+            // region pointers so the matching prefetch request can carry an
+            // honest host resolution.
+            target->host_resolution = results[index].cache_hit
+                ? HostResolution::HostHit
+                : HostResolution::StorageMiss;
         }
         if (filled != 0) {
             const double batch_wall_ms = std::max(
@@ -2913,9 +3133,13 @@ const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int exp
     if (fp4_prepare_generation_ != 0 && prepared != staging_int8_.end() &&
         prepared->second.prepared_generation == fp4_prepare_generation_) {
         const uint8_t* pack = pack_cache_.get_if_present(key, false);
-        if (!pack) return nullptr;
-        point_fp4_regions(&prepared->second, pack);
-        return &prepared->second;
+        if (pack) {
+            point_fp4_regions(&prepared->second, pack);
+            return &prepared->second;
+        }
+        // The pack evicted this record between prepare_fp4_experts and this
+        // consumption: fall through to the full resolution path so it
+        // re-materializes instead of failing on a transient LRU race.
     }
 
     // DEEPSEEK_V4 FP4 (e2m1fn): the weights are already packed on disk
@@ -2952,8 +3176,17 @@ const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int exp
     // host DRAM instead of re-faulting cold mmap pages against the full
     // checkpoint.  The fill is the SAME on hit and miss: if the pack evicted
     // this key in between, it re-copies from the (cheap) resolved views.
-    bool fill_ok = true;
-    auto fill_pack = [&](uint8_t* dst, size_t n) {
+    //
+    // Fail-closed contract (Phase-4 B0d): the fill returns bool.  Any failed
+    // materialization returns false — the cache rolls the reservation back so
+    // no zeroed or partial record can ever be published to a later lookup.
+    // The resolved-but-failed read is also counted in the store's
+    // failure-only counter (it must not enter the read-latency percentiles).
+    auto fill_fail = [&]() -> bool {
+        if (expert_store_) expert_store_->record_source_read_failure();
+        return false;
+    };
+    auto fill_pack = [&](uint8_t* dst, size_t n) -> bool {
         const auto read_begin = std::chrono::steady_clock::now();
         const TensorView* sources[6] = {
             &weights[0], &weights[1], &weights[2],
@@ -2973,9 +3206,7 @@ const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int exp
                        expert_store_->materialize(expert_view, dst, n)) {
                 off = n;
             } else {
-                std::memset(dst, 0, n);
-                fill_ok = false;
-                return;
+                return fill_fail();
             }
         } else if (expert_store_ &&
                    expert_store_->can_gather_materialize() &&
@@ -2986,18 +3217,14 @@ const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int exp
         } else {
             for (int r = 0; r < 6; ++r) {
                 if (off + sources[r]->nbytes > n) {
-                    std::memset(dst, 0, n);
-                    fill_ok = false;
-                    return;
+                    return fill_fail();
                 }
                 std::memcpy(dst + off, sources[r]->data, sources[r]->nbytes);
                 off += sources[r]->nbytes;
             }
         }
         if (off != n) {
-            std::memset(dst, 0, n);
-            fill_ok = false;
-            return;
+            return fill_fail();
         }
         if (expert_store_) {
             const double read_ms =
@@ -3045,25 +3272,53 @@ const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int exp
             return value == nullptr || std::strcmp(value, "0") != 0;
         }();
         if (kReleaseMmapPages) {
-            for (int r = 0; r < 6; ++r) {
-                (void)mmap_.discard_source_pages(
-                    sources[r]->data, sources[r]->nbytes);
-                for (const auto& extra : extra_mmaps_) {
-                    (void)extra->discard_source_pages(
+            // Store-authoritative release first (Phase-4 B0d): the opened
+            // ExpertStore validates page-exact record geometry and applies
+            // posix_fadvise+madvise on its own backing — including dee4
+            // segment mappings the shard mmaps below cannot see.  On any
+            // store-side refusal, the shard-mmap discard stays as the
+            // fallback so safetensors-backed regions are still released.
+            size_t released = 0;
+            const bool store_released =
+                expert_store_ &&
+                expert_store_->release_source_pages(expert_view, &released);
+            if (!store_released) {
+                for (int r = 0; r < 6; ++r) {
+                    (void)mmap_.discard_source_pages(
                         sources[r]->data, sources[r]->nbytes);
+                    for (const auto& extra : extra_mmaps_) {
+                        (void)extra->discard_source_pages(
+                            sources[r]->data, sources[r]->nbytes);
+                    }
                 }
             }
         }
 #endif
+        return true;
     };
+    // contains() distinguishes a true host-pack hit from a same-call fill so
+    // the host-resolution stamp below is honest.  The bool-fill get() is
+    // fail-closed: a failed fill publishes nothing and returns nullptr.  The
+    // explicit std::function selects the bool overload — a bool-returning
+    // lambda alone would also convert to the legacy void-fill signature and
+    // leave the call ambiguous.
+    const bool resident_before = pack_cache_.contains(key);
+    const std::function<bool(uint8_t*, size_t)> fill_fn = fill_pack;
     const uint8_t* pack_buf = pack_cache_.get(
-        key, quantized.fp4_total_nbytes, fill_pack);
-    if (!fill_ok) pack_buf = nullptr;
+        key, quantized.fp4_total_nbytes, fill_fn);
     if (!pack_buf) {
         std::fprintf(stderr,
             "[engine] host pack cache miss-allocation for expert (%d,%d); falling back to mmap regions\n",
             source_layer, expert);
     }
+    // Phase-4 (B0d): the host-tier outcome of THIS call — a resident pack
+    // served the record (host hit), a fill materialized it from the store
+    // (storage miss), or the pack could not be used and the verbatim mmap
+    // regions are the gather sources (mmap fallback).
+    const HostResolution host_resolution = pack_buf
+        ? (resident_before ? HostResolution::HostHit
+                           : HostResolution::StorageMiss)
+        : HostResolution::MmapFallback;
 
     // Metadata + region pointers for the target struct (existing entry on the
     // hit path, the fresh local copy on the miss path).
@@ -3076,6 +3331,7 @@ const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int exp
             quantized.fp4_region_nbytes[region];
     }
     target->fp4_total_nbytes = quantized.fp4_total_nbytes;
+    target->host_resolution = host_resolution;
     if (pack_buf) {
         point_fp4_regions(target, pack_buf);
     } else {
@@ -3110,7 +3366,14 @@ bool Engine::prepack_quantized_sources() {
 
     std::unordered_set<int> source_layers;
     for (int layer = 0; layer < cfg_.num_layers; ++layer) {
-        source_layers.insert(avail_layer(layer));
+        const int source_layer = avail_layer(layer);
+        if (source_layer < 0) {
+            std::fprintf(stderr,
+                "[engine] quantized source prepack: layer %d has no resolvable source layer\n",
+                layer);
+            return false;
+        }
+        source_layers.insert(source_layer);
     }
     const size_t bytes_per_expert =
         cfg_.transfer_dtype == WeightTransferDType::Int4 ? (blob_elems_ + 1) / 2
@@ -3161,9 +3424,12 @@ bool Engine::prepack_quantized_sources() {
 bool Engine::stage_expert(int logical_layer, int source_layer, int expert, int priority) {
 #ifdef DEE_CUDA
     // Central cache-staging boundary: any execution mode may follow the public
-    // pointer-batched API. Release its completed cache pins before a different
-    // path attempts eviction, including preload and legacy host entrypoints.
-    if (cfg_.use_cuda && !drain_pointer_batch_pending()) {
+    // pointer-batched API or the per-expert batched device path.  Retire both
+    // deferred pin sets before any cache ensure may need them as eviction
+    // victims — the pointer-batch drain blocks on its completion event, and
+    // the deferred-unpin drain does the same for chunk compute.
+    if (cfg_.use_cuda && (!drain_pointer_batch_pending() ||
+                          !drain_moe_deferred_unpin())) {
         return false;
     }
 #endif
@@ -3194,6 +3460,12 @@ bool Engine::stage_expert(int logical_layer, int source_layer, int expert, int p
         if (cfg_.transfer_dtype == WeightTransferDType::Fp4E2m1) {
             const QuantizedExpert* quantized = get_staging_fp4(source_layer, expert);
             if (!quantized) return false;
+            // Phase-4 (B0d): hand the host-tier outcome of this staging to the
+            // profiler before the prefetch request is recorded so the emitted
+            // record carries an honest host resolution (never Unknown on the
+            // FP4 path — get_staging_fp4 always stamps one).
+            profiler_.set_host_resolution(
+                source_layer, expert, quantized->host_resolution);
             const void* region_src[6];
             size_t region_nbytes[6];
             size_t packed_offsets[3];
@@ -3264,11 +3536,36 @@ uint16_t* Engine::decode_fp4_cache_block_to_scratch(const void* d_blob,
                                                     void* stream) {
 #ifdef DEE_CUDA
     if (!d_blob || !d_fp4_decode_scratch_ || !fp4_cache_layout_valid_) return nullptr;
+    // Phase-4 (B0d) hard bound: validate the FULL decode footprint before
+    // launching any kernel — a corrupt layout must never queue a write past
+    // the reserved scratch or a read past the cache block.  All math is
+    // overflow-checked; offsets are bounds-checked against cache_blob_bytes_.
+    size_t decoded_elems_total = 0;
+    for (int p = 0; p < 3; ++p) {
+        if (fp4_cache_out_[p] == 0 || fp4_cache_in_[p] == 0 ||
+            (fp4_cache_in_[p] & 1) != 0) return nullptr;
+        const size_t proj = fp4_cache_out_[p] * fp4_cache_in_[p];
+        const size_t packed_nbytes = fp4_cache_out_[p] * (fp4_cache_in_[p] / 2);
+        const size_t scale_nbytes =
+            fp4_cache_out_[p] * ((fp4_cache_in_[p] + 31) / 32);
+        if (fp4_cache_out_[p] != 0 &&
+            proj / fp4_cache_out_[p] != fp4_cache_in_[p]) return nullptr;
+        if (proj > std::numeric_limits<size_t>::max() - decoded_elems_total)
+            return nullptr;
+        if (fp4_cache_packed_offsets_[p] > cache_blob_bytes_ ||
+            packed_nbytes > cache_blob_bytes_ - fp4_cache_packed_offsets_[p])
+            return nullptr;
+        if (fp4_cache_scale_offsets_[p] > cache_blob_bytes_ ||
+            scale_nbytes > cache_blob_bytes_ - fp4_cache_scale_offsets_[p])
+            return nullptr;
+        decoded_elems_total += proj;
+    }
+    if (decoded_elems_total >
+        d_fp4_decode_scratch_bytes_ / sizeof(uint16_t)) return nullptr;
     cudaStream_t cu_stream = static_cast<cudaStream_t>(stream);
     uint16_t* dst16 = static_cast<uint16_t*>(d_fp4_decode_scratch_);
     size_t decoded_elems_before = 0;
     for (int p = 0; p < 3; ++p) {
-        if (fp4_cache_out_[p] == 0 || fp4_cache_in_[p] == 0) return nullptr;
         const uint8_t* packed = static_cast<const uint8_t*>(d_blob) +
                                 fp4_cache_packed_offsets_[p];
         const uint8_t* scale  = static_cast<const uint8_t*>(d_blob) +
@@ -3317,7 +3614,11 @@ void Engine::release_transient_f32_sources() {
 
 bool Engine::preload_all_experts() {
     std::unordered_set<int> source_layers;
-    for (int layer = 0; layer < cfg_.num_layers; ++layer) source_layers.insert(avail_layer(layer));
+    for (int layer = 0; layer < cfg_.num_layers; ++layer) {
+        const int source_layer = avail_layer(layer);
+        if (source_layer < 0) return false;
+        source_layers.insert(source_layer);
+    }
 
     size_t loaded = 0;
     for (int source_layer : source_layers) {
@@ -3373,6 +3674,13 @@ void Engine::forward_layer(int layer, const float* h_in, float* h_out) {
     // budget contract even when top-K is larger than the cache capacity.
     std::vector<float> acc(hidden_, 0.0f);
     const int source_layer = avail_layer(layer);
+    if (source_layer < 0) {
+        // Fail closed on an unresolvable source layer: every expert falls
+        // back rather than staging a foreign layer's weights.
+        stats_.fallbacks += experts.size();
+        for (int i = 0; i < hidden_; ++i) h_out[i] = 0.0f;
+        return;
+    }
     profiler_.note_prediction(current_token_, layer, source_layer, experts);
     for (size_t k = 0; k < experts.size(); ++k) {
         int e = experts[k];
@@ -3460,6 +3768,31 @@ bool Engine::init(const EngineConfig& cfg) {
             cfg_.source_read_lanes, cfg_.source_read_queue_depth);
         return false;
     }
+    // VRAM eviction policy + host-cache mode (§10-B0d). Unknown strings fail
+    // init so a misconfigured Phase-4 run cannot silently change behavior.
+    if (cfg_.eviction_policy != "lru" && cfg_.eviction_policy != "rank_priority") {
+        std::fprintf(stderr,
+            "[engine] invalid eviction_policy '%s' (expected 'lru' or 'rank_priority')\n",
+            cfg_.eviction_policy.c_str());
+        return false;
+    }
+    if (cfg_.host_cache_mode != "lru" && cfg_.host_cache_mode != "bypass") {
+        std::fprintf(stderr,
+            "[engine] invalid host_cache_mode '%s' (expected 'lru' or 'bypass')\n",
+            cfg_.host_cache_mode.c_str());
+        return false;
+    }
+    if (cfg_.host_cache_mode == "bypass") {
+        // Single-record pack budget + a single fill lane: every miss goes
+        // straight to source with no host-tier reuse, matching the bypass
+        // contract while still failing closed on partial fills.
+        cfg_.host_pack_cache_bytes = 0;  // resolved below once record_bytes is known
+        cfg_.source_read_lanes = 1;
+        cfg_.source_read_queue_depth = 1;
+    }
+    cache_.set_eviction_policy(cfg_.eviction_policy == "rank_priority"
+        ? EvictionPolicy::RankPriority
+        : EvictionPolicy::Recency);
     // Expert dims are taken from the SHARD (so a mock inter=64 and the real
     // inter=256 are both handled). The Oracle's own MLP width (H=256) is a
     // separate, fixed quantity passed to oracle.load().
@@ -3634,7 +3967,16 @@ bool Engine::init(const EngineConfig& cfg) {
                                       cfg_.scenario == BenchmarkScenario::ComputeOnly;
     if (needs_full_residency) {
         std::unordered_set<int> source_layers;
-        for (int layer = 0; layer < cfg_.num_layers; ++layer) source_layers.insert(avail_layer(layer));
+        for (int layer = 0; layer < cfg_.num_layers; ++layer) {
+            const int source_layer = avail_layer(layer);
+            if (source_layer < 0) {
+                std::fprintf(stderr,
+                    "[engine] full-resident scenario: layer %d has no resolvable source layer\n",
+                    layer);
+                return false;
+            }
+            source_layers.insert(source_layer);
+        }
         const size_t physical_experts = source_layers.size() * static_cast<size_t>(oracle_.num_experts());
         if (physical_experts > std::numeric_limits<size_t>::max() / cache_blob_bytes_) {
             std::fprintf(stderr, "[engine] full-resident scenario cache size overflow\n");
@@ -3643,10 +3985,63 @@ bool Engine::init(const EngineConfig& cfg) {
         budget = physical_experts * cache_blob_bytes_;
     }
     cfg_.budget_bytes = budget;
-    if (cfg_.host_pack_cache_bytes == 0) {
-        cfg_.host_pack_cache_bytes = 8ULL << 30;  // 8 GiB default host pack LRU
+    // Host pack budget (Phase-4 B0d).  The record size is taken from the
+    // OPENED store's layout reference (first_expert above), never from the
+    // provisional inter_=256 dimensions — that is the same record geometry
+    // get_staging_fp4()/prepare_fp4_experts() request from pack_cache_.
+    size_t host_record_bytes = 0;
+    if (deepseek_v4 && fp4_cache) {
+        QuantizedExpert reference;
+        if (configure_fp4_quantized(first_expert, &reference)) {
+            host_record_bytes = reference.fp4_total_nbytes;
+        }
+    }
+    if (cfg_.host_cache_mode == "bypass") {
+        // Bypass mode degenerates the host pack to a single-record bounce
+        // buffer: the LRU can never hold more than the record currently
+        // being gathered, so every expert still resolves through the same
+        // fail-closed fill path but with zero host-tier reuse.
+        cfg_.host_pack_cache_bytes = std::max<size_t>(host_record_bytes, 1);
+        if (cfg_.verbose) {
+            std::fprintf(stderr,
+                "[engine] host_cache_mode=bypass: host pack budget = %zu bytes "
+                "(one record), source_read_lanes=1\n",
+                cfg_.host_pack_cache_bytes);
+        }
+    } else if (cfg_.host_pack_cache_bytes == 0) {
+        // Unconfigured host budget: default to the proven 8 GiB LRU, but log
+        // loudly — a silent implicit 8 GiB is exactly the kind of hidden
+        // state that makes Phase-4 campaign numbers unexplainable.
+        cfg_.host_pack_cache_bytes = 8ULL << 30;
+        std::fprintf(stderr,
+            "[engine] WARNING: host_pack_cache_bytes=0; defaulting host pack "
+            "LRU budget to 8 GiB (set it explicitly to silence this)\n");
+    } else if (host_record_bytes != 0 &&
+               cfg_.host_pack_cache_bytes < host_record_bytes) {
+        // A budget smaller than a single record guarantees every fill is a
+        // budget rejection — fail init instead of running a campaign that
+        // can never produce a host hit.
+        std::fprintf(stderr,
+            "[engine] host_pack_cache_bytes %zu is smaller than one packed "
+            "record (%zu bytes); every host fill would be rejected\n",
+            cfg_.host_pack_cache_bytes, host_record_bytes);
+        return false;
     }
     pack_cache_.set_budget(cfg_.host_pack_cache_bytes);
+    // Phase-4 (B0d): when the pack LRU evicts a record, immediately clear
+    // the staging_int8_ region pointers that referenced its payload so a
+    // stale case-(a) pointer can never be gathered into VRAM (see the
+    // staging_int8_ INVARIANT in engine.h).  The observer fires on the
+    // caller thread after removal; staging_int8_ keys share the pack's
+    // staging_key(source_layer, expert) key space.
+    pack_cache_.set_evict_observer(
+        [this](uint64_t key, std::size_t) {
+            auto it = staging_int8_.find(key);
+            if (it == staging_int8_.end()) return;
+            for (int r = 0; r < 6; ++r) it->second.fp4_regions[r] = {};
+            it->second.prepared_generation = 0;
+            it->second.host_resolution = HostResolution::Unknown;
+        });
     if (!pack_cache_.set_fill_lanes(cfg_.source_read_lanes)) {
         std::fprintf(stderr,
             "[engine] cannot initialize %zu bounded source-read lanes\n",
@@ -3880,7 +4275,8 @@ bool Engine::generate() {
 
 #ifdef DEE_CUDA
 void Engine::cuda_cleanup() {
-    if (!pointer_batch_pending_pins_.empty()) {
+    if (!pointer_batch_pending_pins_.empty() ||
+        !moe_deferred_unpin_keys_.empty()) {
         bool compute_stream_synchronized = false;
         if (compute_stream_) {
             compute_stream_synchronized = DEE_CUDA_CHECK_NAMED(
@@ -3888,7 +4284,11 @@ void Engine::cuda_cleanup() {
                 "cudaStreamSynchronize(pointer batch teardown)");
         }
         if (compute_stream_synchronized) {
+            // Retire BOTH deferred pin sets after the proven stream sync so
+            // no pin outlives the blocks the cache teardown is about to
+            // release (Phase-4 B0d).
             drain_pointer_batch_pending(true);
+            drain_moe_deferred_unpin(true);
         }
     }
     if (d_h_in_)  { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE(d_h_in_, "d_h_in_"), "cudaFree(d_h_in)");  d_h_in_  = nullptr; }
@@ -3924,6 +4324,10 @@ void Engine::cuda_cleanup() {
     if (pointer_batch_complete_event_) { DEE_CUDA_CHECK_NAMED(DEE_TA_EVENT_DESTROY(pointer_batch_complete_event_, "pointer_batch_complete_event_"), "cudaEventDestroy(pointer batch complete)"); pointer_batch_complete_event_ = nullptr; }
     pointer_batch_completion_event_valid_ = false;
     pointer_batch_retirement_poisoned_ = false;
+    if (moe_chunk_complete_event_) { DEE_CUDA_CHECK_NAMED(DEE_TA_EVENT_DESTROY(moe_chunk_complete_event_, "moe_chunk_complete_event_"), "cudaEventDestroy(MoE chunk pin completion)"); moe_chunk_complete_event_ = nullptr; }
+    moe_chunk_completion_event_valid_ = false;
+    moe_deferred_retirement_poisoned_ = false;
+    moe_deferred_unpin_keys_.clear();
     if (h_moe_expert_ids_i64_) { DEE_CUDA_CHECK_NAMED(DEE_TA_FREE_HOST(h_moe_expert_ids_i64_, "h_moe_expert_ids_i64_"), "cudaFreeHost(combined expert IDs)"); h_moe_expert_ids_i64_ = nullptr; }
     h_moe_expert_ids_capacity_ = 0;
     if (combined_output_ready_event_) { DEE_CUDA_CHECK_NAMED(DEE_TA_EVENT_DESTROY(combined_output_ready_event_, "combined_output_ready_event_"), "cudaEventDestroy(combined output ready)"); combined_output_ready_event_ = nullptr; }
@@ -4001,6 +4405,13 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
     }
 
     const int source_layer = avail_layer(layer);
+    if (source_layer < 0) {
+        std::fprintf(stderr,
+            "[engine] forward_layer_cuda: layer %d has no resolvable source layer\n",
+            layer);
+        finish_host_scheduling();
+        return false;
+    }
     profiler_.note_prediction(current_token_, layer, source_layer, experts);
 
     if (cfg_.scenario == BenchmarkScenario::OracleOnly) {

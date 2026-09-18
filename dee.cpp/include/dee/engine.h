@@ -93,6 +93,17 @@ struct EngineConfig {
     int         num_layers  = 40;   // depth (clamped to oracle.num_layers)
     size_t      budget_bytes = 0;   // VRAM budget (0 => 4 experts auto)
     size_t      host_pack_cache_bytes = 0; // packed-source RAM LRU (0 => 8 GiB)
+    // Phase-4 (B0d): VRAM eviction policy for the expert cache.  "lru" maps to
+    // EvictionPolicy::Recency; "rank_priority" maps to
+    // EvictionPolicy::RankPriority.  The default preserves the legacy
+    // bit-exact rank-priority behavior; unknown strings fail init.
+    std::string eviction_policy = "rank_priority";
+    // Phase-4 (B0d): host pack cache mode.  "lru" is the bounded packed-source
+    // LRU described above; "bypass" clamps the host cache budget to exactly
+    // one store record and forces source_read_lanes = 1 so multi-lane fills
+    // can never outlive a single-record reservation.  Unknown strings fail
+    // init.
+    std::string host_cache_mode = "lru";
     // Bounded DEE4 cold-record materialization. One lane is the conservative
     // legacy-equivalent default; queue depth bounds a layer worklist chunk.
     // Workers only populate disjoint host-cache reservations. H2D and compute
@@ -173,6 +184,9 @@ struct EngineStats {
     size_t device_moe_batch_buffer_bytes = 0;
     size_t device_moe_raw_workspace_bytes = 0;
     size_t device_moe_pointer_batch_workspace_bytes = 0;
+    // P2.3/Phase-4: bounded FP16 scratch that expands one packed FP4 cache
+    // block per expert at compute time (Fp4E2m1 mode only; 0 otherwise).
+    size_t device_fp4_decode_scratch_bytes = 0;
     size_t d2d_gather_copies = 0;
     size_t d2d_gather_bytes = 0;
     size_t d2d_scatter_copies = 0;
@@ -211,6 +225,14 @@ public:
     ExpertStoreStats expert_store_stats() const {
         return expert_store_ ? expert_store_->stats() : ExpertStoreStats{};
     }
+
+    // Phase-4 (B0d) reset APIs.  clear_host_cache() drops every host-pack
+    // entry, clears the staging metadata that points at packed records, and
+    // resets the source-store telemetry so the next call re-materializes
+    // cold.  reset_store_stats() only zeroes ExpertStore counters; the host
+    // cache stays warm.  Both are inert on a null store.
+    bool clear_host_cache();
+    bool reset_store_stats();
 
     // Run the autoregressive generation loop and fill `stats_`.
     bool generate();
@@ -434,6 +456,29 @@ private:
     int pointer_batch_pending_source_layer_ = -1;
     bool pointer_batch_completion_event_valid_ = false;
     bool pointer_batch_retirement_poisoned_ = false;
+    // Phase-4 (B0d): deferred pin retirement for the per-expert batched device
+    // path (moe_forward_batch_device_impl).  The old code unpinned each cache
+    // block right after enqueueing its GEMM, so a later chunk's ensure() could
+    // evict a block whose compute was still queued on compute_stream_.  Pins
+    // now accumulate in moe_deferred_unpin_keys_ (one entry per pin taken) and
+    // retire only after completion is proven:
+    //   - at the end of each chunk's compute loop, moe_chunk_complete_event_
+    //     is recorded on compute_stream_; the record covers every key listed
+    //     so far (stream ordering), including leftovers from earlier chunks
+    //     and calls;
+    //   - stage_expert drains the list before any cache ensure by blocking on
+    //     that event (drain_pointer_batch_pending's exact contract);
+    //   - synchronize_output=true drains after the output stream sync;
+    //   - synchronize_output=false (combined path) leaves the list armed so
+    //     the next call's stage_expert drain retires it;
+    //   - a failed event sync poisons retirement until a full stream sync
+    //     (reset/teardown/output sync) re-proves completion — fail closed.
+    // The list is bounded by the pins outstanding at once (chunk size plus at
+    // most one prior call's leftovers); every entry maps to one live pin count.
+    cudaEvent_t moe_chunk_complete_event_ = nullptr;
+    std::vector<std::pair<int, int>> moe_deferred_unpin_keys_;
+    bool moe_chunk_completion_event_valid_ = false;
+    bool moe_deferred_retirement_poisoned_ = false;
     int64_t* h_moe_expert_ids_i64_ = nullptr;  // pinned [tokens * topk]
     size_t h_moe_expert_ids_capacity_ = 0;
     cudaEvent_t combined_output_ready_event_ = nullptr;
@@ -447,6 +492,7 @@ private:
     bool ensure_combined_raw_capacity(size_t selections);
     bool ensure_pointer_batch_capacity(size_t selections);
     bool drain_pointer_batch_pending(bool compute_stream_synchronized = false);
+    bool drain_moe_deferred_unpin(bool compute_stream_synchronized = false);
     bool moe_forward_pointer_batched_device_impl(
         int layer, const void* d_h_in, int tokens,
         const int* h_expert_ids, int topk, float* d_raw_output);
@@ -553,7 +599,24 @@ private:
         // so hit-path refreshes can re-point without recomputing shapes.
         size_t fp4_region_nbytes[6] = {0, 0, 0, 0, 0, 0};
         uint64_t prepared_generation = 0;
+        // Phase-4 (B0d): the host-tier outcome that produced this entry's
+        // current region pointers (host-pack hit, store materialization, or
+        // mmap fallback).  stage_expert stamps it into the profiler right
+        // before issuing the prefetch so the emitted request record carries
+        // honest host-tier attribution.  Only meaningful for FP4 entries.
+        HostResolution host_resolution = HostResolution::Unknown;
     };
+    // INVARIANT (Phase-4 B0d): an FP4 entry's fp4_regions[] pointers address
+    // either (a) the host pack cache's owned payload or (b) raw mmap regions.
+    // Case (a) pointers dangle as soon as the pack LRU evicts the key —
+    // including re-materialization of the same key at a different buffer —
+    // so EVERY use must re-consult pack_cache_ and re-point via
+    // point_fp4_regions before reading them (get_staging_fp4 does this on
+    // both its hit and miss paths; prepare_fp4_experts does it after each
+    // batch).  The pack_cache_ eviction observer additionally clears the
+    // region pointers of any evicted entry so stale case-(a) pointers can
+    // never survive an eviction.  Non-FP4 (INT8/INT4) entries own their bytes
+    // in host/pinned and are unaffected.
     std::unordered_map<uint64_t, QuantizedExpert> staging_int8_;
     size_t pinned_staging_bytes_ = 0;
     static constexpr size_t kPinnedStagingLimit = 192ULL * 1024 * 1024;
@@ -586,7 +649,10 @@ private:
     bool prepare_fp4_experts(int source_layer, const int* experts,
                              size_t count);
     struct Fp4FillContext {
-        const ExpertStore* store = nullptr;
+        // Non-const: a failed materialize() must record_source_read_failure()
+        // on the owning store (the underlying object is never const in
+        // practice — expert_store_ is a plain unique_ptr).
+        ExpertStore* store = nullptr;
         const ExpertView* view = nullptr;
     };
     static bool fill_fp4_record(void* context, uint8_t* dst, size_t nbytes);
