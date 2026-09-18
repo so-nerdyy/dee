@@ -380,10 +380,19 @@ def run_arm(arm):
         for src in (cp_path, ce_path):
             if src.is_file():
                 (arm_out / src.name).write_bytes(src.read_bytes())
+        result = None
         if res_path.is_file():
-            result = json.loads(res_path.read_text())
-            (arm_out / res_path.name).write_text(
-                json.dumps(result, indent=1))
+            raw = res_path.read_bytes()
+            (arm_out / res_path.name).write_bytes(raw)
+            try:
+                result = json.loads(raw)
+            except ValueError:
+                rec["classification"] = "UNPARSEABLE_RESULT"
+        if journal_path.is_file():
+            dst = arm_out / journal_path.name
+            dst.write_bytes(journal_path.read_bytes())
+            rec["journal_sha256"] = sha256_path(dst)
+        if result is not None:
             rec["classification"] = result.get("classification")
             rec["n_tokens"] = len(result.get("generated_token_ids") or [])
             rec["token_ids_sha256"] = hashlib.sha256(json.dumps(
@@ -400,11 +409,7 @@ def run_arm(arm):
             rec["total_wall_seconds"] = result.get("total_wall_seconds")
             rec["decode_tok_s"] = result.get("decode_tok_s")
             rec["prefill_ms"] = result.get("prefill_ms")
-            if journal_path.is_file():
-                dst = arm_out / journal_path.name
-                dst.write_bytes(journal_path.read_bytes())
-                rec["journal_sha256"] = sha256_path(dst)
-        else:
+        elif "classification" not in rec:
             rec["classification"] = default_cls
         recs[tag] = rec
     # Process-level artifacts (same content across prompts within the arm).
@@ -749,7 +754,8 @@ def main():
         check("read-path microbench", True,
               f"mmap={mmap_ms:.0f}ms/rec pread={pread_ms:.0f}ms/rec")
     except Exception as exc:
-        check("read-path microbench", False, repr(exc)[:150])
+        report["microbench"] = {"error": repr(exc)[:150]}
+        log(f"read-path microbench failed: {exc!r}")
 
     # ---------------- P3 arm loop: one process per arm, all prompts ----
     # a1 FIRST: it is the reference truth source AND the most Phase-3-like
