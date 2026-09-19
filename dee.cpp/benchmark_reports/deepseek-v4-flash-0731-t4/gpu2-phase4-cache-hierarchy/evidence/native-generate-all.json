@@ -1,0 +1,50 @@
+[
+  {
+    "prompt_index": 0,
+    "classification": "ACCEPT_CORRECTNESS",
+    "n_tokens": 128,
+    "token_ids_sha256": "7613595e97071583f516bb2ef376295c6f102053360c173f15d0a1315635d9ab"
+  },
+  {
+    "prompt_index": 1,
+    "classification": "ACCEPT_CORRECTNESS",
+    "n_tokens": 128,
+    "token_ids_sha256": "3f8cdc77c4704757d95609c0e1f3580bb9c4cce3a0071f9eaeece666952eb97f"
+  },
+  {
+    "prompt_index": 2,
+    "classification": "ACCEPT_CORRECTNESS",
+    "n_tokens": 128,
+    "token_ids_sha256": "1ccde161c4b3f6aee8f35b7d62c48fe12a802bb9d552bb7f4dd341fce6482d26"
+  },
+  {
+    "prompt_index": 3,
+    "classification": "ACCEPT_CORRECTNESS",
+    "n_tokens": 128,
+    "token_ids_sha256": "9142eb4b061dd41e5a25e4e89b6d0002c543f28d59aaf5f2919113008f313ad2"
+  },
+  {
+    "prompt_index": 4,
+    "classification": "ACCEPT_CORRECTNESS",
+    "n_tokens": 128,
+    "token_ids_sha256": "0c6a19c75d1b132fdd86ad154334fe6a6c99baa143fa2836e2dbaeb23e7ab75d"
+  },
+  {
+    "prompt_index": 5,
+    "classification": "ACCEPT_CORRECTNESS",
+    "n_tokens": 128,
+    "token_ids_sha256": "9ef4c162fc6636bce0dd61856d33f3906bf8224c712a7132fef893cff034bb17"
+  },
+  {
+    "prompt_index": 6,
+    "classification": "ACCEPT_CORRECTNESS",
+    "n_tokens": 128,
+    "token_ids_sha256": "053d3972ba017144c0ff28706f07825a83e6dd73e7516339c61d6004e3a004b1"
+  },
+  {
+    "prompt_index": 7,
+    "classification": "ACCEPT_CORRECTNESS",
+    "n_tokens": 128,
+    "token_ids_sha256": "7613595e97071583f516bb2ef376295c6f102053360c173f15d0a1315635d9ab"
+  }
+]

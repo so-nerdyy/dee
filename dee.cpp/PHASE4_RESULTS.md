@@ -72,10 +72,20 @@ prompts + q0 verbatim repeat). All arms: dee4_segmented store, 3.5 GiB VRAM aren
 
 ## Evidence locations
 
+- **Committed bundle (primary)**: `dee.cpp/benchmark_reports/
+  deepseek-v4-flash-0731-t4/gpu2-phase4-cache-hierarchy/` — immutable
+  per-prompt artifacts for all four arms, compact metric extracts,
+  file-sha manifest, `SHA256SUMS.json`, and `verify.py` which
+  recomputes every headline number above (58/58 checks at seal time).
+  See `EVIDENCE.md` there for provenance and limitations.
 - Kernel artifacts: `kaggle kernels output nivind/dee-cpp-p4-cache-campaign`
   (per-arm harvest under p4-out/{arm}/; a3's last-arm raw workdir files at
-  output root).
-- Local extraction: C:\Users\carth\Downloads\dynamic_expert_eviction\tmp\p4-out-final\
+  output root). Two pulls were needed — the first truncated mid-harvest
+  (a3 journals absent); the second recovered all three arms' journals.
+- `p4_report.json` was never written — the session ended during final
+  harvest; this report is reconstructed from per-prompt artifacts.
 - Per-request cache events: cache_events-q{0..7}.jsonl per arm (~26 MB each)
   with resident/host_hit/cold kinds — the Phase-4 event stream, first
-  campaign to carry it.
+  campaign to carry it. Too large for git; per-kind counts are committed
+  in the bundle's `_extract/` and stream shas are pinned by the
+  `integrity-q*.json` records + `_extract/file-sha-manifest.json`.
