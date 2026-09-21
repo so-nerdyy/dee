@@ -1627,6 +1627,30 @@ def main() -> int:
             host_cache_mode=HOST_CACHE_MODE)
         log(f"engines built (cache_dtype={CACHE_DTYPE})")
 
+    # Phase-5 cohort mode: NATIVE_COHORT_JSON carries {"groups": [[i,...]]}
+    # — indices into NATIVE_PROMPTS_JSON forming lockstep cohorts.  Each
+    # group runs one generate_cohort call; rows are left-padded to the
+    # group max token length (scalar start_pos contract) and padding is
+    # recorded per row.  With the env absent, max_batch=1 and behavior is
+    # identical to the Phase-4 path.  max_batch must be resolved BEFORE
+    # build_candidate sizes the kv_cache rows.
+    _cohorts_json = os.environ.get("NATIVE_COHORT_JSON", "")
+    try:
+        _cohorts_parsed = json.loads(_cohorts_json) if _cohorts_json else None
+        COHORT_GROUPS = (_cohorts_parsed.get("groups")
+                         if _cohorts_parsed else None)
+        COHORT_PAD_TO = (_cohorts_parsed.get("pad_to")
+                         if _cohorts_parsed else None)
+    except Exception:
+        COHORT_GROUPS = None
+        COHORT_PAD_TO = None
+    COHORT_PAD_TOKEN = int(os.environ.get("NATIVE_COHORT_PAD_TOKEN", "0"))
+    COHORT_MAX_BATCH = (max((len(g) for g in COHORT_GROUPS), default=1)
+                        if COHORT_GROUPS else 1)
+    if COHORT_GROUPS:
+        log(f"=== cohort mode: {len(COHORT_GROUPS)} groups, "
+            f"max_batch={COHORT_MAX_BATCH}, pad_token={COHORT_PAD_TOKEN} ===")
+
     log("=== build full model (native FFN) ===")
     t0 = time.monotonic()
     # The tensor source must read dense tensors (embed/head/norm/attention/
@@ -1641,14 +1665,16 @@ def main() -> int:
             cache0=None, loader0=None, cache1=None, loader1=None,
             provider=provider, ffn_backend="native",
             engine0=eng0, engine1=eng1, split=cfg.n_layers,
-            diagnostics=DIAGNOSTICS, profile_stages=PROFILE_STAGES)
+            diagnostics=DIAGNOSTICS, profile_stages=PROFILE_STAGES,
+            max_batch=COHORT_MAX_BATCH)
     else:
         model = vm.DeepseekV4Model.build_candidate(
             cfg, source, device0="cuda:0", device1="cuda:1",
             cache0=None, loader0=None, cache1=None, loader1=None,
             provider=provider, ffn_backend="native",
             engine0=eng0, engine1=eng1, diagnostics=DIAGNOSTICS,
-            profile_stages=PROFILE_STAGES)
+            profile_stages=PROFILE_STAGES,
+            max_batch=COHORT_MAX_BATCH)
     model.reset_state()
     build_s = time.monotonic() - t0
     log(f"model build {build_s:.1f}s")
@@ -1665,6 +1691,13 @@ def main() -> int:
     if not PROMPT_LIST:
         PROMPT_LIST = [CANONICAL_PROMPT]
     _multi = len(PROMPT_LIST) > 1
+
+    if COHORT_GROUPS:
+        for _g in COHORT_GROUPS:
+            if not _g or max(_g) >= len(PROMPT_LIST) or min(_g) < 0:
+                raise RuntimeError(
+                    f"NATIVE_COHORT_JSON group {_g} indexes outside "
+                    f"PROMPT_LIST (n={len(PROMPT_LIST)})")
 
     def _run_prompt(prompt_text: str, qi: int):
         global CANONICAL_PROMPT, SEAL_APPLICABLE
@@ -2372,26 +2405,530 @@ def main() -> int:
             f"{performance_eligible} ===")
         return {"prompt_index": qi, "classification": classification, "result": result}
 
-    _all_results = []
-    for _qi, _ptext in enumerate(PROMPT_LIST):
+    def _run_cohort(group: list[int], ci: int):
+        """Lockstep K-cohort generation (Phase-5 / dee-serve v0).
+
+        Same evidence discipline as _run_prompt, cohort-scoped: one
+        K-row route journal, one cohort checkpoint (journal link bound
+        once per forward then fanned out), per-row checkpoint/result
+        artifacts, cohort-level counters + dedup statistics.
+        """
+        _kdir = str(DEE / "kaggle" / "deepseek-v4-flash-0731")
+        if _kdir not in sys.path:
+            sys.path.insert(0, _kdir)
+        import phase5_serve_driver as p5drv
+        prompt_texts = [PROMPT_LIST[i] for i in group]
+        suffix = f"-c{ci}"
+        k = len(group)
+        log(f"=== cohort {ci}: K={k} prompt_indices={group} ===")
+        _p4_engines = (
+            (("cuda0", eng0),) if SINGLE_GPU
+            else (("cuda0", eng0), ("cuda1", eng1))
+        )
+        if CACHE_RESET == "cold":
+            for _ck, _ce in _p4_engines:
+                if not _ce.reset_runtime_cache():
+                    raise RuntimeError(
+                        f"{_ck} reset_runtime_cache failed (cold reset): "
+                        f"{_ce.last_error_message() or 'no native diagnostic'}")
+                _clear_host = getattr(_ce, "clear_host_cache", None)
+                if _clear_host is None:
+                    log(f"[p5] {_ck}: pydee binary lacks "
+                        "clear_host_cache(); host pack + fp4 staging "
+                        "metadata NOT cleared (old binary)")
+                else:
+                    _clear_host()
+                _reset_store = getattr(_ce, "reset_store_stats", None)
+                if _reset_store is not None:
+                    _reset_store()
+            log(f"[p5] NATIVE_CACHE_RESET=cold: caches + store stats reset "
+                f"before cohort {ci}")
+        if not eng0.reset_external_profile():
+            raise RuntimeError(
+                "cuda0 external-profile reset failed before cohort: "
+                f"{eng0.last_error_message() or 'no native diagnostic'}")
+        if not SINGLE_GPU and not eng1.reset_external_profile():
+            raise RuntimeError(
+                "cuda1 external-profile reset failed before cohort: "
+                f"{eng1.last_error_message() or 'no native diagnostic'}")
+        mem_avail = host_mem_available_gib()
+        prompt_start_counters: dict[str, dict[str, dict]] = {
+            "host_pack": {}, "expert_store": {}, "engine_stats": {}}
         try:
-            _all_results.append(_run_prompt(_ptext, _qi))
-        except Exception as _exc:
-            # One prompt's failure must not kill the remaining prompts.
-            log(f"prompt {_qi} failed: {_exc!r}")
-            _all_results.append({"prompt_index": _qi,
-                                 "classification": "ERROR",
-                                 "error": repr(_exc)[:400],
-                                 "result": {}})
-            (WORK / f"native-generate-result-q{_qi}.json").write_text(
-                json.dumps({"classification": "ERROR",
-                            "error": repr(_exc)[:400],
-                            "generated_token_ids": []}, indent=2))
+            for _ck, _ce in _p4_engines:
+                prompt_start_counters["host_pack"][_ck] = dict(
+                    _ce.host_pack_stats())
+                prompt_start_counters["expert_store"][_ck] = dict(
+                    _ce.expert_store_stats())
+                prompt_start_counters["engine_stats"][_ck] = json.loads(
+                    _ce.last_stats_json())
+        except Exception as _snap_exc:
+            log(f"[p5] cohort-start counter snapshot failed: {_snap_exc!r}")
+
+        # Prebuild padded ids so L* is known before the first forward (the
+        # route hook derives start_pos from it).  pad_to="max" pads every
+        # group to the workload-global token length so the K=1 reference
+        # arm sees byte-identical padded inputs.
+        if COHORT_PAD_TO == "max":
+            _min_len = max(len(tokenizer.encode(t)) for t in PROMPT_LIST)
+        elif COHORT_PAD_TO is not None:
+            _min_len = int(COHORT_PAD_TO)
+        else:
+            _min_len = 0
+        ids_list, pad_meta = p5drv.build_cohort_ids(
+            tokenizer.encode, prompt_texts, COHORT_PAD_TOKEN,
+            min_len=_min_len)
+        lstar = len(ids_list[0])
+        log(f"[p5] cohort {ci}: L*={lstar} pads={[m['pad_tokens'] for m in pad_meta]}")
+
+        def _set_forward_token(step: int) -> None:
+            for _ck, _ce in _p4_engines:
+                try:
+                    _ce.set_external_token(int(step))
+                except Exception as _tok_exc:
+                    log(f"[p5] {_ck} set_external_token({step}) failed: "
+                        f"{_tok_exc!r}")
+        _set_forward_token(0)
+
+        launch_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        _engine_rc = {}
+        try:
+            _engine_rc = {
+                _ck: _ce.runtime_config() for _ck, _ce in _p4_engines}
+        except Exception as _rc_exc:
+            log(f"[p5] engine runtime_config snapshot failed: {_rc_exc!r}")
+        arm_config_payload = {
+            "recorded_at_utc": launch_utc,
+            "schema": "phase5-cohort-config/v1",
+            "arm_id": ARM_ID or None,
+            "run_id": RUN_ID,
+            "git_commit": head,
+            "cohort_id": ci,
+            "cohort_k": k,
+            "prompt_indices": group,
+            "cohort_pad_token": COHORT_PAD_TOKEN,
+            "cohort_pad_to": COHORT_PAD_TO,
+            "cohort_prompt_len": lstar,
+            "prompt_sha256": [hashlib.sha256(t.encode("utf-8")).hexdigest()
+                              for t in prompt_texts],
+            "resolved": {
+                "cache_dtype": CACHE_DTYPE,
+                "expert_store": EXPERT_STORE_BACKEND,
+                "expert_store_path": dee4_store_path,
+                "eviction_policy": EVICTION_POLICY,
+                "host_cache_mode": HOST_CACHE_MODE,
+                "cache_reset": CACHE_RESET,
+                "trace_requests": TRACE_REQUESTS,
+                "ignore_eos": IGNORE_EOS,
+                "profile_stages": PROFILE_STAGES,
+                "diagnostics": DIAGNOSTICS,
+                "use_batched_experts": USE_BATCHED_EXPERTS,
+                "n_tokens": N_TOKENS,
+                "budget_bytes_per_gpu": BUDGET_BYTES,
+                "host_pack_cache_bytes_requested": [
+                    HOST_PACK_CACHE_BYTES_GPU0,
+                    HOST_PACK_CACHE_BYTES_GPU1],
+                "host_pack_cache_bytes_effective": [
+                    pack_budget0, pack_budget1],
+                "source_read_lanes": SOURCE_READ_LANES,
+                "source_read_queue_depth": SOURCE_READ_QUEUE_DEPTH,
+                "single_gpu": SINGLE_GPU,
+                "device_split": getattr(model, "split", None),
+                "cohort_mode": True,
+                "max_batch": COHORT_MAX_BATCH,
+            },
+            "engine_runtime_config": _engine_rc,
+            "native_env": {
+                k2: v for k2, v in sorted(os.environ.items())
+                if k2.startswith(("NATIVE_", "DEE_", "DEE4_"))},
+        }
+        write_evidence(f"arm_config{suffix}.json", arm_config_payload)
+
+        ROUTE_JOURNAL_PATH = WORK / f"routed_experts{suffix}.jsonl"
+        route_journal = RoutedExpertJournal(
+            ROUTE_JOURNAL_PATH, run_id=RUN_ID, n_layers=cfg.n_layers,
+            topk=cfg.topk)
+        route_step = 0
+        route_start_pos = 0
+
+        def _route_checkpoint(layer_id: int) -> None:
+            nonlocal route_step, route_start_pos
+            layer = model.layer(int(layer_id))
+            ids_host = getattr(
+                layer.ffn_fn, "_native_route_ids_host", None)
+            if ids_host is None:
+                raise RuntimeError(
+                    f"native route buffer unavailable after layer {layer_id}")
+            if bool(getattr(ids_host, "is_cuda", False)):
+                raise RuntimeError(
+                    f"route journal refuses a device read at layer {layer_id}")
+            route_journal.append_layer(
+                step=route_step, start_pos=route_start_pos,
+                layer=int(layer_id), device=str(layer.device),
+                expert_ids=ids_host)
+            if int(layer_id) == cfg.n_layers - 1:
+                route_step += 1
+                route_start_pos = lstar + route_step - 1
+
+        cohort_cp_path = WORK / f"generated_checkpoint{suffix}.jsonl"
+        cohort_cp = open(cohort_cp_path, "w", encoding="utf-8")
+        row_handles = [
+            open(WORK / f"generated_checkpoint{suffix}-r{r}.jsonl", "w",
+                 encoding="utf-8")
+            for r in range(k)]
+        c_t0 = time.monotonic()
+
+        def _cohort_step(cid: int, step: int, toks: list[int]) -> None:
+            # Arm the NEXT forward's token attribution, then bind this
+            # forward's journal link once and fan it into every row record.
+            _set_forward_token(step + 1)
+            link = route_journal.checkpoint_link(step)
+            mem = host_mem_available_gib()
+            rec = {"step": step, "token_ids": [int(t) for t in toks],
+                   "elapsed_s": round(time.monotonic() - c_t0, 2),
+                   "host_mem_available_gib": round(mem, 2),
+                   "route_journal": link,
+                   "proc": process_mem_gib(),
+                   "sys": system_mem_gib()}
+            try:
+                rec["engine_stats"] = {
+                    key: json.loads(engine.last_stats_json())
+                    for key, engine in _p4_engines}
+                rec["expert_store"] = {
+                    key: engine.expert_store_stats()
+                    for key, engine in _p4_engines}
+                rec["host_pack"] = {
+                    key: engine.host_pack_stats()
+                    for key, engine in _p4_engines}
+            except Exception:
+                pass
+            cohort_cp.write(json.dumps(rec) + "\n")
+            cohort_cp.flush()
+            os.fsync(cohort_cp.fileno())
+            row_rec = {"step": step, "elapsed_s": rec["elapsed_s"],
+                       "host_mem_available_gib": rec["host_mem_available_gib"],
+                       "route_journal": link}
+            for r, h in enumerate(row_handles):
+                h.write(json.dumps({**row_rec, "row": r,
+                                    "token_id": int(toks[r])}) + "\n")
+                h.flush()
+                os.fsync(h.fileno())
+            if step % 4 == 0 or mem < 4.0:
+                log(f"[c{ci} step {step}] ids={toks} "
+                    f"elapsed={rec['elapsed_s']}s "
+                    f"mem_avail={rec['host_mem_available_gib']}GiB")
+
+        def _counters_snapshot(cid: int) -> dict:
+            snap: dict[str, Any] = {}
+            try:
+                snap["host_pack"] = {
+                    key: engine.host_pack_stats()
+                    for key, engine in _p4_engines}
+                snap["expert_store"] = {
+                    key: engine.expert_store_stats()
+                    for key, engine in _p4_engines}
+                snap["engine_stats"] = {
+                    key: json.loads(engine.last_stats_json())
+                    for key, engine in _p4_engines}
+            except Exception as exc:
+                snap["error"] = repr(exc)
+            return snap
+
+        drv = p5drv.ServeDriver(
+            model, tokenizer.encode, tokenizer.decode, WORK, RUN_ID,
+            pad_token_id=COHORT_PAD_TOKEN,
+            on_cohort_step=_cohort_step,
+            post_layer_hook=_route_checkpoint,
+            on_cohort_counters=_counters_snapshot)
+        try:
+            res = drv.run_cohort(
+                prompt_texts, ci, group, N_TOKENS,
+                eos_id=(-1 if IGNORE_EOS else 1),
+                prebuilt=(ids_list, pad_meta))
+        finally:
+            route_journal.close()
+            cohort_cp.close()
+            for h in row_handles:
+                h.close()
+        wall_s = res.wall_seconds
+        log(f"[p5] cohort {ci} done in {wall_s:.1f}s, K={k} x "
+            f"{len(res.rows[0].token_ids)} tokens")
+
+        # Dedup: unique experts staged per forward vs the K*topk request
+        # slots — the direct cross-request sharing measure.
+        try:
+            _jr = [json.loads(ln) for ln in
+                   ROUTE_JOURNAL_PATH.read_text("utf-8").splitlines() if ln.strip()]
+            _jrecs = [r for r in _jr if r.get("kind") == "layer_route"
+                      or "expert_ids_rank_order" in r]
+            res.dedup = p5drv.dedup_stats_from_journal(_jrecs)
+        except Exception as _dd_exc:
+            log(f"[p5] dedup stats failed: {_dd_exc!r}")
+            res.dedup = {"error": repr(_dd_exc)}
+
+        decode_ms = res.decode_timings_ms
+        prefill_ms = decode_ms[0] if decode_ms else 0.0
+        decode_only = decode_ms[1:]
+        n_forwards = len(decode_ms)
+        emitted = sum(len(r.token_ids) for r in res.rows)
+        journal_summary = route_journal.summary()
+        result = {
+            "run_id": RUN_ID,
+            "arm_id": ARM_ID or None,
+            "commit": head,
+            "mode": "cohort",
+            "cohort_id": ci,
+            "cohort_k": k,
+            "cohort_prompt_len": lstar,
+            "cohort_pad_token": COHORT_PAD_TOKEN,
+            "prompt_indices": group,
+            "prompts": prompt_texts,
+            "host_mem_available_gib": round(mem_avail, 2),
+            "host_pack_budget_gib": [round(pack_budget0 / (1 << 30), 2),
+                                     round(pack_budget1 / (1 << 30), 2)],
+            "model_revision": REV,
+            "gpu_environment": gpu_environment,
+            "cache_dtype": CACHE_DTYPE,
+            "expert_store_backend": EXPERT_STORE_BACKEND,
+            "expert_store_path": dee4_store_path,
+            "n_tokens": N_TOKENS,
+            "n_forward_steps": n_forwards,
+            "emitted_tokens": emitted,
+            "generated_token_ids": res.rows[0].token_ids,
+            "rows": [{
+                "row": r.row, "prompt_index": r.prompt_index,
+                "pad_tokens": r.pad_tokens,
+                "token_ids_sha256": r.token_ids_sha256,
+                "n_tokens": len(r.token_ids),
+                "decoded_text": r.decoded_text,
+            } for r in res.rows],
+            "build_seconds": round(build_s, 2),
+            "total_wall_seconds": round(wall_s, 2),
+            "prefill_ms": round(prefill_ms, 2),
+            "decode_wall_s": round(sum(decode_only) / 1000.0, 3),
+            "decode_timings_ms": [round(t, 2) for t in decode_only],
+            "gpu_memory": gpu_memory_snapshot(),
+            "diagnostics": DIAGNOSTICS,
+            "bridge_counters": model.bridge_counters(),
+            "route_journal": journal_summary,
+            "dedup": res.dedup,
+            "cohort_counters": res.counters,
+            "eviction_policy": EVICTION_POLICY,
+            "host_cache_mode": HOST_CACHE_MODE,
+            "cache_reset": CACHE_RESET,
+            "ignore_eos": IGNORE_EOS,
+        }
+        try:
+            result["engine_stats"] = {
+                "cuda0": json.loads(eng0.last_stats_json()),
+                "cuda1": json.loads(eng1.last_stats_json()),
+            }
+            result["engine_config"] = {
+                "cuda0": eng0.runtime_config(),
+                "cuda1": eng1.runtime_config(),
+            }
+            result["host_pack"] = {
+                "cuda0": eng0.host_pack_stats(),
+                "cuda1": eng1.host_pack_stats(),
+            }
+            result["expert_store"] = {
+                "cuda0": eng0.expert_store_stats(),
+                "cuda1": eng1.expert_store_stats(),
+            }
+            result["stage_profile"] = {
+                "cuda0": json.loads(eng0.external_profile_json(wall_s * 1000.0)),
+                "cuda1": json.loads(eng1.external_profile_json(wall_s * 1000.0)),
+            }
+            result["model_cuda_stage_profile"] = model.cuda_stage_profile()
+        except Exception as exc:
+            log(f"instrumentation dump failed: {exc}")
+            result["instrumentation_error"] = repr(exc)
+        try:
+            result["model_runtime_snapshot"] = model.runtime_snapshot()
+        except Exception as exc:
+            result["runtime_snapshot_error"] = repr(exc)
+
+        # Scoped counter deltas (same shape as _run_prompt's
+        # prompt_scoped_counters; cohort-scoped).
+        result["cumulative_counters_at_cohort_start"] = prompt_start_counters
+        _end_counters = {
+            "host_pack": result.get("host_pack", {}),
+            "expert_store": result.get("expert_store", {}),
+            "engine_stats": result.get("engine_stats", {}),
+        }
+        _psc = {}
+        for _section in ("host_pack", "expert_store", "engine_stats"):
+            _psc[_section] = {}
+            for _ck, _end_vals in _end_counters[_section].items():
+                _start_vals = (
+                    prompt_start_counters.get(_section, {}).get(_ck, {}))
+                _delta = {}
+                for _f, _v in (_end_vals or {}).items():
+                    if (isinstance(_v, (int, float))
+                            and isinstance(_start_vals.get(_f), (int, float))):
+                        _delta[_f] = _v - _start_vals[_f]
+                    else:
+                        _delta[_f] = _v
+                _psc[_section][_ck] = _delta
+        result["cohort_scoped_counters"] = _psc
+
+        classification, gates, performance_eligible = classify_full_generation(
+            result)
+        completed_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        result.update({
+            "status": "COMPLETE",
+            "completed_at_utc": completed_utc,
+            "classification": classification,
+            "performance_eligible": performance_eligible,
+            "correctness": {
+                "sealed_contract_gates": gates,
+                "all_non_hardware_gates_pass": all(
+                    value for key, value in gates.items()
+                    if key != "required_performance_hardware"),
+            },
+        })
+
+        store_keys = ("cuda0",) if SINGLE_GPU else ("cuda0", "cuda1")
+        _psc_store = _psc.get("expert_store", {})
+        _psc_eng = _psc.get("engine_stats", {})
+        storage_bytes = sum(
+            int(_psc_store.get(key, {}).get("bytes_requested", 0))
+            for key in store_keys)
+        source_reads = sum(
+            int(_psc_store.get(key, {}).get("source_reads", 0))
+            for key in store_keys)
+        result["byte_accounting"] = {
+            "storage_bytes_total": storage_bytes,
+            "storage_bytes_per_emitted_token": (
+                storage_bytes / emitted if emitted else None),
+            "storage_requests_total": source_reads,
+            "storage_requests_per_emitted_token": (
+                source_reads / emitted if emitted else None),
+            "expert_h2d_bytes_total": sum(
+                int(_psc_eng.get(key, {}).get("h2d_bytes", 0))
+                for key in store_keys),
+            "scope": ("cohort-scoped deltas; per-emitted-token amortizes "
+                      "over K*N tokens — cross-request sharing shows here"),
+        }
+
+        profile_payload = {
+            "status": "COMPLETE",
+            "classification": classification,
+            "mode": "cohort",
+            "cohort_id": ci, "cohort_k": k,
+            "build_seconds": result["build_seconds"],
+            "total_wall_seconds": result["total_wall_seconds"],
+            "prefill_ms": result["prefill_ms"],
+            "decode_wall_s": result["decode_wall_s"],
+            "decode_timings_ms": result["decode_timings_ms"],
+            "stage_profile": result.get("stage_profile", {}),
+            "engine_stats": result.get("engine_stats", {}),
+            "expert_store": result.get("expert_store", {}),
+            "host_pack": result.get("host_pack", {}),
+            "dedup": res.dedup,
+            "byte_accounting": result["byte_accounting"],
+        }
+        memory_payload = {
+            "status": "COMPLETE",
+            "classification": classification,
+            "mode": "cohort",
+            "cohort_id": ci, "cohort_k": k,
+            "process_final_and_peak_gib": process_mem_gib(),
+            "system_final_gib": system_mem_gib(),
+            "gpu_final_and_peak_gib": result["gpu_memory"],
+            "cache_budget_bytes_per_gpu": BUDGET_BYTES,
+            "host_pack_budget_bytes": [pack_budget0, pack_budget1],
+        }
+        write_evidence(f"environment{suffix}.json", environment_payload)
+        write_evidence(f"run_config{suffix}.json", run_config_payload)
+        write_evidence(f"profile{suffix}.json", profile_payload)
+        write_evidence(f"memory{suffix}.json", memory_payload)
+        write_evidence(f"result{suffix}.json", result)
+        _artifact_names = [
+            f"environment{suffix}.json", f"run_config{suffix}.json",
+            f"result{suffix}.json", f"profile{suffix}.json",
+            f"memory{suffix}.json", f"routed_experts{suffix}.jsonl",
+            f"arm_config{suffix}.json",
+            f"generated_checkpoint{suffix}.jsonl",
+        ] + [f"generated_checkpoint{suffix}-r{r}.jsonl" for r in range(k)]
+        integrity_payload = {
+            "schema": "phase5-cohort-integrity/v1",
+            "recorded_at_utc": launch_utc,
+            "completed_at_utc": completed_utc,
+            "classification": classification,
+            "performance_eligible": performance_eligible,
+            "arm_id": ARM_ID or None,
+            "run_id": RUN_ID,
+            "git_commit": head,
+            "cohort_id": ci,
+            "cohort_k": k,
+            "cohort_prompt_len": lstar,
+            "rows": [{
+                "row": r.row, "prompt_index": r.prompt_index,
+                "pad_tokens": r.pad_tokens,
+                "actual_token_ids_sha256": hashlib.sha256(
+                    json.dumps(r.token_ids, separators=(",", ":"))
+                    .encode("utf-8")).hexdigest(),
+                "n_tokens": len(r.token_ids),
+            } for r in res.rows],
+            "sealed_contract_gates": gates,
+            "expert_store": result.get("expert_store", {}),
+            "artifact_sha256": {
+                name: sha256_file(WORK / name)
+                for name in _artifact_names
+                if (WORK / name).is_file()
+            },
+        }
+        write_evidence(f"integrity{suffix}.json", integrity_payload)
+        drv.write_row_artifacts(res)
+        drv.write_cohort_summary(res)
+        log("RESULT " + json.dumps(
+            {"cohort_id": ci, "k": k, "classification": classification,
+             "wall_s": wall_s, "dedup": res.dedup}))
+        log(f"=== VERDICT cohort {ci}: {classification} ===")
+        return {"cohort_id": ci, "k": k, "prompt_indices": group,
+                "classification": classification, "result": result,
+                "row_shas": {r.row: r.token_ids_sha256 for r in res.rows}}
+
+    _all_results = []
+    if COHORT_GROUPS:
+        for _ci, _grp in enumerate(COHORT_GROUPS):
+            try:
+                _all_results.append(_run_cohort(_grp, _ci))
+            except Exception as _exc:
+                log(f"cohort {_ci} failed: {_exc!r}")
+                _all_results.append({"cohort_id": _ci, "k": len(_grp),
+                                     "prompt_indices": _grp,
+                                     "classification": "ERROR",
+                                     "error": repr(_exc)[:400],
+                                     "result": {}, "row_shas": {}})
+                (WORK / f"native-generate-result-c{_ci}.json").write_text(
+                    json.dumps({"classification": "ERROR",
+                                "error": repr(_exc)[:400]}, indent=2))
+    else:
+        for _qi, _ptext in enumerate(PROMPT_LIST):
+            try:
+                _all_results.append(_run_prompt(_ptext, _qi))
+            except Exception as _exc:
+                # One prompt's failure must not kill the remaining prompts.
+                log(f"prompt {_qi} failed: {_exc!r}")
+                _all_results.append({"prompt_index": _qi,
+                                     "classification": "ERROR",
+                                     "error": repr(_exc)[:400],
+                                     "result": {}})
+                (WORK / f"native-generate-result-q{_qi}.json").write_text(
+                    json.dumps({"classification": "ERROR",
+                                "error": repr(_exc)[:400],
+                                "generated_token_ids": []}, indent=2))
     (WORK / "native-generate-all.json").write_text(
         json.dumps(
-            [{"prompt_index": r["prompt_index"],
+            [{"prompt_index": r.get("prompt_index"),
+              "cohort_id": r.get("cohort_id"),
+              "k": r.get("k"),
+              "prompt_indices": r.get("prompt_indices"),
               "classification": r["classification"],
               "n_tokens": len(r["result"].get("generated_token_ids") or []),
+              "row_shas": r.get("row_shas"),
               "token_ids_sha256": hashlib.sha256(json.dumps(
                   r["result"].get("generated_token_ids")).encode())
               .hexdigest()}
