@@ -177,6 +177,20 @@ CACHE_RESET = os.environ.get("NATIVE_CACHE_RESET", "warm").strip().lower()
 # Exactness is unaffected: tokens remain the deterministic greedy output;
 # only the stopping rule changes.  Default "0" = natural stop (legacy).
 IGNORE_EOS = os.environ.get("NATIVE_IGNORE_EOS", "0") == "1"
+# P5b mechanism arms: NATIVE_TORCH_DETERMINISTIC=1 arms
+# torch.use_deterministic_algorithms(warn_only) + deterministic cudnn —
+# a torch-side determinism probe for the warm-process divergence.  The
+# CUBLAS_WORKSPACE_CONFIG env itself must come from the spawning process
+# (read at first cuBLAS handle creation); the session driver sets it.
+TORCH_DETERMINISTIC = os.environ.get(
+    "NATIVE_TORCH_DETERMINISTIC", "0") == "1"
+# NATIVE_ROUTE_WEIGHT_JOURNAL=1 writes route_weights{suffix}.jsonl:
+# per (forward_step, layer) sha256 of the routing-weight + expert-id
+# matrices already collected for diagnostics — a continuous-value
+# fingerprint of the hidden state entering each layer's router, used to
+# bisect the first divergent layer across sequential units.
+ROUTE_WEIGHT_JOURNAL = os.environ.get(
+    "NATIVE_ROUTE_WEIGHT_JOURNAL", "0") == "1"
 # v15: return to v8-PROVEN storage behavior.  v13's discard_source_pages
 # (posix_fadvise + MADV_DONTNEED on the shared mmap after every pack fill)
 # re-introduced the v10 behavior that v12 measured as OOM + re-fault
@@ -506,6 +520,26 @@ class RoutedExpertJournal:
             "adds_device_transfers": False,
             "adds_host_synchronizations": False,
         }
+
+
+def _weight_journal_rec(layer, *, step: int, start_pos: int) -> str:
+    """One route_weights jsonl line: sha256 of the routing-weight and
+    expert-id matrices in ``layer.ffn_fn.last_route`` (already collected
+    when diagnostics are on — no extra device reads).  The weights are a
+    continuous fingerprint of the hidden state entering this layer's
+    router, so the first divergent (step, layer) localizes injection."""
+    lr = getattr(layer.ffn_fn, "last_route", None) or {}
+    w = lr.get("routing_weights")
+    i = lr.get("expert_ids")
+    rec = {"step": int(step), "start_pos": int(start_pos),
+           "layer": int(getattr(layer, "layer_id", -1)),
+           "weights_sha256": (hashlib.sha256(
+               json.dumps(w).encode()).hexdigest()
+               if w is not None else None),
+           "ids_sha256": (hashlib.sha256(
+               json.dumps(i).encode()).hexdigest()
+               if i is not None else None)}
+    return json.dumps(rec) + "\n"
 
 
 def classify_full_generation(result: dict) -> tuple[str, dict, bool]:
@@ -1473,6 +1507,17 @@ def main() -> int:
     sys.path.insert(0, str(DEE / "benchmark_reports/deepseek-v4-flash-0731-t4/"
                           "official-source/inference"))
     import torch
+    if TORCH_DETERMINISTIC:
+        # warn_only records (rather than raises on) any op lacking a
+        # deterministic implementation — the warning list itself is
+        # diagnostic: it names the nondeterministic ops in the hot path.
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        log("[det] torch deterministic algorithms armed "
+            "(warn_only=True, cudnn deterministic, tf32 off)")
     log(f"cuda devices: {torch.cuda.device_count()}")
     environment_payload.update({
         "torch_version": torch.__version__,
@@ -1884,6 +1929,9 @@ def main() -> int:
         route_journal = RoutedExpertJournal(
             ROUTE_JOURNAL_PATH, run_id=RUN_ID, n_layers=cfg.n_layers,
             topk=cfg.topk)
+        weight_jf = (open(WORK / f"route_weights{suffix}.jsonl", "w",
+                          encoding="utf-8")
+                     if ROUTE_WEIGHT_JOURNAL else None)
         route_step = 0
         route_start_pos = 0
 
@@ -1903,6 +1951,10 @@ def main() -> int:
                 step=route_step, start_pos=route_start_pos,
                 layer=int(layer_id), device=str(layer.device),
                 expert_ids=ids_host)
+            if weight_jf is not None:
+                weight_jf.write(_weight_journal_rec(
+                    layer, step=route_step, start_pos=route_start_pos))
+                weight_jf.flush()
             if int(layer_id) == cfg.n_layers - 1:
                 route_step += 1
                 route_start_pos = len(ids) + route_step - 1
@@ -1974,6 +2026,8 @@ def main() -> int:
             wall_s = time.monotonic() - t0
         finally:
             route_journal.close()
+            if weight_jf is not None:
+                weight_jf.close()
             cp_handle.close()
         log(f"decode done in {wall_s:.1f}s, {len(toks)} tokens")
 
@@ -2391,6 +2445,8 @@ def main() -> int:
         # cache_events is a trace-only artifact; hash it only when written.
         if (WORK / cache_events_name).is_file():
             _artifact_names.append(cache_events_name)
+        if (WORK / f"route_weights{suffix}.jsonl").is_file():
+            _artifact_names.append(f"route_weights{suffix}.jsonl")
         integrity_payload.update({
             "completed_at_utc": completed_utc,
             "classification": classification,
@@ -2576,6 +2632,9 @@ def main() -> int:
         route_journal = RoutedExpertJournal(
             ROUTE_JOURNAL_PATH, run_id=RUN_ID, n_layers=cfg.n_layers,
             topk=cfg.topk)
+        weight_jf = (open(WORK / f"route_weights{suffix}.jsonl", "w",
+                          encoding="utf-8")
+                     if ROUTE_WEIGHT_JOURNAL else None)
         route_step = 0
         route_start_pos = 0
 
@@ -2594,6 +2653,10 @@ def main() -> int:
                 step=route_step, start_pos=route_start_pos,
                 layer=int(layer_id), device=str(layer.device),
                 expert_ids=ids_host)
+            if weight_jf is not None:
+                weight_jf.write(_weight_journal_rec(
+                    layer, step=route_step, start_pos=route_start_pos))
+                weight_jf.flush()
             if int(layer_id) == cfg.n_layers - 1:
                 route_step += 1
                 route_start_pos = lstar + route_step - 1
@@ -2671,6 +2734,8 @@ def main() -> int:
                 on_cohort_counters=_counters_snapshot)
         except Exception:
             route_journal.close()
+            if weight_jf is not None:
+                weight_jf.close()
             cohort_cp.close()
             for h in row_handles:
                 h.close()
@@ -2682,6 +2747,8 @@ def main() -> int:
                 prebuilt=(ids_list, pad_meta))
         finally:
             route_journal.close()
+            if weight_jf is not None:
+                weight_jf.close()
             cohort_cp.close()
             for h in row_handles:
                 h.close()
@@ -2941,6 +3008,8 @@ def main() -> int:
              ] + [f"result{suffix}-r{r}.json" for r in range(k)]
         if (WORK / cache_events_name).is_file():
             _artifact_names.append(cache_events_name)
+        if (WORK / f"route_weights{suffix}.jsonl").is_file():
+            _artifact_names.append(f"route_weights{suffix}.jsonl")
         integrity_payload = {
             "schema": "phase5-cohort-integrity/v1",
             "recorded_at_utc": launch_utc,
