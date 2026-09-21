@@ -227,6 +227,63 @@ def calls_from_journal(records):
     return calls
 
 
+def merge_cohort_records(journals):
+    """Merge K per-sequence journals into one cohort record stream.
+
+    dee-serve v0 runs an equal-length cohort in lockstep: at each
+    (forward_step, layer) the engine sees ONE call whose request set is the
+    flattened union of every active sequence's expert rows (the FFN
+    flattens b*s rows into moe_forward_experts and engine.cpp:549-556
+    dedupes).  Merging = concatenating the member records' rank rows for
+    the shared key, exactly what a b=K forward emits.
+
+    Fail-closed: every member must cover the identical (step, layer) key
+    set (equal forwards x complete layers), matching the cohort contract
+    (equal prompt length + fixed-length decode)."""
+    if not journals:
+        raise SimError("cohort merge requires >=1 journal")
+    per_key = []
+    keysets = []
+    for j in journals:
+        by_key = {}
+        for rec in j["records"]:
+            by_key[(rec["forward_step"], rec["layer"])] = rec
+        per_key.append(by_key)
+        keysets.append(set(by_key))
+    base_keys = keysets[0]
+    for j, ks in zip(journals[1:], keysets[1:]):
+        if ks != base_keys:
+            missing = sorted(base_keys - ks)[:5]
+            extra = sorted(ks - base_keys)[:5]
+            raise SimError(
+                f"cohort member {j['label']}: (step,layer) key set "
+                f"mismatch — missing {missing} extra {extra} "
+                f"(cohort requires identical forward coverage)")
+    merged = []
+    for i, key in enumerate(
+            sorted(base_keys, key=lambda k: (k[0], k[1]))):
+        rows, n_rows, raw = [], 0, 0
+        ref = per_key[0][key]
+        for by_key in per_key:
+            rec = by_key[key]
+            rows.extend(rec["expert_ids_rank_order"])
+            n_rows += rec["token_rows"]
+            raw += sum(len(r) for r in rec["expert_ids_rank_order"])
+        merged.append({
+            "forward_step": key[0],
+            "layer": key[1],
+            "phase": ref["phase"],
+            "device": ref["device"],
+            "start_pos": ref["start_pos"],
+            "token_rows": n_rows,
+            "topk": ref["topk"],
+            "expert_ids_rank_order": rows,
+            "record_index": i,
+            "run_id": f"cohort({'+'.join(j['label'] for j in journals)})",
+        })
+    return merged
+
+
 # ---------------------------------------------------------------------------
 # Host pack cache — faithful HostPackCache::get_batch replay
 # ---------------------------------------------------------------------------
@@ -1698,6 +1755,11 @@ def parse_args(argv):
                     "journals (stdlib-only).")
     p.add_argument("--journals", nargs="+", required=True,
                    help="route journal JSONL paths, in prompt order")
+    p.add_argument("--cohort", action="store_true",
+                   help="merge all --journals into ONE lockstep cohort "
+                        "stream: records sharing (forward_step,layer) are "
+                        "merged by concatenating rank rows (what a b=K "
+                        "forward emits; engine dedupes the union)")
     p.add_argument("--prompt-order", default=None,
                    help="comma list of prompt labels applied to --journals "
                         "in order (default labels come from filenames)")
@@ -1779,6 +1841,20 @@ def main(argv):
             raise SimError("--prompt-order length != --journals count")
         for j, lab in zip(journals, wanted):
             j["label"] = lab
+    if args.cohort:
+        k = len(journals)
+        merged_records = merge_cohort_records(journals)
+        journals = [{
+            "path": ",".join(j["path"] for j in journals),
+            "records": merged_records,
+            "sha256": hashlib.sha256(
+                "".join(j["sha256"] for j in journals).encode()
+            ).hexdigest(),
+            "calls": calls_from_journal(merged_records),
+            "label": f"K{k}-cohort",
+            "cohort_members": [j["label"] for j in journals],
+            "cohort_k": k,
+        }]
 
     base_cfg = {
         "vram_bytes": int(args.vram * GIB),
