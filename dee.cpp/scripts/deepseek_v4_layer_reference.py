@@ -355,6 +355,9 @@ class DeepseekV4Attention:
                 capture: Optional[dict[str, Any]] = None) -> torch.Tensor:
         cfg = self.cfg
         bsz, seqlen, _ = x.size()
+        if bsz > self.max_batch:
+            raise ValueError(
+                f"batch {bsz} exceeds layer max_batch={self.max_batch}")
         freqs_cis = self.freqs_cis[start_pos: start_pos + seqlen]
         win = cfg.window_size
         ratio = self.compress_ratio

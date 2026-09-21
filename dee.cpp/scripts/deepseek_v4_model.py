@@ -568,6 +568,7 @@ class DeepseekV4Model:
                         ffn_backend: str = "cache_fp16",
                         engine0: Any = None, engine1: Any = None,
                         split: Optional[int] = None,
+                        max_batch: int = 1,
                         diagnostics: bool = True,
                         profile_stages: bool = False) -> "DeepseekV4Model":
         """Build the dual-GPU candidate.
@@ -615,12 +616,14 @@ class DeepseekV4Model:
                 engine = engine0 if layer < split else engine1
                 layer_obj = v4cand.make_native_candidate_layer(
                     lcfg, w_cuda, engine=engine, layer_id=layer,
-                    device=device, max_batch=1, shared_payload=None,
+                    device=device, max_batch=max_batch,
+                    shared_payload=None,
                     provider=provider, diagnostics=diagnostics,
                     profile_stages=profile_stages)
             else:
                 layer_obj = v4cand.make_candidate_layer(
-                    lcfg, w_cuda, device=device, max_batch=1, cache=cache,
+                    lcfg, w_cuda, device=device, max_batch=max_batch,
+                    cache=cache,
                     loader=loader, layer_id=layer, fp16_payloads={},
                     shared_payload=None, provider=provider,
                     diagnostics=diagnostics,
@@ -972,6 +975,77 @@ class DeepseekV4Model:
                     "handoff": dict(self.handoff_stats),
                     "state_hashes": self.state_signatures(
                         list(range(self.cfg.n_layers)))}
+        return generated
+
+    def generate_cohort(self, input_ids: torch.Tensor, max_new_tokens: int,
+                        *, eos_id: int = -1,
+                        decode_timings_ms: Optional[list[float]] = None,
+                        post_step_hook: Optional[Any] = None,
+                        post_layer_hook: Optional[Any] = None
+                        ) -> list[list[int]]:
+        """Lockstep cohort decode (dee-serve v0).  Returns K token streams.
+
+        ``input_ids`` is [K, L]: every member shares the same tokenized
+        prompt length and the same scalar ``start_pos`` at every step —
+        the cohort contract that keeps per-row attention identical to a
+        solo run (all position-dependent state is indexed by the shared
+        scalar; per-row state lives only in the kv_cache row slot).
+
+        ``post_step_hook(step, tokens)`` receives the full per-row token
+        list once per forward; ``post_layer_hook(layer_id)`` is unchanged
+        (the route journal sees the K-row route matrix directly).
+        ``decode_timings_ms`` gets one sample per cohort forward.
+
+        Per-row EOS: when ``eos_id >= 0`` a finished row stops appending
+        tokens but keeps stepping (its extra forwards affect only its own
+        KV slot); the cohort exits when every row has finished.  With
+        ``eos_id == -1`` all rows run the fixed length — the Phase-5
+        campaign mode, matching NATIVE_IGNORE_EOS semantics.
+        """
+        if input_ids.dim() != 2:
+            raise ValueError("cohort input_ids must be [K, L]")
+        k_rows, seq_len = input_ids.shape
+        if k_rows < 1:
+            raise ValueError("cohort requires K >= 1")
+        generated: list[list[int]] = []
+        finished = [False] * k_rows
+
+        t0 = time.monotonic()
+        logits = self.forward(input_ids, 0,
+                              post_layer_hook=post_layer_hook)
+        t1 = time.monotonic()
+        if decode_timings_ms is not None:
+            decode_timings_ms.append((t1 - t0) * 1000.0)
+        toks = logits.argmax(-1).tolist()
+        for r, tok in enumerate(toks):
+            generated.append([int(tok)])
+            if eos_id >= 0 and int(tok) == eos_id:
+                finished[r] = True
+        if post_step_hook is not None:
+            post_step_hook(0, [int(t) for t in toks])
+
+        for t in range(1, max_new_tokens):
+            if all(finished):
+                break
+            step_ids = torch.tensor([[t] for t in toks],
+                                    device=input_ids.device,
+                                    dtype=input_ids.dtype)
+            t0 = time.monotonic()
+            logits = self.forward(step_ids, seq_len + t - 1,
+                                  post_layer_hook=post_layer_hook)
+            t1 = time.monotonic()
+            if decode_timings_ms is not None:
+                decode_timings_ms.append((t1 - t0) * 1000.0)
+            toks = logits.argmax(-1).tolist()
+            for r, tok in enumerate(toks):
+                tok = int(tok)
+                if finished[r]:
+                    continue
+                generated[r].append(tok)
+                if eos_id >= 0 and tok == eos_id:
+                    finished[r] = True
+            if post_step_hook is not None:
+                post_step_hook(t, [int(x) for x in toks])
         return generated
 
     def state_buffers(self, layer_ids: list[int]) -> dict[int, dict[str, torch.Tensor]]:
