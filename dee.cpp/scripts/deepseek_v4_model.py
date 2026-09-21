@@ -1045,7 +1045,12 @@ class DeepseekV4Model:
                 if eos_id >= 0 and tok == eos_id:
                     finished[r] = True
             if post_step_hook is not None:
-                post_step_hook(t, [int(x) for x in toks])
+                # Finished rows report their last emitted token so per-row
+                # checkpoint streams stay consistent with the emitted
+                # stream (a frozen row contributes nothing new).
+                post_step_hook(t, [generated[r][-1] if finished[r]
+                                   else int(toks[r])
+                                   for r in range(k_rows)])
         return generated
 
     def state_buffers(self, layer_ids: list[int]) -> dict[int, dict[str, torch.Tensor]]:

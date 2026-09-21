@@ -43,8 +43,10 @@ def _canon(payload: dict) -> bytes:
 
 
 def _tok_sha(tokens: list[int]) -> str:
+    # Phase-4 manifest convention: sha256 over DEFAULT json.dumps
+    # separators (the compact variant produces a different hash).
     return hashlib.sha256(
-        json.dumps([int(t) for t in tokens], separators=(",", ":"))
+        json.dumps([int(t) for t in tokens])
         .encode("utf-8")).hexdigest()
 
 
@@ -105,9 +107,12 @@ def extract_row_stream(recs: list[dict], row: int, k: int,
     """
     out: dict[tuple[int, int], list[list[int]]] = {}
     for rec in recs:
-        step = int(rec["forward_step"])
-        layer = int(rec["layer"])
-        matrix = rec["expert_ids_rank_order"]
+        try:
+            step = int(rec["forward_step"])
+            layer = int(rec["layer"])
+            matrix = rec["expert_ids_rank_order"]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"malformed journal record: {exc!r}")
         if step == 0:
             if len(matrix) != k * lstar:
                 raise ValueError(
@@ -152,14 +157,20 @@ def main() -> int:
 
     # ---- 1. c0 anchor ----
     c0_integ = bundle / "c0_anchor" / "integrity-q0.json"
-    if c0_integ.is_file():
-        integ = json.loads(c0_integ.read_text())
-        got = integ.get("actual_token_ids_sha256")
+    ck.check("c0 integrity present", c0_integ.is_file())
+    c0_res = bundle / "c0_anchor" / "result-q0.json"
+    if c0_res.is_file():
+        # Recompute from the token list under the manifest convention
+        # (default separators) -- the integrity payload's
+        # actual_token_ids_sha256 uses the compact convention instead.
+        toks = json.loads(c0_res.read_text()).get(
+            "generated_token_ids") or []
+        got = _tok_sha(toks) if toks else None
         exp = (p4_shas.get("q0") or {}).get("a2_fp4")
         ck.check("c0 q0 token sha == phase4 a2", bool(got) and got == exp,
                  f"got={str(got)[:12]} exp={str(exp)[:12]}")
     else:
-        ck.check("c0 integrity present", False, "integrity-q0.json missing")
+        ck.check("c0 result present", False, "result-q0.json missing")
 
     # ---- 2/3. per-row acceptance + token equality vs c1 ----
     c1_rows: dict[int, str] = {}
@@ -179,9 +190,24 @@ def main() -> int:
         if not sha and integ.is_file():
             irows = json.loads(integ.read_text()).get("rows") or []
             sha = irows[0].get("actual_token_ids_sha256") if irows else None
+        # The recorded sha must be recomputable from the row's own
+        # token list -- a field that disagrees with its stream can't pass.
+        rowres = c1_dir / f"result-c{p}-r0.json"
+        if rowres.is_file():
+            rtoks = json.loads(rowres.read_text()).get(
+                "generated_token_ids") or []
+            recomputed = _tok_sha(rtoks) if rtoks else None
+            ck.check(f"c1-c{p} sha recomputable",
+                     bool(recomputed) and recomputed == sha,
+                     f"{str(recomputed)[:12]} vs {str(sha)[:12]}")
+            sha = recomputed or sha
         ck.check(f"c1-c{p} accepted + sha", ok and bool(sha),
                  f"cls={result.get('classification')} sha={str(sha)[:12]}")
         c1_rows[p] = sha
+        # The reference journals get the same chain audit as cohort arms.
+        c1_j = c1_dir / f"routed_experts-c{p}.jsonl"
+        if c1_j.is_file():
+            audit_chain(ck, f"c1-c{p} journal", load_journal(c1_j))
 
     for arm in ("c2", "c4", "c8h"):
         adir = bundle / arm
@@ -206,7 +232,7 @@ def main() -> int:
                 and len(rows) == len(grp)
                 and all(r.get("n_tokens") == n_tokens for r in rows),
                 f"cls={result.get('classification')} rows={len(rows)}")
-            rowmap = {r["prompt_index"]: r.get("token_ids_sha256")
+            rowmap = {r.get("prompt_index"): r.get("token_ids_sha256")
                       for r in rows}
             for p in grp:
                 mine, base = rowmap.get(p), c1_rows.get(p)
@@ -261,6 +287,8 @@ def main() -> int:
         grp = groups[0]
         cpath = adir / f"generated_checkpoint-c{ci}.jsonl"
         if not cpath.is_file():
+            ck.check(f"{arm}-c{ci} cohort ckpt", False,
+                     "generated_checkpoint-c0.jsonl missing")
             continue
         crecs = _load_jsonl(cpath)
         for r, p in enumerate(grp):
@@ -268,11 +296,29 @@ def main() -> int:
             if not rpath.is_file():
                 ck.check(f"{arm}-c{ci} row ckpt r{r}", False, "missing")
                 continue
-            rtoks = [int(rec["token_id"]) for rec in _load_jsonl(rpath)]
-            ctoks = [int(rec["token_ids"][r]) for rec in crecs]
+            try:
+                rtoks = [int(rec["token_id"]) for rec in
+                         _load_jsonl(rpath)]
+                ctoks = [int(rec["token_ids"][r]) for rec in crecs]
+            except (KeyError, TypeError, IndexError, ValueError) as exc:
+                ck.check(f"{arm}-c{ci} ckpt r{r} fan-out", False,
+                         f"malformed checkpoint: {exc!r}"[:100])
+                continue
             ck.check(f"{arm}-c{ci} ckpt r{r} fan-out",
                      rtoks == ctoks and len(rtoks) == n_tokens,
                      f"{len(rtoks)} tokens")
+            # Row result's token list must recompute to its recorded sha
+            # AND match the checkpoint stream -- three-way agreement.
+            rres = adir / f"result-c{ci}-r{r}.json"
+            if rres.is_file():
+                rt = json.loads(rres.read_text())
+                rsha_ok = _tok_sha(
+                    rt.get("generated_token_ids") or []) == rt.get(
+                    "token_ids_sha256")
+                ck.check(f"{arm}-c{ci} r{r} result sha recomputable",
+                         rsha_ok and rt.get("generated_token_ids")
+                         == rtoks,
+                         "sha/stream/checkpoint agreement")
 
     print(f"\n{ck.n - len(ck.fails)}/{ck.n} checks passed")
     if ck.fails:

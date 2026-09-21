@@ -1114,7 +1114,8 @@ def main() -> int:
         "cache_budget_gib_per_gpu": BUDGET_BYTES / (1 << 30),
         "host_pack_requested_bytes": [
             HOST_PACK_CACHE_BYTES_GPU0, HOST_PACK_CACHE_BYTES_GPU1],
-        "host_pack_runtime_cap_gib_total": 17.0,
+        "host_pack_runtime_cap_gib_total": float(
+            os.environ.get("NATIVE_LRU_TOTAL_CAP_GIB", "17.0")),
         "eviction_policy": EVICTION_POLICY,
         "host_cache_mode": HOST_CACHE_MODE,
         "cache_reset": CACHE_RESET,
@@ -1505,7 +1506,10 @@ def main() -> int:
     # Cap the TOTAL LRU budget hard at 17 GiB (8.5 GiB/GPU, below the
     # measured ~21 GiB death point with margin).  v15 also logs MemTotal +
     # per-token VmRSS/VmData/VmLck so v16 can tune the exact ceiling.
-    LRU_TOTAL_CAP_GIB = 17.0
+    # NATIVE_LRU_TOTAL_CAP_GIB overrides for arms that deliberately probe
+    # above the safe default (p5 c8h); the mem_avail clamp still applies.
+    LRU_TOTAL_CAP_GIB = float(
+        os.environ.get("NATIVE_LRU_TOTAL_CAP_GIB", "17.0"))
     pack_budget0 = HOST_PACK_CACHE_BYTES_GPU0
     pack_budget1 = HOST_PACK_CACHE_BYTES_GPU1
     if mem_avail > 0 or mem_total > 0:
@@ -1634,20 +1638,56 @@ def main() -> int:
     # recorded per row.  With the env absent, max_batch=1 and behavior is
     # identical to the Phase-4 path.  max_batch must be resolved BEFORE
     # build_candidate sizes the kv_cache rows.
+    # Multi-prompt mode: NATIVE_PROMPTS_JSON carries a JSON list of prompt
+    # strings; engines + model are built ONCE and every prompt runs through
+    # the same process (one store open+seal per engine, not per prompt).
+    # With the env absent, behavior is identical: one prompt, suffix "".
+    # Parsed BEFORE the model build so cohort-group validation can fail
+    # fast instead of wasting the ~40-min build.
+    _prompts_json = os.environ.get("NATIVE_PROMPTS_JSON", "")
+    try:
+        PROMPT_LIST = (json.loads(_prompts_json) if _prompts_json else None)
+    except Exception:
+        raise RuntimeError(
+            f"NATIVE_PROMPTS_JSON unparsable: {_prompts_json[:200]!r}")
+    if not PROMPT_LIST:
+        PROMPT_LIST = [CANONICAL_PROMPT]
+    _multi = len(PROMPT_LIST) > 1
+
     _cohorts_json = os.environ.get("NATIVE_COHORT_JSON", "")
     try:
         _cohorts_parsed = json.loads(_cohorts_json) if _cohorts_json else None
-        COHORT_GROUPS = (_cohorts_parsed.get("groups")
-                         if _cohorts_parsed else None)
-        COHORT_PAD_TO = (_cohorts_parsed.get("pad_to")
-                         if _cohorts_parsed else None)
-    except Exception:
-        COHORT_GROUPS = None
-        COHORT_PAD_TO = None
-    COHORT_PAD_TOKEN = int(os.environ.get("NATIVE_COHORT_PAD_TOKEN", "0"))
+    except Exception as exc:
+        raise RuntimeError(
+            f"NATIVE_COHORT_JSON unparsable (fail-closed; a malformed "
+            f"cohort spec must not silently fall back to sequential "
+            f"mode): {_cohorts_json[:200]!r}") from exc
+    COHORT_GROUPS = (_cohorts_parsed.get("groups")
+                     if _cohorts_parsed else None)
+    COHORT_PAD_TO = (_cohorts_parsed.get("pad_to")
+                     if _cohorts_parsed else None)
+    # PAD_TOKEN_ID (deepseek_v4_encoding.py:59); BOS=0 would prepend
+    # extra BOS tokens instead of inert pads.
+    COHORT_PAD_TOKEN = int(os.environ.get("NATIVE_COHORT_PAD_TOKEN", "1"))
     COHORT_MAX_BATCH = (max((len(g) for g in COHORT_GROUPS), default=1)
                         if COHORT_GROUPS else 1)
+    if _cohorts_json and not COHORT_GROUPS:
+        raise RuntimeError(
+            "NATIVE_COHORT_JSON parsed but produced no groups "
+            "(fail-closed; refusing silent downgrade to sequential)")
     if COHORT_GROUPS:
+        _seen = set()
+        for _g in COHORT_GROUPS:
+            if not _g or max(_g) >= len(PROMPT_LIST) or min(_g) < 0:
+                raise RuntimeError(
+                    f"NATIVE_COHORT_JSON group {_g} indexes outside "
+                    f"PROMPT_LIST (n={len(PROMPT_LIST)})")
+            _dupes = set(_g) & _seen
+            if len(set(_g)) != len(_g) or _dupes:
+                raise RuntimeError(
+                    f"NATIVE_COHORT_JSON duplicate prompt index in "
+                    f"{_g} (seen={sorted(_dupes)})")
+            _seen.update(_g)
         log(f"=== cohort mode: {len(COHORT_GROUPS)} groups, "
             f"max_batch={COHORT_MAX_BATCH}, pad_token={COHORT_PAD_TOKEN} ===")
 
@@ -1679,31 +1719,14 @@ def main() -> int:
     build_s = time.monotonic() - t0
     log(f"model build {build_s:.1f}s")
 
-    # Multi-prompt mode: NATIVE_PROMPTS_JSON carries a JSON list of prompt
-    # strings; engines + model are built ONCE and every prompt runs through
-    # the same process (one store open+seal per engine, not per prompt).
-    # With the env absent, behavior is identical: one prompt, suffix "".
-    _prompts_json = os.environ.get("NATIVE_PROMPTS_JSON", "")
-    try:
-        PROMPT_LIST = (json.loads(_prompts_json) if _prompts_json else None)
-    except Exception:
-        PROMPT_LIST = None
-    if not PROMPT_LIST:
-        PROMPT_LIST = [CANONICAL_PROMPT]
-    _multi = len(PROMPT_LIST) > 1
-
-    if COHORT_GROUPS:
-        for _g in COHORT_GROUPS:
-            if not _g or max(_g) >= len(PROMPT_LIST) or min(_g) < 0:
-                raise RuntimeError(
-                    f"NATIVE_COHORT_JSON group {_g} indexes outside "
-                    f"PROMPT_LIST (n={len(PROMPT_LIST)})")
-
     def _run_prompt(prompt_text: str, qi: int):
         global CANONICAL_PROMPT, SEAL_APPLICABLE
         CANONICAL_PROMPT = prompt_text
         SEAL_APPLICABLE = prompt_text == SEALED_PROMPT
-        suffix = f"-q{qi}" if _multi else ""
+        # Driver-invoked runs (NATIVE_PROMPTS_JSON set) always suffix,
+        # even for single-prompt arms like the p5 c0_anchor -- the
+        # session driver harvests per-stem filenames.
+        suffix = f"-q{qi}" if (_multi or _prompts_json) else ""
         log(f"=== prompt {qi}: {len(prompt_text)} chars, "
             f"seal_applicable={SEAL_APPLICABLE} ===")
         log("=== tokenize + greedy decode ===")
@@ -2375,7 +2398,7 @@ def main() -> int:
             "arm_id": ARM_ID or None,
             "actual_token_ids": [int(token) for token in toks],
             "actual_token_ids_sha256": hashlib.sha256(
-                json.dumps([int(token) for token in toks], separators=(",", ":"))
+                json.dumps([int(token) for token in toks])
                 .encode("utf-8")).hexdigest(),
             "actual_decoded_text_sha256": hashlib.sha256(
                 text.encode("utf-8")).hexdigest(),
@@ -2413,6 +2436,11 @@ def main() -> int:
         once per forward then fanned out), per-row checkpoint/result
         artifacts, cohort-level counters + dedup statistics.
         """
+        global SEAL_APPLICABLE
+        # Cohort inputs are padded groups, never the sealed canonical
+        # prompt -- the seal gates are inapplicable here and would force
+        # REJECT_NUMERICAL on every cohort if left set from module load.
+        SEAL_APPLICABLE = False
         _kdir = str(DEE / "kaggle" / "deepseek-v4-flash-0731")
         if _kdir not in sys.path:
             sys.path.insert(0, _kdir)
@@ -2634,12 +2662,19 @@ def main() -> int:
                 snap["error"] = repr(exc)
             return snap
 
-        drv = p5drv.ServeDriver(
-            model, tokenizer.encode, tokenizer.decode, WORK, RUN_ID,
-            pad_token_id=COHORT_PAD_TOKEN,
-            on_cohort_step=_cohort_step,
-            post_layer_hook=_route_checkpoint,
-            on_cohort_counters=_counters_snapshot)
+        try:
+            drv = p5drv.ServeDriver(
+                model, tokenizer.encode, tokenizer.decode, WORK, RUN_ID,
+                pad_token_id=COHORT_PAD_TOKEN,
+                on_cohort_step=_cohort_step,
+                post_layer_hook=_route_checkpoint,
+                on_cohort_counters=_counters_snapshot)
+        except Exception:
+            route_journal.close()
+            cohort_cp.close()
+            for h in row_handles:
+                h.close()
+            raise
         try:
             res = drv.run_cohort(
                 prompt_texts, ci, group, N_TOKENS,
@@ -2672,6 +2707,7 @@ def main() -> int:
         n_forwards = len(decode_ms)
         emitted = sum(len(r.token_ids) for r in res.rows)
         journal_summary = route_journal.summary()
+        res.route_journal = journal_summary  # lands in cohort-c{ci}.json
         result = {
             "run_id": RUN_ID,
             "arm_id": ARM_ID or None,
@@ -2695,6 +2731,15 @@ def main() -> int:
             "n_forward_steps": n_forwards,
             "emitted_tokens": emitted,
             "generated_token_ids": res.rows[0].token_ids,
+            # classify_full_generation gates on these sequential-path
+            # fields; row 0's stream is representative (all rows run the
+            # same fixed length under ignore_eos).
+            "decoded_text": res.rows[0].decoded_text,
+            "layer_count_executed": int(
+                model.last_execution.get("layers_executed", -1)),
+            "execution_terminal": dict(model.last_execution),
+            "trace_requests": TRACE_REQUESTS,
+            "dee4_trace_validation": dee4_trace_validation,
             "rows": [{
                 "row": r.row, "prompt_index": r.prompt_index,
                 "pad_tokens": r.pad_tokens,
@@ -2772,6 +2817,43 @@ def main() -> int:
                 _psc[_section][_ck] = _delta
         result["cohort_scoped_counters"] = _psc
 
+        # cache_events{suffix}.jsonl: durable per-request event sink --
+        # same telemetry contract as _run_prompt (one RequestTraceRecord
+        # per expert request, mirrored from the stage profiler's trace).
+        cache_events_name = f"cache_events{suffix}.jsonl"
+        cache_events_meta = {
+            "enabled": bool(TRACE_REQUESTS),
+            "artifact": cache_events_name if TRACE_REQUESTS else None,
+            "records": 0,
+        }
+        if TRACE_REQUESTS:
+            try:
+                _seq = 0
+                _ce_path = WORK / cache_events_name
+                with _ce_path.open("w", encoding="utf-8") as _cef:
+                    for _ck, _ce in _p4_engines:
+                        _dev = (result.get("engine_config", {})
+                                .get(_ck, {}).get("device_id", _ck))
+                        _trace = (result.get("stage_profile", {})
+                                  .get(_ck, {}) or {}).get("trace") or []
+                        for _rec in _trace:
+                            _cef.write(json.dumps(
+                                {"engine": _ck, "device": _dev,
+                                 "seq": _seq, **_rec},
+                                separators=(",", ":")) + "\n")
+                            _seq += 1
+                cache_events_meta.update({
+                    "records": _seq,
+                    "bytes": _ce_path.stat().st_size,
+                    "sha256": sha256_file(_ce_path),
+                })
+                log(f"[p5] cache_events{suffix}.jsonl: {_seq} records "
+                    f"({_ce_path.stat().st_size} bytes)")
+            except Exception as _ce_exc:
+                log(f"[p5] cache_events dump failed: {_ce_exc!r}")
+                cache_events_meta["error"] = repr(_ce_exc)
+        result["cache_events"] = cache_events_meta
+
         classification, gates, performance_eligible = classify_full_generation(
             result)
         completed_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -2844,13 +2926,21 @@ def main() -> int:
         write_evidence(f"profile{suffix}.json", profile_payload)
         write_evidence(f"memory{suffix}.json", memory_payload)
         write_evidence(f"result{suffix}.json", result)
+        # Row artifacts + cohort summary land BEFORE the integrity seal so
+        # artifact_sha256 covers every evidence file, not just the core set.
+        drv.write_row_artifacts(res)
+        drv.write_cohort_summary(res)
         _artifact_names = [
             f"environment{suffix}.json", f"run_config{suffix}.json",
             f"result{suffix}.json", f"profile{suffix}.json",
             f"memory{suffix}.json", f"routed_experts{suffix}.jsonl",
             f"arm_config{suffix}.json",
             f"generated_checkpoint{suffix}.jsonl",
-        ] + [f"generated_checkpoint{suffix}-r{r}.jsonl" for r in range(k)]
+            f"cohort{suffix}.json",
+        ] + [f"generated_checkpoint{suffix}-r{r}.jsonl" for r in range(k)
+             ] + [f"result{suffix}-r{r}.json" for r in range(k)]
+        if (WORK / cache_events_name).is_file():
+            _artifact_names.append(cache_events_name)
         integrity_payload = {
             "schema": "phase5-cohort-integrity/v1",
             "recorded_at_utc": launch_utc,
@@ -2859,16 +2949,23 @@ def main() -> int:
             "performance_eligible": performance_eligible,
             "arm_id": ARM_ID or None,
             "run_id": RUN_ID,
+            "repository": REPO,
+            "branch": BRANCH,
             "git_commit": head,
+            "model_revision": REV,
+            "executing_harness_sha256": sha256_file(
+                Path(__file__).resolve()),
+            "cloned_harness_sha256": sha256_file(cloned_harness),
+            "run_config_sha256": sha256_file(source_run_config),
+            "kernel_metadata_sha256": sha256_file(kernel_metadata),
             "cohort_id": ci,
             "cohort_k": k,
             "cohort_prompt_len": lstar,
             "rows": [{
                 "row": r.row, "prompt_index": r.prompt_index,
                 "pad_tokens": r.pad_tokens,
-                "actual_token_ids_sha256": hashlib.sha256(
-                    json.dumps(r.token_ids, separators=(",", ":"))
-                    .encode("utf-8")).hexdigest(),
+                "actual_token_ids_sha256": p5drv.token_ids_sha(
+                    r.token_ids),
                 "n_tokens": len(r.token_ids),
             } for r in res.rows],
             "sealed_contract_gates": gates,
@@ -2876,19 +2973,22 @@ def main() -> int:
             "artifact_sha256": {
                 name: sha256_file(WORK / name)
                 for name in _artifact_names
-                if (WORK / name).is_file()
             },
         }
         write_evidence(f"integrity{suffix}.json", integrity_payload)
-        drv.write_row_artifacts(res)
-        drv.write_cohort_summary(res)
+        (WORK / f"native-generate-result{suffix}.json").write_text(
+            json.dumps({"cohort_id": ci, "k": k,
+                        "classification": classification,
+                        "performance_eligible": performance_eligible},
+                       indent=2))
         log("RESULT " + json.dumps(
             {"cohort_id": ci, "k": k, "classification": classification,
              "wall_s": wall_s, "dedup": res.dedup}))
         log(f"=== VERDICT cohort {ci}: {classification} ===")
         return {"cohort_id": ci, "k": k, "prompt_indices": group,
                 "classification": classification, "result": result,
-                "row_shas": {r.row: r.token_ids_sha256 for r in res.rows}}
+                "row_shas": {r.prompt_index: r.token_ids_sha256
+                             for r in res.rows}}
 
     _all_results = []
     if COHORT_GROUPS:
@@ -2910,6 +3010,10 @@ def main() -> int:
             try:
                 _all_results.append(_run_prompt(_ptext, _qi))
             except Exception as _exc:
+                if not (_multi or _prompts_json):
+                    # Standalone single-prompt run: let the fatal handler
+                    # write terminal evidence (result.json, error.txt).
+                    raise
                 # One prompt's failure must not kill the remaining prompts.
                 log(f"prompt {_qi} failed: {_exc!r}")
                 _all_results.append({"prompt_index": _qi,

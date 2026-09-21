@@ -46,11 +46,11 @@ def _sha256_path(p: Path) -> str:
 
 def token_ids_sha(tokens: list[int]) -> str:
     """Canonical token-stream hash, same convention as the Phase-4
-    integrity payload: sha256 over compact-json serialization.
-    Comparable to committed token-sha-manifest.json values."""
+    session driver's result payloads and the committed
+    token-sha-manifest.json: sha256 over default json.dumps
+    serialization (single convention across p5 artifacts)."""
     return _sha256_bytes(
-        json.dumps([int(t) for t in tokens],
-                   separators=(",", ":")).encode("utf-8"))
+        json.dumps([int(t) for t in tokens]).encode("utf-8"))
 
 
 @dataclass

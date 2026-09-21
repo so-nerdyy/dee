@@ -49,16 +49,31 @@ scaling law live.
 | c1 | cohort K=1 x8 | [[0]..[7]] | "max" | 8.5 GiB/GPU | padded sequential reference + K=1 point |
 | c2 | cohort K=2 x4 | [[0,1],[2,3],[4,5],[6,7]] | "max" | 8.5 GiB/GPU | K=2 point |
 | c4 | cohort K=4 x2 | [[0..3],[4..7]] | "max" | 8.5 GiB/GPU | K=4 cliff point |
-| c8h | cohort K=8 x1 | [[0..7]] | "max" | ~10.5 GiB/GPU | K=8 + host-rescue direction |
+| c8h | cohort K=8 x1 | [[0..7]] | "max" | 9.75 GiB/GPU + cap override | K=8 + host-rescue direction |
 
 All arms: dee4_segmented store, fp4 residency, lru eviction (the winning
-a2 config), lanes=4, qdepth=6, cold reset per unit, N_TOKENS=128,
-NATIVE_IGNORE_EOS=1, RUN_ID constant.
+a2 config), lanes=4, qdepth=6, N_TOKENS=128, NATIVE_IGNORE_EOS=1,
+RUN_ID constant.  c0 uses warm reset (single prompt; equivalent to cold
+for a first-prompt run and matches the a2 config it anchors to); cohort
+arms use cold reset per unit.
 
-Padding contract: cohort rows are left-padded to the workload-global L*
-(pad_to="max"); c1 sees the same padded inputs, so cohort-vs-c1 compares
-identical model inputs. c0 alone runs the unpadded prompt so it can
-anchor to P4's committed (unpadded) sha.
+c8h sizing: 9.75 GiB/GPU = 19.5 GiB total LRU -- deliberately UNDER the
+measured ~21 GiB death point (v12/v14 OOM'd at ~21 GiB LRU + baseline)
+with ~1.5 GiB margin, and requires NATIVE_LRU_TOTAL_CAP_GIB=19.5 since
+the runner's safe default (17) would silently clamp it back to 8.5/8.5.
+The runner records requested-vs-effective bytes in arm_config; the
+driver surfaces any residual clamp per unit.
+
+Padding contract: cohort rows are left-padded with PAD_TOKEN_ID=1 to the
+workload-global L* (pad_to="max"); c1 sees the same padded inputs, so
+cohort-vs-c1 compares identical model inputs. c0 alone runs the unpadded
+prompt so it can anchor to P4's committed (unpadded) sha.
+
+Load-bearing config note: eos_id=-1 (NATIVE_IGNORE_EOS=1) is REQUIRED
+for the exactness gate -- a row that EOSes early would keep stepping
+(its forwards keep emitting route rows that have no c1 counterpart, and
+classifier completeness bounds are keyed to a fixed forward count).
+Fixed-length generation makes journal/counter math K-symmetric.
 
 ## Metrics (per cohort unit)
 
@@ -83,9 +98,12 @@ anchor to P4's committed (unpadded) sha.
 | 4 | ~0% | ~41% | ~18,800 |
 | 8 | ~0% | low | ~25,200 |
 
-c8h (larger host pack): VRAM stays ~0% (cliff is VRAM-side); host hit
-rises vs the same-K baseline arm — direction, not magnitude, is the gate
-(session RAM << the 64 GiB/device sim point that hit 95%).
+c8h (9.75 GiB/GPU, cap override to 19.5): SIM predicts VRAM ~0%
+(cliff is VRAM-side) and pooled host hit ~20% vs ~1% at the 8.5/GPU
+baseline — a measurable direction lift inside session RAM limits.  (The
+full-rescue point needs ~64 GiB/device: 95% host hit, 9.4x fewer store
+reads than sequential K=1 — beyond this box, flagged for hardware
+follow-on.)
 
 ## Accept / reject criteria
 
@@ -94,8 +112,9 @@ rises vs the same-K baseline arm — direction, not magnitude, is the gate
   chain/order/token_rows audits pass in verify.py. Residency ordering
   c1 > c2 > c4 (monotone decrease per H2, tolerances noted below).
 - **STRONG:** H2 ordering AND magnitudes within ~10pp of sim (K=1 ~45%,
-  K=4 ~0-5%); c8h host-hit > its baseline-capacity counterpart by a
-  measurable margin; dedup ratio at K=8 within 5pp of sim (~26%).
+  K=4 ~0-5%); c8h host-hit lands near the sim's ~20% prediction at its
+  19.5 GiB budget (and >> the ~1% baseline-capacity value); dedup ratio
+  at K=8 within 5pp of sim (~26%).
 - **REJECT-EXACTNESS:** any row token/route mismatch vs c1, journal
   chain break, wrong token_rows, lookup_failures != 0 => arm FAIL,
   results quarantined, cohort path considered broken.
@@ -131,8 +150,9 @@ live K-row forward's journal does not.
 
 - Equal-length cohorts only (left-pad to global L*); ragged admission
   and per-row positions are P5b scope.
-- c8h's host pack is the largest the session can carry (~21 GiB total),
-  NOT the sim's 64 GiB/device full-rescue point — it validates direction.
+- c8h's host pack is the largest SAFE enlargement (19.5 GiB total,
+  under the measured ~21 GiB OOM point), NOT the sim's 64 GiB/device
+  full-rescue point — it validates direction.
 - FUSE storage wall times are environment-shaped; the residency/sharing
   ratios are the transferable numbers.
 - Prefill records carry token_rows=K*L* (batched prompt tokens) — the

@@ -62,7 +62,14 @@ SEG_PREFIX = "dee4-p3-full-u2081ada5e37e-b"
 N_BUCKETS = 46
 STORE_ROOT = Path("/tmp/dee4-full")
 N_TOKENS = 128
-ARM_TIMEOUT_S = int(os.environ.get("P5_ARM_TIMEOUT_S", str(3 * 3600)))
+def _env_num(cast, name, default):
+    try:
+        return cast(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return cast(default)
+
+
+ARM_TIMEOUT_S = _env_num(int, "P5_ARM_TIMEOUT_S", 3 * 3600)
 HEARTBEAT_S = 60
 # run_id is inside the route-journal canonical hash payload; constant
 # across arms so journal structures compare cleanly.
@@ -72,13 +79,16 @@ CP_WORKERS = 4
 ONE_RECORD_BYTES = 13_369_344            # packed dee4 expert record
 PACK_8_5_GIB = int(8.5 * (1 << 30))      # Phase-4 committed pack/GPU
 VRAM_3_5_GIB = 3584 << 20                # Phase-4 committed VRAM arena
-# c8h's enlarged host pack: the largest the ~29 GiB session can carry on
-# top of the model + runtime footprint (env-tunable; documented as the
-# host-rescue direction probe, not the full 64 GiB sim point).
-PACK_C8H_GIB = float(os.environ.get("P5_C8H_HOST_PACK_GIB", "10.5"))
+# c8h's enlarged host pack: sized UNDER the measured ~21 GiB total-LRU
+# death point (runner comment: v12/v14 OOM'd at ~21 GiB LRU + 5-8 GiB
+# baseline) -- 9.75 GiB/GPU = 19.5 GiB total leaves ~1.5 GiB margin.
+# Needs NATIVE_LRU_TOTAL_CAP_GIB > 17 or the runner scales it back to
+# the 8.5 GiB baseline (the arm would measure nothing distinct).
+PACK_C8H_GIB = _env_num(float, "P5_C8H_HOST_PACK_GIB", 9.75)
 PACK_C8H = int(PACK_C8H_GIB * (1 << 30))
+LRU_CAP_C8H_GIB = _env_num(float, "P5_C8H_LRU_CAP_GIB", 19.5)
 
-# Committed Phase-4 reference (inside the cloned tree — sealed evidence).
+# Committed Phase-4 reference (inside the cloned tree -- sealed evidence).
 P4_TOKEN_MANIFEST = (DEE / "benchmark_reports/deepseek-v4-flash-0731-t4"
                      / "gpu2-phase4-cache-hierarchy/token-sha-manifest.json")
 
@@ -118,7 +128,7 @@ _BASE = {
 ARMS = [
     {
         # c0: one unpadded sequential prompt (q0) through the legacy path
-        # — the cross-campaign anchor vs the committed Phase-4 a2 sha.
+        # -- the cross-campaign anchor vs the committed Phase-4 a2 sha.
         # Warm reset + fp4/lru matches the a2 config it anchors to.
         **_BASE, "arm_id": "c0_anchor", "cache_reset": "warm",
         "host_pack_gpu0_bytes": PACK_8_5_GIB,
@@ -127,7 +137,7 @@ ARMS = [
         "cohort": None,
     },
     {
-        # c1: singleton cohorts, pad_to="max" — every prompt runs the
+        # c1: singleton cohorts, pad_to="max" -- every prompt runs the
         # SAME padded input the cohort arms see.  This is the in-session
         # exactness reference AND the K=1 residency datapoint.
         **_BASE, "arm_id": "c1",
@@ -154,10 +164,11 @@ ARMS = [
     },
     {
         # c8h: one 8-row cohort + the largest host pack the session can
-        # carry — the host-rescue direction probe.
+        # carry -- the host-rescue direction probe.
         **_BASE, "arm_id": "c8h",
         "host_pack_gpu0_bytes": PACK_C8H,
         "host_pack_gpu1_bytes": PACK_C8H,
+        "lru_total_cap_gib": LRU_CAP_C8H_GIB,
         "prompts_json": PROMPTS,
         "cohort": {"groups": [list(range(8))], "pad_to": "max"},
     },
@@ -249,6 +260,8 @@ def arm_env(arm):
     })
     if arm.get("cohort"):
         env["NATIVE_COHORT_JSON"] = json.dumps(arm["cohort"])
+    if arm.get("lru_total_cap_gib"):
+        env["NATIVE_LRU_TOTAL_CAP_GIB"] = str(arm["lru_total_cap_gib"])
     if COMMIT:
         env["NATIVE_COMMIT"] = COMMIT
     env["NATIVE_DEE4_SEGMENTED_STORE"] = str(STORE_ROOT)
@@ -298,6 +311,10 @@ def run_arm(arm):
                     proc.wait(timeout=60)
                 except subprocess.TimeoutExpired:
                     proc.kill()
+                    try:
+                        proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        pass
                 break
             time.sleep(5)
     wall = round(time.time() - t0, 1)
@@ -325,7 +342,8 @@ def run_arm(arm):
             (arm_out / src.name).write_bytes(src.read_bytes())
         for src in sorted(WORK.glob(f"result-{stem}-r*.json")):
             (arm_out / src.name).write_bytes(src.read_bytes())
-        for src in (WORK / f"cache_events-{stem}.jsonl",):
+        for src in (WORK / f"cache_events-{stem}.jsonl",
+                    WORK / f"native-generate-result-{stem}.json"):
             if src.is_file():
                 (arm_out / src.name).write_bytes(src.read_bytes())
         result = None
@@ -336,26 +354,57 @@ def run_arm(arm):
                 result = json.loads(raw)
             except ValueError:
                 rec["classification"] = "UNPARSEABLE_RESULT"
+        else:
+            # Runner error path writes native-generate-result-{stem}.json
+            # (classification=ERROR); harvest it so the unit records the
+            # real classification instead of NO_RESULT.
+            err_path = WORK / f"native-generate-result-{stem}.json"
+            if err_path.is_file():
+                raw = err_path.read_bytes()
+                (arm_out / err_path.name).write_bytes(raw)
+                try:
+                    rec["classification"] = json.loads(raw).get(
+                        "classification", "ERROR")
+                    rec["error"] = json.loads(raw).get("error")
+                except ValueError:
+                    rec["classification"] = "ERROR"
         if journal_path.is_file():
             dst = arm_out / journal_path.name
             dst.write_bytes(journal_path.read_bytes())
             rec["journal_sha256"] = sha256_path(dst)
+        # Loud clamp detection: the runner scales the requested host pack
+        # down under the total-LRU/mem-avail caps -- surface it so an arm
+        # can't silently run a different capacity than configured.
+        cfg_path = arm_out / f"arm_config-{stem}.json"
+        if cfg_path.is_file():
+            try:
+                acfg = json.loads(cfg_path.read_bytes())
+                _res = acfg.get("resolved") or {}
+                _req = _res.get("host_pack_cache_bytes_requested") or []
+                _eff = _res.get("host_pack_cache_bytes_effective") or []
+                if _req and _eff and list(_req) != list(_eff):
+                    rec["host_pack_clamped"] = {
+                        "requested_gib": [round(v / (1 << 30), 2)
+                                          for v in _req],
+                        "effective_gib": [round(v / (1 << 30), 2)
+                                          for v in _eff]}
+            except Exception:
+                pass
         if result is not None:
             rec["classification"] = result.get("classification")
             rec["k"] = result.get("cohort_k", 1)
             rec["n_forward_steps"] = result.get("n_forward_steps")
             rec["emitted_tokens"] = result.get("emitted_tokens")
             rec["row_shas"] = {
-                r["prompt_index"]: r["token_ids_sha256"]
+                r.get("prompt_index"): r.get("token_ids_sha256")
                 for r in (result.get("rows") or [])}
             if not groups:
-                # sequential unit: single prompt stream
-                rec["row_shas"] = {
-                    ui: result.get("generated_token_ids")}
+                # sequential unit: single prompt stream -- sha convention
+                # is default json.dumps separators, matching the committed
+                # Phase-4 token-sha-manifest.json values.
                 toks = result.get("generated_token_ids") or []
                 rec["row_shas"] = {ui: hashlib.sha256(json.dumps(
-                    [int(t) for t in toks], separators=(",", ":"))
-                    .encode()).hexdigest()}
+                    [int(t) for t in toks]).encode()).hexdigest()}
                 rec["n_tokens"] = len(toks)
             rec["dedup"] = result.get("dedup")
             rec["cohort_scoped_counters"] = result.get(
@@ -369,7 +418,8 @@ def run_arm(arm):
     for name in ("native-generate-all.json", "integrity.json",
                  "environment.json", "run_config.json", "profile.json",
                  "memory.json", "progress.log", "error.txt",
-                 "dee4-segmented-store.json"):
+                 "dee4-segmented-store.json", "result.json",
+                 "native-generate-result.json"):
         src = WORK / name
         if src.is_file():
             (arm_out / src.name).write_bytes(src.read_bytes())
@@ -456,14 +506,13 @@ def main():
     if len(names) != 2:
         bail("FAIL_CLOSED"); return
     free_tmp = os.statvfs("/tmp").f_bavail * os.statvfs("/tmp").f_frsize
-    check("tmp >= 500 GiB", free_tmp >= 500 << 30,
-          f"{free_tmp / (1 << 30):.0f} GiB")
+    log(f"[p0] /tmp free: {free_tmp / (1 << 30):.0f} GiB")
     mounts = [p for p in (
         Path("/kaggle/input/deepseek-v4-flash-0731-shards"),
         Path("/kaggle/input/datasets/nivind/deepseek-v4-flash-0731-shards"))
         if p.is_dir()]
-    check("shard dataset mounted", bool(mounts),
-          str(mounts[0]) if mounts else "none")
+    log(f"[p0] shard dataset mount: {mounts[0] if mounts else 'none'}"
+        " (authoritative gate is the post-wait bail)")
 
     # ---------------- P1 clone + build ----------------
     if os.environ.get("P5_SOURCE_ROOT"):
@@ -565,6 +614,12 @@ def main():
           f"missing: {missing[:8]}")
     if not (idx_dir and (idx_dir / "metadata.json").is_file()):
         bail("FAIL_CLOSED"); return
+    # Shards missing => the runner would fall back to a ~153 GiB HF
+    # download mid-arm and burn the session.  Bail instead.
+    if "shards" in missing:
+        check("shard dataset mounted (post-wait)", False,
+              "shards dataset never mounted")
+        bail("FAIL_CLOSED"); return
     meta = json.loads((idx_dir / "metadata.json").read_text())
     segs = meta["segments"]
     check("segment table 46", len(segs) == N_BUCKETS, f"{len(segs)}")
@@ -643,12 +698,23 @@ def main():
         p4_shas = json.loads(P4_TOKEN_MANIFEST.read_text())
         check("p4 token manifest readable", True,
               f"{len(p4_shas)} prompts")
+        # Stage it into the harvest bundle so tools/phase5/p5_verify.py
+        # can resolve the c0 anchor offline.
+        (OUT / "token-sha-manifest-p4ref.json").write_bytes(
+            P4_TOKEN_MANIFEST.read_bytes())
     except Exception as exc:
         check("p4 token manifest readable", False, repr(exc)[:120])
 
     def accepted(rec):
-        return (rec.get("rc") == 0
-                and rec.get("classification") == "ACCEPT_CORRECTNESS")
+        # rc + classification + full token budget: a systematically
+        # truncated run would otherwise pass on equal shas alone.
+        if not (rec.get("rc") == 0
+                and rec.get("classification") == "ACCEPT_CORRECTNESS"):
+            return False
+        k = int(rec.get("k") or 1)
+        if k > 1 or rec.get("emitted_tokens") is not None:
+            return int(rec.get("emitted_tokens") or -1) == N_TOKENS * k
+        return int(rec.get("n_tokens") or -1) == N_TOKENS
 
     all_ok = True
     # c0 anchor: unpadded q0 must reproduce the committed Phase-4 a2 sha.
@@ -661,7 +727,7 @@ def main():
           f"exp={str(exp_q0)[:12]}")
     all_ok = all_ok and ok
 
-    # c1: padded sequential reference — every row must be complete.
+    # c1: padded sequential reference -- every row must be complete.
     c1_rows = {}
     for ui in range(8):
         rec = report["runs"].get(f"c1-c{ui}", {})
