@@ -177,3 +177,31 @@ def test_generate_unchanged_on_wide_model() -> None:
     b = _build(2)
     b.reset_state()
     assert _run_bf16(b.generate, ids, 6, eos_id=-1) == ref
+
+
+def test_warm_process_sequential_units_bit_identical() -> None:
+    """Sequential units in one warm process must reproduce bit-exactly.
+
+    Regression guard for the Phase-5 Kaggle finding: units >=1 in a warm
+    process diverged on GPU.  The Python/model path must hold this
+    invariant (verified on CPU); a failure here means model-side state
+    leaked through reset_state."""
+    ids = _prompts(1, 8)
+    m = _build(1)
+    outs = []
+    for _ in range(3):
+        m.reset_state()
+        outs.append(_run_bf16(m.generate, ids, 6, eos_id=-1))
+    assert outs[0] == outs[1] == outs[2]
+
+
+def test_warm_process_sequential_cohorts_bit_identical() -> None:
+    """Back-to-back generate_cohort calls on one model must reproduce —
+    the cohort-path analogue of the warm-process guard."""
+    ids = _prompts(2, 8)
+    co = _build(2)
+    outs = []
+    for _ in range(3):
+        co.reset_state()
+        outs.append(_run_bf16(co.generate_cohort, ids, 5, eos_id=-1))
+    assert outs[0] == outs[1] == outs[2]
