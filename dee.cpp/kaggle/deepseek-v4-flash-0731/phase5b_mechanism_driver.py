@@ -114,43 +114,53 @@ _BASE = {
 
 ARMS = [
     {
-        # mG: full-model forensic probe — 3 identical sequential units with
-        # NATIVE_PROBE_L0=1: at layer-0 prefill the runner dumps the exact
-        # engine I/O tensors (hidden_fp16 in, raw out, ids consumed) plus a
-        # same-unit REPLAY call into a second buffer (resident-hit path).
-        # Offline diff gives divergence magnitude (ULP vs corruption),
-        # position pattern (which experts/tokens), and hit-vs-miss
-        # asymmetry.  Journals retained for the layer map.
-        **_BASE, "arm_id": "mG",
-        "prompts_json": [Q0, Q0, Q0],
-        "cohort": None,
-        "route_weight_journal": "1",
-        "capture_journal": "1",
-        "probe_l0": "1",
-    },
-    {
-        # mI: engine-only micro suite — no model build.  Drives
-        # moe_forward_batch_device on eng0 directly with fixed inputs
-        # (layer 0, n=18, topk=6, 64 experts = real prefill mix) across 4
-        # in-process configs: cold-reset x4, resident-hit x4,
-        # churn+reset x4, post-churn reset x4.  Reproducing here convicts
-        # dee_core standalone; clean => the trigger needs model-level
-        # memory/timing context.
-        **_BASE, "arm_id": "mI",
+        # mK: byte-fingerprint bisect — the engine-only micro suite with
+        # NATIVE_MICRO_FP=1.  After every forward the runner calls
+        # debug_expert_fingerprint(layer, expert) for all 64 experts:
+        # FNV-1a/64 of (a) the store's mmap record (ground truth), (b) the
+        # host pack entry, (c) the resident VRAM block after D2H readback,
+        # plus block pointer/generation/pins/all-zero and the FP4 decode
+        # scratch hash.  store!=pack => host fill lane; pack!=dev =>
+        # staging/H2D/arena addressing; dev==store but output wrong =>
+        # decode/GEMM.  Churn config now uses bounded allocations (v4's
+        # 16 GiB matmul OOM fixed) and micro_probe.json flushes per
+        # iteration so a mid-suite failure keeps prior evidence.
+        **_BASE, "arm_id": "mK",
         "prompts_json": [Q0],
         "cohort": None,
         "micro_probe": "1",
+        "micro_fp": "1",
     },
     {
-        # mJ: same micro suite under CUDA_LAUNCH_BLOCKING=1 — every kernel
-        # launch becomes host-synchronous, collapsing all stream-timing
-        # races.  Clean => a stream-ordering race somewhere; dirty => pure
-        # state-dependent numerics (bytes or kernel state).
-        **_BASE, "arm_id": "mJ",
+        # mL: same fingerprinted suite under CUDA_LAUNCH_BLOCKING=1 —
+        # byte-level confirmation that the corruption is not a stream-
+        # timing race (v4 showed output-level dirtiness under blocking;
+        # this shows whether the BYTES on device are still wrong).
+        **_BASE, "arm_id": "mL",
         "prompts_json": [Q0],
         "cohort": None,
         "micro_probe": "1",
+        "micro_fp": "1",
         "extra_env": {"CUDA_LAUNCH_BLOCKING": "1"},
+    },
+    {
+        # mM: same fingerprinted suite with cache_dtype=fp16 — the FP4-
+        # specificity test.  If fp16 stays byte-stable across resets, the
+        # packed-FP4 fill/stage/decode machinery is convicted and the
+        # generic arena/pack path is exonerated.  (dev_sha isn't
+        # comparable to store_sha here — fp16 blobs are the dequantized
+        # record — only cross-iteration stability + output correctness
+        # apply.)
+        **_BASE, "arm_id": "mM",
+        "cache_dtype": "fp16",
+        "prompts_json": [Q0],
+        "cohort": None,
+        "micro_probe": "1",
+        "micro_fp": "1",
+        # fp16 experts are ~50 MiB: 64 = ~3.2 GiB, close to the 3.5 GiB
+        # arena — drop to 48 experts so the suite stays eviction-free and
+        # its byte-stability signal stays clean.
+        "extra_env": {"NATIVE_MICRO_EXPERTS": "48"},
     },
 ]
 
@@ -258,6 +268,8 @@ def arm_env(arm):
         env["NATIVE_PROBE_L0"] = arm["probe_l0"]
     if arm.get("micro_probe"):
         env["NATIVE_MICRO_PROBE"] = arm["micro_probe"]
+    if arm.get("micro_fp"):
+        env["NATIVE_MICRO_FP"] = arm["micro_fp"]
     for k, v in (arm.get("extra_env") or {}).items():
         env[k] = v
     if COMMIT:
@@ -642,14 +654,126 @@ def main():
             mp = (json.loads(mp_path.read_text())
                   if mp_path.is_file() else None)
             cfg_rows = (mp or {}).get("results") or {}
-            analysis[aid] = {
+            micro = {
                 "micro": True,
                 "units": n_units,
-                "accepted": n_units if mp is not None else 0,
+                # Completion = the probe file exists AND the suite ran at
+                # least one config iteration — incremental flush means a
+                # mid-suite failure still yields partial evidence.
+                "accepted": (n_units if mp is not None and
+                             any((v.get("iters") or v.get("raw_shas"))
+                                 for v in cfg_rows.values()) else 0),
                 "configs": {k: v.get("distinct") for k, v in
                             cfg_rows.items()},
-                "configs_detail": cfg_rows,
+                "configs_detail": {
+                    k: {kk: vv for kk, vv in v.items() if kk != "iters"}
+                    for k, v in cfg_rows.items()},
             }
+            # v5: per-iteration boundary bisect — for each config, count
+            # experts crossing each corruption boundary:
+            #   pack_sha != store_sha  => host fill lane wrong bytes
+            #   dev_sha  != pack_sha   => staging/H2D/arena addressing
+            #   dev_all_zero           => device block is all zeros
+            # and per-expert output state from the raw .npy dumps
+            # (zero/wrong (t,s) block -> expert via ids[t,s]).
+            fp_rows = {}
+            try:
+                import numpy as _np
+            except Exception:
+                _np = None
+            mpc = (mp or {}).get("config") or {}
+            _mn = int(mpc.get("n") or 18)
+            _mtopk = int(mpc.get("topk") or 6)
+            _mexp = int(mpc.get("experts") or 64)
+            for cfg_name, cfg in cfg_rows.items():
+                iters = cfg.get("iters") or []
+                if not any(it.get("fp") for it in iters):
+                    continue
+                # Rebuild the ids mapping the probe used.
+                ids = [[(t * _mtopk + s) % _mexp
+                        for s in range(_mtopk)] for t in range(_mn)]
+                raws = []
+                for i in range(len(iters)):
+                    p = OUT / aid / f"micro_raw-{cfg_name}-i{i}.npy"
+                    try:
+                        raws.append(
+                            _np.load(str(p))
+                            if (p.is_file() and _np is not None)
+                            else None)
+                    except Exception:
+                        raws.append(None)
+                iter_rows = []
+                # dev-vs-pack byte equality is only meaningful when the
+                # device holds the same packed record bytes — under
+                # cache_dtype=fp16 the block is the dequantized blob, so
+                # dev_sha != pack_sha is expected and not a defect signal.
+                _fp4_cache = arm.get("cache_dtype", "fp4") == "fp4"
+                for i, it in enumerate(iters):
+                    fps = it.get("fp") or []
+                    row = {
+                        "raw_sha": str(it.get("raw_sha"))[:16],
+                        "n_fp": len(fps),
+                        "store_ok": sum(1 for f in fps
+                                        if f.get("store_ok")),
+                        "pack_ready": sum(1 for f in fps
+                                          if f.get("pack_ready")),
+                        "pack_ne_store": sum(
+                            1 for f in fps
+                            if f.get("store_ok") and f.get("pack_ready")
+                            and f.get("pack_sha") != f.get("store_sha")),
+                        "dev_resident": sum(1 for f in fps
+                                            if f.get("dev_resident")),
+                        "dev_ne_pack": sum(
+                            1 for f in fps
+                            if _fp4_cache
+                            and f.get("dev_resident") and f.get("pack_ready")
+                            and f.get("dev_sha") != f.get("pack_sha")),
+                        "dev_eq_pack": sum(
+                            1 for f in fps
+                            if _fp4_cache
+                            and f.get("dev_resident") and f.get("pack_ready")
+                            and f.get("dev_sha") == f.get("pack_sha")),
+                        "dev_zero": sum(1 for f in fps
+                                        if f.get("dev_all_zero")),
+                    }
+                    scr = it.get("scratch") or {}
+                    row["scratch_zero"] = scr.get("all_zero")
+                    # Per-expert chain: join fingerprints with the raw
+                    # output's zero/diff blocks for this iteration.
+                    experts = {}
+                    if raws[i] is not None:
+                        ref = raws[0]
+                        for t in range(min(_mn, raws[i].shape[0])):
+                            for s in range(min(_mtopk, raws[i].shape[1])):
+                                blk = raws[i][t, s]
+                                e = ids[t][s]
+                                st = experts.setdefault(e, {"pos": 0})
+                                st["pos"] += 1
+                                if not _np.any(blk):
+                                    st["out_zero"] = st.get(
+                                        "out_zero", 0) + 1
+                                if i > 0 and ref is not None and \
+                                        not _np.array_equal(
+                                            blk, ref[t, s]):
+                                    st["out_diff"] = st.get(
+                                        "out_diff", 0) + 1
+                    row["expert_states"] = experts
+                    # Third boundary: experts whose DEVICE bytes verified
+                    # identical to the store record yet whose output block
+                    # is zero/differs — the decode/GEMM conviction.
+                    row["dev_clean_but_out_bad"] = sum(
+                        1 for e, st in experts.items()
+                        if (st.get("out_zero") or st.get("out_diff"))
+                        and e < len(fps)
+                        and fps[e].get("dev_resident")
+                        and fps[e].get("store_ok")
+                        and fps[e].get("dev_sha") == fps[e].get(
+                            "store_sha"))
+                    iter_rows.append(row)
+                fp_rows[cfg_name] = iter_rows
+            if fp_rows:
+                micro["fp_iters"] = fp_rows
+            analysis[aid] = micro
             continue
         shas = []
         ok_units = 0
@@ -727,34 +851,61 @@ def main():
         analysis[aid] = rec_a
     report["analysis"] = analysis
 
-    mG = analysis.get("mG", {})
-    mI = analysis.get("mI", {})
-    mJ = analysis.get("mJ", {})
-    mi_cfgs = mI.get("configs") or {}
-    mj_cfgs = mJ.get("configs") or {}
-    micro_repro = any((v or 0) > 1 for v in mi_cfgs.values())
-    micro_resident_div = (mi_cfgs.get("resident") or 0) > 1
-    micro_cold_div = (mi_cfgs.get("coldreset") or 0) > 1
-    blocking_stable = (bool(mj_cfgs)
-                       and all((v or 0) == 1 for v in mj_cfgs.values()))
+    mK = analysis.get("mK", {})
+    mL = analysis.get("mL", {})
+    mM = analysis.get("mM", {})
+
+    def _fp_tallies(arm_analysis):
+        """Sum the per-iteration boundary counters across a micro arm's
+        configs -> {pack_ne_store, dev_ne_pack, dev_zero, dev_eq_pack}."""
+        tot = {"pack_ne_store": 0, "dev_ne_pack": 0, "dev_zero": 0,
+               "dev_eq_pack": 0, "dev_clean_but_out_bad": 0,
+               "iters_with_fp": 0}
+        for cfg_name, rows in (arm_analysis.get("fp_iters") or {}).items():
+            for row in rows:
+                if not row.get("n_fp"):
+                    continue
+                tot["iters_with_fp"] += 1
+                for k in ("pack_ne_store", "dev_ne_pack", "dev_zero",
+                          "dev_eq_pack", "dev_clean_but_out_bad"):
+                    tot[k] += int(row.get(k) or 0)
+        return tot
+
+    mk_t = _fp_tallies(mK)
+    ml_t = _fp_tallies(mL)
+    mm_t = _fp_tallies(mM)
+    mk_cfgs = mK.get("configs") or {}
+    mm_cfgs = mM.get("configs") or {}
+    mk_repro = any((v or 0) > 1 for v in mk_cfgs.values())
+    mm_repro = any((v or 0) > 1 for v in mm_cfgs.values())
     interp = {
-        "engine_standalone_convicted": micro_repro,
-        "hit_path_implicated": micro_resident_div and not micro_cold_div,
-        "cold_path_implicated": micro_cold_div,
-        "timing_race": micro_repro and blocking_stable,
-        "model_level_trigger": (not micro_repro
-                                and mG.get("units_bit_identical") is False),
-        "model_still_divergent": mG.get("units_bit_identical") is False,
-        "replay_hit_vs_miss": (mG.get("probe_l0_dumps") or {}),
+        # Byte-boundary verdicts (the decisive fields):
+        "host_fill_convicted": mk_t["pack_ne_store"] > 0,
+        "device_fill_convicted": (mk_t["pack_ne_store"] == 0
+                                  and mk_t["dev_ne_pack"] > 0),
+        "decode_or_gemm_convicted": (mk_t["pack_ne_store"] == 0
+                                     and mk_t["dev_ne_pack"] == 0
+                                     and mk_t["dev_clean_but_out_bad"] > 0),
+        "device_blocks_zero": mk_t["dev_zero"],
+        "fp4_path_specific": mk_repro and not mm_repro,
+        "bytes_stable_under_blocking": (
+            ml_t["iters_with_fp"] > 0 and ml_t["dev_ne_pack"] == 0
+            and ml_t["dev_zero"] == 0 and ml_t["pack_ne_store"] == 0),
+        "fp16_also_divergent": mm_repro,
+        "micro_reproduced": mk_repro,
+        "mk_boundaries": mk_t,
+        "ml_boundaries": ml_t,
+        "mm_boundaries": mm_t,
         "reading": (
-            "mI micro-suite: coldreset/resident/churn/postchurn distinct-"
-            "sha counts per config.  Any config with distinct>1 reproduces "
-            "the defect with NO model — dee_core standalone convicted.  "
-            "resident>1 => the resident-hit path itself is unstable; "
-            "coldreset>1 => miss/fill path unstable.  mJ clean while mI "
-            "dirty => stream-timing race.  mG probe_l0_dumps gives "
-            "max|delta| and ndiff per unit vs q0 plus the same-unit "
-            "raw-vs-replay (miss vs hit) comparison."),
+            "fp_iters[cfg][iter] counts experts crossing each byte "
+            "boundary: pack_ne_store = host fill lane delivered wrong "
+            "bytes; dev_ne_pack = staging/H2D/arena wrote wrong bytes; "
+            "dev_zero = resident block is all zeros; dev_eq_pack = "
+            "device bytes verified == pack bytes.  expert_states maps "
+            "expert -> {pos, out_zero, out_diff} from the raw output so "
+            "each expert's full chain store->pack->dev->output is "
+            "visible per iteration.  fp4_path_specific = defect repros "
+            "under fp4 (mK) but not fp16 (mM)."),
     }
     report["interpretation"] = interp
     # The mechanism test's verdict is informational, not a gate:

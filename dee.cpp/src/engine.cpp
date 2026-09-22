@@ -56,6 +56,17 @@ uint64_t staging_key(int layer, int expert) {
            static_cast<uint32_t>(expert);
 }
 
+// FNV-1a/64 over a byte span — dependency-free fingerprint for the P5b
+// forensic probe.  Deterministic, order-sensitive, cheap (~1 GB/s).
+uint64_t fnv64_bytes(const uint8_t* p, size_t n) {
+    uint64_t h = 1469598103934665603ULL;
+    for (size_t i = 0; i < n; ++i) {
+        h ^= p[i];
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
 float quantize_bf16_projection_scalar(const uint16_t* source, int8_t* destination,
                                       size_t elements) {
     float max_abs = 0.0f;
@@ -2345,6 +2356,103 @@ bool Engine::clear_host_cache() {
     // it so the next call's materialization accounting starts clean.
     if (expert_store_) expert_store_->reset_stats();
     return true;
+}
+
+bool Engine::debug_expert_fingerprint(int layer, int expert,
+                                      ExpertFingerprint* out) {
+    if (!out) return false;
+    *out = ExpertFingerprint{};
+    const int source_layer = avail_layer(layer);
+    const uint64_t key = staging_key(source_layer, expert);
+    out->prepare_gen = fp4_prepare_generation_;
+
+    // Ground truth: the store's own mmap view of the record (no pack, no
+    // worker — the bytes the fill is contractually required to reproduce).
+    if (expert_store_) {
+        ExpertView view;
+        if (expert_store_->get(source_layer, expert, &view) &&
+            view.contiguous_data && view.contiguous_nbytes) {
+            out->store_ok = true;
+            out->record_index = view.record_index;
+            out->store_sha = fnv64_bytes(view.contiguous_data,
+                                         view.contiguous_nbytes);
+        }
+    }
+
+    // Host pack: peek — no LRU/stat perturbation, and an unready
+    // reservation reports pack_ready=false rather than serving bytes.
+    size_t pack_nbytes = 0;
+    if (const uint8_t* pack = pack_cache_.peek_bytes(key, &pack_nbytes)) {
+        out->pack_ready = true;
+        out->pack_ptr = reinterpret_cast<uint64_t>(pack);
+        out->pack_sha = fnv64_bytes(pack, pack_nbytes);
+    }
+
+    auto staged = staging_int8_.find(key);
+    if (staged != staging_int8_.end()) {
+        out->staging_present = true;
+        out->staging_gen = staged->second.prepared_generation;
+    }
+
+    // Device block: pointer/generation/pins plus a D2H readback hash.  The
+    // caller is expected to invoke this after a synchronized forward, but
+    // we still settle the device first — compute_stream_ is non-blocking,
+    // so a plain cudaMemcpy would not implicitly order against it.
+    if (cache_.is_resident(layer, expert)) {
+        out->dev_resident = true;
+        out->dev_gen = cache_.generation_of(layer, expert);
+        out->dev_nbytes = cache_.size_of(layer, expert);
+        out->dev_pins = cache_.pin_count(layer, expert);
+        void* d = cache_.data(layer, expert);
+        out->dev_ptr = reinterpret_cast<uint64_t>(d);
+#ifdef DEE_CUDA
+        if (cfg_.use_cuda && d && out->dev_nbytes &&
+            cudaSetDevice(cfg_.device_id) == cudaSuccess &&
+            cudaDeviceSynchronize() == cudaSuccess) {
+            std::vector<uint8_t> host(out->dev_nbytes);
+            if (cudaMemcpy(host.data(), d, out->dev_nbytes,
+                           cudaMemcpyDeviceToHost) == cudaSuccess) {
+                out->dev_sha = fnv64_bytes(host.data(), host.size());
+                bool nonzero = false;
+                for (uint8_t b : host) {
+                    if (b) { nonzero = true; break; }
+                }
+                out->dev_all_zero = !nonzero;
+            }
+        }
+#endif
+    }
+    return true;
+}
+
+bool Engine::debug_decode_scratch_fingerprint(uint64_t* sha, bool* all_zero,
+                                              size_t* nbytes) {
+    if (nbytes) *nbytes = d_fp4_decode_scratch_bytes_;
+    if (sha) *sha = 0;
+    if (all_zero) *all_zero = false;
+    if (!d_fp4_decode_scratch_ || d_fp4_decode_scratch_bytes_ == 0) {
+        return false;
+    }
+#ifdef DEE_CUDA
+    if (!cfg_.use_cuda) return false;
+    if (cudaSetDevice(cfg_.device_id) != cudaSuccess ||
+        cudaDeviceSynchronize() != cudaSuccess) return false;
+    std::vector<uint8_t> host(d_fp4_decode_scratch_bytes_);
+    if (cudaMemcpy(host.data(), d_fp4_decode_scratch_,
+                   d_fp4_decode_scratch_bytes_,
+                   cudaMemcpyDeviceToHost) != cudaSuccess) return false;
+    if (sha) *sha = fnv64_bytes(host.data(), host.size());
+    if (all_zero) {
+        bool nonzero = false;
+        for (uint8_t b : host) {
+            if (b) { nonzero = true; break; }
+        }
+        *all_zero = !nonzero;
+    }
+    return true;
+#else
+    return false;
+#endif
 }
 
 bool Engine::reset_external_profile() {

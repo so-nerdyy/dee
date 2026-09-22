@@ -164,6 +164,11 @@ public:
     // prepared bytes without double-counting a second logical cache lookup.
     const uint8_t* get_if_present(uint64_t key, bool count_hit = true);
 
+    // Non-perturbing read-only view for forensic fingerprinting: returns the
+    // entry's bytes pointer and sets *nbytes, without touching the LRU or
+    // stats.  nullptr when the key is absent or its reservation is unready.
+    const uint8_t* peek_bytes(uint64_t key, size_t* nbytes) const;
+
     bool contains(uint64_t key) const {
         return map_.find(key) != map_.end();
     }

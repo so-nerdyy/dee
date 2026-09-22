@@ -1700,6 +1700,10 @@ def main() -> int:
     # suite of configs over fixed inputs — isolating the dee_core expert
     # path from all torch-model state.  The suite runs cold-reset, warm
     # resident-hit, allocator-churn, and a post-churn reset in one process.
+    # NATIVE_MICRO_FP=1 additionally fingerprints every expert's packed
+    # record at the store/pack/device boundaries after each iteration
+    # (debug_expert_fingerprint) — the byte-level bisect of WHERE wrong
+    # bytes first appear.
     if os.environ.get("NATIVE_MICRO_PROBE", "0") == "1":
         import numpy as _np
         _pn = int(os.environ.get("NATIVE_MICRO_N", "18"))
@@ -1707,6 +1711,7 @@ def main() -> int:
         _phid = int(os.environ.get("NATIVE_MICRO_HIDDEN", "4096"))
         _player = int(os.environ.get("NATIVE_MICRO_LAYER", "0"))
         _piters = int(os.environ.get("NATIVE_MICRO_ITERS", "4"))
+        _pfp = os.environ.get("NATIVE_MICRO_FP", "0") == "1"
         # 108 selections over 64 experts: mirrors the real prefill mix —
         # some experts group 2-3 rows, ~44 run the single-row path.
         _pexperts = int(os.environ.get("NATIVE_MICRO_EXPERTS", "64"))
@@ -1718,7 +1723,7 @@ def main() -> int:
             ' {"name":"postchurn","reset":true,"churn_mb":0}]'))
         log(f"[micro] n={_pn} topk={_ptopk} hidden={_phid} "
             f"layer={_player} iters={_piters} experts={_pexperts} "
-            f"suite={[s['name'] for s in _suite]}")
+            f"fp={int(_pfp)} suite={[s['name'] for s in _suite]}")
         _g = torch.Generator(device="cpu").manual_seed(1234)
         _h = torch.randn(_pn, _phid, generator=_g,
                          dtype=torch.float32).to("cuda:0").half()
@@ -1727,45 +1732,80 @@ def main() -> int:
                 .reshape(_pn, _ptopk) % _pexperts).copy()
         _raw = torch.empty(_pn, _ptopk, _phid,
                            dtype=torch.float32, device="cuda:0")
-        _results = {}
-        for _spec in _suite:
-            _name = _spec["name"]
-            _shas = []
-            for _it in range(_piters):
-                if _spec.get("reset"):
-                    eng0.reset_runtime_cache()
-                    eng0.clear_host_cache()
-                    eng0.reset_store_stats()
-                if _spec.get("churn_mb", 0) > 0:
-                    _junk = torch.randn(_spec["churn_mb"] * 256, _phid,
+        _probe = {"config": {"n": _pn, "topk": _ptopk, "hidden": _phid,
+                             "layer": _player, "iters": _piters,
+                             "experts": _pexperts, "fingerprint": _pfp,
+                             "cuda_launch_blocking":
+                                 os.environ.get("CUDA_LAUNCH_BLOCKING",
+                                                "0")},
+                  "results": {}}
+
+        def _flush_probe():
+            # Failure-safe: persist whatever iterations completed so far —
+            # a mid-suite crash/OOM must not downgrade completed configs to
+            # "no evidence" (v4's churn OOM lost the whole file).
+            try:
+                (WORK / "micro_probe.json").write_text(
+                    json.dumps(_probe, indent=1))
+            except Exception as _exc:
+                log(f"[micro] probe flush failed: {_exc!r}")
+
+        try:
+            for _spec in _suite:
+                _name = _spec["name"]
+                _results = {"raw_shas": [], "iters": []}
+                _probe["results"][_name] = _results
+                for _it in range(_piters):
+                    if _spec.get("reset"):
+                        eng0.reset_runtime_cache()
+                        eng0.clear_host_cache()
+                        eng0.reset_store_stats()
+                    if _spec.get("churn_mb", 0) > 0:
+                        # Bounded allocator churn: several medium tensors
+                        # perturb the caching allocator without the
+                        # ~16 GiB matmul product that OOMed v4.
+                        _total = int(_spec["churn_mb"])
+                        _parts = 8
+                        _blocks = [
+                            torch.randn(max(1, _total * (1 << 20) //
+                                            (_parts * 4)),
+                                        dtype=torch.float32,
                                         device="cuda:0")
-                    _ = (_junk @ _junk.t()).sum().item()
-                    del _junk
-                torch.cuda.current_stream(0).synchronize()
-                _ok = bool(eng0.moe_forward_batch_device(
-                    _player, _h.data_ptr(), _pn, _ids, _ptopk,
-                    _raw.data_ptr()))
-                _arr = _raw.detach().cpu().numpy()
-                _sha = hashlib.sha256(_arr.tobytes()).hexdigest()
-                _shas.append(_sha)
-                _np.save(str(WORK / f"micro_raw-{_name}-i{_it}.npy"), _arr)
-                log(f"[micro] {_name} iter={_it} ok={_ok} "
-                    f"raw_sha={_sha[:16]}")
-                if not _ok:
-                    log(f"[micro] engine error: "
-                        f"{eng0.last_error_message()}")
-                    break
-            _results[_name] = {"raw_shas": _shas,
-                               "distinct": len(set(_shas))}
-        (WORK / "micro_probe.json").write_text(json.dumps({
-            "config": {"n": _pn, "topk": _ptopk, "hidden": _phid,
-                       "layer": _player, "iters": _piters,
-                       "experts": _pexperts,
-                       "cuda_launch_blocking":
-                           os.environ.get("CUDA_LAUNCH_BLOCKING", "0")},
-            "results": _results}, indent=2))
+                            for _ in range(_parts)]
+                        _ = float(sum(b.sum().item() for b in _blocks))
+                        del _blocks
+                    torch.cuda.current_stream(0).synchronize()
+                    _ok = bool(eng0.moe_forward_batch_device(
+                        _player, _h.data_ptr(), _pn, _ids, _ptopk,
+                        _raw.data_ptr()))
+                    _arr = _raw.detach().cpu().numpy()
+                    _sha = hashlib.sha256(_arr.tobytes()).hexdigest()
+                    _results["raw_shas"].append(_sha)
+                    _iter_rec = {"ok": _ok, "raw_sha": _sha}
+                    if _pfp:
+                        _fps = []
+                        for _e in range(_pexperts):
+                            _fps.append(eng0.debug_expert_fingerprint(
+                                _player, _e))
+                        _iter_rec["fp"] = _fps
+                        _iter_rec["scratch"] = (
+                            eng0.debug_decode_scratch_fingerprint())
+                    _results["iters"].append(_iter_rec)
+                    _results["distinct"] = len(set(_results["raw_shas"]))
+                    _np.save(str(WORK / f"micro_raw-{_name}-i{_it}.npy"),
+                             _arr)
+                    log(f"[micro] {_name} iter={_it} ok={_ok} "
+                        f"raw_sha={_sha[:16]}")
+                    _flush_probe()
+                    if not _ok:
+                        log(f"[micro] engine error: "
+                            f"{eng0.last_error_message()}")
+                        break
+        finally:
+            _flush_probe()
         log(f"[micro] done: " + ", ".join(
-            f"{k}={v['distinct']}sha" for k, v in _results.items()))
+            f"{k}={v.get('distinct')}sha" for k, v in
+            _probe["results"].items()))
         return 0
 
     # Phase-5 cohort mode: NATIVE_COHORT_JSON carries {"groups": [[i,...]]}

@@ -396,3 +396,221 @@ question (untested, not exonerated), `CUBLAS_WORKSPACE_CONFIG`/
   pool to report), corroborating arm engagement.
 - Zero timeouts/CUDA errors/tracebacks in mE/mF; all units rc=0,
   ACCEPT_CORRECTNESS.
+
+## v4 (kernel v4, commit 4e52446)
+
+Fourth kernel version — the localization-and-standalone-repro campaign.
+Artifacts: `kaggle/deepseek-v4-flash-0731/p5b-v4-out/`. Code under test:
+`research/phase4-cache-hierarchy` @ `4e52446c0a590dabbea051163ae9f4d36adf6575`
+(driver clone check "branch head (unpinned) 4e52446c0a59" + integrity.json
+`git_commit` agree; the stale `"branch"` field persists). Three arms:
+
+- **mG** — full model, 3 identical sequential units, `NATIVE_PROBE_L0=1`:
+  at layer-0 prefill the runner dumps `probe_q{i}_hidden/ids/raw/
+  raw_replay.npy` (hidden+ids = engine inputs; raw = per-expert FFN output
+  `(14,6,4096)` fp32 before weighting; raw_replay = immediate identical
+  second call that lands resident hits).
+- **mI** — `NATIVE_MICRO_PROBE=1`: engine-only suite, no model build; drives
+  `moe_forward_batch_device` on eng0 over a fixed synthetic input
+  (n=18, topk=6, hidden=4096, layer=0, 108 requests over 64 experts,
+  4 iters/config) through configs coldreset/resident/churn/postchurn.
+- **mJ** — same suite under `CUDA_LAUNCH_BLOCKING=1`.
+
+### 1. Run status / timeline
+
+- **Status: COMPLETE. Driver verdict FAIL** (= defect still reproduces;
+  this is the expected outcome of a mechanism test, not a harness failure).
+  All 11 driver checks PASS (2×T4, clone, cmake, dee_core,
+  test_dee4_segmented build+run, pydee, index mount, 46-segment assembly).
+- Driver gate 02:50:40 → checks done 02:51:55 UTC; mG exit 02:59:30
+  (subprocess wall 455.1 s); mI exit 03:00:25 (55.0 s); mJ exit 03:01:05
+  (40.0 s); P5B VERDICT emitted ~03:01:05; kernel observed COMPLETE
+  03:01:54. Total ≈21 min wall-to-wall incl. VM boot — much shorter than
+  v2/v3 because the micro arms are ~1 min each and mG uses N_TOKENS=8.
+- Per-unit walls inside mG: q0 131.7 s, q1 77.7 s, q2 78.3 s (one 94 s
+  model build, then warm units run faster on OS-page-cache-warm fills).
+  All runner processes rc=0; all 3 mG units ACCEPT_CORRECTNESS.
+
+### 2. Per-arm outcomes
+
+| Arm | Intent | Result | Verdict |
+|---|---|---|---|
+| mG `NATIVE_PROBE_L0=1` | layer-0 probe dumps + replay | 3/3 executed, units **diverge** (token shas `89c93f0a`/`6174f034`/`23dc9fe8`) | dirty — defect reproduces; probes decisive, see §3 |
+| mI `NATIVE_MICRO_PROBE=1` | engine-only repro, no model | coldreset **4/4 distinct**, resident 1/4; churn/postchurn **never ran** (OOM, see §5) | **dee_core standalone reproduces the defect** |
+| mJ `=mI + CUDA_LAUNCH_BLOCKING=1` | stream-timing check | coldreset **4/4 distinct**, resident 1/4; same OOM | **dirty under serialized launches → NOT a timing race** |
+
+### 3. mG probe dumps — the decisive datum
+
+At (step 0, layer 0) — each unit's first forward — the probe inputs are
+**bit-identical across all three units**: `hidden` sha `fbdca6914a85403f`
+and `ids` sha `92fcaa428f076ee7` for q0/q1/q2 (14 prompt tokens × top-6 =
+84 requests over 70 unique experts; identical expert set confirmed against
+the cache-event stream). Capture journals show the v3 signature:
+`router_scores`, `expert_ids`, `routing_weights`, `shared_out` all match
+unit 0 at (0,0); only `moe_out` diverges (`9942585c`/`0cd8560a`/`a2968366`).
+
+`probe_l0_dumps` from `p5b_report.json` (verified against the .npy files):
+
+| Unit | vs_q0_max_abs | vs_q0_ndiff | replay_max_abs | replay_ndiff |
+|---|---|---|---|---|
+| q0 | 0.0 | 0 | 0.0 | 0 |
+| q1 | **20.2816** | **344064/344064** | **0.0** | **0** |
+| q2 | **20.2142** | **344064/344064** | **0.0** | **0** |
+
+- **`raw == raw_replay` byte-exact within every unit.** The cold-fill
+  (miss) call and the resident-hit call produce identical output — the
+  miss-vs-hit asymmetry hypothesis is dead: whatever content a unit's
+  fills establish is served stably on hits. The perturbation is frozen at
+  fill time and is a per-unit constant.
+- **Magnitude structure is categorical corruption, not ULP drift.**
+  q0 raw: max|x|=20.28, mean 0.224 — normal expert outputs. q1: max=0.337,
+  mean 0.019, **58/84 (t,s) blocks exactly zero**; q2: max=0.530,
+  mean 0.058, 10/84 zero blocks. Zero-ness is **per-expert granular** —
+  an expert is all-zero or all-live in every request slot, no mixing:
+  q1 has 47/70 experts fully zeroed, q2 has 8/70.
+- Surviving experts are not correct either: live blocks are dense but
+  **uncorrelated with q0** (corr ≈ 0.00) and all <0.53 — i.e. wrong
+  values, not scaled-right values; no block of q1 matches any block of
+  q0 (best cross-match max_abs ≈0.35, no permutation).
+- Cache events at (tok0,L0) identical across units: 70 `cold`/
+  `storage_miss` + 70 `resident`/`host_hit`, `evicted_before_use=0`.
+  Generations: q0 = 1–70, q1 = **1639–1708**, q2 = **3012–3081** — the
+  generation counter is NOT reset between units; warm units run the
+  identical request stream at high generation numbers.
+- Fresh determinism reconfirmed at file level: mG-q0 weights sha
+  `d97c566e…`, captures sha `eea12aab…`, token sha `89c93f0a…` are
+  **identical to v3 mE-q0/mF-q0** — three kernels, three VMs, two commits
+  (518f4a6→4e52446); the defect remains specifically warm-process.
+- Warm outputs degenerate as usual: q1 " mRNA = mRNA vaccine mRNA …",
+  q2 "\"vaccine\" by \"vaccine".
+
+### 4. Micro suite (mI/mJ) — standalone repro + OOM truncation
+
+The suite ran only 2 of 4 configs. Per-config distinct raw-shas
+(from `[micro]` log lines, verified byte-exact against the saved
+`micro_raw-*.npy` files):
+
+| Config | mI | mJ (LAUNCH_BLOCKING) |
+|---|---|---|
+| coldreset (reset+refill each iter) | **4/4 distinct** — `17fbc848`,`232a9450`,`4579d711`,`e3bf3bf5` | **4/4 distinct** — `17fbc848`,`21f258b3`,`d0719e09`,`ef1570e4` |
+| resident (no reset; hits) | **1/4** — all `e3bf3bf5` | **1/4** — all `ef1570e4` |
+| churn | **never ran** (OOM) | **never ran** (OOM) |
+| postchurn | **never ran** (OOM) | **never ran** (OOM) |
+
+- **dee_core standalone reproduces the defect with no model**: identical
+  synthetic (hidden, ids) input, four identical reset+refill cycles, four
+  different outputs — on eng0 alone, ~55 s wall.
+- The corruption is **fill-side and cumulative**: exact-zero (t,s) blocks
+  grow monotonically — i0: 0/108 zero → i1: 69/108 → i2: 90/108 →
+  i3: 98/108 (mJ: 0→70→94→98). Per-expert granularity again: at i3 only 6
+  of 64 experts produce nonzero output — mI {17,18,37,38,61,62},
+  mJ {11,12,28,29,52,53} (strikingly, adjacent pairs in both arms); and
+  **no live expert reproduces its i0 value** — wrong bytes, not just zeros.
+- resident = 1/4 and equals the LAST coldreset output: once a unit's
+  fills have landed, the hit path replays that (wrong) content
+  deterministically — same within-unit consistency as mG.
+- **mI-i0 == mJ-i0 = `17fbc848face3672`**: the first cold fill in a fresh
+  process is deterministic across processes and across launch-blocking
+  modes; corruption only enters on later fills in a used process.
+- mJ dirty under `CUDA_LAUNCH_BLOCKING=1` ⇒ **not a stream-timing /
+  launch-order race**. This is state-dependent wrong-content delivery.
+- **Harness defect:** the `churn` config allocates
+  `churn_mb*256 × 4096` fp32 = 65536×4096 (1 GiB) then computes
+  `_junk @ _junk.t()` → a 65536×65536 fp32 output = **16 GiB**, impossible
+  on the 14.56 GiB T4 (9.86 GiB free). Both micro arms died at
+  `deepseek_v4_native_generate.py:1742` before churn/postchurn ran and
+  before `micro_probe.json` was written (it is written once after the
+  suite loop) — hence `analysis.mI.configs={}`/`mJ.configs={}` and the
+  "NO_RESULT" driver rows, despite rc=0 subprocesses.
+  result.json classification: `REJECT_MEMORY`.
+
+### 5. Corrected verdict mapping
+
+The driver's `interpretation` block is computed from the empty `configs`
+dicts — every flag derived from the micro arms is invalid. Corrected
+against log lines + npy-verified shas:
+
+| Flag | Report value | Corrected reading |
+|---|---|---|
+| `engine_standalone_convicted` | false | **TRUE** — coldreset 4/4 distinct on eng0 alone, both arms |
+| `cold_path_implicated` | false | **TRUE** — coldreset dirty, resident clean ⇒ the reset+refill path |
+| `hit_path_implicated` | false | stands — resident-hit replays are stable (1/4 both arms) |
+| `timing_race` | false | stands, strengthened — equally dirty under `CUDA_LAUNCH_BLOCKING` |
+| `model_level_trigger` | true | **FALSE** — no model needed; 55 s engine-only repro exists |
+| `model_still_divergent` | true | stands — mG units diverge |
+
+### 6. Mechanism conclusion — S1 convicted: wrong bytes served on warm fills
+
+The evidence chain is now closed to the fill path:
+
+1. Identical (hidden, ids) inputs in warm units (probed bit-exact) →
+   different `raw` ⇒ the engine's effective expert operands differ.
+2. `raw==replay` within a unit ⇒ resident bytes reproduce stably;
+   per-call compute on fixed bytes is deterministic ⇒ the divergence is
+   established **at fill time**, not in GEMM numerics.
+3. Corruption is per-expert and binary-patterned: a warm slot's output is
+   either **exactly zero** (zeroed/unfilled/torn-to-zero content →
+   silu(0)·0→0) or **dense-wrong** (~0.3-max uncorrelated values → wrong
+   or offset record bytes). In the micro suite the zeroed-expert count
+   **grows with each reset+refill cycle** — a cumulative state skew, not
+   a one-off.
+4. Not a launch-timing race (mJ), not torch/model state (mI needs neither),
+   not hit-path instability (resident clean).
+5. Open sub-split (needs byte-level hashing to separate): (a) the slot's
+   packed bytes are wrong/zero at pin time — host-pack fill, H2D staging,
+   or slot/generation addressing; vs (b) slot bytes right but
+   decode-to-scratch reads the wrong region. Both are inside
+   `moe_forward_batch_device_impl`'s serve→decode→compute chain.
+
+A cheap lead consistent with the cumulative pattern: `reset_runtime_cache`
+does not reset the generation counter (mG warm units ran at gen
+1639+/3012+); audit generation/slot/index handling across resets for
+stale-mapping collisions that misaddress fills.
+
+### 7. Recommended next steps
+
+1. **The micro suite is now the repro vehicle** — ~55 s, no model, no
+   8-min generate. Next instrumentation arm: sha256 the packed `d_blob`
+   per (layer,expert) at pin time AND the decoded FP16 scratch before
+   GEMM, plus a ground-truth re-read of the same record via the dee4
+   reader. Blob wrong/zero ⇒ serve path (host-pack fill coalescing /
+   slot addressing / torn H2D); blob right but scratch wrong ⇒ decode.
+   This is the v3 §7.1 recommendation, now runnable on the fast vehicle.
+2. **Fix the churn OOM before reusing the suite** — cap `churn_mb` so
+   `churn_mb*256 × churn_mb*256` fp32 fits (the current 256 gives a
+   ~16 GiB product; `churn_mb ≤ 8` or chunk the matmul); write
+   `micro_probe.json` **incrementally per config** so truncated suites
+   still parse.
+3. Audit reset semantics: generation counter, host-pack index, slot
+   generations and fill-coalescing across `reset_runtime_cache` +
+   `clear_host_cache` — the defect compounds per reset cycle.
+4. Micro knob sweep once the suite is fixed: `NATIVE_CACHE_DTYPE=fp16`
+   (does the defect need the packed-FP4 path?), smaller expert counts,
+   more iterations — all cheap on the 55 s arm.
+5. Diagnostic for the wrong-but-dense blocks: check whether a warm unit's
+   wrong expert output equals a DIFFERENT expert's correct output
+   (slot holds another record) vs garbage — the d_blob hash answers this
+   directly.
+
+### 8. Anomalies (v4)
+
+- **churn/postchurn evidence absent** — 16 GiB matmul OOM killed both
+  micro arms mid-suite; `micro_probe.json` missing entirely; the driver's
+  `configs`/`interpretation` micro fields are empty-and-wrong (see §5).
+- **Top-level artifact files are mJ's** — `result.json`, `error.txt`,
+  `progress.log`, `memory.json`, `integrity.json`, `environment.json`,
+  `run_config.json`, `profile.json`, `native-generate-result.json`, and
+  the `micro_raw-*.npy` at the output root are the LAST arm's copies
+  (top-level coldreset shas = mJ's `17fbc848/21f258b3/d0719e09/ef1570e4`,
+  not mI's). Per-arm copies are intact under `p5b-out/{mG,mI,mJ}/`.
+- mI/mJ result.json `classification=REJECT_MEMORY` while the subprocess
+  exited rc=0 — driver counts them as `NO_RESULT` rows with a wall time;
+  consistent but confusing.
+- `integrity*.json` still carries the stale
+  `"branch": "freebuff/deepseek-v4-flash-0731-t4"`; actual code is
+  `research/phase4-cache-hierarchy` @ `4e52446` (git_commit + clone
+  check agree).
+- mG heartbeat tails show routine `evict_until_free` activity mid-run —
+  normal at the 3.5 GiB/281-slot VRAM cap, no `evicted_before_use` at
+  the probed (tok0,L0).
+- Zero CUDA errors/tracebacks in mG; micro arms hit only the churn OOM.

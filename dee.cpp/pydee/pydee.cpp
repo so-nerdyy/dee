@@ -203,6 +203,44 @@ PYBIND11_MODULE(pydee_core, m) {
             const bool valid = self.validate_cache_invariants(&error);
             return py::make_tuple(valid, error);
         }, "Return (valid, error) for cache pointer/range/generation/pin invariants.")
+        .def("debug_expert_fingerprint", [](
+                dee::Engine& self, int layer, int expert) {
+            dee::Engine::ExpertFingerprint fp;
+            py::dict d;
+            d["ok"] = self.debug_expert_fingerprint(layer, expert, &fp);
+            d["store_ok"] = fp.store_ok;
+            d["store_sha"] = fp.store_sha;
+            d["record_index"] = fp.record_index;
+            d["pack_ready"] = fp.pack_ready;
+            d["pack_sha"] = fp.pack_sha;
+            d["pack_ptr"] = fp.pack_ptr;
+            d["staging_present"] = fp.staging_present;
+            d["staging_gen"] = fp.staging_gen;
+            d["prepare_gen"] = fp.prepare_gen;
+            d["dev_resident"] = fp.dev_resident;
+            d["dev_sha"] = fp.dev_sha;
+            d["dev_gen"] = fp.dev_gen;
+            d["dev_nbytes"] = fp.dev_nbytes;
+            d["dev_ptr"] = fp.dev_ptr;
+            d["dev_pins"] = fp.dev_pins;
+            d["dev_all_zero"] = fp.dev_all_zero;
+            return d;
+        }, py::arg("layer"), py::arg("expert"),
+           "P5b forensic: FNV-1a fingerprints of one expert's record at the "
+           "store/pack/device boundaries (profiling-only).")
+        .def("debug_decode_scratch_fingerprint", [](dee::Engine& self) {
+            uint64_t sha = 0;
+            bool all_zero = false;
+            size_t nbytes = 0;
+            py::dict d;
+            d["ok"] = self.debug_decode_scratch_fingerprint(
+                &sha, &all_zero, &nbytes);
+            d["sha"] = sha;
+            d["all_zero"] = all_zero;
+            d["nbytes"] = nbytes;
+            return d;
+        }, "P5b forensic: fingerprint the FP4 decode scratch (post-forward "
+           "it holds the last-decoded expert's FP16 blob).")
         .def("reset_external_profile", &dee::Engine::reset_external_profile,
              "Reset measurement counters without evicting resident experts.")
         .def("set_external_token", &dee::Engine::set_external_token,

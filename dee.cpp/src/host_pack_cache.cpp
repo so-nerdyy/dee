@@ -214,6 +214,13 @@ const uint8_t* HostPackCache::get_if_present(uint64_t key, bool count_hit) {
     return found->second.first.bytes.data();
 }
 
+const uint8_t* HostPackCache::peek_bytes(uint64_t key, size_t* nbytes) const {
+    auto found = map_.find(key);
+    if (found == map_.end() || !found->second.first.ready) return nullptr;
+    if (nbytes) *nbytes = found->second.first.nbytes;
+    return found->second.first.bytes.data();
+}
+
 bool HostPackCache::get_batch(
         const BatchRequest* requests, size_t count, BatchResult* results) {
     if (!requests || !results || count == 0 ||

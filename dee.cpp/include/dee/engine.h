@@ -401,6 +401,46 @@ public:
     void clear_last_error() { last_error_message_.clear(); }
     const std::string& last_error_message() const { return last_error_message_; }
 
+    // P5b forensic instrument (profiling-only, off the serving path):
+    // fingerprint one expert's packed record at each boundary of the
+    // cold-fill chain so a warm-fill corruption can be localized to the
+    // first divergent hop:
+    //   store_sha — FNV-1a/64 over the ExpertStore's mmap view (ground
+    //               truth; bypasses the pack entirely);
+    //   pack_sha  — FNV-1a/64 over the HostPackCache entry (peek: no LRU
+    //               or stats perturbation);
+    //   dev_sha   — FNV-1a/64 over the resident VRAM block after a D2H
+    //               readback (device work must already be idle — call
+    //               after a synchronized forward).
+    // store_sha != pack_sha  => host fill lane (pack/store/worker);
+    // pack_sha  != dev_sha   => staging/H2D/arena addressing;
+    // dev_sha   == store_sha but output wrong => decode/GEMM.
+    struct ExpertFingerprint {
+        bool     store_ok       = false;
+        uint64_t store_sha      = 0;
+        uint64_t record_index   = 0;
+        bool     pack_ready     = false;
+        uint64_t pack_sha       = 0;
+        uint64_t pack_ptr       = 0;   // host buffer address (aliasing check)
+        bool     staging_present= false;
+        uint64_t staging_gen    = 0;   // entry's prepared_generation
+        uint64_t prepare_gen    = 0;   // engine fp4_prepare_generation_
+        bool     dev_resident   = false;
+        uint64_t dev_sha        = 0;
+        uint64_t dev_gen        = 0;
+        uint64_t dev_nbytes     = 0;
+        uint64_t dev_ptr        = 0;   // arena base + offset (stable base)
+        uint32_t dev_pins       = 0;
+        bool     dev_all_zero   = false;
+    };
+    bool debug_expert_fingerprint(int layer, int expert,
+                                  ExpertFingerprint* out);
+    // FNV-1a/64 of the FP4 decode scratch buffer (post-forward it holds the
+    // last-decoded expert's FP16 blob).  CUDA builds read the device buffer
+    // back; non-CUDA builds return false.
+    bool debug_decode_scratch_fingerprint(uint64_t* sha, bool* all_zero,
+                                          size_t* nbytes);
+
 private:
     EngineConfig cfg_;
     std::string last_error_message_;
