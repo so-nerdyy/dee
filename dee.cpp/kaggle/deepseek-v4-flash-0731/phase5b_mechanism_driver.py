@@ -7,28 +7,33 @@ each forward (pad rows mutually agree), injected during layers 0-2
 compute.  This session bisects the source with three arms sharing one
 process-per-arm discipline:
 
-  mA  cohort mode, 3x identical K=1 units (same prompt, pad_to=max),
-      NATIVE_ROUTE_WEIGHT_JOURNAL=1 -- per-(step,layer) sha256 of the
-      routing-weight matrix fingerprints the hidden state entering each
-      layer's router; the FIRST divergent layer localizes the injection
-      (layer-0 weights differ => torch-side embed/attention/router before
-      any engine call; layer-L>0 differs => layers<L's MoE/engine output).
-      Expected: unit0 != unit1,unit2 (reproduces the campaign signature).
-  mB  identical to mA plus full torch determinism:
+  mA  3x identical sequential generate() units in one warm process --
+      the minimal repro surface.  (Kernel v1 already proved the plain
+      sequential path diverges at unit 2, so no cohort arm is needed;
+      expected: unit0 != unit1,unit2.)
+  mB  identical to mA plus full determinism:
       NATIVE_TORCH_DETERMINISTIC=1 (use_deterministic_algorithms
       warn_only=True, cudnn deterministic, tf32 off) +
-      CUBLAS_WORKSPACE_CONFIG=:4096:8 in the subprocess env.
-      PASS (units bit-identical) => torch-side library nondeterminism
-      convicted and the fix is known.  FAIL => the divergence survives
-      torch-side determinism => engine cuBLAS / driver-level.
-  mC  sequential control: 2x generate() on the same unpadded prompt with
-      cold resets -- is the defect cohort-specific or any-second-run?
+      CUBLAS_WORKSPACE_CONFIG=:4096:8 in the subprocess env -- the env
+      var is process-global, covering torch's cuBLAS handles AND the
+      engine's own cublasGemmEx handle.
+      PASS (units bit-identical) => library nondeterminism convicted.
+      FAIL => divergence survives determinism config => driver-level.
+  mC  identical to mA plus CUBLAS_WORKSPACE_CONFIG only (no torch flag).
+      Clean mC + clean mB => the env var alone is the fix (cuBLAS
+      workspace/algorithm drift).  Clean mB + dirty mC => a torch-op
+      nondeterminism beyond cuBLAS also contributes.
+
+NATIVE_ROUTE_WEIGHT_JOURNAL=1 on every arm -- per-(step,layer) sha256 of
+the routing-weight + expert-id matrices fingerprints the hidden state
+entering each layer's router; the FIRST divergent layer localizes the
+injection (layer-1 weights differ => layer-0 compute implicated).
 
 Accept/reject is per-arm in p5b_report.json:
   repro_confirmed   = mA units diverge (campaign signature reproduced)
-  cublas_convicted  = mB units bit-identical (determinism config fixes)
-  localized         = first divergent (step, layer) from weight journals
-  cohort_specific   = mC sequential units reproduce while mA diverged
+  cublas_convicted  = mB AND mC bit-identical (env var alone fixes)
+  torch_component   = mB clean but mC dirty (torch ops need the flag)
+  unresolved        = mB still diverges
 
 Phases identical to phase5_session_driver.py: P0 gate, P1 clone+build,
 P2 store assembly + seal, P3 one runner subprocess per arm, P4 report
@@ -105,29 +110,33 @@ _BASE = {
 
 ARMS = [
     {
-        # mA: three identical K=1 cohorts in one warm process.  Weight
-        # journal on -- the bisection instrument.
+        # mA: three identical sequential generate() units in one warm
+        # process -- the minimal repro surface (kernel v1 already proved
+        # the sequential path diverges on unit 2).
         **_BASE, "arm_id": "mA",
-        "prompts_json": [Q0],
-        "cohort": {"groups": [[0], [0], [0]], "pad_to": "max"},
+        "prompts_json": [Q0, Q0, Q0],
+        "cohort": None,
         "route_weight_journal": "1",
     },
     {
-        # mB: identical load under full torch-side determinism.
+        # mB: same + full determinism.  CUBLAS_WORKSPACE_CONFIG is
+        # process-global: covers torch's cuBLAS handles AND the engine's
+        # own cublasGemmEx handle.
         **_BASE, "arm_id": "mB",
-        "prompts_json": [Q0],
-        "cohort": {"groups": [[0], [0], [0]], "pad_to": "max"},
+        "prompts_json": [Q0, Q0, Q0],
+        "cohort": None,
         "route_weight_journal": "1",
         "torch_deterministic": "1",
         "extra_env": {"CUBLAS_WORKSPACE_CONFIG": ":4096:8"},
     },
     {
-        # mC: two sequential generate() runs, same unpadded prompt --
-        # is the defect cohort-specific or any-second-inference?
+        # mC: CUBLAS_WORKSPACE_CONFIG only -- isolates cuBLAS
+        # workspace/algorithm drift from other torch-op nondeterminism.
         **_BASE, "arm_id": "mC",
-        "prompts_json": [Q0, Q0],
+        "prompts_json": [Q0, Q0, Q0],
         "cohort": None,
         "route_weight_journal": "1",
+        "extra_env": {"CUBLAS_WORKSPACE_CONFIG": ":4096:8"},
     },
 ]
 
@@ -622,17 +631,22 @@ def main():
     interp = {
         "repro_confirmed": mA.get("units_bit_identical") is False
                            and mA.get("accepted", 0) >= 2,
-        "cublas_convicted": mB.get("units_bit_identical") is True
-                            and mB.get("accepted") == 3,
-        "cohort_specific": (mC.get("units_bit_identical") is True
-                            and mA.get("units_bit_identical") is False),
+        "cublas_convicted": (mB.get("units_bit_identical") is True
+                             and mC.get("units_bit_identical") is True
+                             and mB.get("accepted") == 3
+                             and mC.get("accepted") == 3),
+        "torch_component": (mB.get("units_bit_identical") is True
+                            and mC.get("units_bit_identical") is False),
+        "unresolved": mB.get("units_bit_identical") is False
+                      and mB.get("accepted") == 3,
         "reading": (
-            "mB clean => torch-side library nondeterminism (fix: "
-            "deterministic config).  mB dirty => divergence survives "
-            "torch determinism => engine cuBLAS or driver-level.  "
-            "first_divergent_weight.layer==0 => injected before any "
-            "engine call (embed/attn/router GEMM); layer==L>0 => "
-            "layers<L MoE/engine output implicated."),
+            "mB+mC clean => CUBLAS_WORKSPACE_CONFIG alone is the fix.  "
+            "mB clean + mC dirty => torch-op nondeterminism beyond "
+            "cuBLAS also contributes (keep NATIVE_TORCH_DETERMINISTIC).  "
+            "mB dirty => divergence survives determinism config => "
+            "engine-internal or driver-level.  first_divergent_weight."
+            "layer==L => layer L-1 (or L's pre-router compute) is the "
+            "injection site; layer-1 divergence = layer-0 output."),
     }
     report["interpretation"] = interp
     # The mechanism test's verdict is informational, not a gate:
