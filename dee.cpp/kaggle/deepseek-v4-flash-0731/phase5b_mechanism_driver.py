@@ -7,33 +7,39 @@ each forward (pad rows mutually agree), injected during layers 0-2
 compute.  This session bisects the source with three arms sharing one
 process-per-arm discipline:
 
-  mA  3x identical sequential generate() units in one warm process --
-      the minimal repro surface.  (Kernel v1 already proved the plain
-      sequential path diverges at unit 2, so no cohort arm is needed;
-      expected: unit0 != unit1,unit2.)
-  mB  identical to mA plus full determinism:
-      NATIVE_TORCH_DETERMINISTIC=1 (use_deterministic_algorithms
-      warn_only=True, cudnn deterministic, tf32 off) +
-      CUBLAS_WORKSPACE_CONFIG=:4096:8 in the subprocess env -- the env
-      var is process-global, covering torch's cuBLAS handles AND the
-      engine's own cublasGemmEx handle.
-      PASS (units bit-identical) => library nondeterminism convicted.
-      FAIL => divergence survives determinism config => driver-level.
-  mC  identical to mA plus CUBLAS_WORKSPACE_CONFIG only (no torch flag).
-      Clean mC + clean mB => the env var alone is the fix (cuBLAS
-      workspace/algorithm drift).  Clean mB + dirty mC => a torch-op
-      nondeterminism beyond cuBLAS also contributes.
+  v2 result (kernel v2, all-sequential arms): divergence survives BOTH
+  torch.use_deterministic_algorithms AND CUBLAS_WORKSPACE_CONFIG — the
+  documented cuBLAS-workspace fix is dead.  Warm trajectory is itself
+  low-entropy (mB-q1 == mC-q1 divergent sha) — consistent with
+  allocator-layout/alignment-dependent kernel dispatch, not randomness.
+  v1 result: sequential path itself diverges (not cohort-specific);
+  injection sits inside layer-0's compute output (layer-1 router
+  weights differ at step 0 while layer-0's match).
 
-NATIVE_ROUTE_WEIGHT_JOURNAL=1 on every arm -- per-(step,layer) sha256 of
-the routing-weight + expert-id matrices fingerprints the hidden state
-entering each layer's router; the FIRST divergent layer localizes the
-injection (layer-1 weights differ => layer-0 compute implicated).
+  mD  reference torch expert path (ffn_backend=cache_fp16): routed
+      experts via DeepseekV4CacheFfn torch GEMMs over FP16 payloads —
+      bypasses moe_forward_batch_device entirely.  Clean => dee_core
+      native FFN path convicted.  Dirty => mechanism lives above the
+      engine (torch/dense/attention side).
+  mE  PYTORCH_NO_CUDA_MEMORY_CACHING=1: disables the caching allocator —
+      every tensor alloc goes through cudaMalloc (uniform driver
+      alignment).  Clean => allocator-layout/alignment-dependent
+      dispatch convicted.
+  mF  NATIVE_BATCHED=1: engine uses cublasGemmBatchedEx pointer-batch
+      instead of per-expert cublasGemmEx.  Clean => per-expert GEMM
+      dispatch specifically implicated; batched = candidate fix.
+
+Instruments on every arm: NATIVE_ROUTE_WEIGHT_JOURNAL (per-step,layer
+sha of routing weights + expert ids) and NATIVE_CAPTURE_JOURNAL (sha of
+moe_out/shared_out/router_scores captures) — the capture shas split
+layer-0 internals: moe_out diverging => engine FFN; shared_out alone =>
+shared expert; weights-only => attention/residual side.
 
 Accept/reject is per-arm in p5b_report.json:
-  repro_confirmed   = mA units diverge (campaign signature reproduced)
-  cublas_convicted  = mB AND mC bit-identical (env var alone fixes)
-  torch_component   = mB clean but mC dirty (torch ops need the flag)
-  unresolved        = mB still diverges
+  engine_convicted     = mD bit-identical (dee_core path necessary)
+  allocator_convicted  = mE bit-identical (layout/algo dispatch)
+  batched_stable       = mF bit-identical (per-expert GEMM implicated)
+  unresolved           = all three still diverge
 
 Phases identical to phase5_session_driver.py: P0 gate, P1 clone+build,
 P2 store assembly + seal, P3 one runner subprocess per arm, P4 report
@@ -65,7 +71,7 @@ INDEX_DS = "nivind/dee4-p3-full-u2081ada5e37e-index"
 SEG_PREFIX = "dee4-p3-full-u2081ada5e37e-b"
 N_BUCKETS = 46
 STORE_ROOT = Path("/tmp/dee4-full")
-N_TOKENS = int(os.environ.get("P5B_N_TOKENS", "16"))
+N_TOKENS = int(os.environ.get("P5B_N_TOKENS", "8"))
 
 
 def _env_num(cast, name, default):
@@ -75,7 +81,7 @@ def _env_num(cast, name, default):
         return cast(default)
 
 
-ARM_TIMEOUT_S = _env_num(int, "P5B_ARM_TIMEOUT_S", 1500)
+ARM_TIMEOUT_S = _env_num(int, "P5B_ARM_TIMEOUT_S", 2400)
 HEARTBEAT_S = 60
 # run_id is inside the route-journal canonical hash payload; constant
 # across arms so journal structures compare cleanly.
@@ -110,39 +116,54 @@ _BASE = {
 
 ARMS = [
     {
-        # mA: three identical sequential generate() units in one warm
-        # process -- the minimal repro surface (kernel v1 already proved
-        # the sequential path diverges on unit 2).
-        **_BASE, "arm_id": "mA",
+        # mD: reference torch expert path (cache_fp16) — routed experts
+        # computed by DeepseekV4CacheFfn torch GEMMs over FP16 payloads,
+        # bypassing moe_forward_batch_device entirely.  The python cache
+        # persists across units, so warm units run the SAME payload
+        # tensors — clean result convicts dee_core; dirty => the
+        # mechanism lives above the engine (torch-side/dense path).
+        # NOTE: engine-integrity gates in classify_full_generation are
+        # meaningless for this arm (engine unused) — the journals carry
+        # the evidence; produced-tokens is the completion criterion.
+        **_BASE, "arm_id": "mD",
         "prompts_json": [Q0, Q0, Q0],
         "cohort": None,
         "route_weight_journal": "1",
+        "capture_journal": "1",
+        "ffn_backend": "cache_fp16",
     },
     {
-        # mB: same + full determinism.  CUBLAS_WORKSPACE_CONFIG is
-        # process-global: covers torch's cuBLAS handles AND the engine's
-        # own cublasGemmEx handle.
-        **_BASE, "arm_id": "mB",
+        # mE: allocator-layout probe — PYTORCH_NO_CUDA_MEMORY_CACHING=1
+        # disables the caching allocator: every tensor alloc goes to
+        # cudaMalloc (uniform >=256B driver alignment).  The leading
+        # surviving theory is address/alignment-dependent kernel/algo
+        # dispatch (warm units' tensors land at different sub-offsets of
+        # recycled pool blocks).  Clean => allocator layout convicted.
+        **_BASE, "arm_id": "mE",
         "prompts_json": [Q0, Q0, Q0],
         "cohort": None,
         "route_weight_journal": "1",
-        "torch_deterministic": "1",
-        "extra_env": {"CUBLAS_WORKSPACE_CONFIG": ":4096:8"},
+        "capture_journal": "1",
+        "extra_env": {"PYTORCH_NO_CUDA_MEMORY_CACHING": "1"},
     },
     {
-        # mC: CUBLAS_WORKSPACE_CONFIG only -- isolates cuBLAS
-        # workspace/algorithm drift from other torch-op nondeterminism.
-        **_BASE, "arm_id": "mC",
+        # mF: pointer-batched GEMM path — NATIVE_BATCHED=1 switches the
+        # engine to cublasGemmBatchedEx (pointer-table batch) instead of
+        # per-expert cublasGemmEx.  Divergent here too => mechanism deeper
+        # than per-expert GEMM dispatch; clean => the per-expert path is
+        # specifically implicated (and batched mode is a candidate fix).
+        **_BASE, "arm_id": "mF",
         "prompts_json": [Q0, Q0, Q0],
         "cohort": None,
         "route_weight_journal": "1",
-        "extra_env": {"CUBLAS_WORKSPACE_CONFIG": ":4096:8"},
+        "capture_journal": "1",
+        "batched": "1",
     },
 ]
 
 STALE_PATTERNS = (
     "native-generate-result*.json", "native-generate-all.json",
-    "routed_experts*.jsonl", "route_weights*.jsonl",
+    "routed_experts*.jsonl", "route_weights*.jsonl", "captures*.jsonl",
     "generated_checkpoint*.jsonl", "cache_events*.jsonl",
     "arm_config*.json", "cohort-c*.json", "result-c*.json",
     "SHA256SUMS*.json", "error.txt", "result*.json", "integrity*.json",
@@ -231,6 +252,12 @@ def arm_env(arm):
         env["NATIVE_COHORT_JSON"] = json.dumps(arm["cohort"])
     if arm.get("route_weight_journal"):
         env["NATIVE_ROUTE_WEIGHT_JOURNAL"] = arm["route_weight_journal"]
+    if arm.get("capture_journal"):
+        env["NATIVE_CAPTURE_JOURNAL"] = arm["capture_journal"]
+    if arm.get("ffn_backend"):
+        env["NATIVE_FFN_BACKEND"] = arm["ffn_backend"]
+    if arm.get("batched"):
+        env["NATIVE_BATCHED"] = arm["batched"]
     if arm.get("torch_deterministic"):
         env["NATIVE_TORCH_DETERMINISTIC"] = arm["torch_deterministic"]
     for k, v in (arm.get("extra_env") or {}).items():
@@ -343,6 +370,11 @@ def run_arm(arm):
             dst = arm_out / weights_path.name
             dst.write_bytes(weights_path.read_bytes())
             rec["weights_sha256"] = sha256_path(dst)
+        captures_path = WORK / f"captures-{stem}.jsonl"
+        if captures_path.is_file():
+            dst = arm_out / captures_path.name
+            dst.write_bytes(captures_path.read_bytes())
+            rec["captures_sha256"] = sha256_path(dst)
         if result is not None:
             rec["classification"] = result.get("classification")
             rec["k"] = result.get("cohort_k", 1)
@@ -371,15 +403,16 @@ def run_arm(arm):
     return recs
 
 
-def _first_divergence(arm_id, n_units, kind="weights_sha256"):
-    """Scan route_weights-c{u}.jsonl across units; return the first
+def _first_divergence(arm_id, n_units, kind="weights_sha256",
+                    fname="route_weights"):
+    """Scan {fname}-c{u}.jsonl across units; return the first
     (step, layer) whose per-record sha differs between unit 0 and a
     later unit.  kind selects the fingerprint field."""
     per_unit = []
     for ui in range(n_units):
-        p = OUT / arm_id / f"route_weights-c{ui}.jsonl"
+        p = OUT / arm_id / f"{fname}-c{ui}.jsonl"
         if not p.is_file():
-            p = OUT / arm_id / f"route_weights-q{ui}.jsonl"
+            p = OUT / arm_id / f"{fname}-q{ui}.jsonl"
         if not p.is_file():
             return None
         rows = [json.loads(ln) for ln in p.read_text().splitlines()
@@ -421,11 +454,12 @@ def selfcheck():
             envs[arm["arm_id"]] = arm_env(arm)
         except Exception as exc:
             problems.append(f"{arm['arm_id']}: arm_env raised {exc!r}")
-    print("[selfcheck] resolved per-arm env diff (vs mA):")
-    ref_env = envs.get("mA", {})
+    print("[selfcheck] resolved per-arm env diff (vs first arm):")
+    ref_env = envs.get(ARMS[0]["arm_id"], {})
     for aid, env in envs.items():
         knob_keys = sorted(k for k in env
-                           if k.startswith(("NATIVE_", "CUBLAS_")))
+                           if k.startswith(("NATIVE_", "CUBLAS_",
+                                            "PYTORCH_")))
         diff = {k: env[k] for k in knob_keys
                 if env.get(k) != ref_env.get(k)
                 and k not in ("NATIVE_ARM_ID", "NATIVE_SOURCE_TREE",
@@ -603,9 +637,16 @@ def main():
         for ui in range(n_units):
             tag = f"{aid}-{'c' if groups else 'q'}{ui}"
             rec = report["runs"].get(tag, {})
-            accepted = (rec.get("rc") == 0
-                        and rec.get("classification") == "ACCEPT_CORRECTNESS")
-            if accepted:
+            # Completion = produced tokens + journals.  The reference-FFN
+            # arm (mD) never exercises the engine, so the native-path
+            # integrity classifier REJECTs it by design — the journals
+            # are the evidence, not the classification.
+            produced = (rec.get("rc") == 0
+                        and (rec.get("classification")
+                             == "ACCEPT_CORRECTNESS"
+                             or rec.get("n_tokens") or rec.get("row_shas")
+                             or rec.get("journal_sha256")))
+            if produced:
                 ok_units += 1
             sha_map = rec.get("row_shas") or {}
             # cohort rows: one row per prompt_index (all index 0 here);
@@ -615,6 +656,13 @@ def main():
         identical = (len({s for s in shas if s}) == 1
                      and all(s for s in shas))
         first_div = _first_divergence(aid, n_units)
+        cap_divs = {}
+        for key in ("moe_out_sha256", "shared_out_sha256",
+                    "router_scores_sha256", "expert_ids_sha256"):
+            d = _first_divergence(aid, n_units, kind=key,
+                                  fname="captures")
+            if d is not None:
+                cap_divs[key] = d
         analysis[aid] = {
             "units": n_units, "accepted": ok_units,
             "token_shas": [str(s)[:16] for s in shas],
@@ -622,40 +670,40 @@ def main():
             "first_divergent_weight": first_div,
             "first_divergent_ids": _first_divergence(
                 aid, n_units, kind="ids_sha256"),
+            "first_divergent_captures": cap_divs,
         }
     report["analysis"] = analysis
 
-    mA = analysis.get("mA", {})
-    mB = analysis.get("mB", {})
-    mC = analysis.get("mC", {})
+    mD = analysis.get("mD", {})
+    mE = analysis.get("mE", {})
+    mF = analysis.get("mF", {})
     interp = {
-        "repro_confirmed": mA.get("units_bit_identical") is False
-                           and mA.get("accepted", 0) >= 2,
-        "cublas_convicted": (mB.get("units_bit_identical") is True
-                             and mC.get("units_bit_identical") is True
-                             and mB.get("accepted") == 3
-                             and mC.get("accepted") == 3),
-        "torch_component": (mB.get("units_bit_identical") is True
-                            and mC.get("units_bit_identical") is False),
-        "unresolved": mB.get("units_bit_identical") is False
-                      and mB.get("accepted") == 3,
+        "engine_convicted": (mD.get("units_bit_identical") is True
+                             and mD.get("accepted") == 3),
+        "allocator_convicted": (mE.get("units_bit_identical") is True
+                                and mE.get("accepted") == 3),
+        "batched_stable": (mF.get("units_bit_identical") is True
+                           and mF.get("accepted") == 3),
+        "engine_exonerated": mD.get("units_bit_identical") is False,
+        "unresolved": all(a.get("units_bit_identical") is False
+                          for a in (mD, mE, mF)),
         "reading": (
-            "mB+mC clean => CUBLAS_WORKSPACE_CONFIG alone is the fix.  "
-            "mB clean + mC dirty => torch-op nondeterminism beyond "
-            "cuBLAS also contributes (keep NATIVE_TORCH_DETERMINISTIC).  "
-            "mB dirty => divergence survives determinism config => "
-            "engine-internal or driver-level.  first_divergent_weight."
-            "layer==L => layer L-1 (or L's pre-router compute) is the "
-            "injection site; layer-1 divergence = layer-0 output."),
+            "mD clean => dee_core native path necessary for the defect.  "
+            "mE clean => allocator-layout/alignment-dependent dispatch "
+            "convicted (fix: allocator discipline).  mF clean => "
+            "per-expert cublasGemmEx implicated; batched path is a "
+            "candidate fix.  All dirty => driver/context-level or "
+            "attention-side mechanism remains.  "
+            "first_divergent_captures splits layer-0 internals: "
+            "moe_out diverging => engine FFN output; shared_out alone "
+            "=> shared expert; only downstream weights => attention/residual."),
     }
     report["interpretation"] = interp
     # The mechanism test's verdict is informational, not a gate:
-    # PASS = repro confirmed AND arms completed (data trustworthy).
+    # PASS = all arms produced their units' data.
     complete = all(a.get("accepted") == a.get("units")
                    for a in analysis.values())
-    report["verdict"] = ("PASS" if complete and interp["repro_confirmed"]
-                         else "FAIL" if not complete
-                         else "NO_REPRO")
+    report["verdict"] = "PASS" if complete else "FAIL"
     write_report()
     print("P5B VERDICT:", report["verdict"], flush=True)
     print("P5B ANALYSIS:", json.dumps(analysis, indent=1)[:4000],

@@ -184,6 +184,25 @@ IGNORE_EOS = os.environ.get("NATIVE_IGNORE_EOS", "0") == "1"
 # (read at first cuBLAS handle creation); the session driver sets it.
 TORCH_DETERMINISTIC = os.environ.get(
     "NATIVE_TORCH_DETERMINISTIC", "0") == "1"
+# NATIVE_FFN_BACKEND: "native" (default; dee_core engine path via
+# moe_forward_batch_device) or "cache_fp16" (reference torch expert path —
+# DeepseekV4CacheFfn computes routed experts with torch GEMMs over FP16
+# payloads from the provider, bypassing the native engine entirely).
+# P5b mechanism arm: convicts/exonerates the native FFN path for the
+# warm-process divergence.
+FFN_BACKEND = os.environ.get(
+    "NATIVE_FFN_BACKEND", "native").strip().lower()
+# Python-side reference cache budget used only when FFN_BACKEND != native.
+# FP16 expert payloads are ~50 MiB each — 1 GiB keeps ~20 resident.
+REF_CACHE_BYTES = int(os.environ.get(
+    "NATIVE_REF_CACHE_BYTES", str(1024 << 20)))
+# NATIVE_CAPTURE_JOURNAL=1 writes captures{suffix}.jsonl: per
+# (step, layer) sha256 of the FFN capture tensors (moe_out combined,
+# shared_out, router_scores, expert_ids, routing_weights) — splits
+# "routed-expert output" vs "shared-expert output" vs "attention-side
+# input" inside the divergent layer boundary.  Sequential path only.
+CAPTURE_JOURNAL = os.environ.get(
+    "NATIVE_CAPTURE_JOURNAL", "0") == "1"
 # NATIVE_ROUTE_WEIGHT_JOURNAL=1 writes route_weights{suffix}.jsonl:
 # per (forward_step, layer) sha256 of the routing-weight + expert-id
 # matrices already collected for diagnostics — a continuous-value
@@ -1744,19 +1763,40 @@ def main() -> int:
     shards_dir = Path(shard_paths[0]).parent
     source = vm.LocalDirTensorSource(HEADERS_DIR, shards_dir)
     provider = vm.ExpertProvider(source)
+    # Reference-FFN arm (P5b): FFN_BACKEND=cache_fp16 builds the
+    # DeepseekV4CacheFfn path — routed experts computed by torch GEMMs
+    # over FP16 payloads, bypassing moe_forward_batch_device entirely.
+    # It needs a real python-side cache + loader per device.
+    cache0 = loader0 = cache1 = loader1 = None
+    if FFN_BACKEND != "native":
+        from scripts import deepseek_v4_cache as v4cache
+        cache0 = v4cache.DeepSeekExpertCache(
+            REF_CACHE_BYTES, device="cuda:0", eviction_policy="lru")
+        loader0 = v4cache.DeepSeekExpertLoader(cache0)
+        dev1 = "cuda:0" if SINGLE_GPU else "cuda:1"
+        if dev1 == "cuda:0":
+            cache1, loader1 = cache0, loader0
+        else:
+            cache1 = v4cache.DeepSeekExpertCache(
+                REF_CACHE_BYTES, device=dev1, eviction_policy="lru")
+            loader1 = v4cache.DeepSeekExpertLoader(cache1)
+        log(f"[ffn] reference cache_fp16 backend armed, "
+            f"cache={REF_CACHE_BYTES / (1 << 20):.0f} MiB/device")
     if SINGLE_GPU:
         model = vm.DeepseekV4Model.build_candidate(
             cfg, source, device0="cuda:0", device1="cuda:0",
-            cache0=None, loader0=None, cache1=None, loader1=None,
-            provider=provider, ffn_backend="native",
+            cache0=cache0, loader0=loader0, cache1=cache1,
+            loader1=loader1,
+            provider=provider, ffn_backend=FFN_BACKEND,
             engine0=eng0, engine1=eng1, split=cfg.n_layers,
             diagnostics=DIAGNOSTICS, profile_stages=PROFILE_STAGES,
             max_batch=COHORT_MAX_BATCH)
     else:
         model = vm.DeepseekV4Model.build_candidate(
             cfg, source, device0="cuda:0", device1="cuda:1",
-            cache0=None, loader0=None, cache1=None, loader1=None,
-            provider=provider, ffn_backend="native",
+            cache0=cache0, loader0=loader0, cache1=cache1,
+            loader1=loader1,
+            provider=provider, ffn_backend=FFN_BACKEND,
             engine0=eng0, engine1=eng1, diagnostics=DIAGNOSTICS,
             profile_stages=PROFILE_STAGES,
             max_batch=COHORT_MAX_BATCH)
@@ -1932,6 +1972,12 @@ def main() -> int:
         weight_jf = (open(WORK / f"route_weights{suffix}.jsonl", "w",
                           encoding="utf-8")
                      if ROUTE_WEIGHT_JOURNAL else None)
+        capture_jf = (open(WORK / f"captures{suffix}.jsonl", "w",
+                           encoding="utf-8")
+                      if CAPTURE_JOURNAL else None)
+        _captures = {} if CAPTURE_JOURNAL else None
+        _step_captures = ([{} for _ in range(N_TOKENS)]
+                          if CAPTURE_JOURNAL else None)
         route_step = 0
         route_start_pos = 0
 
@@ -1942,8 +1988,12 @@ def main() -> int:
             ids_host = getattr(
                 layer.ffn_fn, "_native_route_ids_host", None)
             if ids_host is None:
+                # Reference-FFN backend has no native pinned route buffer —
+                # last_route already holds the exact ids the FFN consumed.
+                ids_host = (layer.ffn_fn.last_route or {}).get("expert_ids")
+            if ids_host is None:
                 raise RuntimeError(
-                    f"native route buffer unavailable after layer {layer_id}")
+                    f"route buffer unavailable after layer {layer_id}")
             if bool(getattr(ids_host, "is_cuda", False)):
                 raise RuntimeError(
                     f"route journal refuses a device read at layer {layer_id}")
@@ -1955,6 +2005,23 @@ def main() -> int:
                 weight_jf.write(_weight_journal_rec(
                     layer, step=route_step, start_pos=route_start_pos))
                 weight_jf.flush()
+            if capture_jf is not None:
+                cap_src = (_captures if route_step == 0
+                           else _step_captures[min(route_step,
+                                                   len(_step_captures) - 1)])
+                cap = (cap_src or {}).get(int(layer_id)) or {}
+                rec = {"step": int(route_step),
+                       "start_pos": int(route_start_pos),
+                       "layer": int(layer_id)}
+                for key in ("moe_out", "shared_out", "router_scores",
+                            "expert_ids", "routing_weights"):
+                    t = cap.get(key)
+                    rec[f"{key}_sha256"] = (
+                        hashlib.sha256(
+                            t.detach().cpu().numpy().tobytes()
+                        ).hexdigest() if torch.is_tensor(t) else None)
+                capture_jf.write(json.dumps(rec) + "\n")
+                capture_jf.flush()
             if int(layer_id) == cfg.n_layers - 1:
                 route_step += 1
                 route_start_pos = len(ids) + route_step - 1
@@ -2020,6 +2087,8 @@ def main() -> int:
             toks = model.generate(
                 input_ids, max_new_tokens=N_TOKENS,
                 eos_id=(-1 if IGNORE_EOS else 1),
+                captures=_captures,
+                per_step_captures=_step_captures,
                 decode_timings_ms=decode_ms,
                 post_step_hook=_token_checkpoint,
                 post_layer_hook=_route_checkpoint)
@@ -2028,6 +2097,8 @@ def main() -> int:
             route_journal.close()
             if weight_jf is not None:
                 weight_jf.close()
+            if capture_jf is not None:
+                capture_jf.close()
             cp_handle.close()
         log(f"decode done in {wall_s:.1f}s, {len(toks)} tokens")
 
@@ -2447,6 +2518,8 @@ def main() -> int:
             _artifact_names.append(cache_events_name)
         if (WORK / f"route_weights{suffix}.jsonl").is_file():
             _artifact_names.append(f"route_weights{suffix}.jsonl")
+        if (WORK / f"captures{suffix}.jsonl").is_file():
+            _artifact_names.append(f"captures{suffix}.jsonl")
         integrity_payload.update({
             "completed_at_utc": completed_utc,
             "classification": classification,
@@ -2644,8 +2717,12 @@ def main() -> int:
             ids_host = getattr(
                 layer.ffn_fn, "_native_route_ids_host", None)
             if ids_host is None:
+                # Reference-FFN backend: last_route holds the exact ids
+                # the FFN consumed (no native pinned buffer exists).
+                ids_host = (layer.ffn_fn.last_route or {}).get("expert_ids")
+            if ids_host is None:
                 raise RuntimeError(
-                    f"native route buffer unavailable after layer {layer_id}")
+                    f"route buffer unavailable after layer {layer_id}")
             if bool(getattr(ids_host, "is_cuda", False)):
                 raise RuntimeError(
                     f"route journal refuses a device read at layer {layer_id}")
