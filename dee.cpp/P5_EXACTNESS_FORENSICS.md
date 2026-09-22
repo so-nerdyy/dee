@@ -132,6 +132,34 @@ divergence is confirmed as cuBLAS-class library nondeterminism, decide:
 Option (a) is the stricter and cheaper path; (b) needs a defensible
 tolerance derivation.
 
+## P5b mechanism test — v1 result (kernel dee-cpp-dsv4-p5b-mechanism v1)
+
+v1 carried a driver bug (cohort groups reused prompt index 0 across
+cohorts — the runner correctly rejects duplicate indices) so only arm mC
+executed, but it produced the decisive datum anyway:
+
+- **mC: two plain sequential `generate()` units on byte-identical
+  unpadded input DIVERGE.** The defect is not cohort-specific — it is
+  any-second-inference in a warm process.
+- **Route-weight journal localization (new instrument):** 687/688
+  (step, layer) records diverge. The ONLY matching record is
+  (step 0, layer 0): layer-0's routing weights are identical → embed +
+  attention-0 produce identical hidden state. Layer-1 weights differ at
+  step 0 → the injection sits between layer-0's FFN input and layer-1's
+  router input: layer-0's MoE output (native engine `cublasGemmEx`),
+  shared expert, or layer-1's attention. Expert-ID flips begin at
+  layer 3 (first learned router) — same signature as the campaign.
+- **Cross-kernel fresh determinism:** v1's first sequential unit
+  reproduces the P4-seal anchor prefix `[79, 14644, …]` — fresh-process
+  output is reproducible across kernels/VMs; warm-process second runs
+  diverge from token 0.
+
+v2 (in flight): all-sequential 3-arm bisect — mA plain repro, mB
+`NATIVE_TORCH_DETERMINISTIC` + `CUBLAS_WORKSPACE_CONFIG=:4096:8`, mC
+`CUBLAS_WORKSPACE_CONFIG` only. Clean mB+mC ⇒ the env var alone is the
+fix; clean mB + dirty mC ⇒ torch-op nondeterminism beyond cuBLAS; dirty
+mB ⇒ deeper than library config.
+
 ## What this means for Phase 5
 
 The serving machinery itself is proven: cohort execution, dedup, evidence
