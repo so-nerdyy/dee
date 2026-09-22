@@ -1695,6 +1695,79 @@ def main() -> int:
             host_cache_mode=HOST_CACHE_MODE)
         log(f"engines built (cache_dtype={CACHE_DTYPE})")
 
+    # P5b engine-only determinism probe: NATIVE_MICRO_PROBE=1 skips the
+    # model build entirely and drives moe_forward_batch_device on eng0 in a
+    # suite of configs over fixed inputs — isolating the dee_core expert
+    # path from all torch-model state.  The suite runs cold-reset, warm
+    # resident-hit, allocator-churn, and a post-churn reset in one process.
+    if os.environ.get("NATIVE_MICRO_PROBE", "0") == "1":
+        import numpy as _np
+        _pn = int(os.environ.get("NATIVE_MICRO_N", "18"))
+        _ptopk = int(os.environ.get("NATIVE_MICRO_TOPK", "6"))
+        _phid = int(os.environ.get("NATIVE_MICRO_HIDDEN", "4096"))
+        _player = int(os.environ.get("NATIVE_MICRO_LAYER", "0"))
+        _piters = int(os.environ.get("NATIVE_MICRO_ITERS", "4"))
+        # 108 selections over 64 experts: mirrors the real prefill mix —
+        # some experts group 2-3 rows, ~44 run the single-row path.
+        _pexperts = int(os.environ.get("NATIVE_MICRO_EXPERTS", "64"))
+        _suite = json.loads(os.environ.get(
+            "NATIVE_MICRO_SUITE",
+            '[{"name":"coldreset","reset":true,"churn_mb":0},'
+            ' {"name":"resident","reset":false,"churn_mb":0},'
+            ' {"name":"churn","reset":true,"churn_mb":256},'
+            ' {"name":"postchurn","reset":true,"churn_mb":0}]'))
+        log(f"[micro] n={_pn} topk={_ptopk} hidden={_phid} "
+            f"layer={_player} iters={_piters} experts={_pexperts} "
+            f"suite={[s['name'] for s in _suite]}")
+        _g = torch.Generator(device="cpu").manual_seed(1234)
+        _h = torch.randn(_pn, _phid, generator=_g,
+                         dtype=torch.float32).to("cuda:0").half()
+        _h = _h.contiguous()
+        _ids = (_np.arange(_pn * _ptopk, dtype=_np.int32)
+                .reshape(_pn, _ptopk) % _pexperts).copy()
+        _raw = torch.empty(_pn, _ptopk, _phid,
+                           dtype=torch.float32, device="cuda:0")
+        _results = {}
+        for _spec in _suite:
+            _name = _spec["name"]
+            _shas = []
+            for _it in range(_piters):
+                if _spec.get("reset"):
+                    eng0.reset_runtime_cache()
+                    eng0.clear_host_cache()
+                    eng0.reset_store_stats()
+                if _spec.get("churn_mb", 0) > 0:
+                    _junk = torch.randn(_spec["churn_mb"] * 256, _phid,
+                                        device="cuda:0")
+                    _ = (_junk @ _junk.t()).sum().item()
+                    del _junk
+                torch.cuda.current_stream(0).synchronize()
+                _ok = bool(eng0.moe_forward_batch_device(
+                    _player, _h.data_ptr(), _pn, _ids, _ptopk,
+                    _raw.data_ptr()))
+                _arr = _raw.detach().cpu().numpy()
+                _sha = hashlib.sha256(_arr.tobytes()).hexdigest()
+                _shas.append(_sha)
+                _np.save(str(WORK / f"micro_raw-{_name}-i{_it}.npy"), _arr)
+                log(f"[micro] {_name} iter={_it} ok={_ok} "
+                    f"raw_sha={_sha[:16]}")
+                if not _ok:
+                    log(f"[micro] engine error: "
+                        f"{eng0.last_error_message()}")
+                    break
+            _results[_name] = {"raw_shas": _shas,
+                               "distinct": len(set(_shas))}
+        (WORK / "micro_probe.json").write_text(json.dumps({
+            "config": {"n": _pn, "topk": _ptopk, "hidden": _phid,
+                       "layer": _player, "iters": _piters,
+                       "experts": _pexperts,
+                       "cuda_launch_blocking":
+                           os.environ.get("CUDA_LAUNCH_BLOCKING", "0")},
+            "results": _results}, indent=2))
+        log(f"[micro] done: " + ", ".join(
+            f"{k}={v['distinct']}sha" for k, v in _results.items()))
+        return 0
+
     # Phase-5 cohort mode: NATIVE_COHORT_JSON carries {"groups": [[i,...]]}
     # — indices into NATIVE_PROMPTS_JSON forming lockstep cohorts.  Each
     # group runs one generate_cohort call; rows are left-padded to the
@@ -1812,6 +1885,10 @@ def main() -> int:
         # even for single-prompt arms like the p5 c0_anchor -- the
         # session driver harvests per-stem filenames.
         suffix = f"-q{qi}" if (_multi or _prompts_json) else ""
+        # P5b probe tagging: layer-0 dump files are named by unit so the
+        # post-hoc diff can align raw tensors across sequential units.
+        os.environ["NATIVE_PROBE_TAG"] = f"q{qi}"
+        os.environ["NATIVE_PROBE_DIR"] = str(WORK)
         log(f"=== prompt {qi}: {len(prompt_text)} chars, "
             f"seal_applicable={SEAL_APPLICABLE} ===")
         log("=== tokenize + greedy decode ===")

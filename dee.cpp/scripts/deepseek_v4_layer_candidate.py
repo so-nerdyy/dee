@@ -21,6 +21,7 @@ stays false for DS9.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import time
 from typing import Any, Optional
@@ -33,6 +34,13 @@ import torch
 # off: the only added cost is one flag check per forward, and no execution,
 # synchronization, or arithmetic changes in either mode.
 _HOST_PROFILE = os.environ.get("DEE_HOST_PROFILE") == "1"
+
+# P5b forensics probe: NATIVE_PROBE_L0=1 dumps the exact layer-0 prefill
+# engine I/O (hidden_fp16 in, raw out, route ids) to .npy files under
+# NATIVE_PROBE_DIR, then replays the identical call into a second output
+# buffer — the replay sees resident cache hits, so raw vs raw_replay
+# separates miss-path from hit-path compute.  Off in production runs.
+_PROBE_L0 = os.environ.get("NATIVE_PROBE_L0", "0") == "1"
 
 from scripts import deepseek_v4_expert_reference as ds7
 from scripts import deepseek_v4_layer_reference as layer_ref
@@ -499,6 +507,38 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
             raise RuntimeError(
                 f"native moe_forward_batch_device failed layer={self.layer_id}"
                 + (f": {detail}" if detail else ""))
+        # P5b layer-0 forensics probe: dump the exact engine input + output,
+        # then replay the same call into a second buffer.  The replay hits
+        # warm device/host caches, so a raw-vs-replay mismatch localizes to
+        # the fill path (miss) vs resident path (hit), and cross-unit
+        # comparison gives the divergence magnitude/pattern.
+        if (_PROBE_L0 and self.layer_id == 0
+                and int(getattr(self, "_profile_start_pos", -1)) == 0):
+            tag = os.environ.get("NATIVE_PROBE_TAG", "u")
+            out_dir = os.environ.get("NATIVE_PROBE_DIR", ".")
+            os.makedirs(out_dir, exist_ok=True)
+            np.save(os.path.join(out_dir, f"probe_{tag}_hidden.npy"),
+                    hidden_fp16.detach().cpu().numpy())
+            np.save(os.path.join(out_dir, f"probe_{tag}_ids.npy"),
+                    ids_host)
+            np.save(os.path.join(out_dir, f"probe_{tag}_raw.npy"),
+                    raw.detach().cpu().numpy())
+            raw2 = torch.empty_like(raw)
+            ok2 = bool(batch_device(
+                self.layer_id, hidden_fp16.data_ptr(), n, ids_host,
+                cfg.topk, raw2.data_ptr()))
+            np.save(os.path.join(out_dir, f"probe_{tag}_raw_replay.npy"),
+                    raw2.detach().cpu().numpy())
+            diff = (raw - raw2).abs()
+            raw_sha = hashlib.sha256(
+                raw.detach().cpu().numpy().tobytes()).hexdigest()[:16]
+            rep_sha = hashlib.sha256(
+                raw2.detach().cpu().numpy().tobytes()).hexdigest()[:16]
+            print(f"[probe] {tag} layer0 replay ok={ok2} "
+                  f"raw_sha={raw_sha} replay_sha={rep_sha} "
+                  f"max_abs_diff={diff.max().item():.6e} "
+                  f"ndiff={int((diff > 0).sum().item())}",
+                  flush=True)
         self._profile_ffn_mark()
 
         if (self._native_moe_output is None or

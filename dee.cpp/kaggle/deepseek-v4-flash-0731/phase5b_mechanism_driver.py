@@ -7,39 +7,37 @@ each forward (pad rows mutually agree), injected during layers 0-2
 compute.  This session bisects the source with three arms sharing one
 process-per-arm discipline:
 
-  v2 result (kernel v2, all-sequential arms): divergence survives BOTH
-  torch.use_deterministic_algorithms AND CUBLAS_WORKSPACE_CONFIG — the
-  documented cuBLAS-workspace fix is dead.  Warm trajectory is itself
-  low-entropy (mB-q1 == mC-q1 divergent sha) — consistent with
-  allocator-layout/alignment-dependent kernel dispatch, not randomness.
-  v1 result: sequential path itself diverges (not cohort-specific);
-  injection sits inside layer-0's compute output (layer-1 router
-  weights differ at step 0 while layer-0's match).
+  v3 result (kernel v3): decisive localization — at (step0, layer0)
+  router_scores/routing_weights/expert_ids/shared_out all match unit 0
+  while moe_out diverges => the engine's routed-expert `raw` output
+  differs on bit-identical inputs.  mD crashed on reference-cache
+  capacity (shared pins > 1 GiB budget); mF was a null arm
+  (NATIVE_BATCHED never consulted on the device path).
+  v2 result: divergence survives BOTH use_deterministic_algorithms AND
+  CUBLAS_WORKSPACE_CONFIG — documented cuBLAS-workspace fix is dead.
+  v1 result: sequential path itself diverges (not cohort-specific).
 
-  mD  reference torch expert path (ffn_backend=cache_fp16): routed
-      experts via DeepseekV4CacheFfn torch GEMMs over FP16 payloads —
-      bypasses moe_forward_batch_device entirely.  Clean => dee_core
-      native FFN path convicted.  Dirty => mechanism lives above the
-      engine (torch/dense/attention side).
-  mE  PYTORCH_NO_CUDA_MEMORY_CACHING=1: disables the caching allocator —
-      every tensor alloc goes through cudaMalloc (uniform driver
-      alignment).  Clean => allocator-layout/alignment-dependent
-      dispatch convicted.
-  mF  NATIVE_BATCHED=1: engine uses cublasGemmBatchedEx pointer-batch
-      instead of per-expert cublasGemmEx.  Clean => per-expert GEMM
-      dispatch specifically implicated; batched = candidate fix.
+  mG  full-model probe: NATIVE_PROBE_L0=1 dumps layer-0 prefill engine
+      I/O tensors (hidden_fp16/raw/ids) + a same-unit replay call into
+      a second buffer — gives divergence MAGNITUDE (ULP vs corruption),
+      position pattern, and miss-vs-hit asymmetry inside a unit.
+  mI  engine-only micro suite (NATIVE_MICRO_PROBE=1): no model; drives
+      moe_forward_batch_device directly across coldreset/resident/churn/
+      postchurn configs — convicts/exonerates dee_core standalone.
+  mJ  same micro suite under CUDA_LAUNCH_BLOCKING=1 — serializes every
+      kernel launch; clean => stream-timing race; dirty => state.
 
-Instruments on every arm: NATIVE_ROUTE_WEIGHT_JOURNAL (per-step,layer
+Instruments on model arms: NATIVE_ROUTE_WEIGHT_JOURNAL (per-step,layer
 sha of routing weights + expert ids) and NATIVE_CAPTURE_JOURNAL (sha of
 moe_out/shared_out/router_scores captures) — the capture shas split
 layer-0 internals: moe_out diverging => engine FFN; shared_out alone =>
 shared expert; weights-only => attention/residual side.
 
 Accept/reject is per-arm in p5b_report.json:
-  engine_convicted     = mD bit-identical (dee_core path necessary)
-  allocator_convicted  = mE bit-identical (layout/algo dispatch)
-  batched_stable       = mF bit-identical (per-expert GEMM implicated)
-  unresolved           = all three still diverge
+  engine_standalone_convicted = mI any config distinct>1
+  hit_path_implicated         = mI resident diverges but coldreset stable
+  timing_race                 = mI dirty but mJ clean under launch-blocking
+  model_level_trigger         = mI clean but mG still diverges
 
 Phases identical to phase5_session_driver.py: P0 gate, P1 clone+build,
 P2 store assembly + seal, P3 one runner subprocess per arm, P4 report
@@ -116,48 +114,43 @@ _BASE = {
 
 ARMS = [
     {
-        # mD: reference torch expert path (cache_fp16) — routed experts
-        # computed by DeepseekV4CacheFfn torch GEMMs over FP16 payloads,
-        # bypassing moe_forward_batch_device entirely.  The python cache
-        # persists across units, so warm units run the SAME payload
-        # tensors — clean result convicts dee_core; dirty => the
-        # mechanism lives above the engine (torch-side/dense path).
-        # NOTE: engine-integrity gates in classify_full_generation are
-        # meaningless for this arm (engine unused) — the journals carry
-        # the evidence; produced-tokens is the completion criterion.
-        **_BASE, "arm_id": "mD",
+        # mG: full-model forensic probe — 3 identical sequential units with
+        # NATIVE_PROBE_L0=1: at layer-0 prefill the runner dumps the exact
+        # engine I/O tensors (hidden_fp16 in, raw out, ids consumed) plus a
+        # same-unit REPLAY call into a second buffer (resident-hit path).
+        # Offline diff gives divergence magnitude (ULP vs corruption),
+        # position pattern (which experts/tokens), and hit-vs-miss
+        # asymmetry.  Journals retained for the layer map.
+        **_BASE, "arm_id": "mG",
         "prompts_json": [Q0, Q0, Q0],
         "cohort": None,
         "route_weight_journal": "1",
         "capture_journal": "1",
-        "ffn_backend": "cache_fp16",
+        "probe_l0": "1",
     },
     {
-        # mE: allocator-layout probe — PYTORCH_NO_CUDA_MEMORY_CACHING=1
-        # disables the caching allocator: every tensor alloc goes to
-        # cudaMalloc (uniform >=256B driver alignment).  The leading
-        # surviving theory is address/alignment-dependent kernel/algo
-        # dispatch (warm units' tensors land at different sub-offsets of
-        # recycled pool blocks).  Clean => allocator layout convicted.
-        **_BASE, "arm_id": "mE",
-        "prompts_json": [Q0, Q0, Q0],
+        # mI: engine-only micro suite — no model build.  Drives
+        # moe_forward_batch_device on eng0 directly with fixed inputs
+        # (layer 0, n=18, topk=6, 64 experts = real prefill mix) across 4
+        # in-process configs: cold-reset x4, resident-hit x4,
+        # churn+reset x4, post-churn reset x4.  Reproducing here convicts
+        # dee_core standalone; clean => the trigger needs model-level
+        # memory/timing context.
+        **_BASE, "arm_id": "mI",
+        "prompts_json": [Q0],
         "cohort": None,
-        "route_weight_journal": "1",
-        "capture_journal": "1",
-        "extra_env": {"PYTORCH_NO_CUDA_MEMORY_CACHING": "1"},
+        "micro_probe": "1",
     },
     {
-        # mF: pointer-batched GEMM path — NATIVE_BATCHED=1 switches the
-        # engine to cublasGemmBatchedEx (pointer-table batch) instead of
-        # per-expert cublasGemmEx.  Divergent here too => mechanism deeper
-        # than per-expert GEMM dispatch; clean => the per-expert path is
-        # specifically implicated (and batched mode is a candidate fix).
-        **_BASE, "arm_id": "mF",
-        "prompts_json": [Q0, Q0, Q0],
+        # mJ: same micro suite under CUDA_LAUNCH_BLOCKING=1 — every kernel
+        # launch becomes host-synchronous, collapsing all stream-timing
+        # races.  Clean => a stream-ordering race somewhere; dirty => pure
+        # state-dependent numerics (bytes or kernel state).
+        **_BASE, "arm_id": "mJ",
+        "prompts_json": [Q0],
         "cohort": None,
-        "route_weight_journal": "1",
-        "capture_journal": "1",
-        "batched": "1",
+        "micro_probe": "1",
+        "extra_env": {"CUDA_LAUNCH_BLOCKING": "1"},
     },
 ]
 
@@ -169,6 +162,7 @@ STALE_PATTERNS = (
     "SHA256SUMS*.json", "error.txt", "result*.json", "integrity*.json",
     "environment*.json", "run_config*.json", "profile*.json",
     "memory*.json", "progress.log", "dee4-*.json", "dee4-*.jsonl",
+    "probe_*.npy", "micro_*.npy", "micro_probe.json",
     "p2.2-dee4-evidence.json")
 
 report = {"job": "phase-5b warm-process divergence mechanism test",
@@ -260,6 +254,10 @@ def arm_env(arm):
         env["NATIVE_BATCHED"] = arm["batched"]
     if arm.get("torch_deterministic"):
         env["NATIVE_TORCH_DETERMINISTIC"] = arm["torch_deterministic"]
+    if arm.get("probe_l0"):
+        env["NATIVE_PROBE_L0"] = arm["probe_l0"]
+    if arm.get("micro_probe"):
+        env["NATIVE_MICRO_PROBE"] = arm["micro_probe"]
     for k, v in (arm.get("extra_env") or {}).items():
         env[k] = v
     if COMMIT:
@@ -396,10 +394,16 @@ def run_arm(arm):
                  "environment.json", "run_config.json", "profile.json",
                  "memory.json", "progress.log", "error.txt",
                  "dee4-segmented-store.json", "result.json",
+                 "micro_probe.json",
                  "native-generate-result.json"):
         src = WORK / name
         if src.is_file():
             (arm_out / src.name).write_bytes(src.read_bytes())
+    # v4 probes: layer-0 engine I/O dumps (mG) and micro-suite raws (mI/mJ)
+    for src in sorted(WORK.glob("probe_*.npy")):
+        (arm_out / src.name).write_bytes(src.read_bytes())
+    for src in sorted(WORK.glob("micro_raw-*.npy")):
+        (arm_out / src.name).write_bytes(src.read_bytes())
     return recs
 
 
@@ -459,7 +463,7 @@ def selfcheck():
     for aid, env in envs.items():
         knob_keys = sorted(k for k in env
                            if k.startswith(("NATIVE_", "CUBLAS_",
-                                            "PYTORCH_")))
+                                            "CUDA_", "PYTORCH_")))
         diff = {k: env[k] for k in knob_keys
                 if env.get(k) != ref_env.get(k)
                 and k not in ("NATIVE_ARM_ID", "NATIVE_SOURCE_TREE",
@@ -626,21 +630,35 @@ def main():
         write_report()
 
     # ---------------- P4 analysis + verdict ----------------
-    # Per-arm: do all units produce bit-identical token streams?
+    # Per-arm: do all units produce bit-identical token streams?  Micro
+    # arms (mI/mJ) produce micro_probe.json configs instead of journals.
     analysis = {}
     for arm in ARMS:
         aid = arm["arm_id"]
         groups = (arm.get("cohort") or {}).get("groups")
         n_units = len(groups) if groups else len(arm["prompts_json"])
+        if arm.get("micro_probe"):
+            mp_path = OUT / aid / "micro_probe.json"
+            mp = (json.loads(mp_path.read_text())
+                  if mp_path.is_file() else None)
+            cfg_rows = (mp or {}).get("results") or {}
+            analysis[aid] = {
+                "micro": True,
+                "units": n_units,
+                "accepted": n_units if mp is not None else 0,
+                "configs": {k: v.get("distinct") for k, v in
+                            cfg_rows.items()},
+                "configs_detail": cfg_rows,
+            }
+            continue
         shas = []
         ok_units = 0
         for ui in range(n_units):
             tag = f"{aid}-{'c' if groups else 'q'}{ui}"
             rec = report["runs"].get(tag, {})
-            # Completion = produced tokens + journals.  The reference-FFN
-            # arm (mD) never exercises the engine, so the native-path
-            # integrity classifier REJECTs it by design — the journals
-            # are the evidence, not the classification.
+            # Completion = produced tokens + journals.  Mechanism arms may
+            # not pass the native integrity classifier — journals carry
+            # the evidence.
             produced = (rec.get("rc") == 0
                         and (rec.get("classification")
                              == "ACCEPT_CORRECTNESS"
@@ -663,40 +681,80 @@ def main():
                                   fname="captures")
             if d is not None:
                 cap_divs[key] = d
-        analysis[aid] = {
-            "units": n_units, "accepted": ok_units,
-            "token_shas": [str(s)[:16] for s in shas],
-            "units_bit_identical": identical,
-            "first_divergent_weight": first_div,
-            "first_divergent_ids": _first_divergence(
-                aid, n_units, kind="ids_sha256"),
-            "first_divergent_captures": cap_divs,
-        }
+        rec_a = {"units": n_units, "accepted": ok_units,
+                 "token_shas": [str(s)[:16] for s in shas],
+                 "units_bit_identical": identical,
+                 "first_divergent_weight": first_div,
+                 "first_divergent_ids": _first_divergence(
+                     aid, n_units, kind="ids_sha256"),
+                 "first_divergent_captures": cap_divs}
+        # v4 mG probe: layer-0 engine I/O dumps — cross-unit magnitude +
+        # same-unit replay (miss vs hit path) comparison.
+        if arm.get("probe_l0"):
+            try:
+                import numpy as _np
+                dumps = {}
+                for ui in range(n_units):
+                    stem = f"q{ui}"
+                    entry = {}
+                    for k in ("hidden", "raw", "raw_replay", "ids"):
+                        p = OUT / aid / f"probe_{stem}_{k}.npy"
+                        if p.is_file():
+                            entry[k] = str(p)
+                    dumps[stem] = entry
+                if "q0" in dumps and "raw" in dumps["q0"]:
+                    ref = _np.load(dumps["q0"]["raw"])
+                    for stem, entry in dumps.items():
+                        if "raw" not in entry:
+                            continue
+                        cur = _np.load(entry["raw"])
+                        d = _np.abs(ref - cur)
+                        entry["vs_q0_max_abs"] = float(d.max())
+                        entry["vs_q0_ndiff"] = int((d > 0).sum())
+                    for stem, entry in dumps.items():
+                        if "raw" in entry and "raw_replay" in entry:
+                            d = _np.abs(_np.load(entry["raw"])
+                                        - _np.load(entry["raw_replay"]))
+                            entry["replay_max_abs"] = float(d.max())
+                            entry["replay_ndiff"] = int((d > 0).sum())
+                # keep only the comparison metrics, not the path strings
+                rec_a["probe_l0_dumps"] = {
+                    s: {k: v for k, v in e.items()
+                        if k.startswith(("vs_q0", "replay"))}
+                    for s, e in dumps.items()}
+            except Exception as exc:
+                rec_a["probe_l0_error"] = repr(exc)[:200]
+        analysis[aid] = rec_a
     report["analysis"] = analysis
 
-    mD = analysis.get("mD", {})
-    mE = analysis.get("mE", {})
-    mF = analysis.get("mF", {})
+    mG = analysis.get("mG", {})
+    mI = analysis.get("mI", {})
+    mJ = analysis.get("mJ", {})
+    mi_cfgs = mI.get("configs") or {}
+    mj_cfgs = mJ.get("configs") or {}
+    micro_repro = any((v or 0) > 1 for v in mi_cfgs.values())
+    micro_resident_div = (mi_cfgs.get("resident") or 0) > 1
+    micro_cold_div = (mi_cfgs.get("coldreset") or 0) > 1
+    blocking_stable = (bool(mj_cfgs)
+                       and all((v or 0) == 1 for v in mj_cfgs.values()))
     interp = {
-        "engine_convicted": (mD.get("units_bit_identical") is True
-                             and mD.get("accepted") == 3),
-        "allocator_convicted": (mE.get("units_bit_identical") is True
-                                and mE.get("accepted") == 3),
-        "batched_stable": (mF.get("units_bit_identical") is True
-                           and mF.get("accepted") == 3),
-        "engine_exonerated": mD.get("units_bit_identical") is False,
-        "unresolved": all(a.get("units_bit_identical") is False
-                          for a in (mD, mE, mF)),
+        "engine_standalone_convicted": micro_repro,
+        "hit_path_implicated": micro_resident_div and not micro_cold_div,
+        "cold_path_implicated": micro_cold_div,
+        "timing_race": micro_repro and blocking_stable,
+        "model_level_trigger": (not micro_repro
+                                and mG.get("units_bit_identical") is False),
+        "model_still_divergent": mG.get("units_bit_identical") is False,
+        "replay_hit_vs_miss": (mG.get("probe_l0_dumps") or {}),
         "reading": (
-            "mD clean => dee_core native path necessary for the defect.  "
-            "mE clean => allocator-layout/alignment-dependent dispatch "
-            "convicted (fix: allocator discipline).  mF clean => "
-            "per-expert cublasGemmEx implicated; batched path is a "
-            "candidate fix.  All dirty => driver/context-level or "
-            "attention-side mechanism remains.  "
-            "first_divergent_captures splits layer-0 internals: "
-            "moe_out diverging => engine FFN output; shared_out alone "
-            "=> shared expert; only downstream weights => attention/residual."),
+            "mI micro-suite: coldreset/resident/churn/postchurn distinct-"
+            "sha counts per config.  Any config with distinct>1 reproduces "
+            "the defect with NO model — dee_core standalone convicted.  "
+            "resident>1 => the resident-hit path itself is unstable; "
+            "coldreset>1 => miss/fill path unstable.  mJ clean while mI "
+            "dirty => stream-timing race.  mG probe_l0_dumps gives "
+            "max|delta| and ndiff per unit vs q0 plus the same-unit "
+            "raw-vs-replay (miss vs hit) comparison."),
     }
     report["interpretation"] = interp
     # The mechanism test's verdict is informational, not a gate:
