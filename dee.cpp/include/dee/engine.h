@@ -425,6 +425,9 @@ public:
         bool     staging_present= false;
         uint64_t staging_gen    = 0;   // entry's prepared_generation
         uint64_t prepare_gen    = 0;   // engine fp4_prepare_generation_
+        uint64_t staging_region_bytes = 0; // sum of stamped fp4_regions
+                                           // nbytes — 0 with a live pack
+                                           // entry means zero-length gathers
         bool     dev_resident   = false;
         uint64_t dev_sha        = 0;
         uint64_t dev_gen        = 0;

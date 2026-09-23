@@ -614,3 +614,81 @@ stale-mapping collisions that misaddress fills.
   normal at the 3.5 GiB/281-slot VRAM cap, no `evicted_before_use` at
   the probed (tok0,L0).
 - Zero CUDA errors/tracebacks in mG; micro arms hit only the churn OOM.
+
+---
+
+# v5 — byte-fingerprint bisect (commit 0dd39ef): ROOT CAUSE FOUND
+
+Kernel `nivind/dee-cpp-dsv4-p5b-mechanism` v5, commit `0dd39ef`, three
+fingerprinted micro arms.  `debug_expert_fingerprint` hashed every expert's
+record at three boundaries per iteration: `store_sha` (dee4 mmap ground
+truth), `pack_sha` (HostPackCache entry, non-perturbing `peek_bytes`),
+`dev_sha` (D2H readback of the resident arena block) + pointers,
+generations, pins, all-zero, and the FP4 decode-scratch hash.
+
+| Arm | Config | Result |
+|-----|--------|--------|
+| mK | fp4 + fingerprints, 64 experts × {coldreset,resident,churn,postchurn} | i0 of coldreset perfect (dev_eq_pack=64); **every refill iteration: pack_ne_store=0, dev_ne_pack=64** |
+| mL | mK + `CUDA_LAUNCH_BLOCKING=1` | identical boundary failure (960 dev_ne_pack, 874 dev_zero) — timing exonerated at byte level |
+| mM | fp16 cache + fingerprints, 48 experts | host fill still clean (pack_ne_store=0), 639 zero blocks — **not FP4-specific** |
+
+## What the bytes said
+
+- Host pack contents were **always correct** (`pack_ne_store = 0` across
+  all 3 arms / 48 dirty iterations) — store→pack lane exonerated.
+- Device blocks were wrong in exactly two shapes: **all-zero** (872 in mK)
+  or **holding the verbatim record of the LAST two staged experts**
+  (rec62/rec63, alternating by slot parity — the "adjacent-pair" structure
+  first seen in v4's output dumps).
+- `dev_ptr` identical across iterations (arena re-ensures deterministically),
+  generations advanced cleanly — cache bookkeeping correct; the *content*
+  was stale.
+- Wrong-record counts decayed per reset cycle (22→10→6→2 in mK) while zeros
+  grew — consistent with pinned staging slots whose contents were written
+  once (iteration 0) and never refreshed.
+
+## Root cause
+
+`Engine::clear_host_cache()` zeroed **`fp4_region_nbytes[r]`** on each
+surviving `staging_int8_` entry while nulling `fp4_regions[r]` pointers.
+On the next cold fill, `prepare_fp4_experts()` found the *existing* entry,
+skipped `configure_fp4_quantized()` (the only writer of
+`fp4_region_nbytes`), and `point_fp4_regions()` stamped six
+**zero-length** regions `{pack+0, 0}`.  `AsyncPrefetcher::cuda_submit` then
+memcpy'd 0 bytes per region into the pinned slot — leaving whatever the
+slot last held — and the H2D shipped 13.4 MB of stale slot bytes into the
+cache block.  Slots never re-written ⇒ their content froze at iteration
+0's final fills (records 62/63); never-yet-used slots stayed zero.
+
+Every prior signature is explained: first-touch fills correct (entries
+fresh), every post-clear refill corrupt (entries reused), pack bytes right
+(pack fill unaffected), launch-blocking irrelevant (host metadata bug),
+fp16 equally dirty (same region path feeds both dtypes), cumulative-per-
+reset growth (all post-i0 iterations broken; slot reuse mix shifts).
+
+Note: the pack *eviction observer* never had this bug — it nulls
+`fp4_regions` + `prepared_generation` but leaves `fp4_region_nbytes`
+(engine.cpp:4149).  `clear_host_cache`'s extra zeroing was the deviation.
+
+## Fix (commit pending on top of 0dd39ef)
+
+1. `clear_host_cache`: no longer zeroes `fp4_region_nbytes` — pointers
+   invalidated, geometry preserved (same rule the evict observer uses).
+2. `prepare_fp4_experts` existing-entry branch: restores `fp4[]` /
+   `fp4_region_nbytes` / `fp4_total_nbytes` from the freshly-configured
+   `metadata[index]` when the fill ran (guarded by
+   `metadata[index].fp4_total_nbytes != 0` so the pack-hit path keeps the
+   entry's own geometry) — defense-in-depth against any future
+   invalidation path.
+3. `debug_expert_fingerprint` now also reports `staging_region_bytes`
+   (sum of stamped region sizes); the driver tallies
+   `staging_zero_regions` per iteration — a permanent tripwire for this
+   bug class.
+
+## v6 validation expectation
+
+Re-run of mK/mL/mM on the fixed commit must show: `staging_zero_regions=0`,
+`dev_eq_pack=64/iter`, `dev_zero=0`, `distinct=1` raw_shas across all
+configs and both cache dtypes.  Anything less means a second defect lives
+behind this one (none was visible in the fingerprints — every boundary
+except the stamped regions checked clean).

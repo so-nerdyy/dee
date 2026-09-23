@@ -735,6 +735,16 @@ def main():
                             and f.get("dev_sha") == f.get("pack_sha")),
                         "dev_zero": sum(1 for f in fps
                                         if f.get("dev_all_zero")),
+                        # v5 root-cause tripwire: a live pack entry whose
+                        # stamped fp4_regions sum to 0 bytes means the
+                        # pinned-slot gather copied nothing and the H2D
+                        # shipped stale slot bytes (clear_host_cache
+                        # region-nbytes poison, fixed in 0dd39ef+).
+                        "staging_zero_regions": sum(
+                            1 for f in fps
+                            if f.get("pack_ready") and f.get("dev_resident")
+                            and f.get("staging_present")
+                            and not f.get("staging_region_bytes")),
                     }
                     scr = it.get("scratch") or {}
                     row["scratch_zero"] = scr.get("all_zero")
@@ -860,14 +870,15 @@ def main():
         configs -> {pack_ne_store, dev_ne_pack, dev_zero, dev_eq_pack}."""
         tot = {"pack_ne_store": 0, "dev_ne_pack": 0, "dev_zero": 0,
                "dev_eq_pack": 0, "dev_clean_but_out_bad": 0,
-               "iters_with_fp": 0}
+               "staging_zero_regions": 0, "iters_with_fp": 0}
         for cfg_name, rows in (arm_analysis.get("fp_iters") or {}).items():
             for row in rows:
                 if not row.get("n_fp"):
                     continue
                 tot["iters_with_fp"] += 1
                 for k in ("pack_ne_store", "dev_ne_pack", "dev_zero",
-                          "dev_eq_pack", "dev_clean_but_out_bad"):
+                          "dev_eq_pack", "dev_clean_but_out_bad",
+                          "staging_zero_regions"):
                     tot[k] += int(row.get(k) or 0)
         return tot
 

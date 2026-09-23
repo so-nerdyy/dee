@@ -2344,8 +2344,14 @@ bool Engine::clear_host_cache() {
         QuantizedExpert& quantized = entry.second;
         for (int r = 0; r < 6; ++r) {
             quantized.fp4_regions[r] = {nullptr, 0};
-            quantized.fp4_region_nbytes[r] = 0;
         }
+        // NOTE: fp4_region_nbytes is immutable record GEOMETRY, not a
+        // pointer — it must survive the clear.  Zeroing it left entries
+        // that prepare_fp4_experts() later re-pointed into zero-length
+        // regions, so the pinned-slot gather copied nothing and the H2D
+        // shipped stale slot bytes (P5b root cause).  The pack evict
+        // observer above uses the same rule: invalidate pointers, keep
+        // geometry.
         quantized.prepared_generation = 0;
         quantized.host_resolution = HostResolution::Unknown;
     }
@@ -2392,6 +2398,8 @@ bool Engine::debug_expert_fingerprint(int layer, int expert,
     if (staged != staging_int8_.end()) {
         out->staging_present = true;
         out->staging_gen = staged->second.prepared_generation;
+        for (int r = 0; r < 6; ++r)
+            out->staging_region_bytes += staged->second.fp4_regions[r].nbytes;
     }
 
     // Device block: pointer/generation/pins plus a D2H readback hash.  The
@@ -3200,6 +3208,22 @@ bool Engine::prepare_fp4_experts(
             QuantizedExpert* target = nullptr;
             if (existing != staging_int8_.end()) {
                 target = &existing->second;
+                // Reused staging entry: restore the immutable record
+                // geometry this fill re-derived.  A surviving entry may
+                // carry invalidated fields (clear_host_cache / the pack
+                // evict observer null region pointers); if the region
+                // sizes were dropped too, point_fp4_regions() below would
+                // stamp zero-length gathers and the H2D would ship stale
+                // pinned-slot bytes — the P5b warm-process corruption.
+                if (metadata[index].fp4_total_nbytes != 0) {
+                    for (int p = 0; p < 3; ++p)
+                        target->fp4[p] = metadata[index].fp4[p];
+                    for (int r = 0; r < 6; ++r)
+                        target->fp4_region_nbytes[r] =
+                            metadata[index].fp4_region_nbytes[r];
+                    target->fp4_total_nbytes =
+                        metadata[index].fp4_total_nbytes;
+                }
             } else {
                 auto inserted = staging_int8_.emplace(
                     key, std::move(metadata[index]));

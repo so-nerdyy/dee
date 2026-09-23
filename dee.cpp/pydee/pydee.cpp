@@ -217,6 +217,7 @@ PYBIND11_MODULE(pydee_core, m) {
             d["staging_present"] = fp.staging_present;
             d["staging_gen"] = fp.staging_gen;
             d["prepare_gen"] = fp.prepare_gen;
+            d["staging_region_bytes"] = fp.staging_region_bytes;
             d["dev_resident"] = fp.dev_resident;
             d["dev_sha"] = fp.dev_sha;
             d["dev_gen"] = fp.dev_gen;
