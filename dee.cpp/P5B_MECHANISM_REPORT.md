@@ -670,7 +670,7 @@ Note: the pack *eviction observer* never had this bug — it nulls
 `fp4_regions` + `prepared_generation` but leaves `fp4_region_nbytes`
 (engine.cpp:4149).  `clear_host_cache`'s extra zeroing was the deviation.
 
-## Fix (commit pending on top of 0dd39ef)
+## Fix (commit cccf17f)
 
 1. `clear_host_cache`: no longer zeroes `fp4_region_nbytes` — pointers
    invalidated, geometry preserved (same rule the evict observer uses).
@@ -685,10 +685,39 @@ Note: the pack *eviction observer* never had this bug — it nulls
    `staging_zero_regions` per iteration — a permanent tripwire for this
    bug class.
 
-## v6 validation expectation
+## v6 validation — PASS (kernel dee-cpp-dsv4-p5b-mechanism v6 @ 6ee7249)
 
-Re-run of mK/mL/mM on the fixed commit must show: `staging_zero_regions=0`,
-`dev_eq_pack=64/iter`, `dev_zero=0`, `distinct=1` raw_shas across all
-configs and both cache dtypes.  Anything less means a second defect lives
-behind this one (none was visible in the fingerprints — every boundary
-except the stamped regions checked clean).
+Re-run of mK/mL/mM on the fixed commit.  Preflight all PASS (2xT4, clone,
+cmake, dee_core, test_dee4_segmented, pydee, 46-segment store assembly);
+`P5B VERDICT: PASS`.
+
+| boundary | mK (fp4) | mL (fp4+blocking) | mM (fp16) |
+|---|---|---|---|
+| pack_ne_store | 0 | 0 | 0 |
+| dev_ne_pack | 0 | 0 | 0 |
+| dev_zero | 0 | 0 | 0 |
+| dev_eq_pack | **1024** (64×16) | **1024** | 0 (fp16 repr differs by design) |
+| staging_zero_regions | 0 | 0 | 0 |
+| dev_clean_but_out_bad | 0 | 0 | 0 |
+
+- `staging_region_bytes = 13,369,344` on every expert every iteration —
+  full record geometry stamped (was the zeroed field that caused v5).
+- `distinct = 1` on all 4 configs in mK: every one of the 16 iterations
+  produces raw output sha `17fbc848…` — **byte-identical to v5's clean
+  iteration-0**.  The fix doesn't merely stabilize the output; every
+  warm-process refill now delivers the correct bytes a fresh run
+  produces.  mL identical under `CUDA_LAUNCH_BLOCKING=1`; mM clean under
+  fp16 semantics.
+- `micro_reproduced: false`, `device_fill_convicted: false`,
+  `bytes_stable_under_blocking: true`, `fp16_also_divergent: false`.
+
+Interpretation: the convicted boundary (device bytes ≠ pack bytes after
+host-cache clear) is fully closed.  Every acceptance criterion met; no
+second defect was hiding behind this one in the exercised surface
+(coldreset / resident / churn / postchurn × fp4 / fp4-blocking / fp16).
+
+Phase-5 consequence: the campaign's exactness-gate FAIL and the unstable
+c1 reference were both this one bug — every unit ≥1 ran `clear_host_cache`
+before refilling.  A post-fix cohort re-run should now satisfy the
+`row == c1` bitwise gate (the machinery-side PASS conditions were already
+met: 16/16 units, c0 anchor == P4 seal, dedup 1.21–1.85).
