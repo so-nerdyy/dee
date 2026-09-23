@@ -535,11 +535,41 @@ void test_batch_allprotected_stats_coherence() {
           "post-reject inserts behave normally");
 }
 
+void test_peek_bytes_is_non_perturbing() {
+    dee::HostPackCache cache;
+    cache.set_budget(600);  // fits 2 x 256 + 1 x 64
+    const uint8_t* a = cache.get(1, 256, [&](uint8_t* dst, size_t n) {
+        pattern_fill(dst, n, 1); });
+    const uint8_t* b = cache.get(2, 256, [&](uint8_t* dst, size_t n) {
+        pattern_fill(dst, n, 2); });
+    check(a && b, "seed two entries");
+    const dee::HostPackCache::Stats before = cache.stats();
+    size_t nbytes = 0;
+    const uint8_t* peeked = cache.peek_bytes(1, &nbytes);
+    check(peeked == a && nbytes == 256, "peek returns live bytes + size");
+    check(cache.peek_bytes(99, &nbytes) == nullptr,
+          "peek of absent key returns nullptr");
+    check(cache.stats().hits == before.hits &&
+          cache.stats().misses == before.misses &&
+          cache.stats().entries == before.entries,
+          "peek does not touch hit/miss/entry counters");
+    // LRU order must be untouched: key 1 stays the oldest, so inserting
+    // key 3 must still evict 1 — if peek had refreshed it, 2 would go.
+    cache.peek_bytes(1, nullptr);
+    cache.peek_bytes(1, nullptr);
+    check(cache.get(3, 256, [&](uint8_t* dst, size_t n) {
+            pattern_fill(dst, n, 3); }) != nullptr,
+          "third insert fits after evicting one");
+    check(!cache.contains(1) && cache.contains(2) && cache.contains(3),
+          "peek left LRU order untouched (1 still evicted first)");
+}
+
 }  // namespace
 
 int main() {
     test_basic_hit_miss();
     test_lru_eviction();
+    test_peek_bytes_is_non_perturbing();
     test_oversize_and_clear();
     test_same_buffer_stays_valid_until_evicted();
     test_bounded_batch_fill_and_rollback();
