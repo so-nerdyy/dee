@@ -173,7 +173,7 @@ STALE_PATTERNS = (
     "environment*.json", "run_config*.json", "profile*.json",
     "memory*.json", "progress.log", "dee4-*.json", "dee4-*.jsonl",
     "probe_*.npy", "micro_*.npy", "micro_probe.json",
-    "p2.2-dee4-evidence.json")
+    "iso*.npy", "p2.2-dee4-evidence.json")
 
 report = {"job": "phase-5b warm-process divergence mechanism test",
           "branch": BRANCH, "commit": COMMIT or "(branch head)",
@@ -252,6 +252,8 @@ def arm_env(arm):
         "NATIVE_SOURCE_TREE": str(ROOT),
         "PYTHONPATH": str(DEE),
     })
+    if arm.get("lru_total_cap_gib"):
+        env["NATIVE_LRU_TOTAL_CAP_GIB"] = str(arm["lru_total_cap_gib"])
     if arm.get("cohort"):
         env["NATIVE_COHORT_JSON"] = json.dumps(arm["cohort"])
     if arm.get("route_weight_journal"):
@@ -416,6 +418,10 @@ def run_arm(arm):
         (arm_out / src.name).write_bytes(src.read_bytes())
     for src in sorted(WORK.glob("micro_raw-*.npy")):
         (arm_out / src.name).write_bytes(src.read_bytes())
+    # P5c cohort-isolation dumps (NATIVE_ISO_DUMP): per-(step,layer)
+    # router + hidden tensors for the K=1-vs-K=8 numerical bisect.
+    for src in sorted(WORK.glob("iso*.npy")):
+        (arm_out / src.name).write_bytes(src.read_bytes())
     return recs
 
 
@@ -453,8 +459,8 @@ def _first_divergence(arm_id, n_units, kind="weights_sha256",
 
 def selfcheck():
     problems = []
-    if len(ARMS) != 3:
-        problems.append(f"expected 3 arms, got {len(ARMS)}")
+    if not ARMS:
+        problems.append("no arms configured")
     for arm in ARMS:
         aid = arm["arm_id"]
         co = arm.get("cohort")
@@ -919,6 +925,62 @@ def main():
             "under fp4 (mK) but not fp16 (mM)."),
     }
     report["interpretation"] = interp
+
+    # P5c isolation arm (mN): same padded prompt at K=1 vs inside K=8,
+    # plus a same-shape repeat for bitwise determinism.  Member-level
+    # token shas make the contract explicit:
+    #   cN[k1_row] == cM[k1_row]        -> cohort shape is deterministic
+    #   cN[row] == cK8[member row]      -> singleton vs cohort (expected
+    #                                    to DIFFER at ULP-amplified
+    #                                    routing boundaries — reported,
+    #                                    not gated)
+    mN = analysis.get("mN")
+    if mN:
+        def _rows(tag):
+            return (report["runs"].get(tag, {}).get("row_shas") or {})
+        groups = (next(a for a in ARMS if a["arm_id"] == "mN")
+                  .get("cohort") or {}).get("groups") or []
+        iso = {"groups": groups, "units": {}}
+        for ui, g in enumerate(groups):
+            iso["units"][f"c{ui}"] = {
+                "group": g,
+                "row_shas": {str(k): str(v)[:16]
+                             for k, v in _rows(f"mN-c{ui}").items()},
+            }
+        # Same-shape determinism: every pair of units sharing a group
+        # must be bitwise identical on every member row.
+        det = []
+        for i in range(len(groups)):
+            for j in range(i + 1, len(groups)):
+                if groups[i] != groups[j]:
+                    continue
+                ri, rj = _rows(f"mN-c{i}"), _rows(f"mN-c{j}")
+                det.append({"units": [i, j],
+                            "identical": bool(ri) and ri == rj})
+        iso["same_shape_determinism"] = det
+        # Singleton-vs-member comparisons for each K=1 unit: unit's
+        # single row sha vs the same prompt_index's row inside each
+        # K>1 unit.
+        sv = []
+        for i, g in enumerate(groups):
+            if len(g) != 1:
+                continue
+            pidx = g[0]
+            ref = _rows(f"mN-c{i}").get(pidx) or next(
+                iter(_rows(f"mN-c{i}").values()), None)
+            for j, gj in enumerate(groups):
+                if len(gj) <= 1 or pidx not in gj:
+                    continue
+                got = _rows(f"mN-c{j}").get(pidx)
+                sv.append({"singleton_unit": i, "cohort_unit": j,
+                           "prompt_index": pidx,
+                           "member_pos": gj.index(pidx),
+                           "k1_sha": str(ref)[:16],
+                           "member_sha": str(got)[:16],
+                           "bit_identical": bool(ref) and ref == got})
+        iso["singleton_vs_member"] = sv
+        interp["mN_iso"] = iso
+
     # The mechanism test's verdict is informational, not a gate:
     # PASS = all arms produced their units' data.
     complete = all(a.get("accepted") == a.get("units")

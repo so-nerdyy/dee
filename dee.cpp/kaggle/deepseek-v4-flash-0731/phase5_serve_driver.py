@@ -184,7 +184,9 @@ class ServeDriver:
                    max_new_tokens: int,
                    eos_id: int = -1,
                    prebuilt: Optional[tuple[list[list[int]],
-                                          list[dict[str, Any]]]] = None
+                                          list[dict[str, Any]]]] = None,
+                   captures: Optional[dict[int, dict[str, Any]]] = None,
+                   per_step_captures: Optional[list[dict[int, dict[str, Any]]]] = None,
                    ) -> CohortResult:
         import torch
         k = len(prompt_texts)
@@ -220,6 +222,8 @@ class ServeDriver:
         # forward() moves ids to device0 itself; CPU tensor is fine.
         streams = self.model.generate_cohort(
             input_ids, max_new_tokens, eos_id=eos_id,
+            captures=captures,
+            per_step_captures=per_step_captures,
             decode_timings_ms=decode_ms,
             post_step_hook=_step_hook,
             post_layer_hook=self.post_layer_hook)

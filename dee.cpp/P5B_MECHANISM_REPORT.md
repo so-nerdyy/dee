@@ -718,6 +718,69 @@ second defect was hiding behind this one in the exercised surface
 
 Phase-5 consequence: the campaign's exactness-gate FAIL and the unstable
 c1 reference were both this one bug — every unit ≥1 ran `clear_host_cache`
-before refilling.  A post-fix cohort re-run should now satisfy the
-`row == c1` bitwise gate (the machinery-side PASS conditions were already
-met: 16/16 units, c0 anchor == P4 seal, dedup 1.21–1.85).
+before refilling.
+
+## v2 cohort campaign re-run (@ c3cad2c, kernel dee-cpp-dsv4-phase5-cohort v2)
+
+Full 5-arm re-run on the fixed build, ~7.5h (arms ~1.7–2x slower than
+v1 — FUSE/storage variance on the shared host, not a code change).
+
+**The corruption bug is gone on the real model path:**
+
+- c1-c0..c7 all `ACCEPT_CORRECTNESS`; c1-c7 sha `b28d95485c46` ==
+  c1-c0 — the verbatim-repeat prompt now produces byte-identical output
+  7 warm-process units later (v1: c1-c7 was a degenerate `The.??` loop).
+- c8h-c0 row shas identical to v1 (fresh-process arm — was never
+  corrupted; determinism confirmed cross-run).
+- 2/24 row-exact gates now PASS: c4-c1 p5 and c8h p5 (`44f3d59edc4e`) —
+  selective agreement that corruption could never produce.
+
+**Verdict remains FAIL (22/24 row gates)** — but the residual is a
+different, smaller phenomenon now cleanly isolated:
+
+Route-journal analysis (c8h members vs c1 refs, step 0 = prefill):
+layer-3 expert-set overlap is 5.9–6.0/6 for ALL members (member0 = 32/32
+identical rows).  Divergence grows smoothly with depth/steps
+(layer-42 ~5.7/6; decode step-127 mixed 0–6/6) — chaotic amplification
+of a ULP-scale prefill perturbation, not a discrete corruption event.
+No pad-count or member-index correlation (m3 with 0 pads diverges;
+m5 with 19 pads stays bit-exact through 128 steps).  Outputs are
+coherent and on-topic; divergent streams are *different valid
+evaluations*, not garbage.
+
+Mechanism: batched K>1 execution runs different GEMM shapes
+(K·L* rows vs L* rows through dense + expert-grouped GEMMs) — different
+cuBLAS kernel selection and reduction order → ULP differences in hidden
+state → occasional top-6 boundary flips → token-stream divergence over
+128 autoregressive steps.  Bitwise batch-invariance is not achievable on
+the current kernel stack — the P5c isolation run measures this
+mechanism directly (same padded prompt at K=1 vs inside a K=8-shaped
+computation, with per-(step,layer) tensor dumps).
+
+**Contract decision (user-directed):** K=1 stays bitwise
+reference-equivalent, unchanged.  K>1 cohort serving adopts a separate
+numerical-equivalence contract — NOT a looser "coherent output" or
+average route-overlap bar:
+
+- expert/store/host/device bytes remain exact (already evidenced:
+  pack==store and dev==pack on every verified record)
+- no stale/zero/cross-request data contamination
+- identical cohort shape + identical inputs reproduces bitwise across
+  repeated runs (same-shape determinism)
+- the first singleton-vs-cohort numerical divergence must be directly
+  characterized (magnitude + location)
+- routing flips must originate at near-tied router boundaries,
+  consistent with the measured floating-point perturbation
+- once a legitimate boundary flips, downstream token-stream equality is
+  not required
+
+The P5c isolation kernel (`dee-cpp-dsv4-p5c-iso`, driver
+`phase5c_iso_driver.py`) gathers the direct evidence: prompt 0 at K=1
+vs the same padded prompt as member0 of a K=8 cohort (plus prompt 5 —
+v2's always-exact row — as the expected-negative singleton, and a
+repeated K=8 unit for same-shape bitwise determinism), with per-
+(step,layer) dumps of router_scores/expert_ids/routing_weights for all
+43 layers and the residual-chain hidden tensors at layers 0-3.
+
+Clean dedup numbers (v1's were contaminated): K=1 ~1.15, K=2 ~1.21,
+K=4 ~1.30, K=8 1.61 — monotone with K as the sim predicted.

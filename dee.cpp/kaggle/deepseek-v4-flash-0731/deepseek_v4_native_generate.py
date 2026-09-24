@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import numpy as np
 import platform
 import shutil
 import subprocess
@@ -210,6 +211,31 @@ CAPTURE_JOURNAL = os.environ.get(
 # bisect the first divergent layer across sequential units.
 ROUTE_WEIGHT_JOURNAL = os.environ.get(
     "NATIVE_ROUTE_WEIGHT_JOURNAL", "0") == "1"
+# P5c cohort-isolation probe: NATIVE_ISO_DUMP=1 wires per-layer capture
+# dicts through generate_cohort and dumps the actual TENSORS (not just
+# shas) inside the cohort _route_checkpoint hook, so a K=1 row can be
+# diffed elementwise against the same prompt's row inside a K=8 cohort.
+# NATIVE_ISO_H_LAYERS: comma list of layers that also dump the big
+# hidden-state tensors (layer_input, ffn_norm_out, attn_norm_out,
+# attn_out, moe_out, shared_out, output); every layer always dumps the
+# small router tensors (router_scores, expert_ids, routing_weights).
+# NATIVE_ISO_STEPS: comma list of forward steps to dump (0 = prefill);
+# NATIVE_ISO_H_STEPS: subset of those steps that also dump the big
+# hidden-state tensors (kept small — a K=8 fp32 hidden tensor is ~4 MiB).
+ISO_DUMP = os.environ.get("NATIVE_ISO_DUMP", "0") == "1"
+_ISO_H_LAYERS = frozenset(
+    int(x) for x in
+    os.environ.get("NATIVE_ISO_H_LAYERS", "0,1,2,3,4").split(",") if x)
+_ISO_STEPS = frozenset(
+    int(x) for x in
+    os.environ.get("NATIVE_ISO_STEPS", "0,1,2,3,4,5,6,7").split(",") if x)
+_ISO_H_STEPS = frozenset(
+    int(x) for x in
+    os.environ.get("NATIVE_ISO_H_STEPS", "0").split(",") if x)
+_ISO_SMALL_KEYS = ("router_scores", "expert_ids", "routing_weights")
+_ISO_BIG_KEYS = ("layer_input", "attn_norm_out", "attn_out",
+                 "attn_hc_out", "ffn_norm_in", "ffn_norm_out",
+                 "moe_out", "shared_out", "output")
 # v15: return to v8-PROVEN storage behavior.  v13's discard_source_pages
 # (posix_fadvise + MADV_DONTNEED on the shared mmap after every pack fill)
 # re-introduced the v10 behavior that v12 measured as OOM + re-fault
@@ -1854,13 +1880,19 @@ def main() -> int:
             "(fail-closed; refusing silent downgrade to sequential)")
     if COHORT_GROUPS:
         _seen = set()
+        # P5c isolation arms intentionally repeat prompt indices across
+        # groups (same prompt at K=1 and inside a K=8 cohort); the
+        # campaign's global-uniqueness invariant is relaxed ONLY under an
+        # explicit opt-in so accidental duplicate rows still fail closed.
+        _allow_dupes = os.environ.get(
+            "NATIVE_COHORT_ALLOW_DUPES", "0") == "1"
         for _g in COHORT_GROUPS:
             if not _g or max(_g) >= len(PROMPT_LIST) or min(_g) < 0:
                 raise RuntimeError(
                     f"NATIVE_COHORT_JSON group {_g} indexes outside "
                     f"PROMPT_LIST (n={len(PROMPT_LIST)})")
             _dupes = set(_g) & _seen
-            if len(set(_g)) != len(_g) or _dupes:
+            if len(set(_g)) != len(_g) or (_dupes and not _allow_dupes):
                 raise RuntimeError(
                     f"NATIVE_COHORT_JSON duplicate prompt index in "
                     f"{_g} (seen={sorted(_dupes)})")
@@ -2825,6 +2857,13 @@ def main() -> int:
         weight_jf = (open(WORK / f"route_weights{suffix}.jsonl", "w",
                           encoding="utf-8")
                      if ROUTE_WEIGHT_JOURNAL else None)
+        # P5c isolation probe: per-layer capture dicts wired through
+        # generate_cohort (prefill -> _captures, decode step t ->
+        # _step_captures[t]); the dump hook below materializes the
+        # tensors for (step, layer) in the ISO target sets.
+        _captures = {} if ISO_DUMP else None
+        _step_captures = ([{} for _ in range(N_TOKENS)]
+                          if ISO_DUMP else None)
         route_step = 0
         route_start_pos = 0
 
@@ -2851,6 +2890,24 @@ def main() -> int:
                 weight_jf.write(_weight_journal_rec(
                     layer, step=route_step, start_pos=route_start_pos))
                 weight_jf.flush()
+            if ISO_DUMP and route_step in _ISO_STEPS:
+                cap_src = (_captures if route_step == 0
+                           else _step_captures[min(
+                               route_step, len(_step_captures) - 1)])
+                cap = (cap_src or {}).get(int(layer_id)) or {}
+                keys = list(_ISO_SMALL_KEYS) + (
+                    list(_ISO_BIG_KEYS)
+                    if (int(layer_id) in _ISO_H_LAYERS
+                        and route_step in _ISO_H_STEPS) else [])
+                for key in keys:
+                    t = cap.get(key)
+                    if torch.is_tensor(t):
+                        t = t.detach()
+                        if t.is_floating_point():
+                            t = t.float()
+                        np.save(str(WORK / f"iso{suffix}_s{route_step}"
+                                         f"_l{layer_id}_{key}.npy"),
+                                t.cpu().numpy())
             if int(layer_id) == cfg.n_layers - 1:
                 route_step += 1
                 route_start_pos = lstar + route_step - 1
@@ -2938,7 +2995,12 @@ def main() -> int:
             res = drv.run_cohort(
                 prompt_texts, ci, group, N_TOKENS,
                 eos_id=(-1 if IGNORE_EOS else 1),
-                prebuilt=(ids_list, pad_meta))
+                prebuilt=(ids_list, pad_meta),
+                captures=_captures,
+                per_step_captures=_step_captures)
+            if ISO_DUMP:
+                np.save(str(WORK / f"iso{suffix}_ids.npy"),
+                        np.asarray(ids_list, dtype=np.int64))
         finally:
             route_journal.close()
             if weight_jf is not None:

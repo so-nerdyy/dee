@@ -979,6 +979,8 @@ class DeepseekV4Model:
 
     def generate_cohort(self, input_ids: torch.Tensor, max_new_tokens: int,
                         *, eos_id: int = -1,
+                        captures: Optional[dict[int, dict[str, Any]]] = None,
+                        per_step_captures: Optional[list[dict[int, dict[str, Any]]]] = None,
                         decode_timings_ms: Optional[list[float]] = None,
                         post_step_hook: Optional[Any] = None,
                         post_layer_hook: Optional[Any] = None
@@ -1011,7 +1013,7 @@ class DeepseekV4Model:
         finished = [False] * k_rows
 
         t0 = time.monotonic()
-        logits = self.forward(input_ids, 0,
+        logits = self.forward(input_ids, 0, captures=captures,
                               post_layer_hook=post_layer_hook)
         t1 = time.monotonic()
         if decode_timings_ms is not None:
@@ -1030,8 +1032,10 @@ class DeepseekV4Model:
             step_ids = torch.tensor([[t] for t in toks],
                                     device=input_ids.device,
                                     dtype=input_ids.dtype)
+            cap_map = per_step_captures[t] if per_step_captures else None
             t0 = time.monotonic()
             logits = self.forward(step_ids, seq_len + t - 1,
+                                  captures=cap_map,
                                   post_layer_hook=post_layer_hook)
             t1 = time.monotonic()
             if decode_timings_ms is not None:
