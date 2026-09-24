@@ -798,8 +798,15 @@ def main():
             rec = report["runs"].get(tag, {})
             # Completion = produced tokens + journals.  Mechanism arms may
             # not pass the native integrity classifier — journals carry
-            # the evidence.
-            produced = (rec.get("rc") == 0
+            # the evidence.  An ERROR/TIMEOUT/NO_RESULT classification can
+            # never count as produced even if a journal file exists: the
+            # journal is written incrementally and a unit that dies
+            # mid-generation (e.g. the p5c v1 K=8 CUDA OOM) still leaves
+            # one behind.
+            failed_cls = rec.get("classification") in (
+                None, "ERROR", "NO_RESULT", "TIMEOUT",
+                "UNPARSEABLE_RESULT")
+            produced = (rec.get("rc") == 0 and not failed_cls
                         and (rec.get("classification")
                              == "ACCEPT_CORRECTNESS"
                              or rec.get("n_tokens") or rec.get("row_shas")
