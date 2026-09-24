@@ -2890,24 +2890,30 @@ def main() -> int:
                 weight_jf.write(_weight_journal_rec(
                     layer, step=route_step, start_pos=route_start_pos))
                 weight_jf.flush()
-            if ISO_DUMP and route_step in _ISO_STEPS:
+            if ISO_DUMP:
                 cap_src = (_captures if route_step == 0
                            else _step_captures[min(
                                route_step, len(_step_captures) - 1)])
-                cap = (cap_src or {}).get(int(layer_id)) or {}
-                keys = list(_ISO_SMALL_KEYS) + (
-                    list(_ISO_BIG_KEYS)
-                    if (int(layer_id) in _ISO_H_LAYERS
-                        and route_step in _ISO_H_STEPS) else [])
-                for key in keys:
-                    t = cap.get(key)
-                    if torch.is_tensor(t):
-                        t = t.detach()
-                        if t.is_floating_point():
-                            t = t.float()
-                        np.save(str(WORK / f"iso{suffix}_s{route_step}"
-                                         f"_l{layer_id}_{key}.npy"),
-                                t.cpu().numpy())
+                # Pop, don't get: the capture dict holds live GPU tensors
+                # (~15 per layer, ~17 MB each at K=8) — retaining all 43
+                # layers' entries for the whole unit is a multi-GB leak.
+                # The hook is the only consumer, so freeing each layer's
+                # entry after dumping bounds retention to one layer.
+                cap = (cap_src or {}).pop(int(layer_id), None) or {}
+                if route_step in _ISO_STEPS:
+                    keys = list(_ISO_SMALL_KEYS) + (
+                        list(_ISO_BIG_KEYS)
+                        if (int(layer_id) in _ISO_H_LAYERS
+                            and route_step in _ISO_H_STEPS) else [])
+                    for key in keys:
+                        t = cap.get(key)
+                        if torch.is_tensor(t):
+                            t = t.detach()
+                            if t.is_floating_point():
+                                t = t.float()
+                            np.save(str(WORK / f"iso{suffix}_s{route_step}"
+                                             f"_l{layer_id}_{key}.npy"),
+                                    t.cpu().numpy())
             if int(layer_id) == cfg.n_layers - 1:
                 route_step += 1
                 route_start_pos = lstar + route_step - 1

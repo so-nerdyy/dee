@@ -11,12 +11,11 @@ cuBLAS kernels/reduction orders -> last-ulp differences -> top-6 flips
 at near-tied router boundaries.
 
 This driver runs ONE arm (``mN``) through the real model + engine in a
-single process so the comparison carries no cross-run state:
+single process so the comparison carries no cross-run state.  v2 units
+(the K=1 singletons ran in v1 — their dumps/results are the baselines):
 
-    unit c0: prompt 0 at K=1          (singleton reference)
-    unit c1: prompt 5 at K=1          (the v2 always-exact prompt)
-    unit c2: prompts 0-7 at K=8       (member0 = identical padded p0)
-    unit c3: prompts 0-7 at K=8       (same-shape bitwise determinism)
+    unit c0: prompts 0-7 at K=8       (member0 = identical padded p0)
+    unit c1: prompts 0-7 at K=8       (same-shape bitwise determinism)
 
 ``NATIVE_ISO_DUMP=1`` wires per-layer capture dicts through
 ``generate_cohort`` and the route hook dumps the actual tensors
@@ -88,19 +87,19 @@ PACK_C8H = int(9.75 * (1 << 30))   # c8h host pack/GPU from the campaign
 LRU_CAP_C8H_GIB = 19.5             # c8h host-LRU cap from the campaign
 
 ISO_ARM = {
-    # mN: cohort-shape isolation.  groups order matters for analysis:
-    # c0/c1 are the K=1 references (prompts 0 and 5), c2/c3 are the
-    # identical K=8 cohorts.  pad_to="max" pads every unit to the
-    # workload-global L* so the K=1 rows are byte-identical inputs to
-    # the corresponding cohort members.
+    # mN: cohort-shape isolation.  v2 scope: the two identical K=8
+    # cohorts only — the K=1 singleton references (p0/p5) completed
+    # cleanly in v1 and their dumps/results are the baselines; the
+    # v1 K=8 units OOM'd on capture retention (fixed: per-layer pop in
+    # the dump hook).  pad_to="max" pads to the workload-global L* so
+    # member0/member5 inputs are byte-identical to the K=1 baselines.
     **p5b._BASE,
     "arm_id": "mN",
     "host_pack_gpu0_bytes": PACK_C8H,
     "host_pack_gpu1_bytes": PACK_C8H,
     "lru_total_cap_gib": LRU_CAP_C8H_GIB,
     "prompts_json": PROMPTS,
-    "cohort": {"groups": [[0], [5],
-                         [0, 1, 2, 3, 4, 5, 6, 7],
+    "cohort": {"groups": [[0, 1, 2, 3, 4, 5, 6, 7],
                          [0, 1, 2, 3, 4, 5, 6, 7]],
                "pad_to": "max"},
     "route_weight_journal": "1",
