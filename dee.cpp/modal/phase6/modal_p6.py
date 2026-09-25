@@ -480,13 +480,10 @@ def _bench_impl(
         finally:
             vol_evid.commit()
 
-def _bench_for(gpu_name: str):
-    """Build the module-level wrapper Modal registers for one GPU spec.
-    The explicit signature is required: Modal maps `modal run` CLI args
-    onto function parameters by name."""
+def _bench_dec(gpu_name: str):
+    """The @app.function decorator for one GPU spec (module-scope targets)."""
     _spec, _archs, _budget, _mem, _host = GPU_SPECS[gpu_name]
-
-    @app.function(
+    return app.function(
         image=image_gpu,
         gpu=_spec,
         cpu=8,
@@ -494,26 +491,53 @@ def _bench_for(gpu_name: str):
         timeout=6 * 3600,
         volumes={VOL_MODELS: vol_models, VOL_STORES: vol_stores,
                  VOL_EVID: vol_evid},
-        name=f"bench_{gpu_name}",
-        serialized=True,
     )
-    def _fn(model: str = "dsv4-flash", n_tokens: int = 64,
-            prompt: str = "", host_gib: float = 0.0, budget_mib: int = 0,
-            cache_reset: str = "cold", local_store: bool = True,
-            pinned: str = "", run_id: str = "") -> dict:
-        return _bench_impl(
-            gpu_name, model=model, n_tokens=n_tokens, prompt=prompt,
-            host_gib=host_gib, budget_mib=budget_mib,
-            cache_reset=cache_reset, local_store=local_store,
-            pinned=pinned, run_id=run_id)
-
-    return _fn
 
 
-# bench_L4, bench_2xL4, bench_A10, bench_L40S, bench_RTXPRO6000
-_globals = globals()
-for _g in GPU_SPECS:
-    _globals[f"bench_{_g}"] = _bench_for(_g)
+@_bench_dec("L4")
+def bench_L4(model: str = "dsv4-flash", n_tokens: int = 64,
+             prompt: str = "", host_gib: float = 0.0, budget_mib: int = 0,
+             cache_reset: str = "cold", local_store: bool = True,
+             pinned: str = "", run_id: str = "") -> dict:
+    return _bench_impl("L4", model, n_tokens, prompt, host_gib,
+                       budget_mib, cache_reset, local_store, pinned, run_id)
+
+
+@_bench_dec("2xL4")
+def bench_2xL4(model: str = "dsv4-flash", n_tokens: int = 64,
+               prompt: str = "", host_gib: float = 0.0, budget_mib: int = 0,
+               cache_reset: str = "cold", local_store: bool = True,
+               pinned: str = "", run_id: str = "") -> dict:
+    return _bench_impl("2xL4", model, n_tokens, prompt, host_gib,
+                       budget_mib, cache_reset, local_store, pinned, run_id)
+
+
+@_bench_dec("A10")
+def bench_A10(model: str = "dsv4-flash", n_tokens: int = 64,
+              prompt: str = "", host_gib: float = 0.0, budget_mib: int = 0,
+              cache_reset: str = "cold", local_store: bool = True,
+              pinned: str = "", run_id: str = "") -> dict:
+    return _bench_impl("A10", model, n_tokens, prompt, host_gib,
+                       budget_mib, cache_reset, local_store, pinned, run_id)
+
+
+@_bench_dec("L40S")
+def bench_L40S(model: str = "dsv4-flash", n_tokens: int = 64,
+               prompt: str = "", host_gib: float = 0.0, budget_mib: int = 0,
+               cache_reset: str = "cold", local_store: bool = True,
+               pinned: str = "", run_id: str = "") -> dict:
+    return _bench_impl("L40S", model, n_tokens, prompt, host_gib,
+                       budget_mib, cache_reset, local_store, pinned, run_id)
+
+
+@_bench_dec("RTXPRO6000")
+def bench_RTXPRO6000(model: str = "dsv4-flash", n_tokens: int = 64,
+                     prompt: str = "", host_gib: float = 0.0,
+                     budget_mib: int = 0, cache_reset: str = "cold",
+                     local_store: bool = True, pinned: str = "",
+                     run_id: str = "") -> dict:
+    return _bench_impl("RTXPRO6000", model, n_tokens, prompt, host_gib,
+                       budget_mib, cache_reset, local_store, pinned, run_id)
 
 
 @app.local_entrypoint()
