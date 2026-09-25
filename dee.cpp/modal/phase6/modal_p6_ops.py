@@ -118,7 +118,7 @@ def build_store(model: str, prefetch: int = 8, buckets: int = 0) -> dict:
     build_dir = os.path.join(VOL_STORES, spec["store_dir"])
     os.makedirs(build_dir, exist_ok=True)
     cmd = [
-        "python", "tools/phase3/p3_kaggle_job.py", "build",
+        "python", "dee.cpp/tools/phase3/p3_kaggle_job.py", "build",
         "--build-dir", build_dir,
         "--headers", os.path.join(src, spec["headers"]),
         "--source", "remote",
@@ -177,7 +177,7 @@ def store_status(model: str) -> str:
     src = "/tmp/dsv4-native-src"
     subprocess.run(_clone(), shell=True, check=True)
     r = subprocess.run(
-        ["python", "tools/phase3/p3_kaggle_job.py", "status",
+        ["python", "dee.cpp/tools/phase3/p3_kaggle_job.py", "status",
          "--build-dir", f"{VOL_STORES}/{spec['store_dir']}"],
         cwd=src, capture_output=True, text=True)
     return r.stdout + r.stderr
