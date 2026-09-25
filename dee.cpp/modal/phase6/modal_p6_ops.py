@@ -127,10 +127,39 @@ def build_store(model: str, prefetch: int = 8, buckets: int = 0) -> dict:
     ]
     if buckets:
         cmd += ["--buckets", str(buckets)]
-    proc = subprocess.run(cmd, cwd=src, capture_output=True, text=True)
+    # Stream the job's stdout live (modal app logs show it) while keeping a
+    # tail for the return value — a silent capture hid the v1 failure.
+    proc = subprocess.Popen(cmd, cwd=src, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, bufsize=1)
+
+    # Bounded periodic volume commit: build.journal/integrity/*.partial on
+    # the volume survive a mid-build kill -> the next run resumes.  Timeout
+    # guard per CACHE1c (an unbounded commit must never kill the worker).
+    import concurrent.futures
+    import threading
+    _stop = threading.Event()
+    _pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    def _hb_commit() -> None:
+        while not _stop.wait(300):
+            try:
+                _pool.submit(vol_stores.commit).result(timeout=90)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[hb] volume commit skipped: {exc!r}", flush=True)
+
+    threading.Thread(target=_hb_commit, daemon=True).start()
+
+    tail: list[str] = []
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        print(line, end="", flush=True)
+        tail.append(line)
+        if len(tail) > 400:
+            tail.pop(0)
+    rc = proc.wait()
+    _stop.set()
     vol_stores.commit()
-    tail = (proc.stdout + "\n---STDERR---\n" + proc.stderr)[-8000:]
-    return {"model": model, "rc": proc.returncode, "tail": tail,
+    return {"model": model, "rc": rc, "tail": "".join(tail[-80:]),
             "wall_s": round(time.monotonic() - t0, 1)}
 
 

@@ -139,13 +139,15 @@ class RemoteRangeSource:
 
     def _range(self, url: str, start: int, end: int) -> bytes:
         last: Exception | None = None
+        headers = {"Range": f"bytes={start}-{end}",
+                   "User-Agent": USER_AGENT}
+        tok = (os.environ.get("HF_TOKEN")
+               or os.environ.get("HUGGING_FACE_HUB_TOKEN"))
+        if tok:
+            headers["Authorization"] = f"Bearer {tok}"
         for attempt in range(self.max_attempts):
             try:
-                req = urllib.request.Request(
-                    url, headers={
-                        "Range": f"bytes={start}-{end}",
-                        "User-Agent": USER_AGENT,
-                    })
+                req = urllib.request.Request(url, headers=headers)
                 with urllib.request.urlopen(req, timeout=300) as resp:
                     if resp.status != 206:
                         raise RuntimeError(
