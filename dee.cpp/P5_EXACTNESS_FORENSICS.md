@@ -120,7 +120,7 @@ the fixed config; reject = any divergence; abort = first unit failure.
 All four arms fit one batch: total GPU time ≈ 8–10 K=1 equivalents at
 reduced `N_TOKENS` (32 tokens suffices — divergence appears at prefill).
 
-## Contract question for the user
+## Contract question for the user — RESOLVED
 
 The current gate requires bit-exact token streams between units. If the
 divergence is confirmed as cuBLAS-class library nondeterminism, decide:
@@ -131,6 +131,18 @@ divergence is confirmed as cuBLAS-class library nondeterminism, decide:
 
 Option (a) is the stricter and cheaper path; (b) needs a defensible
 tolerance derivation.
+
+**Resolution (user-directed, post-P5b/P5c):** the forensics-era framing
+above was superseded by findings — the warm-process instability was a
+data-integrity bug (`fp4_region_nbytes`), not cuBLAS drift; the residual
+after the fix is *batch-shape* numerics.  The adopted contract is a
+precise variant of (b), NOT a "coherent output" or overlap-threshold
+bar: K=1 stays bitwise reference-equivalent; K>1 requires exact
+store/host/device bytes, no contamination, same-shape bitwise
+reproducibility, and routing flips confined to near-tied boundaries
+consistent with the measured perturbation.  Directly evidenced by the
+P5c tensor bisect — see `P5B_MECHANISM_REPORT.md` §P5c and
+`p5c_analysis.json`.
 
 ## P5b mechanism test — v1 result (kernel dee-cpp-dsv4-p5b-mechanism v1)
 

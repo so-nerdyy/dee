@@ -18,7 +18,8 @@ and does hardware demand scale with the working set, not the checkpoint?
 ## Verdict
 
 **Serving machinery: PROVEN. Warm-process exactness defect: FOUND, ROOT-CAUSED,
-FIXED (`cccf17f`), VALIDATED (v6).**
+FIXED (`cccf17f`), VALIDATED (v6). Exactness contract: RESOLVED and evidenced
+(P5c v2) — singleton bitwise, cohort numerical-equivalence.**
 
 | Component | Result |
 |---|---|
@@ -29,6 +30,8 @@ FIXED (`cccf17f`), VALIDATED (v6).**
 | Root cause | `clear_host_cache` zeroed `fp4_region_nbytes` → zero-length gathers → stale pinned-slot bytes shipped to VRAM |
 | Fix | preserve record geometry on clear + restore on reused staging entries + `staging_region_bytes` tripwire |
 | Post-fix validation | v6 micro suite — see below |
+| Cohort re-run (v2, fixed build) | corruption gone (c1 stable, c0 anchored); residual = batch-shape numerics, not a defect |
+| Exactness contract | K=1 bitwise; K>1 = exact bytes + deterministic numerical equivalence — evidenced by P5c tensor bisect |
 
 ## The defect that failed the exactness gate
 
@@ -120,13 +123,47 @@ reproduce the exact fresh-run output bit-for-bit.
   held; the full 95%-host-hit point needs ~64 GiB/device — deferred to
   hardware follow-on, by design.
 
+## Cohort re-run (v2) + exactness contract — resolved
+
+The post-fix campaign re-run (`dee-cpp-dsv4-phase5-cohort` v2, ~7.5h)
+removed the corruption noise entirely: c1's 8 warm units stable
+(c1-c7 == c1-c0 bitwise), c0 anchored, all machinery checks green,
+clean dedup curve K=1 1.15 → K=8 1.61.  The residual 22/24
+`row == c1` gate failures were then isolated to **batch-shape floating
+point**, not a defect: the P5c isolation kernel
+(`dee-cpp-dsv4-p5c-iso` v2) dumped per-(step,layer) tensors for the
+same padded prompt at K=1 vs inside a K=8 cohort and measured:
+
+- **Injection point:** layer-0 attention GEMM output (max_abs 3.1e-2)
+  with bitwise-identical inputs — different GEMM row shapes (K·L* vs
+  L*) select different kernels/reduction orders.
+- **Amplification:** router-score perturbation grows ~400× over depth
+  (5e-4 → ~0.2); expert-id flips begin at l3 (first learned router),
+  ~20/layer at the saturated tail; hash-routed l0-2 cannot flip.
+- **Boundary causality:** 92.5% of flips have swap-expert score delta
+  ≥ the rank-6/7 margin; 97.7% are single-expert swaps — flips occur
+  where the measured perturbation can cross the gap.
+- **Determinism:** two identical K=8 units reproduced all 503 dumped
+  tensors, 344 journal records, and 8 token shas bitwise.
+- **Tokens:** member0 and member5 emitted bit-identical tokens to
+  their K=1 singletons in the 8-token window — routing flips stayed
+  sub-argmax; over the 128-token campaign horizon, crossings
+  accumulate and streams legitimately bifurcate.
+
+Full detail: `P5B_MECHANISM_REPORT.md` §P5c + `p5c_analysis.json`.
+
+**Final contract (user-directed):** K=1 remains bitwise
+reference-equivalent in tokens and authoritative routing.  K>1 cohort
+serving holds: exact expert/store/host/device bytes, no
+stale/zero/cross-request contamination, same-shape bitwise
+reproducibility, and characterized near-tied-boundary routing flips —
+but not bitwise batch-invariance.  Batch-invariant kernels remain a
+possible future research direction, not a Phase-5 requirement.
+
 ## Remaining scope (not done here)
 
-- **Cohort re-run on the fixed build** to collect the true H1–H5 verdict:
-  the campaign's residency/dedup counters are valid, but the token-exact
-  gate must be re-measured post-fix (one GPU run).
 - Ragged cohort admission / per-row positions (P5b scope, deferred).
 - `dee-local` packaging (SSD-heavy minimum-hardware profile) and
   `dee-serve` (global expert caches, continuous batching, admission
-  control on the measured capacity law) — engineering build-out, now on a
-  validated exact base.
+  control on the measured capacity law) — engineering build-out, now on
+  a validated exact base.

@@ -784,3 +784,82 @@ repeated K=8 unit for same-shape bitwise determinism), with per-
 
 Clean dedup numbers (v1's were contaminated): K=1 ~1.15, K=2 ~1.21,
 K=4 ~1.30, K=8 1.61 — monotone with K as the sim predicted.
+
+## P5c isolation result (@ 4e7db21, kernel dee-cpp-dsv4-p5c-iso v2)
+
+v1 of the kernel captured the K=1 baselines but OOM'd the K=8 units on
+capture retention (~7 GiB of live dump tensors held across 43 layers);
+fixed by popping each layer's capture entry after dumping
+(`cap_src.pop(layer_id)`).  v2 ran the two identical K=8 cohorts only
+(`p5c_analysis.json`, dumps in `p5c-v1-k1/` and `p5c-v2-k8/`).
+
+**Run record:** mN arm, 2 units, both `ACCEPT_CORRECTNESS`, 64 emitted
+tokens each, `P5B VERDICT: PASS` (with the produced-gate now fail-closed
+on ERROR classifications — v1's false PASS can't recur).
+
+**1. Identical inputs.** member0's padded ids are byte-equal to the
+K=1 singleton's (`iso-c0_ids.npy`, pad_to="max" → same global L*).
+
+**2. Same-shape determinism — PROVEN at every level.** The two
+identical K=8 units produced bitwise-identical `router_scores`,
+`expert_ids`, `routing_weights`, and every dumped hidden tensor
+(503 tensors compared, 0 differ — steps 0-3 coverage), plus identical
+route journals (344 records) and all 8 token shas.
+
+**3. First singleton-vs-cohort divergence — directly characterized.**
+Prefill layer-0 chain, member0 vs singleton:
+
+| tensor | result |
+|---|---|
+| layer_input | **bitwise** |
+| attn_norm_out | **bitwise** |
+| attn_out | **first injection** — max_abs 3.1e-2, 2.3% of elements |
+| ffn_norm_out | 3.9e-3 |
+| moe_out | 6.3e-3 (batch-shaped expert GEMM propagates it further) |
+| router_scores | 5.2e-4 — expert_ids still **bitwise** |
+
+The injection point is the **layer-0 attention GEMM** (dense path,
+K·L*=256 vs L*=32 row shapes → different kernel/reduction order).  Not
+the store, not the host cache, not the expert path — the same padded
+inputs enter a different-shaped dense GEMM and come out perturbed at
+ULP scale.
+
+**4. Amplification.** The scores perturbation grows ~400× over depth:
+5.2e-4 (l0) → ~0.2 (l32-42).  Flip counts track amplitude: 0 at
+hash-routed l0-2 (expert ids *cannot* flip there — input-determined),
+first single-slot swap at l3 (first learned router), ~20 flips/layer
+at the saturated tail.  399 flip sites total (352 prefill, 47 decode
+decaying 23→15→9→0 by step 4).
+
+**5. Boundary consistency.** At 173 analyzable flip sites, the
+swap-expert score delta is ≥ the rank-6/rank-7 margin in **92.5%** of
+cases (median margin 5.6e-3, median swap delta 1.6e-2); 97.7% are
+single-expert swaps — the perturbation is causally sufficient for the
+flips observed, at exactly the near-tied boundaries expected.
+
+**6. Token outcome.** Despite 399 routing flips, member0's 8 emitted
+tokens are bit-identical to the singleton's (`943ef144…`), as are
+member5's to p5's singleton (`066c0d8d…`).  Routing flips perturb
+hidden state sub-argmax; a token flip needs the perturbation to cross
+the vocab-argmax gap, which did not happen in this 8-token window.
+Over the campaign's 128-token horizon enough boundary crossings
+accumulated to bifurcate streams — consistent with the observed
+prefill flip density (~27% of (row,layer) pairs) and decode decay.
+
+**Contract verdict vs the user-directed bullets:**
+
+- expert/store/host/device bytes exact — ✓ (v6)
+- no stale/zero/cross-request contamination — ✓ (v6 + tripwire)
+- identical cohort shape + inputs → bitwise — ✓ PROVEN (503 tensors +
+  344 journal records + 8 token shas)
+- first singleton-vs-cohort divergence characterized — ✓ PROVEN
+  (layer-0 attention GEMM, 3.1e-2 max_abs, inputs bitwise)
+- routing flips at near-tied boundaries consistent with measured
+  perturbation — ✓ PROVEN (92.5% delta≥margin, 97.7% single-slot)
+- downstream token equality not required after a legitimate flip —
+  evidenced (flips at real positions did not alter the argmax in this
+  window)
+
+Phase 5 closes as: **singleton mode bitwise exact; cohort mode exact
+data/model semantics + deterministic numerical equivalence, not
+bitwise batch-invariant.**

@@ -108,9 +108,12 @@ def main():
 
     # ---- 1. input identity ----
     id_checks = []
-    i_k1_0 = load(d1, 0, 0, 0, "ids")
-    i_k1_1 = load(d1, 1, 0, 0, "ids")
-    i_k8 = load(d8, 0, 0, 0, "ids")
+    i_k1_0 = (d1 / "iso-c0_ids.npy")
+    i_k1_1 = (d1 / "iso-c1_ids.npy")
+    i_k8 = (d8 / "iso-c0_ids.npy")
+    i_k1_0 = np.load(str(i_k1_0)) if i_k1_0.is_file() else None
+    i_k1_1 = np.load(str(i_k1_1)) if i_k1_1.is_file() else None
+    i_k8 = np.load(str(i_k8)) if i_k8.is_file() else None
     if i_k1_0 is not None and i_k8 is not None:
         id_checks.append({"pair": "k1c0-vs-k8c0.member0",
                           "equal": bool(np.array_equal(
@@ -147,6 +150,7 @@ def main():
 
     # ---- 3. boundary margins at flip sites ----
     flips = []
+    n_site_rows = 0
     for step in steps:
         for layer in range(43):
             e1 = load(d1, 0, step, layer, "expert_ids")
@@ -163,6 +167,7 @@ def main():
             h1 = load(d1, 0, step, layer, "ffn_norm_out")
             h8 = member_slice(load(d8, 0, step, layer, "ffn_norm_out"),
                               0, 8)
+            n_site_rows += int(len(diff_rows))
             for r in diff_rows[:8]:
                 rec = {"step": step, "layer": layer, "row": int(r),
                        "k1_margin": None, "k8_margin": None,
@@ -184,10 +189,15 @@ def main():
                     rec["hidden_max_abs"] = (st or {}).get("max_abs")
                 flips.append(rec)
     out["flip_sites"] = flips[:200]
-    out["n_flip_sites"] = len(flips)
+    out["n_flip_sites"] = n_site_rows
 
     # ---- 4. member5 (p5) vs k1-c1 singleton ----
+    # NOTE: v1's c1 (p5@K1) npy dumps were not retrievable (the v1 output
+    # archive is not served once v2 exists).  If k1_dir lacks iso-c1 files
+    # this check compares nothing — member5_compared reports the count so
+    # a vacuous "clean" cannot be mistaken for evidence.
     m5 = []
+    m5_compared = 0
     for step in steps:
         for layer in range(43):
             keys = list(SMALL)
@@ -197,11 +207,14 @@ def main():
                 a = load(d1, 1, step, layer, key)
                 b = member_slice(load(d8, 0, step, layer, key), 5, 8)
                 st = diff_stats(a, b)
+                if st is not None:
+                    m5_compared += 1
                 if st is not None and not st["bitwise"]:
                     m5.append({"step": step, "layer": layer, "key": key,
                                **st})
     out["member5_vs_singleton_diffs"] = m5[:100]
-    out["member5_bitwise_clean"] = not m5
+    out["member5_compared"] = m5_compared
+    out["member5_bitwise_clean"] = (not m5) and m5_compared > 0
 
     # ---- 5. k8-c0 vs k8-c1 same-shape bitwise ----
     det = {"compared": 0, "differing": 0, "first_diff": None}
