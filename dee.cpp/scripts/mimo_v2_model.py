@@ -30,6 +30,7 @@ expert records feed the engine's native fp4->fp16 SwiGLU path.
 from __future__ import annotations
 
 import json
+import os
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -84,8 +85,71 @@ class ScanHeaderSource(CommittedHeaderSource):
                 f"no tensors discovered under {self.headers_dir}")
 
 
+class RemoteShardSource(ScanHeaderSource):
+    """HTTP Range fetches of tensors from the pinned HF revision.
+
+    Same convention as ``RemoteTensorSource`` (absolute byte offset =
+    8 + header_len + data_offset, header len probed once per shard), but
+    resolved through the scanned arbitrary-name header map.
+    """
+
+    def __init__(self, headers_dir: Path | str, *,
+                 repository: str = OFFICIAL_REPOSITORY,
+                 revision: str = OFFICIAL_REVISION,
+                 max_attempts: int = 6):
+        self.repository = repository
+        self.max_attempts = max_attempts
+        self.stats: dict[str, int] = {"requests": 0, "bytes": 0,
+                                      "retries": 0}
+        super().__init__(headers_dir, revision)
+
+    def _url(self, shard: str) -> str:
+        return (f"https://huggingface.co/{self.repository}/resolve/"
+                f"{self.revision}/{shard}")
+
+    def _fetch_prefix_len(self, shard: str) -> int:
+        data = self._range(self._url(shard), 0, 7)
+        if len(data) != 8:
+            raise RuntimeError(f"{shard}: bad prefix {len(data)} bytes")
+        hlen = int.from_bytes(data, "little")
+        if hlen <= 0 or hlen > (1 << 31):
+            raise RuntimeError(f"{shard}: implausible header length {hlen}")
+        return hlen
+
+    def _range(self, url: str, start: int, end: int) -> bytes:
+        import time
+        import urllib.request
+        import urllib.error
+        headers = {"Range": f"bytes={start}-{end}"}
+        tok = (os.environ.get("HF_TOKEN")
+               or os.environ.get("HUGGING_FACE_HUB_TOKEN"))
+        if tok:
+            headers["Authorization"] = f"Bearer {tok}"
+        last: Exception | None = None
+        for attempt in range(self.max_attempts):
+            try:
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=300) as resp:
+                    if resp.status != 206:
+                        raise RuntimeError(
+                            f"server did not honor Range ({resp.status})")
+                    data = resp.read()
+                self.stats["requests"] += 1
+                self.stats["bytes"] += len(data)
+                return data
+            except (urllib.error.HTTPError, urllib.error.URLError,
+                    ConnectionError, TimeoutError) as exc:
+                last = exc
+                self.stats["retries"] += 1
+                time.sleep(1.5 * (2 ** attempt))
+        raise ConnectionError(f"range fetch failed: {last!r}")
+
+    def _fetch_bytes(self, name: str) -> bytes:
+        shard, start, length = self.absolute_range(name)
+        return self._range(self._url(shard), start, start + length - 1)
+
+
 class LocalShardSource(ScanHeaderSource):
-    """Reads tensor bytes from locally-mounted safetensors shards."""
 
     def __init__(self, headers_dir: Path | str, shards_dir: Path | str, *,
                  revision: str = OFFICIAL_REVISION):
