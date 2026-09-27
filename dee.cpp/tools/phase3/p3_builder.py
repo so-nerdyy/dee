@@ -256,14 +256,18 @@ def assemble_record(
     chunks: list[bytes] = []
     component_sha256: dict[str, str] = {}
     source_shards: set[str] = set()
-    for component, data_offset, nbytes, _record_offset, tensor in \
-            record["ranges"]:
-        data = source.fetch(record["shard"], int(data_offset), int(nbytes))
+    for rng in record["ranges"]:
+        component, data_offset, nbytes, tensor = \
+            rng[0], rng[1], rng[2], rng[4]
+        # Spec-built manifests may carry a per-range shard (EP-sharded
+        # checkpoints can split one record's components across files).
+        shard = str(rng[5]) if len(rng) > 5 else record["shard"]
+        data = source.fetch(shard, int(data_offset), int(nbytes))
         if len(data) != int(nbytes):
             raise IOError(f"{tensor}: {len(data)} != {nbytes}")
         chunks.append(data)
         component_sha256[component] = hashlib.sha256(data).hexdigest()
-        source_shards.add(record["shard"])
+        source_shards.add(shard)
     blob = b"".join(chunks)
     if len(blob) != int(record["record_bytes"]):
         raise RuntimeError(
@@ -591,7 +595,7 @@ def _store_metadata(manifest: dict[str, Any], fmt: str) -> dict[str, Any]:
     scales = [c for c in components if c["component"].endswith(".scale")]
     return {
         "format": fmt,
-        "codec": "deepseek-fp4-e2m1-e8m0",
+        "codec": manifest.get("codec", "deepseek-fp4-e2m1-e8m0"),
         "source_repository": manifest["model"],
         "source_revision": manifest["revision"],
         "start_layer": 0,

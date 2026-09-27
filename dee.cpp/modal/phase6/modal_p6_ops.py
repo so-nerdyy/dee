@@ -40,6 +40,25 @@ MODELS = {
         "headers": "dee.cpp/benchmark_reports/deepseek-v4-flash-0731-t4/"
                    "shard-headers",
     },
+    # mxfp4 expert records are wire-identical to the DSv4 FP4 codec
+    # (packed e2m1 + ue8m0/32) — same 13,369,344 B record, no new codec.
+    "mimo-flash": {
+        "hf_repo": "XiaomiMiMo/MiMo-V2.6-Flash-RL",
+        "hf_rev": "5711b268169967567844e1e560e8a3966da959b1",
+        "ckpt_dir": "MiMo-V2.6-Flash-RL",
+        "store_dir": "mimo-flash",
+        "spec": "dee.cpp/tools/phase3/specs/mimo_v2_flash.json",
+        "headers_remote": True,   # no committed headers — range-fetch them
+    },
+    # Same mimo_v2 family as Flash — one adapter unlocks the ~1T giant.
+    "mimo-pro": {
+        "hf_repo": "XiaomiMiMo/MiMo-V2.6-Pro-RL",
+        "hf_rev": "main",   # pin a sha before the Pro build
+        "ckpt_dir": "MiMo-V2.6-Pro-RL",
+        "store_dir": "mimo-pro",
+        "spec": "dee.cpp/tools/phase3/specs/mimo_v2_pro.json",
+        "headers_remote": True,
+    },
 }
 
 image_cpu = (
@@ -120,11 +139,38 @@ def build_store(model: str, prefetch: int = 8, buckets: int = 0) -> dict:
     cmd = [
         "python", "dee.cpp/tools/phase3/p3_kaggle_job.py", "build",
         "--build-dir", build_dir,
-        "--headers", os.path.join(src, spec["headers"]),
         "--source", "remote",
         "--prefetch", str(prefetch),
         "--publisher", "none",
     ]
+    if spec.get("spec"):
+        # Spec-driven manifest: fetch shard headers over HTTP ranges into
+        # the build dir, build manifest+records, then hand the job the
+        # explicit paths (the manifest carries repo+revision itself).
+        headers_dir = os.path.join(build_dir, "headers")
+        spec_path = spec["spec"]
+        subprocess.run(
+            ["python", "dee.cpp/tools/phase3/fetch_headers.py",
+             "--repo", spec["hf_repo"], "--revision", spec["hf_rev"],
+             "--out-dir", headers_dir],
+            cwd=src, check=True)
+        manifest_path = os.path.join(build_dir, "p3_manifest.json")
+        manifest_code = (
+            "import sys, json; "
+            "sys.path.insert(0, 'dee.cpp/tools/phase3'); "
+            "import p3_manifest, p3_manifest_spec; "
+            f"sp = p3_manifest_spec.load_spec('{spec_path}'); "
+            f"m = p3_manifest_spec.build_manifest_spec(sp, '{headers_dir}'); "
+            f"p3_manifest.write_manifest(m, '{build_dir}'); "
+            "print('spec manifest:', json.dumps({k: m[k] for k in "
+            "('n_buckets','total_experts','record_bytes','store_gib',"
+            "'universe_sha256')}))")
+        subprocess.run(["python", "-c", manifest_code],
+                       cwd=src, check=True)
+        cmd += ["--manifest", manifest_path,
+                "--records", os.path.join(build_dir, "p3_records.jsonl")]
+    else:
+        cmd += ["--headers", os.path.join(src, spec["headers"])]
     if buckets:
         cmd += ["--buckets", str(buckets)]
     # Stream the job's stdout live (modal app logs show it) while keeping a
@@ -180,7 +226,9 @@ def store_status(model: str) -> str:
         ["python", "dee.cpp/tools/phase3/p3_kaggle_job.py", "status",
          "--build-dir", f"{VOL_STORES}/{spec['store_dir']}"],
         cwd=src, capture_output=True, text=True)
-    return r.stdout + r.stderr
+    out = r.stdout + r.stderr
+    print(out, flush=True)   # modal run does not print return values
+    return out
 
 
 @app.local_entrypoint()

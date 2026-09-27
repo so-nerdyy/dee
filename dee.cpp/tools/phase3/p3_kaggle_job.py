@@ -311,9 +311,10 @@ def make_source(
 
     if prefetch_workers > 0:
         requests = [
-            (rec["shard"], int(data_offset), int(nbytes))
+            (str(rng[5]) if len(rng) > 5 else rec["shard"],
+             int(rng[1]), int(rng[2]))
             for rec in records
-            for _comp, data_offset, nbytes, _roff, _t in rec["ranges"]
+            for rng in rec["ranges"]
         ]
         source = PrefetchRangeSource(
             source, requests,
