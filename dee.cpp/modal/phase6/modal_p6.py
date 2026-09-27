@@ -60,6 +60,15 @@ MODELS = {
                    "shard-headers",
         # ~147 GiB store; dense backbone ~14 GiB -> VRAM floor fits one L4
     },
+    "mimo-flash": {
+        "hf_repo": "XiaomiMiMo/MiMo-V2.6-Flash-RL",
+        "hf_rev": "5711b268169967567844e1e560e8a3966da959b1",
+        "ckpt_dir": "MiMo-V2.6-Flash-RL",
+        "store_dir": "mimo-flash",
+        "runner": "dee.cpp/modal/phase6/mimo_native_generate.py",
+        "dataset_mount": "mimo-v26-flash-ckpt",
+        # headers fetched to <store>/headers by the ops build_store spec path
+    },
 }
 
 # --- GPU matrix (limited environments only) ----------------------------------
@@ -397,6 +406,8 @@ def _bench_impl(
                 "NATIVE_FORCE_TMP": "1",
                 "NATIVE_TRACE_REQUESTS": "1",
                 "NATIVE_PROFILE": "1",
+                "NATIVE_MODEL_CKPT": str(ckpt_dir),
+                "NATIVE_HEADERS_DIR": str(store_vol / "headers"),
                 "DEE_BUILD_DIR": str(build),
             })
             if n_gpus == 1:
