@@ -37,9 +37,15 @@ from typing import Any
 import p3_manifest
 
 # DEE4 record component order — fixed by the native ExpertView layout.
+# (fp4/mxfp4: three packed weights + three scale tensors.)
 COMPONENTS = (
     ("w1", "weight"), ("w3", "weight"), ("w2", "weight"),
     ("w1", "scale"), ("w3", "scale"), ("w2", "scale"),
+)
+# Scale-free codecs (e.g. raw bf16 expert matrices): the record is just the
+# three weight tensors — engine interprets by codec label.
+COMPONENTS_NO_SCALE = (
+    ("w1", "weight"), ("w3", "weight"), ("w2", "weight"),
 )
 
 
@@ -104,6 +110,7 @@ def build_manifest_spec(
     kind_field = spec["kind_field"]            # {"weight": "weight", "scale": "weight_scale"}
     tensor_pattern = spec["tensor_pattern"]    # "...{layer}...{expert}...{proj}.{kind}"
     expected = spec["expected"]                # "w1.weight": {dtype, shape}
+    components = COMPONENTS_NO_SCALE if spec.get("no_scales") else COMPONENTS
     expert_re = re.compile(spec["expert_name_re"])
     coverage_re = re.compile(spec["coverage_re"])
     # regex groups: (layer, expert, proj_name, kind_name)
@@ -160,7 +167,7 @@ def build_manifest_spec(
             ranges = []
             record_offset = 0
             record_shards: set[str] = set()
-            for proj, kind in COMPONENTS:
+            for proj, kind in components:
                 key = (bucket, expert, projections[proj], kind_field[kind])
                 if key not in seen:
                     raise KeyError(
@@ -227,7 +234,7 @@ def build_manifest_spec(
         "store_bytes": store_bytes,
         "store_gib": round(store_bytes / (1 << 30), 4),
         "layer_bytes": experts_per_layer * record_bytes,
-        "component_order": [f"{p}.{k}" for p, k in COMPONENTS],
+        "component_order": [f"{p}.{k}" for p, k in components],
         "components": [
             {
                 "component": f"{p}.{k}",
@@ -236,8 +243,8 @@ def build_manifest_spec(
                 "nbytes": expected[f"{p}.{k}"]["nbytes"],
                 "record_offset": off,
             }
-            for off, (p, k) in zip(_component_record_offsets(expected),
-                                   COMPONENTS)
+            for off, (p, k) in zip(
+                _component_record_offsets(expected, components), components)
         ],
         "universe_sha256": _universe_sha256(n_buckets, experts_per_layer),
         "bucket_shards": spec.pop("_bucket_shards", {}),
@@ -257,10 +264,11 @@ def _universe_sha256(n_buckets: int, experts_per_layer: int) -> str:
         p3_manifest.canonical_json_bytes(pairs)).hexdigest()
 
 
-def _component_record_offsets(expected: dict[str, Any]) -> list[int]:
+def _component_record_offsets(expected: dict[str, Any],
+                              components=COMPONENTS) -> list[int]:
     offsets = []
     off = 0
-    for p, k in COMPONENTS:
+    for p, k in components:
         offsets.append(off)
         off += int(expected[f"{p}.{k}"]["nbytes"])
     return offsets
