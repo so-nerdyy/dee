@@ -1,0 +1,222 @@
+{
+  "counts": {
+    "ornith_t2/next_layer": {
+      "cond_perlayer": {
+        "n_calls": 429,
+        "n_clusters": 11,
+        "n_target_total": 3432
+      },
+      "cond_pooled": {
+        "n_calls": 429,
+        "n_clusters": 11,
+        "n_target_total": 3432
+      },
+      "logreg_pairwise": {
+        "n_calls": 429,
+        "n_clusters": 11,
+        "n_target_total": 3432
+      },
+      "mlp_set": {
+        "n_calls": 429,
+        "n_clusters": 11,
+        "n_target_total": 3432
+      },
+      "popularity": {
+        "n_calls": 429,
+        "n_clusters": 11,
+        "n_target_total": 3432
+      },
+      "xlayer_bag": {
+        "n_calls": 429,
+        "n_clusters": 11,
+        "n_target_total": 3432
+      }
+    },
+    "ornith_t2/next_step": {
+      "cond_perlayer": {
+        "n_calls": 400,
+        "n_clusters": 10,
+        "n_target_total": 3200
+      },
+      "cond_pooled": {
+        "n_calls": 400,
+        "n_clusters": 10,
+        "n_target_total": 3200
+      },
+      "logreg_pairwise": {
+        "n_calls": 400,
+        "n_clusters": 10,
+        "n_target_total": 3200
+      },
+      "mlp_set": {
+        "n_calls": 400,
+        "n_clusters": 10,
+        "n_target_total": 3200
+      },
+      "popularity": {
+        "n_calls": 400,
+        "n_clusters": 10,
+        "n_target_total": 3200
+      },
+      "xlayer_bag": {
+        "n_calls": 400,
+        "n_clusters": 10,
+        "n_target_total": 3200
+      }
+    },
+    "sealed_t1/next_layer": {
+      "cond_perlayer": {
+        "n_calls": 210,
+        "n_clusters": 5,
+        "n_target_total": 1260
+      },
+      "cond_pooled": {
+        "n_calls": 210,
+        "n_clusters": 5,
+        "n_target_total": 1260
+      },
+      "logreg_pairwise": {
+        "n_calls": 210,
+        "n_clusters": 5,
+        "n_target_total": 1260
+      },
+      "mlp_set": {
+        "n_calls": 210,
+        "n_clusters": 5,
+        "n_target_total": 1260
+      },
+      "popularity": {
+        "n_calls": 210,
+        "n_clusters": 5,
+        "n_target_total": 1260
+      },
+      "xlayer_bag": {
+        "n_calls": 210,
+        "n_clusters": 5,
+        "n_target_total": 1260
+      }
+    },
+    "sealed_t1/next_step": {
+      "cond_perlayer": {
+        "n_calls": 172,
+        "n_clusters": 4,
+        "n_target_total": 1032
+      },
+      "cond_pooled": {
+        "n_calls": 172,
+        "n_clusters": 4,
+        "n_target_total": 1032
+      },
+      "logreg_pairwise": {
+        "n_calls": 172,
+        "n_clusters": 4,
+        "n_target_total": 1032
+      },
+      "mlp_set": {
+        "n_calls": 172,
+        "n_clusters": 4,
+        "n_target_total": 1032
+      },
+      "popularity": {
+        "n_calls": 172,
+        "n_clusters": 4,
+        "n_target_total": 1032
+      },
+      "xlayer_bag": {
+        "n_calls": 172,
+        "n_clusters": 4,
+        "n_target_total": 1032
+      }
+    }
+  },
+  "counts_summary": {
+    "ornith_t2/next_layer": {
+      "test_calls": 429,
+      "test_target_records": 3432,
+      "test_tokens": 11
+    },
+    "ornith_t2/next_step": {
+      "test_calls": 400,
+      "test_target_records": 3200,
+      "test_tokens": 10
+    },
+    "sealed_t1/next_layer": {
+      "test_calls": 210,
+      "test_target_records": 1260,
+      "test_tokens": 5
+    },
+    "sealed_t1/next_step": {
+      "test_calls": 172,
+      "test_target_records": 1032,
+      "test_tokens": 4
+    }
+  },
+  "fixed_before_test_evaluation": true,
+  "note": "Split fixed in theory/pred/__init__.py (PRED_SPLIT_T2 / PRED_SPLIT_T1) before any test-set number was computed. Leak prevention: run-level routing-stream identity was checked first; byte-identical streams are grouped into one split side. Vocabulary is fixed by geometry (256 experts/layer), no test-derived vocabulary or features; hyperparameters fixed a priori in PRED_LR / PRED_MLP / PRED_XLAYER.",
+  "ornith_t2": {
+    "definition": {
+      "dropped_stream_groups": [
+        [
+          "dual-one-token"
+        ]
+      ],
+      "test_stream_groups": [
+        [
+          "dual-long-prompt"
+        ]
+      ],
+      "train_stream_groups": [
+        [
+          "dual-cold-primary",
+          "dual-warm-profiled",
+          "dual-warm-reference-present"
+        ],
+        [
+          "dual-cache-disabled",
+          "dual-cache-capacity-4",
+          "single-t4-warm"
+        ]
+      ]
+    },
+    "stream_identity_evidence": {
+      "byte_identical_run_groups": [
+        [
+          "dual-cold-primary",
+          "dual-warm-profiled",
+          "dual-warm-reference-present"
+        ],
+        [
+          "dual-cache-disabled",
+          "dual-cache-capacity-4",
+          "single-t4-warm"
+        ]
+      ],
+      "prefix_run": "dual-one-token (strict prefix of group 1; dropped)",
+      "train_test_jaccard_max": 0.081
+    }
+  },
+  "sealed_t1": {
+    "definition": {
+      "test_forward_steps": [
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "train_forward_steps": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ]
+    }
+  }
+}

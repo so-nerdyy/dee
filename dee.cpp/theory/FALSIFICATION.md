@@ -57,6 +57,21 @@ this document's own reproduction (all local).
 | P9 | next-layer predictor recall (empirical P(j\|i), m=8/source, lead=1) | 0.65-0.80 | replay on a fresh trace with recall outside 0.55-0.88 | THEORY.md 7 |
 | P10 | same predictor **precision** | 0.10-0.18 (kill: > 0.30) | precision > 0.30 at m=8 would kill the "fails prior-art gate" claim and reopen prefetch as a wall-time lever | THEORY.md 7 |
 | P11 | `Delta H <= Sigma_corr <= 0.80` at any hint budget | ceiling 0.65-0.80 | any hint scheme achieving > 0.85 hit-rate gain on a matched trace | THEORY.md 7 |
+
+**Phase-7 verdicts (evaluated, not bounded — `PREDICTOR_VERDICT.md`,
+time-ordered splits):** **P9 KILLED 2026-09** — every arm lands recall
+0.05-0.52 at m=8 outside the 0.55-0.88 band on both traces (the 0.65-0.80
+range was in-sample resubstitution; +42pp T2 / +23pp T1 inflation measured
+in `data/pred_leak_diagnostic.csv`). **P10 PARTIALLY KILLED** — the kill
+criterion (> 0.30 at m=8) is crossed on the sealed single-prompt surface by
+the popularity prior (0.333 [0.302, 0.357], 5 clusters, borderline under
+jackknife) but not on the 50k-event surface (max 0.154 [0.076, 0.266]); the
+claim "fails the prior-art gate" survives (precision 0.75 never approached,
+and the byte ledger is net-negative 5-10x everywhere). **P11 range
+correction** — `Sigma_corr = 0.729` is in-sample; the leak-free measured
+ceiling at m=8 is 0.34-0.58 depending on surface (still `<= 0.80`, so the
+prediction's inequality holds, but its 0.65-0.80 band does not describe
+leak-free m=8 data).
 | P12 | prefetch at lead=1 is worth **~0 s** of wall on the sealed bank shape (per prior-art idle-gap bound) | 0-0.3 s/token | an A/B with lead-1 prefetch saving > 0.5 s/token at B_pf <= 0.3 GiB/hint | THEORY.md 7 |
 
 ## P13-P15: serving / economics predictions

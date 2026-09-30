@@ -1,0 +1,25 @@
+trace,task,m,protocol,n_calls,announced_per_call,recall,precision,recall_lo,recall_hi,cluster_lo,cluster_hi
+ornith_t2,next_layer,8,"in_sample_all_pairs (OLD prefetch.py protocol, leaky, diagnostic only)",1131,43.47480106100796,0.7651414677276747,0.1407972340858247,,,,
+ornith_t2,next_layer,8,"out_of_sample_test (time-ordered, honest)",429,50.96503496503497,0.34411421911421913,0.05401573362605196,0.2715399184149184,0.4344624125874125,,
+ornith_t2,next_layer,8,leave_one_cluster_out (robustness of the in-sample run),1131,,,,0.7570037986704653,0.7749287749287749,0.13835672907942984,0.1434417213006556
+ornith_t2,next_layer,16,"in_sample_all_pairs (OLD prefetch.py protocol, leaky, diagnostic only)",1131,79.35278514588859,0.8909151193633952,0.08981815750768819,,,,
+ornith_t2,next_layer,16,"out_of_sample_test (time-ordered, honest)",429,88.75524475524476,0.4813519813519814,0.04338691038974682,0.41224504662004663,0.5694274475524475,,
+ornith_t2,next_layer,16,leave_one_cluster_out (robustness of the in-sample run),1131,,,,0.8870192307692307,0.8962488129154795,0.08892617449664429,0.09088173337345772
+ornith_t2,next_step,8,"in_sample_all_pairs (OLD prefetch.py protocol, leaky, diagnostic only)",880,42.20227272727273,0.7603693181818182,0.14413807959502398,,,,
+ornith_t2,next_step,8,"out_of_sample_test (time-ordered, honest)",400,48.4075,0.3190625,0.05272943242266178,0.2899453125,0.3503203125,,
+ornith_t2,next_step,8,leave_one_cluster_out (robustness of the in-sample run),880,,,,0.7501488095238096,0.7702380952380953,0.14092421235078695,0.14679802955665025
+ornith_t2,next_step,16,"in_sample_all_pairs (OLD prefetch.py protocol, leaky, diagnostic only)",880,77.59772727272727,0.8816761363636364,0.09089710921711625,,,,
+ornith_t2,next_step,16,"out_of_sample_test (time-ordered, honest)",400,85.3675,0.46875,0.0439277242510323,0.436234375,0.503453125,,
+ornith_t2,next_step,16,leave_one_cluster_out (robustness of the in-sample run),880,,,,0.8760416666666667,0.88828125,0.08978191245996645,0.09196677607754303
+sealed_t1,next_layer,8,"in_sample_all_pairs (OLD prefetch.py protocol, leaky, diagnostic only)",672,40.52232142857143,0.7169014084507043,0.13084352392493848,,,,
+sealed_t1,next_layer,8,"out_of_sample_test (time-ordered, honest)",210,37.766666666666666,0.49126984126984125,0.0780481654268062,0.4603174603174603,0.5214285714285715,,
+sealed_t1,next_layer,8,leave_one_cluster_out (robustness of the in-sample run),672,,,,0.6952380952380952,0.7229758372191607,0.1178052716514255,0.13323177876728381
+sealed_t1,next_layer,16,"in_sample_all_pairs (OLD prefetch.py protocol, leaky, diagnostic only)",672,73.21130952380952,0.8700201207243461,0.08788975161591935,,,,
+sealed_t1,next_layer,16,"out_of_sample_test (time-ordered, honest)",210,69.9047619047619,0.6206349206349207,0.05326975476839237,0.5944444444444444,0.6468253968253969,,
+sealed_t1,next_layer,16,leave_one_cluster_out (robustness of the in-sample run),672,,,,0.8505291005291006,0.8736752861381941,0.07630779455046045,0.08921498603986754
+sealed_t1,next_step,8,"in_sample_all_pairs (OLD prefetch.py protocol, leaky, diagnostic only)",602,39.6328903654485,0.7253599114064231,0.10981181105662434,,,,
+sealed_t1,next_step,8,"out_of_sample_test (time-ordered, honest)",172,36.424418604651166,0.5494186046511628,0.09050279329608939,0.5310077519379846,0.5765503875968992,,
+sealed_t1,next_step,8,leave_one_cluster_out (robustness of the in-sample run),602,,,,0.7090041741204532,0.7322599880739415,0.10730969435422877,0.12600678253497244
+sealed_t1,next_step,16,"in_sample_all_pairs (OLD prefetch.py protocol, leaky, diagnostic only)",602,72.04485049833887,0.8842746400885936,0.0736436789559844,,,,
+sealed_t1,next_step,16,"out_of_sample_test (time-ordered, honest)",172,67.12790697674419,0.6608527131782945,0.059068075523990994,0.6337209302325582,0.687984496124031,,
+sealed_t1,next_step,16,leave_one_cluster_out (robustness of the in-sample run),602,,,,0.8765652951699463,0.8878950506857484,0.07262460103118094,0.08157149991676378

@@ -78,25 +78,41 @@ where it cannot.)
 
 ## 3. The predictor lab (`theory/pred/` + [`PREDICTOR_VERDICT.md`](PREDICTOR_VERDICT.md))
 
-PENDING — component B report. (Orchestrator audit of the evaluation
-pipeline: no future leakage — time-ordered/run-grouped splits with
-byte-identical streams kept on one side, test-window labels dropped from
-training, a-priori hyperparameters; metrics arithmetic verified on 288
-rows.)
+**VERDICT (component B, complete): do not ship a lead-1 hint source.**
+Six real predictors (empirical-conditional, per-layer conditional, hashed
+logistic, MLP, within-token cross-layer, popularity prior) on the real
+50k-event router trace + the sealed journal, time-ordered splits, 288
+metric rows with cluster-bootstrap CIs:
 
-Verified evidence from `data/pred_*` (orchestrator recomputation):
-recall/precision at m=8 range 0.03–0.58 / 0.03–0.33 across arms and both
-traces under time-ordered eval (vs the prior run's in-sample 0.729/0.131);
-byte-value net is negative in every cell (consumed bytes 3–16x saved).
-**Calibration is bad in both directions** (corrected reading — an earlier
-orchestrator note said "under-confident" from one arm's bins alone):
-conditional-combination arms are badly OVER-confident (predicted
-0.79–1.00 vs observed 0.04–0.34 in the top bins — the
-`1-∏(1-P(j|i))` independence product saturates; ECE ~0.4–0.84), while the
-popularity arm is UNDER-confident (predicted 0.018–0.033 vs observed
-0.08–0.25; ECE ~0.10–0.32). The MLP arm is the best-calibrated learned
-arm (ECE 0.07–0.25) but does not beat the conditional baselines on
-precision.
+- **P9 KILLED**: every arm lands recall 0.05–0.52 at m=8 vs P9's 0.65–0.80
+  (kill band 0.55–0.88) on both traces. The prior run's 0.729 was
+  in-sample resubstitution — measured inflation **+42pp (T2) / +23pp (T1)**
+  in [`data/pred_leak_diagnostic.csv`](data/pred_leak_diagnostic.csv);
+  jackknife shows the in-sample numbers are overfit, not noise.
+- **P10 partially killed**: its kill threshold (> 0.30 at m=8) is crossed
+  only on the tiny single-prompt sealed surface (popularity prior 0.333
+  [0.302, 0.357], 5 clusters — borderline under jackknife), NOT on the
+  50k-event surface (max 0.154 [0.076, 0.266]). "Fails the prior-art gate"
+  survives everywhere.
+- **Byte ledger decides it anyway**: net bytes/token is negative in every
+  cell (consumed 5–16x saved; best ratio anywhere 0.182 at m=4) — hints at
+  these precisions are a wall regression of ~7–10x their benefit at the
+  sealed bank's storage ceiling.
+
+**Orchestrator audit + calibration** (leak audit: features use only
+hint-time information; run-grouped splits keep byte-identical streams on
+one side; test-window labels dropped from training; a-priori
+hyperparameters; metrics arithmetic verified on 288 rows). Calibration is
+bad in both directions (corrected reading — an earlier orchestrator note
+said "under-confident" from one arm's bins alone): conditional-combination
+arms are badly OVER-confident (predicted 0.79–1.00 vs observed 0.04–0.34 in
+the top bins — the `1-∏(1-P(j|i))` independence product saturates;
+ECE ~0.4–0.84), while the popularity arm is UNDER-confident (predicted
+0.018–0.033 vs observed 0.08–0.25; ECE ~0.10–0.32). The MLP arm is the
+best-calibrated learned arm (ECE 0.07–0.25) but does not beat the
+conditional baselines on precision. Practical consequence (B §2.4): the
+empirical-conditional "probabilities" are ranking keys, not probabilities —
+never threshold them for hint admission.
 
 ## 4. The provisioning solver (`theory/solve/` + [`solve/SOLVER.md`](solve/SOLVER.md))
 

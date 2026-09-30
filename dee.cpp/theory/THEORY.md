@@ -467,7 +467,20 @@ are computed (`data/prefetch_budget_sweep.csv`, `data/prefetch_submodular.csv`).
 | 4 | 0.545 | 0.183 | 22.0 | 0.27 GiB |
 | 8 | 0.729 | 0.131 | 41.2 | 0.51 GiB |
 
-**The provable ceiling** `Delta H <= Sigma_corr` = 0.729 at `m=8`: prefetch can
+**Phase-7 in-sample warning (an out-of-sample eval now exists).** The table
+above fits `P(j|i)` on all adjacent pairs of T1 and scores on the *same*
+pairs — resubstitution. The Phase-7 predictor lab
+([`PREDICTOR_VERDICT.md`](PREDICTOR_VERDICT.md)) reran this exact estimator
+under leak-free time-ordered splits: it scores recall **0.344 (T2) / 0.491
+(T1)** at m=8 vs the in-sample 0.729 — the in-sample protocol overstates
+recall by **+42pp (T2), +23pp (T1)**, and the leave-one-cluster-out
+jackknife shows the in-sample numbers are stable (0.757-0.775): overfit, not
+noise (`data/pred_leak_diagnostic.csv`). The table and the `Sigma_corr`
+ceiling below are therefore resubstitution estimates that **overstate the
+realizable hint ceiling by ~2x**.
+
+**The provable ceiling** `Delta H <= Sigma_corr` = 0.729 at `m=8` (in-sample
+— see the Phase-7 warning): prefetch can
 only convert accesses predictable from already-observed information into
 earlier hits. Compulsory first touches (2,364 records on T1) are immovable, and
 a wrong hint wastes bandwidth **without changing execution** (exactness
@@ -481,6 +494,21 @@ research assimilation) requires lead >= 2 **and** precision >= 0.75 to clear
 the idle-gap bound; this measured next-layer predictor reaches precision 0.28
 at lead 1 and **fails the gate**, consistent with the in-repo verdict that
 k=1 mechanisms are worth 0 s on the sealed bank.
+
+**Phase-7 out-of-sample verdict** ([`PREDICTOR_VERDICT.md`](PREDICTOR_VERDICT.md)):
+the gate conclusion **holds** — with real trained/evaluated predictors behind
+it now. Six arms (empirical-conditional, per-layer conditional, hashed
+logistic, MLP, within-token cross-layer, popularity prior), leak-free
+time-ordered splits: no arm exceeds precision **0.154** at m=8 on the
+multi-run surface (the 0.28 figure above is in-sample). P9 (recall 0.65-0.80)
+is **KILLED** by every arm out-of-sample (recall 0.05-0.52 at m=8); P10's
+kill threshold (> 0.30) is **crossed only on the tiny single-prompt sealed
+surface** by the popularity prior (0.333 [0.302, 0.357], 5 clusters —
+borderline under jackknife), not on the 50k-event surface. The byte ledger
+decides the product question anyway: every configuration consumes **5-10x**
+the slow-tier bytes it saves (best net -1.7 GB/tok at m=8), which at the
+sealed bank's storage ceiling is a wall regression of several seconds per
+token. Do not ship a lead-1 hint source.
 
 ---
 
