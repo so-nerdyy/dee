@@ -318,13 +318,21 @@ held fixed as a prediction across the other bandwidth cases.
 The measured anchor (`result.json`: `decode_tok_s=0.21`, 15 decode tokens in
 71.479 s, storage 0.29-0.37 GiB/s per `research/route-pipeline/STORAGE_VERDICT.md`).
 
-**Miss counts first** (`data/anchor_check.json`). The steady-state Che model is
-*wrong* for a 16-token generation and we say so: it predicts 46 cold records
-per decode token against a measured 83.5 (**-45%**); the finite-window model
-predicts 162.0 (**+94%**). The measured value sits between the two bracketing
-models — consistent with the fact that the run is neither stationary (cold
-start, 2,364-record universe touched once) nor purely compulsory (host tier
-absorbs 23-25% of fills: `host_pack` hits 2,618/5,099).
+**Miss counts first** (`data/anchor_check.json`, `miss_model_comparison`). The
+steady-state Che model *under*-predicts the cold reads of a 16-token
+generation: **67.84** cold SSD records per decode token against a measured
+83.47 (rel err **-18.7%**) — the "46 cold records (-45%)" this section
+previously asserted is a **text/artifact mismatch**: no 46 appears in the
+cited artifact, whose steady-state row is 67.84/-18.7% (Phase-7 correction,
+recorded with the old claim visible here). The finite-window model
+*over*-predicts at **161.96** (**+94.0%**). The measured value sits between
+the two bracketing models — consistent with the fact that the run is neither
+stationary (cold start, 2,364-record universe touched once) nor purely
+compulsory (host tier absorbs **51.3%** of host lookups: `host_pack` hits
+2,618/5,099 — note 2,618/5,099 **is** 51.3%, not the 23-25% this document
+previously asserted; only the cuda0-GPU share of the pooled stream
+(1,223/5,099 = 24.0%) lands in that band; all eight share definitions are
+computed in `data/anchor_gate.json` `host_share.definitions`).
 
 **Token rate** (decode accounting, finite-window model, `data/anchor_check.csv`):
 

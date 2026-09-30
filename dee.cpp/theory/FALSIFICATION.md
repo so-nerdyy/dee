@@ -36,7 +36,7 @@ this document's own reproduction (all local).
 | P3 | cold SSD record reads/token (16-tok, 281+682 slots) | 100-220 (kill: outside 70-260) | `per_token_accounting.storage_requests` on a matched run | THEORY.md 5.2 |
 | P3b | device fills/token (VRAM misses) | 190-260 (kill: outside 150-320) | `cold_loads` per decode token | THEORY.md 5.1 |
 | P3c | whole-generation TPS incl. prefill at 0.29-0.37 GiB/s storage | 0.062-0.13 tok/s (storage bound x1.25-2.0 slack) | 2xT4 rerun landing outside 0.05-0.16 tok/s over 16 tokens | THEORY.md 5.2 |
-| P4 | finite-window Che bracket for cold records/token | measured always in [steady-Che, 2x finite-Che] = [46, 324] | any matched run whose cold count falls outside the bracket | THEORY.md 5.2 |
+| P4 | finite-window Che bracket for cold records/token | measured always in [steady-Che, 2x finite-Che] = **[67.8, 323.9]** at the anchor config (steady-Che 67.84, finite-Che 161.96 -> 2x = 323.92; measured 83.47 decode / 155.06 whole-gen per emitted token). Phase-7 correction: the prior range "[46, 324]" had the correct upper end (2x 161.96) but a lower end that mismatched its own cited artifact (46 vs 67.84 in `data/anchor_check.json`); old claim preserved here rather than edited away | any matched run whose cold count falls outside the bracket | THEORY.md 5.2 |
 | P5 | eta_storage (fill hiding fraction) on any T4-class cell | 0.15-0.45 (nominal 0.292) | stage-profile-derived hiding fraction outside 0.10-0.55 on a second platform | THEORY.md 5.1 |
 
 ## P6-P8: popularity / cache-shape predictions
