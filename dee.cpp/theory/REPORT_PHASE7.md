@@ -84,6 +84,20 @@ byte-identical streams kept on one side, test-window labels dropped from
 training, a-priori hyperparameters; metrics arithmetic verified on 288
 rows.)
 
+Verified evidence from `data/pred_*` (orchestrator recomputation):
+recall/precision at m=8 range 0.03–0.58 / 0.03–0.33 across arms and both
+traces under time-ordered eval (vs the prior run's in-sample 0.729/0.131);
+byte-value net is negative in every cell (consumed bytes 3–16x saved).
+**Calibration is bad in both directions** (corrected reading — an earlier
+orchestrator note said "under-confident" from one arm's bins alone):
+conditional-combination arms are badly OVER-confident (predicted
+0.79–1.00 vs observed 0.04–0.34 in the top bins — the
+`1-∏(1-P(j|i))` independence product saturates; ECE ~0.4–0.84), while the
+popularity arm is UNDER-confident (predicted 0.018–0.033 vs observed
+0.08–0.25; ECE ~0.10–0.32). The MLP arm is the best-calibrated learned
+arm (ECE 0.07–0.25) but does not beat the conditional baselines on
+precision.
+
 ## 4. The provisioning solver (`theory/solve/` + [`solve/SOLVER.md`](solve/SOLVER.md))
 
 PENDING — component C report.
