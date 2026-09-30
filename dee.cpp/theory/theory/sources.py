@@ -236,6 +236,17 @@ def load_stores() -> Dict[str, Store]:
 def write_provenance() -> None:
     from .util import write_csv
 
+    # Import every stage module defensively so constants registered via
+    # constants.C() in leaf modules (anchor_gate, sim, pred, solve, predecl)
+    # land in CONSTS regardless of which stage subset is being run.  Phase-7
+    # convention: each component registers its constants in ITS OWN module;
+    # constants.py stays the declaration home for cross-component handles.
+    for _mod in ("anchor_gate", "sim", "pred", "solve", "predecl"):
+        try:
+            __import__("%s.%s" % (__package__, _mod), fromlist=[_mod])
+        except ImportError:
+            pass
+
     rows = []
     for name, c in CONSTS.items():
         val = c.value
