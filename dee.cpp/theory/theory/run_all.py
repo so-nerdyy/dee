@@ -99,9 +99,19 @@ def main(argv=None) -> int:
             dlog("stage %s NOT IMPLEMENTED YET (Phase-7 deliverable): %s"
                  % (stage, exc))
             continue
+        if not callable(getattr(mod, "run", None)):
+            dlog("stage %s NOT IMPLEMENTED YET (no run(); in-flight): skipping"
+                 % stage)
+            continue
         t = time.time()
         if stage == "sim":
-            results[key] = mod.run(results.get("ANCHOR"), fast=fast)
+            anchor = results.get("ANCHOR")
+            if anchor is None:
+                from . import anchor_gate
+                anchor = anchor_gate.run(fast=fast)
+                results["ANCHOR"] = anchor
+                dlog("stage anchor (auto, sim prerequisite) done")
+            results[key] = mod.run(anchor, fast=fast)
         elif stage == "solve":
             results[key] = mod.run(results.get("D"), results.get("B"))
         elif stage == "predecl":
