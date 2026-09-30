@@ -11,7 +11,10 @@ rate is a non-monotone function of concurrency at fixed M.  We derive
 with K(lambda) ~ Poisson(lambda * W) from Little's law (W = mean response
 time), and report bytes/token vs concurrency.
 
-Cost frontier:  $/1k tok = hardware_rate_s / (TPS * 1000) per cell, plus the
+Cost frontier:  $/1k tok = 1000 * hardware_rate_s / TPS  per cell (the
+formula in THEORY.md 6 previously printed as `hardware_rate_s / (TPS*1000)`,
+which is 1e6 x off dimensionally; this module always computed the correct
+`price_s / TPS * 1000`), plus the
 break-even request volume against a conservative dense-residency baseline
 (DSv4-Flash bf16 ~568 GiB resident on 8xH100-class at published prices).
 """
@@ -65,7 +68,14 @@ def dense_baseline_cost() -> Dict[str, float]:
 
     ASSUMPTIONS (stated explicitly):
       * resident footprint ~568 GiB bf16 routed+dense weights;
-      * 8 x H100-80GB-class at $3.223/GPU/h ($0.000895/GPU/s) — conservative
+      * 8 x H100-80GB-class at price_gpu_s = 0.003223 $/GPU/s as COMPUTED
+        (= $11.60/GPU/h).  PHASE-7 PRICE AMBIGUITY: this docstring previously
+        said "$3.223/GPU/h ($0.000895/GPU/s)" while the computed value is
+        3.223/1000 — i.e. either $3.223/h was divided by 1000 (not 3600) or
+        the rate is $3,223/1000 GPU-h.  If the cheap reading ($3.223/GPU/h)
+        is right, dense is 3.57x cheaper and flips the b=8 break-even (see
+        theory/solve/SOLVER.md).  Treated as an unverified pricing
+        ASSUMPTION with both readings carried;
         cloud list pricing, not reserved/spot;
       * achieved decode 200 tok/s aggregate (deliberately conservative for a
         13B-active MoE on 8xH100; dense serving stacks routinely report far

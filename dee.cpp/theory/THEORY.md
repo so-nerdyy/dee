@@ -371,7 +371,10 @@ universe is fully covered and the loss vanishes. Slow-tier bytes/token follow
 (`figs/serve_bytes_per_token.png`).
 
 **Cost frontier** (`data/serve_cost_frontier.csv`, `figs/serve_cost_frontier.png`).
-`$/1k tok = hardware_rate_s / (TPS_pred * 1000)`, with the Modal price
+`$/1k tok = 1000 * hardware_rate_s / TPS_pred` (this formula previously
+printed as `hardware_rate_s / (TPS_pred * 1000)` — dimensionally 1e6 off;
+the computation in `theory/serving.py` was always `price_s / TPS * 1000`,
+i.e. correct), with the Modal price
 schedule from the brief as ASSUMPTION and `COMPUTE_EFF = 0.6` of vendor dense-
 tensor peak (ASSUMPTION, ranged 0.3-0.8 in FALSIFICATION):
 
@@ -391,14 +394,31 @@ rises 2-6x and their $/1k tok falls proportionally.
 
 **Dense-residency baseline** (`data/serve_dense_baseline.json` — all
 ASSUMPTION, deliberately conservative *toward the competitor*): DSv4-Flash
-bf16 resident ~568 GiB on 8xH100-80GB at $0.003223/GPU/s, achieved 200 tok/s
-aggregate decode -> **$0.129/1k tok**. We do not measure this baseline in-repo
-and we do not claim to. The 200 tok/s figure is a *high* achieved-throughput
-assumption for the competitor (a weaker competitor would flatter dee), and the
-H100 price is list-rate cloud pricing, not reserved/spot — both choices push
-against dee's advantage. A baseline achieving less than 200 tok/s would only
-widen dee's margin; a baseline achieving more is the live falsification risk
-(FALSIFICATION.md, P7).
+bf16 resident ~568 GiB on 8xH100-80GB at **$0.003223/GPU/s as computed**
+(= $11.60/GPU/h), achieved 200 tok/s aggregate decode -> **$0.129/1k tok**.
+We do not measure this baseline in-repo and we do not claim to. The 200
+tok/s figure is a *high* achieved-throughput assumption for the competitor
+(a weaker competitor would flatter dee), and the H100 price is list-rate
+cloud pricing, not reserved/spot — both choices push against dee's
+advantage. A baseline achieving less than 200 tok/s would only widen dee's
+margin; a baseline achieving more is the live falsification risk
+(FALSIFICATION.md, P15; this previously cited P7, which is the entropy
+prediction — wrong cross-reference, corrected in Phase 7).
+
+**Phase-7 price-ambiguity disclosure (material).** The baseline's price note
+and `serving.py`'s docstring both described the rate as "$3.223/GPU/h", but
+the computed constant is `0.003223 $/GPU/s` = **$11.60/GPU/h** — consistent
+with $3.223/h having been divided by 1000 where 3600 was meant. Under the
+cheap reading ($3.223/GPU/h = $0.000895/GPU/s) the dense baseline is
+**$0.0358/1k tok (3.57x cheaper)** and the whole break-even table shifts:
+at that price dee wins nowhere at `b=8` (ratios 2.5-3.4x on the cells the
+expensive reading showed winning 0.70-0.93). The tables below use the
+computed (expensive) value as before — but the previous claim that this
+choice "pushes against dee's advantage" is **retracted**: on price alone the
+computed value favors dee 3.57x; only the 200 tok/s throughput assumption
+pushes against it. The unresolved price reading is a live falsification risk
+on P15b and is carried explicitly into `theory/solve/SOLVER.md` (sensitivity
+section) and PREDICTIONS_PHASE6.md's assumptions ledger.
 
 **Break-even** (`data/serve_breakeven.csv`, `figs/serve_breakeven.png`): at
 host 256 GiB the honest picture under the conservative per-touch cost is that

@@ -255,7 +255,12 @@ DENSE_BASELINE = C("dense_baseline", {
     "n_gpu": 8,
     "achieved_tok_s": 200.0,              # ASSUMPTION, conservative achieved decode for 13B-active MoE
 }, "ASSUMPTION", "AGENT_BRIEF L110 + conservative cloud pricing",
-    "DSv4-Flash bf16 ~568 GiB resident on H100-class hardware; $3.223/GPU/h; "
+    "DSv4-Flash bf16 ~568 GiB resident on H100-class hardware; "
+    "$11.60/GPU/h (code value price_gpu_s=0.003223 $/GPU/s = 3.223/1000 — "
+    "ambiguous whether $3.223/GPU/h was divided by 1000 instead of 3600; "
+    "if the intended rate was $3.223/GPU/h = 0.000895 $/GPU/s, dense cost is "
+    "3.57x LOWER and the b=8 break-even conclusions FLIP, see "
+    "theory/solve/SOLVER.md); "
     "200 tok/s achieved decode is deliberately conservative for a 13B-active model")
 
 # ==========================================================================
