@@ -267,6 +267,7 @@ class LogRegArm(Arm):
 
     def fit(self, train_ex, meta):
         from sklearn.linear_model import SGDClassifier
+        from threadpoolctl import threadpool_limits
 
         self.meta = meta
         # train on BOTH context types (full set + single-source views) so both
@@ -279,11 +280,15 @@ class LogRegArm(Arm):
         self.clf = SGDClassifier(loss="log_loss", alpha=self.cfg["alpha"],
                                  max_iter=self.cfg["max_iter"], random_state=meta["seed"],
                                  class_weight="balanced")
-        self.clf.fit(X, y)
+        with threadpool_limits(1):     # deterministic BLAS reductions
+            self.clf.fit(X, y)
 
     def _predict(self, examples, singles):
+        from threadpoolctl import threadpool_limits
+
         X, _ = self._rows(examples, singles=singles)
-        p = self.clf.predict_proba(X)[:, 1]
+        with threadpool_limits(1):
+            p = self.clf.predict_proba(X)[:, 1]
         n_ctx = len(examples) if not singles else sum(max(1, len(e.s_src)) for e in examples)
         return p.reshape(n_ctx, 256)
 
@@ -306,6 +311,8 @@ class _TorchArm(Arm):
     """Shared machinery for the two torch arms."""
 
     def _torch(self):
+        """Seed BEFORE any network construction: torch weight init draws from
+        the process-global RNG, which is randomly seeded at process start."""
         import torch
         torch.manual_seed(self.meta["seed"])
         torch.set_num_threads(1)
@@ -356,8 +363,8 @@ class MLPSetArm(_TorchArm):
         return v
 
     def fit(self, train_ex, meta):
-        import torch
         self.meta = meta
+        torch = self._torch()          # seed before Linear() weight init
         X = np.stack([self._vec(ex.s_src, ex) for ex in train_ex])
         Y = np.zeros((len(train_ex), 256))
         for a, ex in enumerate(train_ex):
@@ -396,8 +403,8 @@ class XLayerBagArm(_TorchArm):
                 tuple(ex.s_prev2) if ex.task == "next_layer" else tuple(ex.s_step2))
 
     def fit(self, train_ex, meta):
-        import torch
         self.meta = meta
+        torch = self._torch()          # seed before Embedding()/Linear() init
         E = self.cfg["emb_dim"]
         cfg = self.cfg
 

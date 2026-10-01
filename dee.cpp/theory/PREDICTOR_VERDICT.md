@@ -148,7 +148,8 @@ touches), so the m=8 table shows the middle scenario. m=8, per test TOKEN
 Under "src" semantics it is worse (T2 `cond_pooled` m=8: saved 366.6 vs
 consumed 12,505.1 MB/tok, ratio 0.029). The **best ratio anywhere in the
 grid** is 0.182 at m=4 (T1 next_step popularity, always-cold baseline); at
-m=8 the best cell is 0.134; at m=16 the best is 0.090. Full grid (432 rows,
+m=8 the best cell is 0.134 (T1 next_step popularity) and the best next_layer
+cell is 0.115 (T1 popularity); at m=16 the best is 0.090. Full grid (432 rows,
 3 residency scenarios, saved/stale/wasted record counts):
 `data/pred_byte_value.csv`.
 
@@ -210,15 +211,16 @@ not pay.
 
 ### (2) Does expected saved cold-bytes/token beat the bandwidth the hints consume?
 
-**No, by 5-10x, in every arm, every m, every scenario.** Best ratio in the
-whole grid is 0.182 (m=4, T1 next_step popularity); at m=8 the best cell is
-0.134 and the best next_layer cell is 0.115. Typical m=8: consumed/saved ≈
-9.7/1 (T2 `mlp_set`: 1,962.9 consumed vs 201.3 saved MB/tok, net
-**-1,761.6 MB/tok**). In wall terms at the measured bank ceiling the hints
-add ~4.5-5.9 s/token of marginal storage time to save ~0.5-0.7 s/token (see
-§2.3). The byte accounting in `data/pred_byte_value.csv` is optimistic for
-the hint side (staging 8-51 extra records per call into LRU would pollute the
-cache; not modeled), so the true net is no better.
+**No, in every arm, every m, every scenario — by at least 5.5x and typically
+~10x (worst cell 83x).** Best ratio in the whole grid is 0.182 (m=4, T1
+next_step popularity); at m=8 the best cell is 0.134 and the best next_layer
+cell is 0.115. Typical m=8: consumed/saved ≈ 9.7/1 (T2 `mlp_set`: 1,962.9
+consumed vs 201.3 saved MB/tok, net **-1,761.6 MB/tok**). In wall terms at
+the measured bank ceiling the hints add ~4.5-5.9 s/token of marginal storage
+time to save ~0.5-0.7 s/token (see §2.3). The byte accounting in
+`data/pred_byte_value.csv` is optimistic for the hint side (staging 8-51
+extra records per call into LRU would pollute the cache; not modeled), so
+the true net is no better.
 
 ### (3) Each arm's m=8 numbers vs P9 (recall 0.65-0.80, kill outside 0.55-0.88)
 and P10 (precision 0.10-0.18, kill > 0.30) — next_layer surface
@@ -226,11 +228,11 @@ and P10 (precision 0.10-0.18, kill > 0.30) — next_layer surface
 | arm | R@8 T2 / T1 (best sem) | P9 verdict | P@8 T2 / T1 (set sem) | P10 verdict |
 |---|---|---|---|---|
 | popularity | 0.150 / 0.444 | **KILLED** (-40pp / -11pp vs 0.55 bound) | 0.150 / 0.333 | T2 CONFIRMED (in band); T1 **kill threshold crossed** (+0.033..0.053 > 0.30) |
-| cond_pooled (the P9/P10 derivation arm) | 0.344 (src) / 0.491 | **KILLED** (-20.6pp / -5.9pp vs 0.55) | 0.118 / 0.249 | T2 CONFIRMED (in band); T1 outside band above (+0.07..0.17) but < 0.30 |
+| cond_pooled (the P9/P10 derivation arm) | 0.344 (src) / 0.491 | **KILLED** (-20.6pp / -5.9pp vs 0.55) | 0.118 / 0.249 | T2 CONFIRMED (in band); T1 outside band above by +0.07 (CI +0.04..+0.09 over the 0.18 edge) but < 0.30 |
 | cond_perlayer | 0.355 (src) / 0.524 | **KILLED** (-19.5pp / -2.6pp) | 0.154 / 0.306 | T2 CONFIRMED; T1 point > 0.30, CI [0.276,0.331] straddles — **borderline** |
-| logreg_pairwise | 0.053 / 0.083 | **KILLED** (-49.7pp / -46.7pp) | 0.027 / 0.026 | outside band BELOW (-0.07..-0.15); not killed |
+| logreg_pairwise | 0.053 / 0.083 | **KILLED** (-49.7pp / -46.7pp) | 0.027 / 0.026 | outside band below by -0.07 vs the 0.10 floor (both traces); not killed |
 | mlp_set | 0.183 / 0.420 | **KILLED** (-36.7pp / -13.0pp) | 0.151 / 0.286 | T2 CONFIRMED; T1 CI straddles 0.30 — **borderline** |
-| xlayer_bag | 0.283 / 0.474 | **KILLED** (-26.7pp / -7.6pp) | 0.131 / 0.227 | T2 CONFIRMED; T1 outside band above (+0.05..0.13) but < 0.30 |
+| xlayer_bag | 0.283 / 0.474 | **KILLED** (-26.7pp / -7.6pp) | 0.131 / 0.227 | T2 CONFIRMED; T1 outside band above by +0.05 (CI +0.02..+0.07 over the 0.18 edge) but < 0.30 |
 
 **P9 is KILLED by every arm on both traces at m=8** (the kill bound is
 "outside 0.55-0.88"; all recalls land 0.05-0.52). Even at m=32 (up to 138
@@ -240,31 +242,32 @@ announced records/call) T2 recall only reaches 0.638 and T1 0.751 — the
 **Where a measured number lands outside a P9/P10 range (all disagreements,
 with magnitude):** P9 range violated downward by every arm
 (-2.6pp to -49.7pp vs the 0.55 kill bound at m=8). P10 range violated
-**downward** by `logreg_pairwise` everywhere and by all src-sem conditional
-arms (-0.02 to -0.07 below 0.10), and **upward** on T1 by `popularity`
-(+0.15 above 0.18, crossing 0.30), `cond_perlayer` (+0.13), `xlayer_bag`
-(+0.05). P10's kill direction (> 0.30) is the one that matters and it fires
-on T1 only.
+**downward** by `logreg_pairwise` everywhere (-0.073/-0.074 below the 0.10
+floor, T2/T1) and by the src-sem conditional arms (-0.01 to -0.05 below the
+floor: T2 `cond_pooled` 0.054, `cond_perlayer` 0.061; T1 0.078 / 0.090), and
+**upward** on T1 by `popularity` (+0.153 over the 0.18 edge, crossing 0.30),
+`cond_perlayer` (+0.126), `cond_pooled` (+0.069), `xlayer_bag` (+0.047).
+P10's kill direction (> 0.30) is the one that matters and it fires on T1 only.
 
 ### (4) Would I ship this predictor in dee-serve as a hint source, and at what m?
 
 **No — do not ship.** The honest byte ledger says every configuration spends
-5-10x more slow-tier bandwidth than it saves (best net -1,762 MB/token at
-m=8), which at the storage-limited regime dee lives in converts a hint source
-into a wall-time regression of several seconds per token; precision never
-exceeds 0.154 on the multi-run surface at any m, so the prior-art gate
-(precision >= 0.75, lead >= 2) is not even approached; and the conditional
-arms' probabilities are so miscalibrated (ECE up to 0.81) that no admission
-threshold can be trusted to cut the waste. The single exception worth
-carrying forward as a *research* note, not a product: on a single-prompt
-generation with hot expert concentration (the T1 shape), a 1-2 record
-popularity-prior hint reaches precision 0.28-0.57 and could pay for itself
-*if* it is deduplicated against live host-residency state (our stale-hit
-counts show 277-366 of the landed hints at m=8 would hit already-resident
-records). If dee-serve ever ships a hint source it should be (a) m <= 2,
-(b) popularity/recency based, not learned, (c) admission-controlled by
-observed host-residency and (d) gated by a live A/B on wall time — all four
-conditions unmet today.
+at best 7.5x and typically ~10x more slow-tier bandwidth than it saves (worst
+cell 83x; best net -1,762 MB/token at m=8), which at the storage-limited
+regime dee lives in converts a hint source into a wall-time regression of
+several seconds per token; precision never exceeds 0.154 on the multi-run
+surface at any m, so the prior-art gate (precision >= 0.75, lead >= 2) is not
+even approached; and the conditional arms' probabilities are so miscalibrated
+(ECE up to 0.81) that no admission threshold can be trusted to cut the waste.
+The single exception worth carrying forward as a *research* note, not a
+product: on a single-prompt generation with hot expert concentration (the T1
+shape), a 1-2 record popularity-prior hint reaches precision 0.56-0.64
+(P@1 = 0.643, P@2 = 0.562) and could pay for itself *if* it is deduplicated
+against live host-residency state (our stale-hit counts show 277-366 of the
+landed hints at m=8 would hit already-resident records). If dee-serve ever
+ships a hint source it should be (a) m <= 2, (b) popularity/recency based,
+not learned, (c) admission-controlled by observed host-residency and (d)
+gated by a live A/B on wall time — all four conditions unmet today.
 
 ---
 
