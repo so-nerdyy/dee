@@ -1,8 +1,8 @@
 # REPORT_PHASE7 — the dee digital twin, predictor verdict, provisioning solver, and pre-registered Phase-6 scoreboard
 
-**Status:** integrated Phase-7 report (work in progress — sections marked
-PENDING are filled as the four component reports land; this file is written
-by the orchestrator from the component artifacts and reports).
+**Status:** integrated Phase-7 report (all four components landed;
+this file is written by the orchestrator from the component artifacts and
+reports).
 **Branch:** `research/phase7-theory`. **Campaign brief:**
 [`AGENT_BRIEF_PHASE7.md`](AGENT_BRIEF_PHASE7.md).
 **Reproduction:** `cd dee.cpp/theory && python -m theory.run_all` — now
@@ -116,16 +116,98 @@ never threshold them for hint admission.
 
 ## 4. The provisioning solver (`theory/solve/` + [`solve/SOLVER.md`](solve/SOLVER.md))
 
-PENDING — component C report.
+Component C enumerates 19,040 allocation rows (7 cells × 17 host budgets ×
+4 VRAM fractions × 10 batch policies × 4 model stores) and solves the
+constrained minimum-cost deployment per (model, arrival rate, SLO).
+
+**Pareto knees** (`data/solve_knees.json`, hints off):
+
+| model | knee cell | host GiB | b | tok/s | $/1k tok | ratio vs dense (computed) | limiter |
+|---|---|---:|---:|---:|---:|---:|---|
+| dsv4_flash | 1xL40S | 4 | 32 | 34.2 | 0.0169 | 0.131 | compute |
+| mimo_v2_flash | 1xRTXPRO6000 | 128 | 2 | 204 | 0.0057 | 0.094 | compute |
+| mimo_v2_pro | 1xRTXPRO6000 | 64 | 1 | 83.6 | 0.0121 | 0.054 | storage |
+| minimax_m3 | 1xRTXPRO6000 | 768 | 1 | 98.4 | 0.0262 | 0.067 | h2d |
+
+Knees sit at deep-coverage operating points; under the *computed* H100
+price reading dee beats dense residency by 7–19× at the knee — under the
+*cheap* reading the margin compresses 3.57× but does not disappear on the
+knee cells.
+
+**The decisive negative result:** all 120 (model × λ × SLO) provisioning
+queries are **infeasible** (`data/solve_provisioning_infeasible.csv`). The
+per-stream decode SLO (≥5 tok/s/stream) is unreachable — feasibility needs
+`X/b ≥ slo/(1−ρ)`, ~16.7 tok/s per stream at SLO=5, while b=1 per-replica
+rates top out at ~3–8 tok/s on bounded cells. Replication scales aggregate
+throughput; it cannot speed a single stream. **dee-serve is a
+cost/throughput play at batch concurrency; it cannot sell per-stream
+latency.** Consistent with FALSIFICATION P15c (no cell beats dense at
+b=1).
+
+The solver also re-derived the prefetch verdict independently: at the knee
+cells the measured m=1 hint arm multiplies cost by ×1.0 (dsv4, zero benefit
+region), ×1.9 (mimo-flash), ×5.1 (minimax-m3) and ×16.3 (mimo-pro) —
+hints-off dominates everywhere, agreeing with component B.
 
 ## 5. The pre-registered Phase-6 matrix ([`PREDICTIONS_PHASE6.md`](PREDICTIONS_PHASE6.md))
 
-PENDING — component D report.
+Frozen at commit `6107aab` (registration of record; 0 hardware runs existed
+at freeze). **60 scored cells** = 5 Modal cells × 2 models × b ∈ {1,8} ×
+host {16,64,256} GiB, each predicting decode tok/s, host hit %, cold
+records/tok, and $/1k tok — every row carrying nominal + working range +
+kill band + governing FALSIFICATION IDs. Plus 24 non-scored reference rows
+(2xT4 anchor, CPU floor). Machine-readable twin: `data/predecl_matrix.csv`
+(336 rows) regenerable via `python -m theory.run_all predecl`.
+
+Scoring rules are pre-declared: PASS (all metrics in range) / KILLED
+(any metric outside its kill band or its referenced FALSIFICATION id's) /
+WEAKENED (the deliberate gap band) / UNTESTABLE (missing prerequisite — a
+run without stage profile or measured B_SSD cannot score TPS rows).
+
+**All rows are tagged `CLOSED-FORM-ONLY (sim pending at freeze)`** — the
+freeze happened before component A's sim outputs existed. The sim-vs-
+closed-form disagreement (§6) means the closed-form TPS rows should be
+read as the storage/H2D-bound side of the prediction band; an ADDENDUM
+may annotate sim-predicted values but must not edit the frozen ranges.
 
 ## 6. Where theory, sim and predictor disagree — and what to trust
 
-PENDING — integrated disagreement table.
+| disagreement | magnitude | trust | resolution |
+|---|---|---|---|
+| sim anchor replay vs measured run | 12/12 dims PASS, counters bitwise | **sim** — structural replay, not fitted | settled |
+| cache hit-rate: sim vs Che two-level | 5–10 pp host-hit, 5–15% cold | sim for policy mechanics; Che for trends | enough for both uses |
+| token timing: sim vs closed-form T_pred | up to ~10× where storage limits (12.5% grid pass vs 80% criterion) | **sim** — blocking demand-gated fill matches anchor's wall-vs-storage r=0.987 | Phase-6 stage profile |
+| dense-path constant | 180 vs 570.7 ms/tok (3.2×) | unresolved — two decompositions of one measurement | Phase-6 stage profile |
+| solver vs theory $/1k tok | −14% to −60% | solver — it adds volume amortisation + SOLVE_CORES | accounting convention, documented |
+| predictor calibration | ECE 0.07–0.84 by arm | none — conditional arms' "probabilities" are ranking keys | never threshold for admission |
+| prefetch verdict | pred lab −5..10× net bytes; solver ×1.9–16.3 cost | **both agree: hints off** | two independent instruments concurring |
+| knee stability on long streams | sealed 16 GiB → long-stream knee drifts to 4 GiB | synth (negative result) — P2's band is window-conditional | ≥1k-token real trace (data needed) |
 
 ## 7. What the Phase-6 measurements will tell us (mapping to prediction IDs)
 
-PENDING — final mapping table.
+1. **P1** (1xL4 b=1 decode 1.1–1.7 tok/s, kill <0.9|>2.1): the headline —
+   tests the whole roofline chain end-to-end.
+2. **P2/P2b/P2c** (LRU 48–54% at 16 GiB, within 3pp of MIN, 850–1000
+   repeats): tests the cache model on a fresh window — and now carries the
+   synth caveat that the knee is window-conditional.
+3. **P3/P3b/P4** (cold records/token brackets): tests the finite-window
+   correction directly.
+4. **P5** (η_storage 0.15–0.45): tests fill-hiding — the sim's blocking
+   makespan vs theory's (1−η) disagreement lives here; a stage profile
+   adjudicates.
+5. **P8b/P8c** (t₀ 300–420µs; batched 50–150µs): a stage profile on any
+   T4-class run plus a batched-kernel build would replace the weakest
+   calibrated constant with a measurement.
+6. **P15c** (no cell beats dense at b=1) + provisioning infeasibility:
+   the serving-side reality check — dee-serve's value case is batch
+   throughput economics, not latency.
+7. **P9/P10 post-kill state**: prefetch is off the table at current
+   trace-derived accuracies — the only resurrection path is a predictor
+   beating precision 0.30 at m=8 on a fresh window, which the lab measured
+   at ≤0.154 on the big trace.
+
+The campaign's real deliverable is therefore: one L4-class run (b=1 and
+b=8 if budget allows, ≥16 tokens, stage profile + per-token accounting
+captured, B_SSD measured) scores P1–P5 in a single shot; a MiMo-Flash
+run adds the cross-model transfer check (S_TRANSFER, the solver's
+assumption-4 risk).
