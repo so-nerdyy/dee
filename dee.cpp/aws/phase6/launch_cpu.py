@@ -57,10 +57,11 @@ def build_entry(args: argparse.Namespace) -> str:
         return (f"{base}/dense_extract.py --model {args.model} "
                 "--repo-root /opt/dee-p6/repo "
                 f"--out-dir /opt/dee-p6/dense-out/{args.model} --s3")
+    evidence = config.s3_prefix("evidence", run_id=args.run_id)
     return (f"{base}/store_build.py --model {args.model} "
             "--src-root /opt/dee-p6/repo "
             f"--build-dir /opt/dee-p6/store-build/{args.model} --s3 "
-            f"--prefetch {args.prefetch} --buckets {args.buckets}")
+            f"--evidence {evidence} --prefetch {args.prefetch}")
 
 
 def pre_entry(args: argparse.Namespace) -> list[str]:
@@ -160,7 +161,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--disk-gb", type=int, default=config.CPU_ROOT_VOLUME_GIB)
     parser.add_argument("--max-hours", type=float, default=6.0)
     parser.add_argument("--prefetch", type=int, default=8)
-    parser.add_argument("--buckets", type=int, default=0)
     parser.add_argument("--pinned", default="")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true",

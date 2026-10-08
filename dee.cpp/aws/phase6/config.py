@@ -59,6 +59,7 @@ INSTANCE_TYPES = {
     "g6e.4xlarge": {"usd_per_hour": 3.00424, "ram_gib": 128, "vcpus": 16, "nvme_gb": 600, "gpus": 1},
     "g6e.8xlarge": {"usd_per_hour": 4.52856, "ram_gib": 256, "vcpus": 32, "nvme_gb": 900, "gpus": 1},
     "g6e.16xlarge": {"usd_per_hour": 7.57719, "ram_gib": 512, "vcpus": 64, "nvme_gb": 1900, "gpus": 1},
+    "m7i-flex.large": {"usd_per_hour": 0.09576, "ram_gib": 8, "vcpus": 2, "nvme_gb": 0, "gpus": 0},
     "c7i.xlarge": {"usd_per_hour": 0.1785, "ram_gib": 8, "vcpus": 4, "nvme_gb": 0, "gpus": 0},
     "c7i.2xlarge": {"usd_per_hour": 0.357, "ram_gib": 16, "vcpus": 8, "nvme_gb": 0, "gpus": 0},
     "c7i.4xlarge": {"usd_per_hour": 0.714, "ram_gib": 32, "vcpus": 16, "nvme_gb": 0, "gpus": 0},

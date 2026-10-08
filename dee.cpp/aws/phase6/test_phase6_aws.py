@@ -382,3 +382,67 @@ def test_s3_prefix_layout():
     assert config.s3_prefix("dense", "dsv4-flash").endswith("/dense/dsv4-flash/")
     assert config.s3_prefix("evidence", run_id="r").endswith("/evidence/r/")
     assert config.BUCKET == "dee-p6-147224001180-use2"
+
+
+def test_store_resume_cutoff_drops_committed_but_lost_buckets():
+    import store_build as sb
+    assert sb.lost_bucket_cutoff({0, 1, 2}, {0, 1, 2}, set()) is None
+    assert sb.lost_bucket_cutoff({0, 1, 2}, {0, 1}, {2}) is None
+    assert sb.lost_bucket_cutoff({0, 1, 2}, {0}, set()) == 1
+
+
+def test_prune_journal_keeps_only_buckets_below_cutoff(tmp_path):
+    import store_build as sb
+    journal = tmp_path / "build.journal.jsonl"
+    journal.write_text(
+        '{"bucket": 0, "segment_sha256": "a"}\n'
+        '{"bucket": 1, "segment_sha256": "b"}\n'
+        '{"bucket": 2, "segment_sha256": "c"}\n')
+    assert sb.prune_journal_from(journal, 1) == 2
+    assert sb.read_bucket_set(journal) == {0}
+
+
+def test_read_bucket_set_ignores_torn_trailing_line(tmp_path):
+    import store_build as sb
+    journal = tmp_path / "j.jsonl"
+    journal.write_text('{"bucket": 0}\n{"bucket": 1, "seg')
+    assert sb.read_bucket_set(journal) == {0}
+
+
+def test_local_segment_buckets_ignores_tombstones(tmp_path):
+    import store_build as sb
+    seg = tmp_path / "segments"
+    seg.mkdir()
+    (seg / "experts-bucket-03.dee4").write_bytes(b"x")
+    (seg / "experts-bucket-04.dee4.tomb").write_bytes(b"")
+    (seg / "experts-bucket-05.dee4").write_bytes(b"")
+    assert sb.local_segment_buckets(seg) == {3, 5}
+
+
+def test_progress_snapshot_eta_from_observed_rate():
+    import store_build as sb
+    snap = sb.progress_snapshot(
+        n_buckets=46, committed={0, 1, 2, 3}, pushed={0, 1, 2}, elapsed_s=3600,
+        disk_free_gib=50.0, http_status={"429": 0}, source_stats={"requests": 9},
+        push_errors=[], peak_rss_kb=123, now_utc="t")
+    assert snap["rate_buckets_per_h"] == 3.0
+    assert snap["eta_h"] == 14.33
+    assert snap["buckets_sealed"] == 4 and snap["buckets_pushed"] == 3
+    empty = sb.progress_snapshot(
+        n_buckets=46, committed=set(), pushed=set(), elapsed_s=0, disk_free_gib=1,
+        http_status={}, source_stats={}, push_errors=[], peak_rss_kb=0, now_utc="t")
+    assert empty["eta_h"] is None and empty["rate_buckets_per_h"] is None
+
+
+def test_parse_s3_uri():
+    import store_build as sb
+    assert sb.parse_s3_uri("s3://b/stores/dsv4-flash/segments/x.dee4") == (
+        "b", "stores/dsv4-flash/segments/x.dee4")
+    with pytest.raises(ValueError):
+        sb.parse_s3_uri("https://x")
+
+
+def test_m7i_flex_is_free_tier_size_in_config():
+    row = config.INSTANCE_TYPES["m7i-flex.large"]
+    assert (row["vcpus"], row["ram_gib"], row["gpus"]) == (2, 8, 0)
+    assert row["usd_per_hour"] == 0.09576

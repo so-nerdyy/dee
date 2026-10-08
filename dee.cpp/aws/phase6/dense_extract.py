@@ -2,13 +2,12 @@
 
 CPU job. Range-reads only the tensors the segmented-store runner needs
 (1564 names: model-level, per-layer dense, shared experts) from the pinned HF
-revision. Each shard's header is checked against the committed shard headers
-and the total length against the server, then the compact blobs and
-manifest.json are written. Resume-safe: shards with a finished state record
-are skipped on restart.
+revision. Tensors are written as they arrive, so peak memory is one tensor
+(the largest is the 1.06 GB embedding). Each shard's header is checked against
+the committed shard headers and the total length against the server. Resume-
+safe: shards with a finished state record are skipped on restart.
 
-HF_TOKEN / HUGGING_FACE_HUB_TOKEN are honored by RemoteRangeSource (anonymous
-reads hit HTTP 429).
+HF_TOKEN / HUGGING_FACE_HUB_TOKEN are honored (anonymous reads hit HTTP 429).
 
   python dense_extract.py --model dsv4-flash --repo-root <clone> \
       --out-dir <dir> [--s3]
@@ -27,15 +26,7 @@ from pathlib import Path
 
 import config
 import dense_manifest as dm
-
-PHASE3_DIR = "dee.cpp/tools/phase3"
-
-
-def load_p3_builder(repo_root: Path):
-    sys.path.insert(0, str(repo_root / PHASE3_DIR))
-    import p3_builder
-
-    return p3_builder
+from hf_source import USER_AGENT, CountingRangeSource
 
 
 def needed_tensor_names(repo_root: Path) -> list[str]:
@@ -66,15 +57,15 @@ def committed_headers(headers_dir: Path) -> dict[str, dict]:
     return out
 
 
-def _abs_range(builder, source, shard: str, start: int, nbytes: int) -> bytes:
+def _abs_range(source: CountingRangeSource, shard: str, start: int, nbytes: int) -> bytes:
     data = source._range(source._url(shard), start, start + nbytes - 1)
     if len(data) != nbytes:
         raise IOError(f"{shard}: short range {start}+{nbytes}: got {len(data)}")
     return data
 
 
-def remote_total_size(builder, source, shard: str) -> int:
-    headers = {"Range": "bytes=0-0", "User-Agent": builder.USER_AGENT}
+def remote_total_size(source: CountingRangeSource, shard: str) -> int:
+    headers = {"Range": "bytes=0-0", "User-Agent": USER_AGENT}
     tok = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
     if tok:
         headers["Authorization"] = f"Bearer {tok}"
@@ -86,11 +77,11 @@ def remote_total_size(builder, source, shard: str) -> int:
     return int(content_range.rsplit("/", 1)[1])
 
 
-def extract_shard(builder, source, shard: str, names: list[str],
+def extract_shard(source: CountingRangeSource, shard: str, names: list[str],
                   committed: dict[str, dict], blob_path: Path) -> dict:
-    prefix = _abs_range(builder, source, shard, 0, 8)
+    prefix = _abs_range(source, shard, 0, 8)
     hlen = dm.prefix_header_len(prefix)
-    header = prefix + _abs_range(builder, source, shard, 8, hlen)
+    header = prefix + _abs_range(source, shard, 8, hlen)
     remote = json.loads(header[8:].decode("utf-8"))
     for name in names:
         if remote.get(name, {}).get("data_offsets") != committed[name]["data_offsets"]:
@@ -98,7 +89,7 @@ def extract_shard(builder, source, shard: str, names: list[str],
     data_ends = [meta["data_offsets"][1] for key, meta in remote.items()
                  if key != "__metadata__"]
     file_size = dm.shard_file_size(header, data_ends)
-    total = remote_total_size(builder, source, shard)
+    total = remote_total_size(source, shard)
     if total != file_size:
         raise RuntimeError(f"{shard}: server length {total} != header-derived {file_size}")
 
@@ -108,8 +99,7 @@ def extract_shard(builder, source, shard: str, names: list[str],
     tmp_path = blob_path.parent / (blob_path.name + ".tmp")
     with tmp_path.open("wb") as fh:
         for name in sorted(names, key=lambda n: remote[n]["data_offsets"][0]):
-            meta = remote[name]
-            start, end = meta["data_offsets"]
+            start, end = remote[name]["data_offsets"]
             nbytes = end - start
             data = source.fetch(shard, start, nbytes)
             if len(data) != nbytes:
@@ -118,6 +108,7 @@ def extract_shard(builder, source, shard: str, names: list[str],
             digest.update(data)
             entries.append([name, 8 + hlen + start, nbytes, blob_off])
             blob_off += nbytes
+            del data
     tmp_path.replace(blob_path)
     return dm.shard_record(
         header_bytes=header, file_size=file_size, blob=f"blobs/{blob_path.name}",
@@ -128,7 +119,6 @@ def build(model: str, repo_root: Path, out_dir: Path) -> Path:
     spec = config.MODELS[model]
     if not spec["dense_supported"]:
         raise SystemExit(f"dense extraction not supported for {model}")
-    builder = load_p3_builder(repo_root)
     names = needed_tensor_names(repo_root)
     committed = committed_headers(repo_root / spec["headers"])
     by_shard: dict[str, list[str]] = {}
@@ -142,8 +132,7 @@ def build(model: str, repo_root: Path, out_dir: Path) -> Path:
         print("WARNING: HF_TOKEN not set; anonymous range reads may return HTTP 429",
               flush=True)
 
-    source = builder.RemoteRangeSource(repository=spec["hf_repo"],
-                                       revision=spec["hf_rev"])
+    source = CountingRangeSource(repository=spec["hf_repo"], revision=spec["hf_rev"])
     blobs = out_dir / "blobs"
     state = out_dir / "work"
     blobs.mkdir(parents=True, exist_ok=True)
@@ -158,12 +147,11 @@ def build(model: str, repo_root: Path, out_dir: Path) -> Path:
                 shards[shard] = record
                 print(f"resume: {shard} already extracted", flush=True)
                 continue
-        record = extract_shard(builder, source, shard, by_shard[shard],
-                               committed[shard], blob_file)
+        record = extract_shard(source, shard, by_shard[shard], committed[shard], blob_file)
         state_file.write_text(json.dumps(record), encoding="utf-8")
         shards[shard] = record
         print(f"extracted {shard}: {record['blob_bytes'] / (1 << 30):.3f} GiB "
-              f"tensors={len(record['entries'])}", flush=True)
+              f"tensors={len(record['entries'])} http={source.status_counts}", flush=True)
 
     doc = dm.manifest(model=model, repo=spec["hf_repo"],
                       revision=spec["hf_rev"], shards=shards)
@@ -172,9 +160,16 @@ def build(model: str, repo_root: Path, out_dir: Path) -> Path:
     manifest_path = out_dir / "manifest.json"
     manifest_path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
     print(f"manifest: {doc['tensor_count']} tensors, "
-          f"{doc['total_blob_bytes'] / (1 << 30):.3f} GiB in {len(shards)} shards",
-          flush=True)
+          f"{doc['total_blob_bytes']} bytes in {len(shards)} shards", flush=True)
+    print(f"http_status={source.status_counts} stats={source.stats}", flush=True)
     return manifest_path
+
+
+def peak_rss_kb() -> int:
+    for line in Path("/proc/self/status").read_text().splitlines():
+        if line.startswith("VmHWM:"):
+            return int(line.split()[1])
+    return -1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -188,6 +183,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="sync blobs + manifest to the dense/<model>/ prefix")
     args = parser.parse_args(argv)
     build(args.model, args.repo_root.resolve(), args.out_dir.resolve())
+    print(f"peak_rss_kb={peak_rss_kb()}", flush=True)
     if args.s3:
         subprocess.run(["aws", "s3", "sync", str(args.out_dir),
                         config.s3_prefix("dense", args.model),

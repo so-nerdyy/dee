@@ -25,7 +25,7 @@ import config
 from bench_runner import parse_cohort_spec
 
 HARNESS_FILES = ["config.py", "dense_manifest.py", "bench_runner.py",
-                 "dense_extract.py", "store_build.py"]
+                 "dense_extract.py", "store_build.py", "hf_source.py"]
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 BOOTSTRAP_LOG = "/var/log/dee-p6-bootstrap.log"
 
