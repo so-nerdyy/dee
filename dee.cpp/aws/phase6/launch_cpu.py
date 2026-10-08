@@ -30,7 +30,7 @@ from launch import (
 )
 
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
-CPU_PIP_PACKAGES = ["numpy", "safetensors", "huggingface_hub"]
+CPU_PIP_PACKAGES: list[str] = []  # stdlib only; no venv on the DLAMI (no ensurepip)
 DEFAULT_INSTANCE = "c7i.4xlarge"
 
 
@@ -52,7 +52,7 @@ def hf_token_param_exists(sess) -> bool:
 
 
 def build_entry(args: argparse.Namespace) -> str:
-    base = "/opt/dee-p6/venv/bin/python /opt/dee-p6/harness"
+    base = "python3 /opt/dee-p6/harness"
     if args.job == "dense":
         return (f"{base}/dense_extract.py --model {args.model} "
                 "--repo-root /opt/dee-p6/repo "
@@ -160,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--instance-type", default=DEFAULT_INSTANCE)
     parser.add_argument("--disk-gb", type=int, default=config.CPU_ROOT_VOLUME_GIB)
     parser.add_argument("--max-hours", type=float, default=6.0)
-    parser.add_argument("--prefetch", type=int, default=8)
+    parser.add_argument("--prefetch", type=int, default=4)
     parser.add_argument("--pinned", default="")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true",

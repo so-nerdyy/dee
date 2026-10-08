@@ -16,10 +16,26 @@ import urllib.error
 import urllib.request
 
 USER_AGENT = "dee-p6-aws/1.0"
+RETRY_BASE_S = 2.0
+RETRY_CAP_S = 300.0
+MAX_ATTEMPTS = 20
+
+
+def retry_delay_s(status: int | None, attempt: int, retry_after: str | None = None) -> float:
+    """Seconds to wait before retry `attempt` (0-based).
+
+    429 and 5xx back off up to RETRY_CAP_S, honoring a numeric Retry-After.
+    Other failures back off briefly.
+    """
+    if status == 429 or (status is not None and status >= 500):
+        if retry_after and retry_after.strip().isdigit():
+            return min(float(retry_after), RETRY_CAP_S)
+        return min(RETRY_CAP_S, 30.0 * (2 ** attempt))
+    return min(60.0, RETRY_BASE_S * (2 ** attempt))
 
 
 class CountingRangeSource:
-    def __init__(self, *, repository: str, revision: str, max_attempts: int = 6):
+    def __init__(self, *, repository: str, revision: str, max_attempts: int = MAX_ATTEMPTS):
         self.repository = repository
         self.revision = revision
         self.max_attempts = max_attempts
@@ -60,11 +76,13 @@ class CountingRangeSource:
             except urllib.error.HTTPError as exc:
                 self._count(str(exc.code))
                 last = exc
+                delay = retry_delay_s(exc.code, attempt, exc.headers.get("Retry-After"))
             except Exception as exc:  # noqa: BLE001
                 self._count("exception")
                 last = exc
+                delay = retry_delay_s(None, attempt)
             self._count("", "retries")
-            time.sleep(1.5 * (2 ** attempt))
+            time.sleep(delay)
         raise ConnectionError(f"range fetch failed: {last!r}")
 
     def _hlen(self, shard: str) -> int:

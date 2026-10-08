@@ -446,3 +446,22 @@ def test_m7i_flex_is_free_tier_size_in_config():
     row = config.INSTANCE_TYPES["m7i-flex.large"]
     assert (row["vcpus"], row["ram_gib"], row["gpus"]) == (2, 8, 0)
     assert row["usd_per_hour"] == 0.09576
+
+
+def test_retry_delay_honors_retry_after_and_caps():
+    from hf_source import RETRY_CAP_S, retry_delay_s
+    assert retry_delay_s(429, 0, "12") == 12.0
+    assert retry_delay_s(429, 0, "99999") == RETRY_CAP_S
+    assert retry_delay_s(429, 0) == 30.0
+    assert retry_delay_s(429, 10) == RETRY_CAP_S
+    assert retry_delay_s(503, 1) == 60.0
+    assert retry_delay_s(404, 3) == 16.0
+
+
+def test_cpu_userdata_has_no_venv_and_uses_system_python():
+    text = launch.render_userdata(
+        run_id="r3", max_hours=2, job_json="{}", pre_entry=[],
+        entry="python3 /opt/dee-p6/harness/dense_extract.py", pip_packages=[],
+        hf_token_from_ssm=True)
+    assert "venv" not in text.replace("export PATH=/opt/dee-p6/venv/bin", "")
+    assert "python3 /opt/dee-p6/harness/dense_extract.py" in text

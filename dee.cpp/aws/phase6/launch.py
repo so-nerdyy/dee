@@ -81,11 +81,14 @@ def render_userdata(*, run_id: str, max_hours: float, job_json: str,
         f"echo {job_b64} | base64 -d > /opt/dee-p6/job.json",
         f"aws s3 cp --recursive {config.s3_prefix('src')} /opt/dee-p6/harness/ "
         "--only-show-errors",
-        "python3 -m venv /opt/dee-p6/venv",
-        "/opt/dee-p6/venv/bin/pip install --quiet --upgrade pip",
-        f"/opt/dee-p6/venv/bin/pip install --quiet {' '.join(pip_packages)}",
         "export PATH=/opt/dee-p6/venv/bin:/usr/local/cuda/bin:$PATH",
     ]
+    if pip_packages:
+        lines[-1:-1] = [
+            "python3 -m venv /opt/dee-p6/venv",
+            "/opt/dee-p6/venv/bin/pip install --quiet --upgrade pip",
+            f"/opt/dee-p6/venv/bin/pip install --quiet {' '.join(pip_packages)}",
+        ]
     if hf_token_from_ssm:
         lines.append(
             f"HF_TOKEN=$(aws ssm get-parameter --name {config.SSM_HF_TOKEN_PARAM} "
