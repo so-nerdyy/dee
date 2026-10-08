@@ -294,3 +294,48 @@ Grading: **PASS** = all four metrics in range · **KILLED** = any metric outside
 | *(all 84 config cells)* | | | | | *(see §1)* | **pending sim** | — | — | PENDING (2026-09-30; `data/sim_*.json` absent at freeze) |
 
 *(later addenda append below, each with its own UTC timestamp and heading; section 0-5 stays byte-frozen)*
+
+### Addendum 2 — AWS EC2 campaign cells + a b>1 units defect (registered 2026-10-08, before any AWS GPU run)
+
+**Why.** The Phase-6 campaign moved from Modal to AWS EC2 (us-east-2). Two problems with the frozen rows above surfaced while porting the harness. Neither changes any frozen range. Both are recorded here, and the AWS cells get **new** rows.
+
+1. **The frozen decode-TPS and $/1k rows are mostly UNTESTABLE on AWS.** Their B_SSD values are Modal spec ASSUMPTIONs, and the §0 prerequisite 5 makes a run UNTESTABLE when its measured B_SSD falls outside 0.9–1.1× spec. AWS does not publish instance-store NVMe bandwidth. Host-hit % and cold rec/tok do not depend on B_SSD in the closed form, so they stay scorable against §1 where the provisioning matches.
+2. **The frozen VRAM provisioning is not physically realizable on L4/A10.** §0 assumes a 22 GiB/GPU expert cache. The DSv4-Flash dense backbone the runner keeps resident is **8.238 GiB** (1,564 tensors, 8,845,959,388 B; derived from the committed shard headers on `research/phase6-aws`), and an L4 has ~22 GiB usable. The AWS harness provisions the sealed-anchor budget instead: **3,584 MiB = 281 records** on L4/A10, and **28,672 MiB = 2,248 records** on L40S.
+3. **Units defect at b>1 (found 2026-10-08).** `roofline_point` returns `t_storage`, `t_h2d` and `cold_records_per_tok` **per batch step**: D(b) = Σᵢ[1−(1−πᵢ)ᵇ] distinct records for the b rows of one step. It returns `t_dense` and `t_compute` **per emitted token** (already divided by b), and `t_pred` sums the two. The **frozen b=8 decode-TPS rows are therefore neither aggregate nor per-stream throughput**, and the b=8 cold rec/tok is per step. Evidence: for an L4-class cell at host 16 GiB, the steady b=8 `cold_records_per_tok` = **482**, more than the **258** record touches (L·k) one token can make. That is only possible per step. The b=1 rows are unaffected (step = token). The frozen b=8 rows stay as registered and will be scored as registered. Expect their decode-TPS rows to read **low** against measured aggregate throughput, by up to ~b×, wherever storage/H2D dominates.
+
+**Registered AWS rows.** Machine-readable source of record: [`theory/predecl_aws.py`](theory/predecl_aws.py), giving [`data/predecl_aws_matrix.csv`](data/predecl_aws_matrix.csv) (560 rows) and [`data/predecl_aws_meta.json`](data/predecl_aws_meta.json). Regenerate with `python -m theory.predecl_aws` (deterministic, no RNG, no network).
+
+- **Cells** (DSv4-Flash only; no MiMo dense checkpoint or complete store exists on AWS at registration). Each instance is the smallest of its family with RAM − 12 GiB ≥ host budget, the same rule the harness enforces:
+
+  | cell | instance | GPU | $/h (on-demand, us-east-2, Price List 2026-10-08, ASSUMPTION) | VRAM expert budget | host GiB |
+  |---|---|---|---|---|---|
+  | aws-L4-g6.2xlarge | g6.2xlarge | L4 | 0.9776 | 3,584 MiB (281 rec) | 16 |
+  | aws-L4-g6.8xlarge | g6.8xlarge | L4 | 2.0144 | 3,584 MiB (281 rec) | 64 |
+  | aws-A10-g5.2xlarge | g5.2xlarge | A10G | 1.212 | 3,584 MiB (281 rec) | 16 |
+  | aws-A10-g5.8xlarge | g5.8xlarge | A10G | 2.448 | 3,584 MiB (281 rec) | 64 |
+  | aws-L40S-g6e.2xlarge | g6e.2xlarge | L40S | 2.24208 | 28,672 MiB (2,248 rec) | 16 |
+  | aws-L40S-g6e.4xlarge | g6e.4xlarge | L40S | 3.00424 | 28,672 MiB (2,248 rec) | 64 |
+  | aws-L40S-g6e.16xlarge | g6e.16xlarge | L40S | 7.57719 | 28,672 MiB (2,248 rec) | 256 |
+
+  256 GiB on L4/A10 is not provisionable: the largest g6/g5 has 256 GiB of RAM in total.
+- **Model.** The frozen closed form, unchanged, with three substitutions. (a) B_SSD = the run's **measured** value. (b) The VRAM budget above. (c) rate_s = instance $/h ÷ 3600, all-in. GPU B_h2d and F_peak come from the frozen Modal cell of the same GPU. eta_storage = 0.29170 (anchor-calibrated, as in `roofline.run`). **b=1 rows use `predecl._gpu_derivations` verbatim.** The pipeline's self-check reproduces all 72 frozen 1xL4/1xA10/1xL40S rows at **max relative error 0.0** before writing anything. **b=8 rows use the units-corrected step model** (`UNITS_CORRECTION`): step = b·(t_dense + t_compute) + (1−η_s)·t_storage,step + (1−η_h)·t_h2d,step. **decode_tps is AGGREGATE** = b / step, and cold rec/tok = cold_step / b. The corners and kill multipliers are the same as the frozen rules.
+- **Scoring rule (the registration).** The registered prediction for a run is `theory.predecl_aws.predict(cell, b, host, B_ssd)` evaluated at `B_ssd = summary.json measured_b_ssd_gib_s × 2³⁰`. That value comes from bench_runner's fio randread probe: 13,369,344 B blocks, O_DIRECT, libaio, iodepth 6, numjobs 3, which is the anchor's 3-lane QD6 definition. The function is frozen at this addendum's commit; the CSV is a human-readable sample of it at B_SSD ∈ {0.5 … 8} GB/s. The 0.9–1.1× B_SSD corner stays in as instrument noise. PASS / KILLED / WEAKENED / UNTESTABLE follow §0 and §4 unchanged.
+- **Run protocol.**
+  - **b=1:** a 16-token generation with the default anchor prompt. Decode TPS = decode tokens ÷ decode wall (the anchor's `decode_wall_s` convention). The horizon matches `finite_16tok`.
+  - **b=8:** one cohort of 8 prompts, ≥ 64 decode steps. The rows are **steady-state** predictions, so decode TPS is scored over the **last 32 decode steps** only. They are scorable only if the measured cold rec/tok over that same window lies inside the row's cold kill band. Otherwise the window has not reached the modeled regime, and the TPS and $/1k rows are **UNTESTABLE** (not killed).
+- **Sample at B_SSD = 2.0 GB/s** (nominal [range]):
+
+  | cell | b | host | decode tok/s | cold rec/tok | $/1k tok |
+  |---|---|---|---|---|---|
+  | aws-L4-g6.2xlarge | 1 | 16 | 0.912 [0.698, 1.433] | 185.0 [82, 370] | 0.160 |
+  | aws-L4-g6.2xlarge | 8 | 16 | 2.522 [1.951, 4.137] (aggregate) | 60.3 [60, 370] | 0.108 |
+  | aws-L4-g6.8xlarge | 1 | 64 | 1.088 [0.835, 1.745] | 147.8 [0, 296] | 0.113 |
+  | aws-L4-g6.8xlarge | 8 | 64 | 9.006 [7.586, 24.890] (aggregate) | 0.0 [0, 296] | 0.062 |
+  | aws-L40S-g6e.2xlarge | 1 | 16 | 1.171 [0.902, 1.883] | 149.1 [2, 298] | 0.085 |
+  | aws-L40S-g6e.2xlarge | 8 | 16 | 13.081 [11.748, 55.682] (aggregate) | 1.9 [2, 298] | 0.048 |
+
+- **Known weaknesses, stated in advance.**
+  - **(i)** At host ≥ 64 GiB (and on L40S at 16 GiB) the steady-state cold rate is ≈ 0. The sealed-trace empirical popularity puts **zero mass on the 9,412 records it never saw**, so those b=8 rows are dense/compute/H2D ceilings and are B_SSD-independent. Arbitrary prompts will touch unseen experts. Expect measured cold rec/tok above the steady nominal there; the scorability gate above exists for this reason.
+  - **(ii)** $/1k uses the steady-horizon TPS (the frozen economics convention). That is why it is B_SSD-independent at host ≥ 64 GiB.
+  - **(iii)** The finite_16tok horizon uses the b=1 batch schedule `[7]+[1]*15` at every b (inherited). The b=8 cold bracket's finite edge is therefore a single-stream quantity.
+  - **(iv)** Prices are on-demand. Spot runs are billed lower but scored at on-demand, an upper bound.

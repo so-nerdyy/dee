@@ -322,13 +322,14 @@ def _finite_hit(host_gib: int, model: str) -> float:
     return pts[-1][1]
 
 
-def _gpu_derivations(cell_name: str, model: str, b: int, host: int, roof: dict, frontier: dict):
+def _gpu_derivations(cell_name: str, model: str, b: int, host: int, roof: dict, frontier: dict,
+                     cell=None):
     """Derive the 4 metric predictions for one GPU cell from the closed form."""
     prim = "finite_16tok" if b == 1 else "steady_state"   # P1 uses finite at b=1; P1b steady at b=8
     rp = roof[(cell_name, "dsv4_flash", b, prim, host)]
     rsteady = roof[(cell_name, "dsv4_flash", b, "steady_state", host)]
     rfinite = roof[(cell_name, "dsv4_flash", b, "finite_16tok", host)]
-    c = _cell(cell_name)
+    c = cell if cell is not None else _cell(cell_name)
     f = 1.0 if model == "dsv4_flash" else MIMO_TOUCH_RATIO.value
 
     # t_compute (THEORY.md 5.1: D t_0 / b + L k W_touch / (eff F)) is decomposed into its
