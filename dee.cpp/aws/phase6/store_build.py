@@ -112,11 +112,13 @@ def prune_journal_from(journal_path: Path, cutoff: int) -> int:
 
 
 def progress_snapshot(*, n_buckets: int, committed: set[int], pushed: set[int],
-                      elapsed_s: float, disk_free_gib: float, http_status: dict,
-                      source_stats: dict, push_errors: list[str],
+                      baseline_pushed: int, elapsed_s: float, disk_free_gib: float,
+                      http_status: dict, source_stats: dict, push_errors: list[str],
                       peak_rss_kb: int, now_utc: str) -> dict:
-    """Progress record. ETA uses the observed push rate since this process started."""
-    rate_per_h = (len(pushed) * 3600.0 / elapsed_s) if pushed and elapsed_s > 0 else None
+    """Progress record. The rate counts only buckets pushed by this process
+    (baseline_pushed buckets were already in S3 when it started)."""
+    new_pushed = len(pushed) - baseline_pushed
+    rate_per_h = (new_pushed * 3600.0 / elapsed_s) if new_pushed > 0 and elapsed_s > 0 else None
     remaining = n_buckets - len(pushed)
     eta_h = (remaining / rate_per_h) if rate_per_h else None
     return {
@@ -126,6 +128,7 @@ def progress_snapshot(*, n_buckets: int, committed: set[int], pushed: set[int],
         "buckets_pushed": len(pushed),
         "pushed": sorted(pushed),
         "elapsed_s": round(elapsed_s, 1),
+        "baseline_pushed": baseline_pushed,
         "rate_buckets_per_h": round(rate_per_h, 3) if rate_per_h else None,
         "eta_h": round(eta_h, 2) if eta_h is not None else None,
         "disk_free_gib": round(disk_free_gib, 2),
@@ -226,7 +229,8 @@ def peak_rss_kb() -> int:
 
 class Heartbeat:
     def __init__(self, *, job, source, build_dir: Path, root: str, evidence: str,
-                 n_buckets: int, t0: float):
+                 n_buckets: int, t0: float, baseline_pushed: int):
+        self.baseline_pushed = baseline_pushed
         self.job = job
         self.source = source
         self.build_dir = build_dir
@@ -242,6 +246,7 @@ class Heartbeat:
         free_gib = shutil.disk_usage(self.build_dir).free / (1 << 30)
         snap = progress_snapshot(
             n_buckets=self.n_buckets, committed=committed, pushed=pushed,
+            baseline_pushed=self.baseline_pushed,
             elapsed_s=time.monotonic() - self.t0, disk_free_gib=free_gib,
             http_status=self.source.status_counts, source_stats=self.source.stats,
             push_errors=list(self.job.push_errors), peak_rss_kb=peak_rss_kb(),
@@ -317,7 +322,8 @@ def main(argv: list[str] | None = None) -> int:
 
     n_buckets = int(manifest.get("n_buckets", manifest["n_layers"]))
     beat = Heartbeat(job=job, source=remote, build_dir=build_dir, root=root,
-                     evidence=args.evidence or root, n_buckets=n_buckets, t0=t0)
+                     evidence=args.evidence or root, n_buckets=n_buckets, t0=t0,
+                     baseline_pushed=len(read_bucket_set(build_dir / p3.PUBLISH_JOURNAL)))
     thread = threading.Thread(target=beat.run, daemon=True)
     thread.start()
     try:

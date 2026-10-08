@@ -422,14 +422,19 @@ def test_local_segment_buckets_ignores_tombstones(tmp_path):
 def test_progress_snapshot_eta_from_observed_rate():
     import store_build as sb
     snap = sb.progress_snapshot(
-        n_buckets=46, committed={0, 1, 2, 3}, pushed={0, 1, 2}, elapsed_s=3600,
+        n_buckets=46, committed={0, 1, 2, 3}, pushed={0, 1, 2}, baseline_pushed=0, elapsed_s=3600,
         disk_free_gib=50.0, http_status={"429": 0}, source_stats={"requests": 9},
         push_errors=[], peak_rss_kb=123, now_utc="t")
     assert snap["rate_buckets_per_h"] == 3.0
     assert snap["eta_h"] == 14.33
     assert snap["buckets_sealed"] == 4 and snap["buckets_pushed"] == 3
+    resumed = sb.progress_snapshot(
+        n_buckets=46, committed={0, 1, 2, 3}, pushed={0, 1, 2, 3}, baseline_pushed=2,
+        elapsed_s=3600, disk_free_gib=1, http_status={}, source_stats={}, push_errors=[],
+        peak_rss_kb=0, now_utc="t")
+    assert resumed["rate_buckets_per_h"] == 2.0 and resumed["eta_h"] == 21.0
     empty = sb.progress_snapshot(
-        n_buckets=46, committed=set(), pushed=set(), elapsed_s=0, disk_free_gib=1,
+        n_buckets=46, committed=set(), pushed=set(), baseline_pushed=0, elapsed_s=0, disk_free_gib=1,
         http_status={}, source_stats={}, push_errors=[], peak_rss_kb=0, now_utc="t")
     assert empty["eta_h"] is None and empty["rate_buckets_per_h"] is None
 
