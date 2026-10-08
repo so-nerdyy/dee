@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -19,10 +22,13 @@ from bench_runner import (
     build_runner_env,
     choose_instance_store,
     cohort_json,
-    effective_host_gib,
     fio_command,
+    host_budget_honored,
+    host_pack_effective_bytes,
+    mem_total_gib,
     parse_cohort_spec,
     parse_fio_bandwidth_gib_s,
+    run_logged_process,
     summary_for_run,
 )
 
@@ -39,15 +45,118 @@ def _job(**overrides) -> dict:
     return job
 
 
-def test_effective_host_gib_clamps_to_ram_minus_reserve():
-    assert effective_host_gib(17.0, 32) == 17.0
-    assert effective_host_gib(64.0, 32) == 32 - config.HOST_RAM_RESERVE_GIB
-    assert effective_host_gib(64.0, 192) == 64.0
+FAMILIES = {name: spec["family"] for name, spec in config.GPU_SPECS.items()}
 
 
-def test_effective_host_gib_rejects_nonpositive():
-    with pytest.raises(ValueError):
-        effective_host_gib(0, 32)
+@pytest.mark.parametrize("gpu, host, expected", [
+    ("L4", 16, "g6.2xlarge"),
+    ("L4", 20, "g6.2xlarge"),       # 20 + 12 == 32: exact fit, no clamp
+    ("L4", 21, "g6.4xlarge"),
+    ("L4", 64, "g6.8xlarge"),       # 64 GiB box cannot hold 64 + 12
+    ("L4", 116, "g6.8xlarge"),
+    ("L4", 117, "g6.16xlarge"),
+    ("A10", 16, "g5.2xlarge"),
+    ("A10", 64, "g5.8xlarge"),
+    ("L40S", 16, "g6e.2xlarge"),
+    ("L40S", 64, "g6e.4xlarge"),
+    ("L40S", 256, "g6e.16xlarge"),  # 256 box cannot hold 256 + 12
+    ("2xL4", 16, "g6.12xlarge"),
+])
+def test_smallest_fitting_instance(gpu, host, expected):
+    assert config.smallest_fitting_instance(FAMILIES[gpu], host) == expected
+
+
+@pytest.mark.parametrize("gpu, host", [
+    ("L4", 256),     # no L4 size has 268 GiB
+    ("A10", 256),
+    ("L4", 1024),    # the required too-large case
+    ("2xL4", 181),   # only g6.12xlarge (192 GiB) exists here; 192 - 12 == 180
+])
+def test_too_large_host_budget_fails_closed(gpu, host):
+    with pytest.raises(config.HostBudgetError, match="no instance"):
+        config.smallest_fitting_instance(FAMILIES[gpu], host)
+
+
+def test_require_host_budget_never_clamps():
+    assert config.require_host_budget(20, 32) == 20.0
+    with pytest.raises(config.HostBudgetError, match="needs 84.0 GiB"):
+        config.require_host_budget(72, 64)
+    with pytest.raises(config.HostBudgetError, match="must be positive"):
+        config.require_host_budget(0, 32)
+
+
+def test_instance_override_validation():
+    assert config.validate_instance_override(
+        "g6.16xlarge", FAMILIES["L4"], 16) == "g6.16xlarge"
+    with pytest.raises(config.HostBudgetError, match="not in this GPU's family"):
+        config.validate_instance_override("g5.2xlarge", FAMILIES["L4"], 16)
+    with pytest.raises(config.HostBudgetError, match="needs"):
+        config.validate_instance_override("g6.2xlarge", FAMILIES["L4"], 64)
+
+
+def test_families_are_real_and_ascending_in_ram():
+    for name, spec in config.GPU_SPECS.items():
+        rams = [config.INSTANCE_TYPES[i]["ram_gib"] for i in spec["family"]]
+        assert rams == sorted(rams), name
+        for inst in spec["family"]:
+            row = config.INSTANCE_TYPES[inst]
+            assert row["vcpus"] > 0 and row["usd_per_hour"] > 0 and row["nvme_gb"] > 0
+
+
+def test_runtime_ram_check_uses_memtotal_and_fails_closed():
+    meminfo = "MemTotal:       32778748 kB\nMemFree:  1 kB\n"
+    total = mem_total_gib(meminfo)
+    assert 31.0 < total < 31.5
+    config.runtime_ram_check(16, total)
+    with pytest.raises(config.HostBudgetError, match="runtime MemTotal"):
+        config.runtime_ram_check(20, total)
+    with pytest.raises(RuntimeError, match="MemTotal missing"):
+        mem_total_gib("MemFree: 1 kB\n")
+
+
+def test_host_budget_honored_compares_runner_knobs():
+    gib = 1 << 30
+    assert host_budget_honored({"host_pack_bytes_gpu0_effective": 16 * gib},
+                               16.0, 1)
+    assert not host_budget_honored({"host_pack_bytes_gpu0_effective": 12 * gib},
+                                   16.0, 1)
+    assert host_budget_honored({"host_pack_bytes_gpu0_effective": 8 * gib,
+                                "host_pack_bytes_gpu1_effective": 8 * gib}, 16.0, 2)
+    assert not host_budget_honored({}, 16.0, 1)
+
+
+def test_host_pack_knobs_parsed_from_runner_log():
+    lines = ["[p4cfg] host_pack_bytes_gpu0_effective = 17179869184",
+             "unrelated", "[p4cfg] host_pack_bytes_gpu0_requested = 1"]
+    assert host_pack_effective_bytes(lines) == {
+        "host_pack_bytes_gpu0_effective": 17179869184}
+
+
+def test_run_logged_process_timeout_kills_hung_child():
+    import time
+    lines: list[str] = []
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="timed out"):
+        run_logged_process(
+            [sys.executable, "-c", "import time; print('start', flush=True); time.sleep(60)"],
+            cwd=Path("."), env=dict(os.environ), timeout=2, on_line=lines.append)
+    assert time.monotonic() - started < 20
+    assert lines == ["start"]
+
+
+def test_run_logged_process_nonzero_exit_raises():
+    with pytest.raises(RuntimeError, match="command failed"):
+        run_logged_process([sys.executable, "-c", "import sys; sys.exit(3)"],
+                           cwd=Path("."), env=dict(os.environ), timeout=30,
+                           on_line=lambda _: None)
+
+
+def test_run_logged_process_success_streams_lines():
+    lines: list[str] = []
+    run_logged_process([sys.executable, "-c", "print('a'); print('b')"],
+                       cwd=Path("."), env=dict(os.environ), timeout=30,
+                       on_line=lines.append)
+    assert lines == ["a", "b"]
 
 
 def test_parse_cohort_range_and_groups():

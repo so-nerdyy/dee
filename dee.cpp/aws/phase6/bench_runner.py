@@ -15,7 +15,9 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import os
+import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -42,12 +44,22 @@ HEARTBEAT_S = 300
 # Pure logic (unit-tested in test_phase6_aws.py)
 # ---------------------------------------------------------------------------
 
-def effective_host_gib(requested: float, ram_gib: float,
-                       reserve_gib: float = config.HOST_RAM_RESERVE_GIB) -> float:
-    """Clamp the host-tier budget so the instance keeps `reserve_gib` free."""
-    if requested <= 0:
-        raise ValueError("host budget must be positive")
-    return round(min(float(requested), max(0.0, ram_gib - reserve_gib)), 3)
+def mem_total_gib(meminfo_text: str) -> float:
+    for line in meminfo_text.splitlines():
+        if line.startswith("MemTotal:"):
+            return int(line.split()[1]) / (1 << 20)
+    raise RuntimeError("MemTotal missing from /proc/meminfo")
+
+
+def host_pack_effective_bytes(lines: list[str]) -> dict[str, int]:
+    """Parse the runner's '[p4cfg] host_pack_bytes_gpuN_effective = V' knobs."""
+    found: dict[str, int] = {}
+    pattern = re.compile(r"\[p4cfg\] (host_pack_bytes_gpu\d_effective) = (\d+)")
+    for line in lines:
+        match = pattern.search(line)
+        if match:
+            found[match.group(1)] = int(match.group(2))
+    return found
 
 
 def parse_cohort_spec(spec: str) -> list[list[int]]:
@@ -263,18 +275,53 @@ class Run:
     def run_logged(self, cmd: list[str], *, cwd: Path, env: dict[str, str],
                    timeout: int) -> None:
         self.log("+ " + " ".join(cmd))
-        proc = subprocess.Popen(cmd, cwd=str(cwd), env=env, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True, bufsize=1)
-        assert proc.stdout is not None
-        tail: list[str] = []
-        for line in proc.stdout:
-            line = line.rstrip("\n")
+
+        def on_line(line: str) -> None:
             with self.log_path.open("a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
-            tail.append(line)
-            tail = tail[-40:]
-        if proc.wait(timeout=timeout) != 0:
-            raise RuntimeError(f"command failed: {' '.join(cmd)}\n" + "\n".join(tail[-20:]))
+
+        run_logged_process(cmd, cwd=cwd, env=env, timeout=timeout, on_line=on_line)
+
+
+def run_logged_process(cmd: list[str], *, cwd: Path, env: dict[str, str],
+                       timeout: float, on_line) -> None:
+    """Run cmd, stream each output line to on_line, and enforce a hard timeout.
+
+    The timer kills the whole process group, so a hung child cannot hold the
+    pipe open and stall the reader loop.
+    """
+    posix = os.name == "posix"
+    proc = subprocess.Popen(cmd, cwd=str(cwd), env=env, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, bufsize=1,
+                            start_new_session=posix)
+    timed_out = threading.Event()
+
+    def kill_group() -> None:
+        timed_out.set()
+        if posix:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        else:
+            proc.kill()
+
+    timer = threading.Timer(timeout, kill_group)
+    timer.start()
+    tail: list[str] = []
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line = line.rstrip("\n")
+            on_line(line)
+            tail = (tail + [line])[-40:]
+        returncode = proc.wait()
+    finally:
+        timer.cancel()
+    if timed_out.is_set():
+        raise RuntimeError(f"timed out after {timeout}s: {' '.join(cmd)}")
+    if returncode != 0:
+        raise RuntimeError(f"command failed: {' '.join(cmd)}\n" + "\n".join(tail[-20:]))
 
 
 def env_capture(run: Run) -> None:
@@ -312,7 +359,7 @@ def clone_and_build(run: Run, build_env: dict[str, str]) -> Path:
                           capture_output=True, text=True, check=True).stdout.strip()
     run.summary["commit"] = head
     dee = REPO_ROOT / "dee.cpp"
-    build = dee / "build-modal"
+    build = dee / "build-aws"
     jobs = str(max(1, os.cpu_count() or 8))
     run.run_logged(["cmake", "-S", str(dee), "-B", str(build),
                     f"-DCMAKE_CUDA_ARCHITECTURES={job['cuda_archs']}",
@@ -435,19 +482,30 @@ def run_native(run: Run, env: dict[str, str], runner: Path) -> int:
     stop = threading.Event()
     threading.Thread(target=run.heartbeat, args=(proc, stop), daemon=True).start()
     tail: list[str] = []
+    all_lines: list[str] = []
     assert proc.stdout is not None
     for line in proc.stdout:
         line = line.rstrip("\n")
         run.log(f"[runner] {line}")
         tail.append(line)
+        all_lines.append(line)
         tail = tail[-80:]
     code = proc.wait()
     stop.set()
     run.summary["tail"] = tail[-50:]
+    run.summary["host_pack_effective_bytes"] = host_pack_effective_bytes(all_lines)
     for ln in tail:
         if ln.startswith("VERDICT:"):
             run.summary["verdict"] = ln.split(":", 1)[1].strip()
     return code
+
+
+def host_budget_honored(run_knobs: dict[str, int], host_gib: float,
+                        visible_gpus: int) -> bool:
+    if not run_knobs:
+        return False
+    requested = int(host_gib / visible_gpus * (1 << 30))
+    return all(abs(value - requested) <= (1 << 20) for value in run_knobs.values())
 
 
 def run_bench(job: dict) -> dict:
@@ -456,8 +514,8 @@ def run_bench(job: dict) -> dict:
     spec = config.MODELS[model]
     instance = config.INSTANCE_TYPES[job["instance_type"]]
     usd_per_hour = instance["usd_per_hour"]
-    host_gib = effective_host_gib(job["host_gib"], instance["ram_gib"])
-    run.summary["host_gib_requested"] = job["host_gib"]
+    host_gib = float(job["host_gib"])
+    run.summary["host_gib_requested"] = host_gib
     run.summary["host_gib_effective"] = host_gib
     run.summary["budget_mib"] = job["budget_mib"]
     run.summary["n_tokens"] = job["n_tokens"]
@@ -468,6 +526,9 @@ def run_bench(job: dict) -> dict:
                         f"{base_env.get('PATH', '')}")
     base_env["AWS_DEFAULT_REGION"] = config.REGION
     try:
+        mem_total = mem_total_gib(Path("/proc/meminfo").read_text())
+        run.summary["mem_total_gib"] = round(mem_total, 2)
+        config.runtime_ram_check(host_gib, mem_total)
         env_capture(run)
         build = clone_and_build(run, base_env)
         mount = ensure_instance_store(run)
@@ -485,6 +546,14 @@ def run_bench(job: dict) -> dict:
         code = run_native(run, env, REPO_ROOT / spec["runner"])
         collect_evidence(run, started_at)
         run.summary["exit_code"] = code
+        honored = host_budget_honored(run.summary["host_pack_effective_bytes"],
+                                      host_gib, job["visible_gpus"])
+        run.summary["host_budget_honored"] = honored
+        if not honored:
+            run.summary["verdict"] = (
+                f"HOST_BUDGET_NOT_HONORED: runner effective pack bytes "
+                f"{run.summary['host_pack_effective_bytes']} != requested "
+                f"{host_gib} GiB / {job['visible_gpus']} GPU(s)")
     except Exception as exc:  # noqa: BLE001
         run.summary["verdict"] = f"{type(exc).__name__}: {exc}"
         run.summary["traceback"] = traceback.format_exc()[-4000:]

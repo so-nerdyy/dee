@@ -101,20 +101,48 @@ Instance prices are on-demand Linux us-east-2, read from the AWS Price List API 
 (`config.py`, `PRICES_NOTE`). They are an ASSUMPTION for that date. Spot runs are reported
 at the on-demand rate, which is an upper bound.
 
-| instance | GPUs used | USD/h | RAM | NVMe | used for |
-|---|---|---|---|---|---|
-| g6.2xlarge | 1x L4 | 0.9776 | 32 GiB | 450 GB | `L4` |
-| g6.12xlarge | 2 of 4 L4 | 4.6016 | 192 GiB | 3760 GB | `2xL4` (instance has 4 GPUs; runner pins 2) |
-| g5.2xlarge | 1x A10G | 1.212 | 32 GiB | 450 GB | `A10` |
-| g6e.2xlarge | 1x L40S | 2.24208 | 64 GiB | 450 GB | `L40S` |
-| c7i.4xlarge | CPU | 0.714 | 32 GiB | none | dense / store jobs |
+| instance | GPUs used | vCPUs | USD/h | RAM | NVMe | used for |
+|---|---|---|---|---|---|---|
+| g6.2xlarge | 1x L4 | 8 | 0.9776 | 32 GiB | 450 GB | `L4` |
+| g6.4xlarge | 1x L4 | 16 | 1.3232 | 64 GiB | 600 GB | `L4` |
+| g6.8xlarge | 1x L4 | 32 | 2.0144 | 128 GiB | 900 GB | `L4` |
+| g6.16xlarge | 1x L4 | 64 | 3.3968 | 256 GiB | 1880 GB | `L4` |
+| g6.12xlarge | 2 of 4 L4 | 48 | 4.6016 | 192 GiB | 3760 GB | `2xL4` (runner pins 2) |
+| g5.2xlarge / 4x / 8x / 16x | 1x A10G | 8 / 16 / 32 / 64 | 1.212 / 1.624 / 2.448 / 4.096 | 32 / 64 / 128 / 256 GiB | 450 / 600 / 900 / 1900 GB | `A10` |
+| g6e.2xlarge / 4x / 8x / 16x | 1x L40S | 8 / 16 / 32 / 64 | 2.24208 / 3.00424 / 4.52856 / 7.57719 | 64 / 128 / 256 / 512 GiB | 450 / 600 / 900 / 1900 GB | `L40S` |
+| c7i.4xlarge | CPU | 16 | 0.714 | 32 GiB | none | dense / store jobs |
+
+G/VT on-demand quota is counted in vCPUs. It is 0 approved and 8 requested, so only the 8 vCPU
+sizes (2xlarge) fit the current request. The dry run prints this check.
 
 `summary.json` records `est_cost_usd = USD/h x wall_s / 3600`. `launch.py` prints
 `max_cost_usd = USD/h x max_hours`. Storage (S3 and EBS) is not priced here.
 
-Host-tier budgets are clamped to `RAM - 12 GiB` (`HOST_RAM_RESERVE_GIB`, ASSUMPTION carried
-from Modal), so `--host-gib 64` on a 32 GiB instance runs at 20 GiB. The runner logs both
-values in `summary.json` (`host_gib_requested`, `host_gib_effective`).
+### Host budget: fail closed, never clamp
+
+`--host-gib` is the pre-registered budget, so it is never reduced. `launch.py` picks the smallest
+size in the GPU's family whose RAM covers `host_gib + HOST_RAM_RESERVE_GIB` (12 GiB, ASSUMPTION
+carried from Modal). If no size fits, the launch refuses. `--instance-type` overrides the size, but
+it must be in the family and must also fit. At runtime, `bench_runner.py` reads MemTotal from
+`/proc/meminfo` and fails before building if RAM is short. After the run it compares the runner's
+logged `host_pack_bytes_gpuN_effective` against the request. Mismatch sets
+`host_budget_honored: false` and the verdict `HOST_BUDGET_NOT_HONORED`. `summary.json` carries
+`host_gib_requested` and `host_gib_effective`, which are always equal.
+
+Families (RAM from DescribeInstanceTypes; `--host-gib` 16 / 64 / 256 result shown):
+
+| --gpu | sizes (RAM GiB) | 16 | 64 | 256 |
+|---|---|---|---|---|
+| L4 | g6.2xl (32) / g6.4xl (64) / g6.8xl (128) / g6.16xl (256) | g6.2xlarge | g6.8xlarge | refused |
+| A10 | g5.2xl (32) / g5.4xl (64) / g5.8xl (128) / g5.16xl (256) | g5.2xlarge | g5.8xlarge | refused |
+| L40S | g6e.2xl (64) / g6e.4xl (128) / g6e.8xl (256) / g6e.16xl (512) | g6e.2xlarge | g6e.4xlarge | g6e.16xlarge |
+| 2xL4 | g6.12xl (192; 4 GPUs, runner uses 2) | g6.12xlarge | g6.12xlarge | refused |
+
+Because the reserve is 12 GiB, a 256 GiB budget does not fit a 256 GiB L4 or A10 box.
+Reaching it there would need a larger instance or a smaller reserve. Both are decisions for the lead.
+
+Prices and vCPUs are in `config.py`, read on 2026-10-08. `--host-gib` is always an explicit
+decision, never a silent reduction.
 
 ## Evidence
 

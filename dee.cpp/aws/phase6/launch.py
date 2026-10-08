@@ -113,8 +113,17 @@ def build_plan(args: argparse.Namespace) -> dict:
     if not RUN_ID_RE.match(args.run_id):
         raise SystemExit(f"invalid --run-id {args.run_id!r}")
     gpu = config.GPU_SPECS[args.gpu]
-    instance = config.INSTANCE_TYPES[gpu["instance"]]
     model = config.MODELS[args.model]
+    host_gib = args.host_gib or gpu["default_host_gib"]
+    try:
+        if args.instance_type:
+            instance_type = config.validate_instance_override(
+                args.instance_type, gpu["family"], host_gib)
+        else:
+            instance_type = config.smallest_fitting_instance(gpu["family"], host_gib)
+    except config.HostBudgetError as exc:
+        raise SystemExit(f"refusing to launch: {exc}")
+    instance = config.INSTANCE_TYPES[instance_type]
     if not model["dense_supported"]:
         raise SystemExit(f"{args.model} has no dense-only extraction yet; "
                          "launch is limited to dsv4-flash")
@@ -136,11 +145,11 @@ def build_plan(args: argparse.Namespace) -> dict:
         "run_id": args.run_id,
         "model": args.model,
         "gpu": args.gpu,
-        "instance_type": gpu["instance"],
+        "instance_type": instance_type,
         "visible_gpus": gpu["visible_gpus"],
         "cuda_archs": gpu["cuda_archs"],
         "budget_mib": args.budget_mib or gpu["budget_mib"],
-        "host_gib": args.host_gib or gpu["host_gib"],
+        "host_gib": host_gib,
         "n_tokens": args.n_tokens,
         "prompt": args.prompt,
         "cohort": args.cohort,
@@ -155,7 +164,7 @@ def build_plan(args: argparse.Namespace) -> dict:
     entry = ("/opt/dee-p6/venv/bin/python /opt/dee-p6/harness/bench_runner.py "
              "/opt/dee-p6/job.json")
     job_json = json.dumps(job, sort_keys=True)
-    return {"job": job, "job_json": job_json, "instance_type": gpu["instance"],
+    return {"job": job, "job_json": job_json, "instance_type": instance_type,
             "entry": entry, "instance": instance}
 
 
@@ -200,12 +209,25 @@ def launch(args: argparse.Namespace) -> int:
             "SpotOptions": {"SpotInstanceType": "one-time",
                             "InstanceInterruptionBehavior": "terminate"}}
 
+    quota_vcpus = sess.client("service-quotas").get_service_quota(
+        ServiceCode="ec2", QuotaCode=config.GPU_ON_DEMAND_QUOTA_CODE)["Quota"]["Value"]
+    vcpus = plan["instance"]["vcpus"]
     summary = {
         "mode": "launch" if args.launch else "dry-run",
-        "run_id": job["run_id"], "instance_type": plan["instance_type"],
+        "run_id": job["run_id"],
+        "gpu": job["gpu"], "host_gib_requested": job["host_gib"],
+        "host_gib_effective": job["host_gib"],
+        "instance_type": plan["instance_type"],
+        "ram_gib": plan["instance"]["ram_gib"],
+        "vcpus": vcpus,
         "usd_per_hour": plan["instance"]["usd_per_hour"],
         "max_cost_usd": config.est_cost_usd(plan["instance"]["usd_per_hour"],
                                             job["max_hours"] * 3600),
+        "gpu_vcpu_quota": {
+            "approved_on_demand_vcpus": quota_vcpus,
+            "requested_on_demand_vcpus": config.GPU_ON_DEMAND_QUOTA_REQUESTED_VCPUS,
+            "instance_fits_approved_quota": vcpus <= quota_vcpus,
+        },
         "ami": {"id": ami["ImageId"], "name": ami["Name"]},
         "security_group": sg_id, "subnet": subnet,
         "spot": job["spot"], "pricing_date": config.PRICES_DATE,
@@ -240,7 +262,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", default="dsv4-flash", choices=sorted(config.MODELS))
     parser.add_argument("--n-tokens", type=int, default=64)
     parser.add_argument("--host-gib", type=float, default=0.0,
-                        help="total host-tier GiB (0 = GPU default)")
+                        help="total host-tier GiB (0 = GPU default). Never clamped: "
+                             "the smallest family size with RAM >= host+reserve is "
+                             "chosen, or the launch fails")
+    parser.add_argument("--instance-type", default="",
+                        help="override the size; must be in the GPU's family and fit host-gib")
     parser.add_argument("--budget-mib", type=int, default=0,
                         help="per-GPU VRAM expert budget MiB (0 = GPU default)")
     parser.add_argument("--cache-reset", default="cold")
