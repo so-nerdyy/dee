@@ -339,3 +339,39 @@ Grading: **PASS** = all four metrics in range · **KILLED** = any metric outside
   - **(ii)** $/1k uses the steady-horizon TPS (the frozen economics convention). That is why it is B_SSD-independent at host ≥ 64 GiB.
   - **(iii)** The finite_16tok horizon uses the b=1 batch schedule `[7]+[1]*15` at every b (inherited). The b=8 cold bracket's finite edge is therefore a single-stream quantity.
   - **(iv)** Prices are on-demand. Spot runs are billed lower but scored at on-demand, an upper bound.
+
+### Addendum 3 — Modal cells at measured B_SSD (registered 2026-11-04, before any Phase-6 hardware run)
+
+**Why.** On 2026-11-04 the campaign moved back from AWS to Modal. No Phase-6 hardware run existed on either platform. The frozen section-1 rows are scored **as registered**: `aws/phase6/score.py` grades a Modal run against `data/predecl_matrix.csv`, with the section-0 B_SSD gate and the section-4 ID bands. Addendum 2 already showed two of their inputs fail on real hardware: an unmeasured B_SSD, which makes decode tok/s and $/1k UNTESTABLE outside 0.9–1.1× spec, and a VRAM cache that doesn't fit (22 GiB/GPU on L4/A10 next to the 8.238 GiB resident backbone). This addendum registers **new** Modal rows beside the frozen ones, the same way Addendum 2 did for AWS. No frozen range is edited.
+
+**Registered function.** [`theory/predecl_modal.py`](theory/predecl_modal.py) `predict(gpu, model, b, host, B_ssd)`. Evaluated at `B_ssd = summary.json measured_b_ssd_gib_s × 2³⁰` (the `modal_p6.py` fio randread probe, which uses Addendum 2's definition), it is the registered prediction. Sample grid: [`data/predecl_modal_matrix.csv`](data/predecl_modal_matrix.csv) (2,400 rows) and [`data/predecl_modal_meta.json`](data/predecl_modal_meta.json). Regenerate with `python -m theory.predecl_modal` (deterministic, no RNG, no network).
+
+- **Substitutions (only these three).** (a) B_SSD = the run's measured value. (b) The VRAM expert budget `modal_p6.py` provisions: 3,584 MiB per GPU on L4, 2xL4 and A10; 28,672 MiB on L40S; 61,440 MiB on RTX PRO 6000. (c) rate_s = the bench container at the frozen A7 schedule: n_gpu × GPU + 8 CPU cores + container RAM. The container is 96 GiB (L4, 2xL4, A10), 128 GiB (L40S) or 192 GiB (RTX) at host 16 and 64 GiB, and 288 GiB at host 256 via `bench_<GPU>_h256`. Modal bills the memory reservation (ASSUMPTION). All-in USD/h at host 16/64 → 256: L4 1.944 → 3.478, 2xL4 2.743 → 4.277, A10 2.246 → 3.781, L40S 3.351 → 4.630, RTX 4.943 → 5.710.
+- **Model.** b=1 uses `predecl._gpu_derivations` verbatim. MiMo-Flash = DSv4 × MIMO_TOUCH_RATIO, as frozen. The self-check feeds the frozen spec B_SSD, VRAM and rate back in and reproduces all **120** frozen b=1 GPU rows (5 GPUs × 2 models × 3 hosts × 4 metrics) at max relative error 1.6e-16 before anything is written. b=8 uses Addendum 2's `UNITS_CORRECTION` step model: decode tok/s is AGGREGATE, cold rec/tok is per emitted token, and the MiMo scaling is applied to its outputs.
+- **Scoring rule.** Same as Addendum 2. b=1 runs are a 16-token generation with the default anchor prompt. b=8 runs are one 8-prompt cohort (`aws/phase6/prompts_phase4_8.json`) with at least 64 decode steps and `--ignore-eos`. TPS and $/1k are scored on the last 32 steps, and only if that window's cold rec/tok lies inside the row's cold kill band. P2's 0.45–0.57 kill band is intersected in at host 16 GiB. $/1k uses the Modal billing receipt when one is recorded (`summary.json billed_usd`), otherwise `1000 × rate_s / TPS`. The run must use the registered VRAM budget and container size, otherwise the Addendum-3 row is UNTESTABLE. The frozen row is still scored either way.
+- **Sample at B_SSD = 2.0 GB/s, DSv4-Flash** (nominal [range]; $/1k nominal; predicted limiter):
+
+  | cell | b | host | decode tok/s | cold rec/tok | $/1k tok | limiter |
+  |---|---|---|---|---|---|---|
+  | modal-L4 | 1 | 16 | 0.912 [0.698, 1.433] | 185.0 [82, 370] | 0.318 | storage |
+  | modal-L4 | 1 | 64 | 1.088 [0.835, 1.745] | 147.8 [0, 296] | 0.109 | h2d |
+  | modal-L4 | 1 | 256 | 1.088 [0.835, 1.745] | 147.8 [0, 296] | 0.195 | h2d |
+  | modal-L4 | 8 | 16 | 2.522 [1.951, 4.137] | 60.3 [60, 370] | 0.214 | storage |
+  | modal-L4 | 8 | 64 | 9.006 [7.586, 24.890] | 0.0 [0, 296] | 0.060 | h2d |
+  | modal-L4 | 8 | 256 | 9.006 [7.586, 24.890] | 0.0 [0, 296] | 0.107 | h2d |
+  | modal-L40S | 1 | 16 | 1.171 [0.902, 1.883] | 149.1 [2, 298] | 0.127 | compute |
+  | modal-L40S | 1 | 64 | 1.180 [0.909, 1.900] | 147.8 [0, 296] | 0.120 | compute |
+  | modal-L40S | 1 | 256 | 1.180 [0.909, 1.900] | 147.8 [0, 296] | 0.166 | compute |
+  | modal-L40S | 8 | 16 | 13.081 [11.748, 55.682] | 1.9 [2, 298] | 0.071 | storage |
+  | modal-L40S | 8 | 64 | 14.778 [13.622, 85.048] | 0.0 [0, 296] | 0.063 | compute |
+  | modal-L40S | 8 | 256 | 14.778 [13.622, 85.048] | 0.0 [0, 296] | 0.087 | compute |
+  | modal-RTXPRO6000 | 1 | 16 | 1.193 [0.919, 1.923] | 147.8 [0, 296] | 0.173 | compute |
+  | modal-RTXPRO6000 | 1 | 64 | 1.193 [0.919, 1.923] | 147.8 [0, 296] | 0.173 | compute |
+  | modal-RTXPRO6000 | 1 | 256 | 1.193 [0.919, 1.923] | 147.8 [0, 296] | 0.199 | compute |
+  | modal-RTXPRO6000 | 8 | 16 | 15.296 [14.132, 102.024] | 0.0 [0, 296] | 0.090 | compute |
+  | modal-RTXPRO6000 | 8 | 64 | 15.296 [14.132, 102.024] | 0.0 [0, 296] | 0.090 | compute |
+  | modal-RTXPRO6000 | 8 | 256 | 15.296 [14.132, 102.024] | 0.0 [0, 296] | 0.104 | compute |
+
+- **Known weaknesses, stated in advance.** Addendum 2's (i)–(iii) carry over unchanged: steady cold ≈ 0 at host ≥ 64 GiB with the sealed popularity, $/1k on the steady horizon, and the finite edge of the b=8 cold bracket. There is also (iv): container RAM is billed at its reserved size, so a host-16 run pays for a 96–192 GiB container. (v) Whether Modal grants a 288 GiB container on every GPU type is unverified. If it doesn't, the host-256 rows are descoped, not re-registered. (vi) If the container refuses O_DIRECT, the probe falls back to buffered I/O and the scorecard flags it. Such a run is still scored, with the flag reported next to the grade.
+
+*(Phase-6 results will be appended as Addendum 4+, each dated, with evidence paths.)*
