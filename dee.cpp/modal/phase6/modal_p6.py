@@ -355,7 +355,13 @@ def _bench_impl(
                 [sys.executable, "pydee/setup.py", "build_ext", "--inplace"],
                 check=True, capture_output=True, text=True, timeout=1800,
                 cwd=str(dee), env={**os.environ,
-                                   "DEE_BUILD_DIR": str(build)})
+                                   "DEE_BUILD_DIR": str(build),
+                                   # add_python's interpreter records clang/clang++
+                                   # in sysconfig, and the image has only gcc. Build
+                                   # the binding with the toolchain CMake used.
+                                   "CC": "gcc", "CXX": "g++",
+                                   "LDSHARED": "g++ -shared",
+                                   "LDCXXSHARED": "g++ -shared"})
             log(f"[build] done in {cost_sofar():+0.2f}$ gpu-time so far")
 
             # ---- 2. checkpoint mount -------------------------------------------
