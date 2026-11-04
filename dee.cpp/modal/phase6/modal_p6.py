@@ -30,7 +30,7 @@ import modal
 
 # --- Pinned source -----------------------------------------------------------
 REPOSITORY = "https://github.com/so-nerdyy/dee.git"
-BRANCH = "research/phase6-modal"
+BRANCH = "research/phase6-modal"  # Phase 6 runs on Modal (2026-11-04)
 PINNED_COMMIT = ""  # empty = branch head; set for sealed runs
 
 # --- Volumes -----------------------------------------------------------------
@@ -103,7 +103,7 @@ image_cpu = (
 image_gpu = (
     modal.Image.from_registry(
         "nvidia/cuda:12.8.1-devel-ubuntu22.04", add_python="3.11")
-    .apt_install("git", "cmake", "build-essential", "zlib1g-dev")
+    .apt_install("git", "cmake", "build-essential", "zlib1g-dev", "fio")
     .pip_install(
         "torch", "transformers", "safetensors", "numpy",
         "huggingface_hub", "hf_transfer", "pybind11", "requests",
@@ -242,6 +242,11 @@ def _bench_impl(
     local_store: bool = True,     # stage store to instance NVMe first
     pinned: str = "",
     run_id: str = "",
+    ignore_eos: bool = False,     # decode the full n_tokens past EOS (b=8 scoring)
+    cohort: str = "",             # e.g. "0-7": one lockstep cohort (b=8)
+    prompts_file: str = "",       # repo-relative JSON list, e.g. dee.cpp/aws/phase6/prompts_phase4_8.json
+    ssd_probe: bool = True,       # fio B_SSD probe (frozen section 0 prerequisite 5)
+    container_mib: int = 0,       # 0 -> GPU_SPECS memory; bench_*_h256 pass HOST_256_MIB
 ) -> dict:
         import concurrent.futures
         import json
@@ -270,7 +275,13 @@ def _bench_impl(
         log_path = run_ev / "bench.log"
 
         summary = {"run_id": run_id, "model": model, "gpu": gpu_name,
-                   "gpu_price_s": gpu_price}
+                   "platform": "modal", "gpu_price_s": gpu_price,
+                   "n_gpus": n_gpus, "host_gib_requested": host_gib,
+                   "host_gib_effective": host_gib, "host_basis": "TOTAL",
+                   "budget_mib": budget_mib, "n_tokens": n_tokens,
+                   "cache_reset": cache_reset, "ignore_eos": bool(ignore_eos),
+                   "cohort": cohort or None, "verdict": "UNKNOWN",
+                   "container_mib": container_mib or _mem, "cpu_cores": 8}
 
         def log(line: str) -> None:
             ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -290,6 +301,14 @@ def _bench_impl(
 
         try:
             # ---- 0. environment -------------------------------------------------
+            # Host budget is the pre-registered row: never clamp, refuse instead
+            # (12 GiB reserve, same ASSUMPTION as aws/phase6/config.py).
+            ram_gib = (container_mib or _mem) / 1024.0
+            summary["container_ram_gib"] = ram_gib
+            if host_gib + 12.0 > ram_gib:
+                raise RuntimeError(
+                    f"host budget {host_gib} GiB + 12 GiB reserve exceeds the "
+                    f"{ram_gib:.0f} GiB container; raise GPU_SPECS memory first")
             nvidia = subprocess.run(
                 ["nvidia-smi", "--query-gpu=name,memory.total,driver_version",
                  "--format=csv,noheader"],
@@ -381,6 +400,47 @@ def _bench_impl(
                     summary["store_on_volume"] = True
             summary["store_gib"] = round(store_gib, 1)
 
+            # Shared pure helpers from the AWS port (stdlib only, same probe
+            # definition: 13,369,344 B blocks, O_DIRECT, libaio, QD6 x 3 jobs).
+            sys.path.insert(0, str(dee / "aws" / "phase6"))
+            import bench_runner as br  # noqa: PLC0415
+
+            # ---- 3b. SSD probe: measured B_SSD ---------------------------------
+            if ssd_probe:
+                segs = sorted(json.loads(meta.read_text()).get("segments", []),
+                              key=lambda s_: int(s_["bytes"]), reverse=True)
+                target = Path(store_path) / segs[0]["file"]
+                results, direct = {}, True
+                for rw in ("randread", "read"):
+                    out_json = run_ev / f"fio-{rw}.json"
+                    cmd = br.fio_command(rw=rw, path=target,
+                                         size_gib=br.PROBE_SIZE_GIB,
+                                         out_json=out_json)
+                    log("+ " + " ".join(cmd))
+                    r = subprocess.run(cmd, capture_output=True, text=True,
+                                       timeout=br.PROBE_RUNTIME_S * 4 + 120)
+                    if r.returncode != 0 and direct:
+                        # Some container filesystems refuse O_DIRECT; record it.
+                        log(f"[ssd] O_DIRECT refused ({r.stderr[-200:]!r}); buffered")
+                        direct = False
+                    if not direct:
+                        cmd = [c if c != "--direct=1" else "--direct=0" for c in cmd]
+                        subprocess.run(cmd, check=True, timeout=br.PROBE_RUNTIME_S * 4 + 120)
+                    results[rw] = br.parse_fio_bandwidth_gib_s(
+                        json.loads(out_json.read_text()))
+                summary.update({
+                    "measured_b_ssd_gib_s": results["randread"],
+                    "measured_b_ssd_seq_gib_s": results["read"],
+                    "ssd_probe": {"file": str(target), "block_bytes": br.PROBE_RECORD_BYTES,
+                                  "iodepth": br.PROBE_IODEPTH, "numjobs": br.PROBE_NUMJOBS,
+                                  "direct": direct, "runtime_s": br.PROBE_RUNTIME_S,
+                                  "on_volume": bool(summary.get("store_on_volume"))},
+                })
+                log(f"[ssd] randread {results['randread']} GiB/s, "
+                    f"seq {results['read']} GiB/s (direct={direct})")
+                if results["randread"] <= 0:
+                    raise RuntimeError("SSD probe produced no bandwidth; unscorable")
+
             # ---- 4. run the native generate driver ------------------------------
             env = dict(os.environ)
             pack_per_gpu = host_gib / n_gpus
@@ -412,7 +472,17 @@ def _bench_impl(
             })
             if n_gpus == 1:
                 env["NATIVE_SINGLE_GPU"] = "1"
-            if prompt:
+            if ignore_eos:
+                env["NATIVE_IGNORE_EOS"] = "1"
+            if cohort:
+                if not prompts_file:
+                    raise ValueError("cohort mode needs prompts_file (fail-closed)")
+                prompts = json.loads((src_root / prompts_file).read_text("utf-8"))
+                groups = br.parse_cohort_spec(cohort)
+                br.check_cohort_against_prompts(groups, len(prompts))
+                env["NATIVE_COHORT_JSON"] = br.cohort_json(groups)
+                env["NATIVE_PROMPTS_JSON"] = json.dumps(prompts)
+            elif prompt:
                 env["NATIVE_PROMPT"] = prompt
             log(f"[run] n_tokens={n_tokens} host_gib={host_gib} "
                 f"budget_mib={budget_mib} cache={cache_reset} "
@@ -451,10 +521,12 @@ def _bench_impl(
             threading.Thread(target=_hb, daemon=True).start()
 
             tail: list[str] = []
+            all_lines: list[str] = []
             assert proc.stdout is not None
             for line in proc.stdout:
                 line = line.rstrip("\n")
                 log(f"[runner] {line}")
+                all_lines.append(line)
                 tail.append(line)
                 if len(tail) > 80:
                     tail.pop(0)
@@ -470,6 +542,13 @@ def _bench_impl(
                 if ln.startswith("VERDICT:"):
                     verdict = ln.split(":", 1)[1].strip()
             summary["verdict"] = verdict
+            knobs = br.host_pack_effective_bytes(all_lines)
+            summary["host_pack_effective_bytes"] = knobs
+            honored = br.host_budget_honored(knobs, host_gib, n_gpus)
+            summary["host_budget_honored"] = honored
+            if not honored:
+                summary["verdict"] = (f"HOST_BUDGET_NOT_HONORED: {knobs} != "
+                                      f"{host_gib} GiB / {n_gpus} GPU(s)")
 
             # ---- 5. collect evidence -------------------------------------------
             for f in ev_root.iterdir():
@@ -491,14 +570,20 @@ def _bench_impl(
         finally:
             vol_evid.commit()
 
-def _bench_dec(gpu_name: str):
+# 256 GiB host-tier cells need a bigger container than GPU_SPECS gives (host +
+# reserve). Registered in theory/predecl_modal.py (HOST_256_CONTAINER_MIB) and
+# priced there; run them through the bench_<GPU>_h256 functions below.
+HOST_256_MIB = 294912
+
+
+def _bench_dec(gpu_name: str, memory_mib: int = 0):
     """The @app.function decorator for one GPU spec (module-scope targets)."""
     _spec, _archs, _budget, _mem, _host = GPU_SPECS[gpu_name]
     return app.function(
         image=image_gpu,
         gpu=_spec,
         cpu=8,
-        memory=_mem,
+        memory=memory_mib or _mem,
         timeout=6 * 3600,
         volumes={VOL_MODELS: vol_models, VOL_STORES: vol_stores,
                  VOL_EVID: vol_evid},
@@ -509,36 +594,52 @@ def _bench_dec(gpu_name: str):
 def bench_L4(model: str = "dsv4-flash", n_tokens: int = 64,
              prompt: str = "", host_gib: float = 0.0, budget_mib: int = 0,
              cache_reset: str = "cold", local_store: bool = True,
-             pinned: str = "", run_id: str = "") -> dict:
+             pinned: str = "", run_id: str = "",
+             ignore_eos: bool = False,
+             cohort: str = "", prompts_file: str = "",
+             ssd_probe: bool = True) -> dict:
     return _bench_impl("L4", model, n_tokens, prompt, host_gib,
-                       budget_mib, cache_reset, local_store, pinned, run_id)
+                       budget_mib, cache_reset, local_store, pinned, run_id,
+                       ignore_eos, cohort, prompts_file, ssd_probe)
 
 
 @_bench_dec("2xL4")
 def bench_2xL4(model: str = "dsv4-flash", n_tokens: int = 64,
                prompt: str = "", host_gib: float = 0.0, budget_mib: int = 0,
                cache_reset: str = "cold", local_store: bool = True,
-               pinned: str = "", run_id: str = "") -> dict:
+               pinned: str = "", run_id: str = "",
+             ignore_eos: bool = False,
+             cohort: str = "", prompts_file: str = "",
+             ssd_probe: bool = True) -> dict:
     return _bench_impl("2xL4", model, n_tokens, prompt, host_gib,
-                       budget_mib, cache_reset, local_store, pinned, run_id)
+                       budget_mib, cache_reset, local_store, pinned, run_id,
+                       ignore_eos, cohort, prompts_file, ssd_probe)
 
 
 @_bench_dec("A10")
 def bench_A10(model: str = "dsv4-flash", n_tokens: int = 64,
               prompt: str = "", host_gib: float = 0.0, budget_mib: int = 0,
               cache_reset: str = "cold", local_store: bool = True,
-              pinned: str = "", run_id: str = "") -> dict:
+              pinned: str = "", run_id: str = "",
+             ignore_eos: bool = False,
+             cohort: str = "", prompts_file: str = "",
+             ssd_probe: bool = True) -> dict:
     return _bench_impl("A10", model, n_tokens, prompt, host_gib,
-                       budget_mib, cache_reset, local_store, pinned, run_id)
+                       budget_mib, cache_reset, local_store, pinned, run_id,
+                       ignore_eos, cohort, prompts_file, ssd_probe)
 
 
 @_bench_dec("L40S")
 def bench_L40S(model: str = "dsv4-flash", n_tokens: int = 64,
                prompt: str = "", host_gib: float = 0.0, budget_mib: int = 0,
                cache_reset: str = "cold", local_store: bool = True,
-               pinned: str = "", run_id: str = "") -> dict:
+               pinned: str = "", run_id: str = "",
+             ignore_eos: bool = False,
+             cohort: str = "", prompts_file: str = "",
+             ssd_probe: bool = True) -> dict:
     return _bench_impl("L40S", model, n_tokens, prompt, host_gib,
-                       budget_mib, cache_reset, local_store, pinned, run_id)
+                       budget_mib, cache_reset, local_store, pinned, run_id,
+                       ignore_eos, cohort, prompts_file, ssd_probe)
 
 
 @_bench_dec("RTXPRO6000")
@@ -546,13 +647,77 @@ def bench_RTXPRO6000(model: str = "dsv4-flash", n_tokens: int = 64,
                      prompt: str = "", host_gib: float = 0.0,
                      budget_mib: int = 0, cache_reset: str = "cold",
                      local_store: bool = True, pinned: str = "",
-                     run_id: str = "") -> dict:
+                     run_id: str = "", ignore_eos: bool = False,
+                     cohort: str = "", prompts_file: str = "",
+                     ssd_probe: bool = True) -> dict:
     return _bench_impl("RTXPRO6000", model, n_tokens, prompt, host_gib,
-                       budget_mib, cache_reset, local_store, pinned, run_id)
+                       budget_mib, cache_reset, local_store, pinned, run_id,
+                       ignore_eos, cohort, prompts_file, ssd_probe)
+
+
+@_bench_dec("L4", HOST_256_MIB)
+def bench_L4_h256(model: str = "dsv4-flash", n_tokens: int = 64,
+                   prompt: str = "", host_gib: float = 256.0, budget_mib: int = 0,
+                   cache_reset: str = "cold", local_store: bool = True,
+                   pinned: str = "", run_id: str = "", ignore_eos: bool = False,
+                   cohort: str = "", prompts_file: str = "",
+                   ssd_probe: bool = True) -> dict:
+    return _bench_impl("L4", model, n_tokens, prompt, host_gib,
+                       budget_mib, cache_reset, local_store, pinned, run_id,
+                       ignore_eos, cohort, prompts_file, ssd_probe, HOST_256_MIB)
+
+
+@_bench_dec("2xL4", HOST_256_MIB)
+def bench_2xL4_h256(model: str = "dsv4-flash", n_tokens: int = 64,
+                   prompt: str = "", host_gib: float = 256.0, budget_mib: int = 0,
+                   cache_reset: str = "cold", local_store: bool = True,
+                   pinned: str = "", run_id: str = "", ignore_eos: bool = False,
+                   cohort: str = "", prompts_file: str = "",
+                   ssd_probe: bool = True) -> dict:
+    return _bench_impl("2xL4", model, n_tokens, prompt, host_gib,
+                       budget_mib, cache_reset, local_store, pinned, run_id,
+                       ignore_eos, cohort, prompts_file, ssd_probe, HOST_256_MIB)
+
+
+@_bench_dec("A10", HOST_256_MIB)
+def bench_A10_h256(model: str = "dsv4-flash", n_tokens: int = 64,
+                   prompt: str = "", host_gib: float = 256.0, budget_mib: int = 0,
+                   cache_reset: str = "cold", local_store: bool = True,
+                   pinned: str = "", run_id: str = "", ignore_eos: bool = False,
+                   cohort: str = "", prompts_file: str = "",
+                   ssd_probe: bool = True) -> dict:
+    return _bench_impl("A10", model, n_tokens, prompt, host_gib,
+                       budget_mib, cache_reset, local_store, pinned, run_id,
+                       ignore_eos, cohort, prompts_file, ssd_probe, HOST_256_MIB)
+
+
+@_bench_dec("L40S", HOST_256_MIB)
+def bench_L40S_h256(model: str = "dsv4-flash", n_tokens: int = 64,
+                   prompt: str = "", host_gib: float = 256.0, budget_mib: int = 0,
+                   cache_reset: str = "cold", local_store: bool = True,
+                   pinned: str = "", run_id: str = "", ignore_eos: bool = False,
+                   cohort: str = "", prompts_file: str = "",
+                   ssd_probe: bool = True) -> dict:
+    return _bench_impl("L40S", model, n_tokens, prompt, host_gib,
+                       budget_mib, cache_reset, local_store, pinned, run_id,
+                       ignore_eos, cohort, prompts_file, ssd_probe, HOST_256_MIB)
+
+
+@_bench_dec("RTXPRO6000", HOST_256_MIB)
+def bench_RTXPRO6000_h256(model: str = "dsv4-flash", n_tokens: int = 64,
+                   prompt: str = "", host_gib: float = 256.0, budget_mib: int = 0,
+                   cache_reset: str = "cold", local_store: bool = True,
+                   pinned: str = "", run_id: str = "", ignore_eos: bool = False,
+                   cohort: str = "", prompts_file: str = "",
+                   ssd_probe: bool = True) -> dict:
+    return _bench_impl("RTXPRO6000", model, n_tokens, prompt, host_gib,
+                       budget_mib, cache_reset, local_store, pinned, run_id,
+                       ignore_eos, cohort, prompts_file, ssd_probe, HOST_256_MIB)
 
 
 @app.local_entrypoint()
 def main() -> None:
     print("dee-p6 functions: stage_ckpt, build_store, store_status, "
-          + ", ".join(f"bench_{g}" for g in GPU_SPECS))
+          + ", ".join(f"bench_{g}" for g in GPU_SPECS)
+          + " (+ bench_<GPU>_h256 for 256 GiB host cells)")
     print("Models:", ", ".join(MODELS))

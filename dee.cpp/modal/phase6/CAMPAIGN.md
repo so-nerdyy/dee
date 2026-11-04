@@ -1,142 +1,159 @@
-# Phase-6 campaign runbook (AWS EC2, us-east-2)
+# Phase-6 campaign runbook (Modal)
 
-Phase 6 runs DSv4-Flash on rented GPUs and grades every run against the predictions
-registered before any run existed: `theory/PREDICTIONS_PHASE6.md` (frozen 2026-09-30) and its
-Addendum 2 (AWS cells, registered 2026-10-08, function `theory/predecl_aws.py`). This file is
-the order of work, the exact commands, what each run costs, and how a run becomes a graded row.
+Phase 6 runs the exact-MoE engine on rented GPUs and grades every run against the predictions
+registered before any run existed: `theory/PREDICTIONS_PHASE6.md`, frozen 2026-09-30, plus
+**Addendum 3** (2026-11-04), which registers Modal rows at the run's measured B_SSD and the VRAM
+and container sizes `modal_p6.py` actually provisions (`theory/predecl_modal.py`). Every Modal
+run is scored twice: against the frozen row as written, and against its Addendum-3 row. The frozen
+matrix was written for **Modal**: 5 cells (1xL4, 2xL4, 1xA10, 1xL40S, RTX PRO 6000) × 2 models ×
+b ∈ {1, 8} × host {16, 64, 256} GiB = 60 scored cells. Modal is the active platform again
+(2026-11-04). The AWS port (`aws/phase6/`, Addendum 2) is paused. Its scorer and helpers are
+shared.
 
-Every command that bills is marked **BILLS**. Everything else is free.
+This file gives the order of work, the exact commands, what each run costs, and how a run becomes a
+graded row. Every command that bills is marked **BILLS**. Commands run from `dee.cpp/`.
+
+> The GPU containers clone `research/phase6-modal` at its head (`modal_p6.py` `BRANCH`). Merge
+> this work into that branch before the first run, or pass `--pinned <commit>`.
 
 ## 0. What "Phase 6 done" means
 
-1. Every provisionable registered AWS cell has a scored b=1 run, and a b=8 run where budget
-   allows. Each run has `scorecard.md` next to its evidence and one line in `SCOREBOARD.jsonl`.
-2. `PREDICTIONS_PHASE6.md` gets an append-only **Addendum 3** with each row's grade. Killed rows
-   are marked `KILLED (date, evidence path)` and the theory is corrected, not defended (section 0).
-3. Cells that can't be provisioned (quota, budget) are listed as descoped with the reason.
+1. Each provisionable frozen cell has a scored run. Each run has `scorecard.md` next to its
+   evidence and one line in `SCOREBOARD.jsonl`.
+2. `PREDICTIONS_PHASE6.md` gets an append-only **Addendum 4** (results) with each row's frozen
+   and Addendum-3 grade. Killed rows are
+   marked `KILLED (date, evidence path)` and the theory is corrected, not defended (section 0).
+3. Cells that can't be provisioned (container RAM, budget) are listed as descoped with the reason.
 
-REPORT_PHASE7 section 7 names the minimum useful deliverable: one L4-class run at b=1 (and b=8 if
-budget allows), with at least 16 tokens, the stage profile and measured B_SSD. That run alone
-scores P2-P5 on new hardware.
+REPORT_PHASE7 section 7 names the minimum useful deliverable: one L4 run at b=1 (and b=8 if budget
+allows) with at least 16 tokens, the stage profile and measured B_SSD. That run alone scores P1-P5.
 
-## 1. Preflight (free)
+## 1. Preflight (free unless marked)
 
 ```
-cd dee.cpp/aws/phase6
-python -m pip install boto3 "botocore[crt]" pytest numpy scipy
-python -m pytest -q test_phase6_aws.py test_score.py      # harness + scorer
-python infra.py status                                     # bucket, role, SG, GPU quota
-aws s3 ls s3://dee-p6-147224001180-use2/stores/dsv4-flash/metadata.json --profile dee
-aws s3 ls s3://dee-p6-147224001180-use2/dense/dsv4-flash/manifest.json  --profile dee
+pip install modal pytest
+python -m pytest -q aws/phase6/test_score.py aws/phase6/test_phase6_aws.py
+modal run modal/phase6/modal_p6_ops.py::store_status --model dsv4-flash   # store complete?
 ```
-
-Blockers to clear before the first GPU run:
 
 | check | needed | how |
 |---|---|---|
-| G/VT on-demand vCPU quota (`L-DB2E81BA`) | **8** for the 2xlarge cells, **32** for g6.8xlarge / g5.8xlarge, **64** for g6e.16xlarge | Service Quotas console, us-east-2. At 2026-10-08: 0 approved, 8 requested |
-| segmented store in S3 | `stores/dsv4-flash/metadata.json` present and complete | `python launch_cpu.py --job store --model dsv4-flash --launch` (**BILLS**, CPU) |
-| dense-only checkpoint in S3 | `dense/dsv4-flash/manifest.json` (8.238 GiB, 1,564 tensors) | `python launch_cpu.py --job dense --model dsv4-flash --launch` (**BILLS**, CPU) |
-| HF token | in your shell as `HF_TOKEN` for CPU jobs | written to SSM by `launch_cpu.py --launch` |
+| payment method on the Modal workspace | GPU functions refuse to start without one | Modal dashboard → Settings → Billing |
+| checkpoint on `dee-models` | `DeepSeek-V4-Flash-0731/` | `modal run modal/phase6/modal_p6_ops.py::stage_ckpt --model dsv4-flash` (**BILLS**, CPU) |
+| segmented store on `dee-stores` | `dsv4-flash/metadata.json`, journal complete | `modal run --detach modal/phase6/modal_p6_ops.py::build_store --model dsv4-flash` (**BILLS**, CPU, resume-safe) |
+| MiMo-Flash (second model) | same two steps with `--model mimo-flash` | only after the DSv4 slice is scored |
 
 ## 2. Run order
 
-Cheapest first, so a harness bug costs a dollar, not ten. Every launch is a dry run first.
+Cheapest first, so a harness bug costs a dollar, not ten. The first run is the frozen headline cell.
 
-| # | cell (Addendum 2) | b | host | quota | command (add `--launch` to bill) |
+| # | frozen cell | b | host | ids it scores | command (**BILLS**) |
 |---|---|---|---|---|---|
-| 1 | aws-L4-g6.2xlarge | 1 | 16 | 8 | `python launch.py --gpu L4 --host-gib 16 --n-tokens 16 --run-id p6-l4-h16-b1` |
-| 2 | aws-L4-g6.2xlarge | 8 | 16 | 8 | `python launch.py --gpu L4 --host-gib 16 --n-tokens 65 --ignore-eos --cohort 0-7 --prompts-file prompts_phase4_8.json --run-id p6-l4-h16-b8` |
-| 3 | aws-A10-g5.2xlarge | 1 | 16 | 8 | `python launch.py --gpu A10 --host-gib 16 --n-tokens 16 --run-id p6-a10-h16-b1` |
-| 4 | aws-A10-g5.2xlarge | 8 | 16 | 8 | as #2 with `--gpu A10 --run-id p6-a10-h16-b8` |
-| 5 | aws-L40S-g6e.2xlarge | 1 | 16 | 8 | `python launch.py --gpu L40S --host-gib 16 --n-tokens 16 --run-id p6-l40s-h16-b1` |
-| 6 | aws-L40S-g6e.2xlarge | 8 | 16 | 8 | as #2 with `--gpu L40S --run-id p6-l40s-h16-b8` |
-| 7-10 | aws-L4-g6.8xlarge, aws-A10-g5.8xlarge | 1, 8 | 64 | 32 | as above with `--host-gib 64` |
-| 11-12 | aws-L40S-g6e.4xlarge | 1, 8 | 64 | 16 | as above with `--gpu L40S --host-gib 64` |
-| 13-14 | aws-L40S-g6e.16xlarge | 1, 8 | 256 | 64 | as above with `--gpu L40S --host-gib 256` |
+| 1 | 1xL4 | 1 | 64 | **P1** (headline), P2-P4 | `modal run modal/phase6/modal_p6.py::bench_L4 --n-tokens 16 --host-gib 64 --run-id p6m-l4-h64-b1` |
+| 2 | 1xL4 | 1 | 16 | **P2** short window | as #1 with `--host-gib 16 --run-id p6m-l4-h16-b1` |
+| 3 | 1xL4 | 8 | 16, 64 | P2-P4 steady | `modal run modal/phase6/modal_p6.py::bench_L4 --n-tokens 65 --ignore-eos --cohort 0-7 --prompts-file dee.cpp/aws/phase6/prompts_phase4_8.json --host-gib 64 --run-id p6m-l4-h64-b8` |
+| 4-7 | 1xA10, 1xL40S | 1, 8 | 16, 64 | P2-P4 | `bench_A10` / `bench_L40S`, same flags |
+| 8-9 | 2xL4, RTX PRO 6000 | 1, 8 | 16, 64 | P2-P4 | `bench_2xL4` / `bench_RTXPRO6000`, same flags |
+| 10+ | all cells | 1, 8 | **256** | **P1b, P14, P15b, P15c** | `bench_<GPU>_h256` (288 GiB container, registered in Addendum 3), e.g. `modal run modal/phase6/modal_p6.py::bench_L40S_h256 --n-tokens 65 --ignore-eos --cohort 0-7 --prompts-file dee.cpp/aws/phase6/prompts_phase4_8.json --run-id p6m-l40s-h256-b8` |
 
 Notes on the flags:
 
 - **b=1** uses the runner's default anchor prompt (no `--prompt`), 16 generated tokens = the
   `finite_16tok` horizon (one prefill + 15 decode steps).
-- **b=8** needs at least 64 decode steps, so `--n-tokens 65`, and `--ignore-eos` so no row stops
-  early. The scorer grades decode tok/s and $/1k on the last 32 steps only.
-- `--host-gib` is always explicit. The launcher refuses rather than clamps. 256 GiB is not
-  provisionable on L4/A10 (Addendum 2).
-- `--spot` is fine for cost. Spot runs are still scored at the on-demand rate (Addendum 2 (iv)).
-- Leave `--budget-mib` at the GPU default (3,584 MiB L4/A10, 28,672 MiB L40S). Any other value
-  is not a registered cell and the scorer marks the run UNTESTABLE.
+- **b=8** needs at least 64 decode steps (`--n-tokens 65`) and `--ignore-eos`, so no row stops
+  early. Decode tok/s is aggregate over the last 32 steps.
+- **`--host-gib` is always explicit.** The default (17 GiB, the sealed T4 split) is not a frozen
+  budget, and the scorer marks it UNTESTABLE. The function refuses when host + 12 GiB reserve
+  exceeds the container's RAM, instead of clamping.
+- Leave `--budget-mib` at the GPU default (3,584 MiB on L4/A10, 28,672 on L40S, 61,440 on RTX). The
+  frozen rows assumed 22 / 48 / 96 GiB, which can't fit next to the 8.238 GiB dense backbone on
+  L4/A10 (Addendum 2 item 2). The scorecard reports this as a warning on every run.
+- The function now runs a **fio B_SSD probe** after staging the store (13,369,344 B blocks,
+  O_DIRECT, libaio, QD6 × 3, the anchor's definition) and records `measured_b_ssd_gib_s`. If the
+  container refuses O_DIRECT, it falls back to buffered I/O and flags it. If `/tmp` can't hold the
+  store, it is served from the volume, which is also flagged.
 
-## 3. Cost (ASSUMPTION: on-demand prices read 2026-10-08)
+## 3. Cost (frozen price schedule A7, an ASSUMPTION)
 
-`launch.py` prints the hard cap `max_cost_usd = USD/h x --max-hours` (default 3 h; user-data arms
-`shutdown -h` at that time). The estimates below assume about 45 minutes of wall time per run:
-clone and build, a ~147 GiB S3 sync to instance NVMe, fio probe, then generation. This is a guess
-until run #1 reports `wall_s`. Use run #1's `summary.json` to replace it.
+Modal bills GPU + CPU (8 cores × $0.0000131/s) + RAM ($0.00000222/GiB/s on the container size in
+`GPU_SPECS`). Estimates assume ~45 minutes per run (build, ~147 GiB store copy from the volume,
+probe, generation). That is a guess until run #1 reports `wall_s`.
 
-| cell | USD/h | est. per run (45 min) | cap per run (3 h) |
+| function | container RAM | ≈ USD/h all-in | est. per run (45 min) |
 |---|---|---|---|
-| g6.2xlarge (L4) | 0.9776 | ~0.73 | 2.93 |
-| g5.2xlarge (A10) | 1.212 | ~0.91 | 3.64 |
-| g6e.2xlarge (L40S) | 2.242 | ~1.68 | 6.73 |
-| g6.8xlarge / g5.8xlarge | 2.014 / 2.448 | ~1.51 / ~1.84 | 6.04 / 7.34 |
-| g6e.4xlarge | 3.004 | ~2.25 | 9.01 |
-| g6e.16xlarge | 7.577 | ~5.68 | 22.73 |
+| bench_L4 | 96 GiB | 1.94 | ~1.46 |
+| bench_A10 | 96 GiB | 2.25 | ~1.68 |
+| bench_2xL4 | 96 GiB | 2.74 | ~2.06 |
+| bench_L40S | 128 GiB | 3.35 | ~2.51 |
+| bench_RTXPRO6000 | 192 GiB | 4.94 | ~3.71 |
+| bench_<GPU>_h256 | 288 GiB | L4 3.48 · A10 3.78 · 2xL4 4.28 · L40S 4.63 · RTX 5.71 | ~2.6-4.3 |
 
-Runs 1-6 (8-vCPU quota only): about **$6.6 estimated, $26.6 worst case**. All 14: about
-**$30 estimated, $105 worst case**. S3 storage for the store (~147 GiB) is extra and not priced here.
+Runs 1-3 (the L4 slice, 4 runs): **~$6**. All 16 GiB / 64 GiB DSv4 cells (5 GPUs × 2 b × 2 hosts =
+20 runs): **~$46**. The 10 host-256 runs: **~$33** more. That is ~$79 for the whole DSv4 matrix,
+before MiMo, and assumes Modal grants a 288 GiB container on each GPU type (unverified). The function timeout is 6 h, so the worst case
+for one L4 run is ~$11.6.
 
 ## 4. Score a run (free)
 
 ```
-RUN=p6-l4-h16-b1
-aws s3 sync s3://dee-p6-147224001180-use2/evidence/$RUN/ runs/$RUN/ --profile dee
-python score.py runs/$RUN --write --ledger SCOREBOARD.jsonl
+RUN=p6m-l4-h64-b1
+modal volume get dee-p6-evidence runs/$RUN runs/
+# optional but registered (section 0 item 1): add the billed cost from the Modal usage page
+python - <<EOF
+import json, pathlib; p = pathlib.Path("runs/$RUN/summary.json")
+s = json.loads(p.read_text()); s["billed_usd"] = 0.00  # <- from the dashboard
+p.write_text(json.dumps(s, indent=2))
+EOF
+python aws/phase6/score.py runs/$RUN --write --ledger SCOREBOARD.jsonl
 ```
 
-`score.py` checks the prerequisites first (registered cell and host budget, VRAM budget, host
-budget honored, measured B_SSD, run complete, stage profile present, enough tokens/steps, no early
-EOS at b=8). Any failure makes the run **UNTESTABLE**, and the scorecard lists why. It then evaluates
-`predecl_aws.predict(cell, b, host, measured_B_ssd)` and grades the four metrics:
+For Modal runs `score.py` grades the frozen rows straight from `theory/data/predecl_matrix.csv`
+(stdlib only), then the Addendum-3 row from `theory.predecl_modal` (needs numpy + scipy; without
+them that section says NOT SCORED). For the frozen rows:
 
-| grade | meaning (frozen section 0) |
-|---|---|
-| PASS | inside the registered `[lo, hi]` |
-| WEAKENED | between a range edge and its kill edge |
-| KILLED | outside the kill band (P2's 0.45-0.57 intersected in at host 16 GiB) |
-| UNTESTABLE | missing prerequisite, or (b=8) the window never reached the modeled regime |
+- **Prerequisites** (any failure → UNTESTABLE): frozen cell and host budget, host budget honored
+  by the runner, measured B_SSD present, run complete, stage profile present, ≥16 tokens (b=1),
+  ≥64 decode steps and no early EOS (b=8).
+- **B_SSD gate:** decode tok/s and $/1k are scored only when measured B_SSD is 0.9-1.1× the cell
+  spec (L4 2.5, 2xL4 5.0, A10 3.0, L40S 6.0, RTX 8.0 GB/s). Otherwise those two metrics are
+  UNTESTABLE, while host hit and cold rec/tok are still scored.
+- **ID tightening** (section 4): P1 0.9-2.1 and P1b 8-28 on decode tok/s, P2 0.45-0.57 on host hit
+  at 16 GiB, and P14 $0.05-0.20 (plus TPS 8-28). P15b (ratio vs dense ≥ 0.95 kills) and P15c (< 0.85
+  kills) are graded against the expensive dense reading. The cheap-reading ratio is reported
+  alongside.
+- **$/1k** uses `billed_usd / emitted tokens` when present, otherwise `1000 × rate_s / TPS` with the
+  frozen `serve_cost_frontier.csv` rate, plus a warning.
 
-The cell verdict is the worst grade: KILLED, then WEAKENED, then PARTIAL (some metrics
-untestable), then PASS.
+The Addendum-3 section follows Addendum 2's rules: the prediction is evaluated at the measured
+B_SSD (so no B_SSD gate), P2 applies at 16 GiB, the b=8 steady gate applies, and the run must use
+the registered VRAM budget and container (`bench_<GPU>_h256` at 256 GiB).
 
-Read by hand from the stage profile in `result*.json` (not automated): P5 (eta_s 0.15-0.45),
-P8b/P8c (per-touch dispatch), P16/P17 (limiter identity vs the predicted limiter in the scorecard).
+Read by hand from the stage profile (not automated): P5 (eta_s 0.15-0.45), P8b/P8c, P16/P17
+(limiter identity).
 
 ## 5. Record results
 
-After each scored run:
-
-1. Commit `runs/<run_id>/scorecard.{md,json}` and the `SCOREBOARD.jsonl` line on `research/phase6-aws`.
-   Keep raw evidence in S3, and commit only what the scorecard cites, as earlier phases did under
-   `benchmark_reports/`.
-2. Append a dated row to Addendum 3 in `theory/PREDICTIONS_PHASE6.md`. Never edit sections 0-5 or
+1. Commit `runs/<run_id>/scorecard.{md,json}` and the `SCOREBOARD.jsonl` line on
+   `research/phase6-modal`. Keep raw evidence on the volume, and commit only what the scorecard
+   cites, as earlier phases did under `benchmark_reports/`.
+2. Append a dated row to Addendum 4 in `theory/PREDICTIONS_PHASE6.md`. Never edit sections 0-5 or
    the frozen tables.
-3. On a KILLED row: write what was killed, the measured value, and the evidence path. Then fix the
-   theory in a new commit on `research/phase7-theory`.
+3. On a KILLED row: write the measured value and the evidence path, then fix the theory in a new
+   commit on `research/phase7-theory`.
 
 ## 6. Known weaknesses, stated before the runs
 
-- **b=1 $/1k reads high by construction.** The prediction uses the steady-horizon TPS (frozen
-  economics convention, section 3b item 9). The measurement uses the run's finite 16-token decode
-  TPS, so expect WEAKENED or KILLED on cost where the finite and steady TPS differ. This is
-  registered. Report it, don't patch it.
-- **b=8 steady cold rate is ~0 at host >= 64 GiB** (Addendum 2 (i)). Arbitrary prompts touch
-  experts the sealed trace never saw, so the b=8 gate may close (TPS/$ UNTESTABLE). That gate is
-  the registered rule, not a scorer bug.
-- **The 8-prompt workload repeats prompt 0 as prompt 7** (the Phase-4/5 determinism probe). This
-  raises cross-row sharing slightly at b=8. It is the established workload. Note it in Addendum 3.
-- **Untested against a real run.** The scorer's field names come from
-  `kaggle/deepseek-v4-flash-0731/deepseek_v4_native_generate.py` (`result*.json`,
-  `generated_checkpoint-c*.jsonl`), and it is tested on synthetic fixtures only. Check the first
-  real scorecard against the raw `result.json` by hand.
-- **MiMo-Flash is not on AWS** (no dense-only extraction yet), so its frozen rows stay UNTESTABLE.
+- **Frozen decode tok/s and $/1k may be UNTESTABLE everywhere** if Modal's real disk speed isn't
+  within ±10% of the assumed spec. Addendum 3 is what keeps those two metrics scorable. It only
+  counts as a pre-registration because it is committed before the first run, so keep it that way.
+- **The frozen VRAM provisioning is unrealizable on L4/A10** (22 GiB assumed vs 3.5 GiB usable next
+  to the backbone). Cold rec/tok and host hit are scored as registered, with the deviation shown.
+- **The frozen b=8 rows carry the units defect** (Addendum 2 item 3): scored as registered, and
+  expected to read low against measured aggregate throughput.
+- **b=1 $/1k reads high by construction:** the prediction uses steady-horizon TPS (section 3b item
+  9), while the run measures a 16-token window.
+- **The 8-prompt workload repeats prompt 0 as prompt 7** (the Phase-4/5 determinism probe), which
+  adds a little cross-row sharing at b=8.
+- **Not yet run on Modal:** the probe, cohort and host-budget code in `modal_p6.py`, and the
+  scorer, are tested only on synthetic fixtures. Check the first scorecard against the raw
+  `result.json` by hand.

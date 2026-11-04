@@ -253,3 +253,152 @@ def test_real_registry_end_to_end(tmp_path):
     assert card["metrics"]["decode_tps"]["nominal"] == pytest.approx(0.912, abs=1e-3)
     assert card["metrics"]["decode_tps"]["grade"] == "PASS"
     json.dumps(card, default=float)   # numpy scalars must serialize
+
+
+# --- Modal runs vs the frozen section-1 rows (stdlib only) ---------------------
+
+def _modal_summary(**over):
+    s = {"run_id": "m1", "platform": "modal", "model": "dsv4-flash", "gpu": "L4",
+         "gpu_price_s": 0.000222, "n_gpus": 1, "commit": "abc",
+         "host_gib_requested": 64.0, "host_gib_effective": 64.0, "host_basis": "TOTAL",
+         "budget_mib": 3584, "host_budget_honored": True,
+         "measured_b_ssd_gib_s": 2.5e9 / (1 << 30),          # exactly the 1xL4 spec
+         "ssd_probe": {"direct": True, "on_volume": False},
+         "exit_code": 0, "est_gpu_cost_usd": 0.4}
+    s.update(over)
+    return s
+
+
+@pytest.fixture(scope="module")
+def frozen():
+    return score.load_frozen()
+
+
+def test_modal_b1_frozen_row_with_p1_and_receipt(tmp_path, frozen):
+    # 16 tokens billed at 0.0012 USD -> 0.075 $/1k, inside the frozen [0.0185, 0.0844]
+    d = _write(tmp_path, _modal_summary(billed_usd=0.0012),
+               {"result.json": _b1_result(decode_tok_s=1.5,
+                                          host_pack={"cuda0": {"hits": 54, "misses": 46}})})
+    card = score.score_run(d, frozen=frozen)
+    assert card["platform"] == "modal" and card["cell"] == "1xL4"
+    assert card["prerequisite_failures"] == []
+    m = card["metrics"]
+    assert (m["decode_tps"]["kill_lo"], m["decode_tps"]["kill_hi"]) == (0.9, 2.1)   # P1
+    assert m["host_hit_rate"]["kill_hi"] == 1.0          # P2 band only at host 16
+    assert m["usd_per_1k_tok"]["measured"] == pytest.approx(0.075)
+    assert all(v["grade"] == "PASS" for v in m.values()), m
+    assert card["b_ssd_vs_spec"] == pytest.approx(1.0)
+    assert any("VRAM expert budget 3584 MiB" in w for w in card["warnings"])
+    assert card["verdict"] == "PASS"
+
+
+def test_modal_bssd_outside_band_untests_tps_and_cost(tmp_path, frozen):
+    d = _write(tmp_path, _modal_summary(measured_b_ssd_gib_s=1.0),
+               {"result.json": _b1_result(decode_tok_s=1.5)})
+    card = score.score_run(d, frozen=frozen)
+    m = card["metrics"]
+    assert m["decode_tps"]["grade"] == "UNTESTABLE"
+    assert m["usd_per_1k_tok"]["grade"] == "UNTESTABLE"
+    assert m["cold_records_per_tok"]["grade"] == "PASS"
+    assert any("no billing receipt" in w for w in card["warnings"])
+    assert card["verdict"] == "PARTIAL"
+
+
+def test_modal_p1_kill_inside_row_range(tmp_path, frozen):
+    d = _write(tmp_path, _modal_summary(), {"result.json": _b1_result(decode_tok_s=2.15)})
+    card = score.score_run(d, frozen=frozen)
+    assert card["metrics"]["decode_tps"]["grade"] == "KILLED"   # row hi 2.22, P1 kill 2.1
+
+
+def test_modal_p14_and_p15b_bands_on_l40s_b8(tmp_path, frozen):
+    s = _modal_summary(gpu="L40S", host_gib_requested=256.0, host_gib_effective=256.0,
+                       budget_mib=28672, measured_b_ssd_gib_s=6.0e9 / (1 << 30))
+    d = _write(tmp_path, s, {"result-c0.json": _cohort(step_ms=800.0)},
+               checkpoint=_checkpoint(reads_per_step=8 * 100))
+    card = score.score_run(d, frozen=frozen)
+    m = card["metrics"]
+    assert card["b"] == 8 and card["prerequisite_failures"] == []
+    assert m["decode_tps"]["measured"] == pytest.approx(10.0)
+    assert m["decode_tps"]["kill_hi"] == 28.0                          # P14 TPS cross-check
+    assert m["usd_per_1k_tok"]["kill_hi"] == pytest.approx(min(0.20, 0.95 * 0.12892))
+    assert "dense_ratio" in card and "b8_steady_gate" not in card
+    assert any("units defect" in w for w in card["warnings"])
+
+
+@pytest.mark.parametrize("over, needle", [
+    ({"gpu": "H100"}, "not a frozen cell"),
+    ({"host_gib_requested": 17.0, "host_gib_effective": 17.0}, "not a frozen budget"),
+    ({"host_budget_honored": False}, "host budget not honored"),
+    ({"measured_b_ssd_gib_s": None}, "no measured B_SSD"),
+])
+def test_modal_prerequisites(tmp_path, frozen, over, needle):
+    d = _write(tmp_path, _modal_summary(**over), {"result.json": _b1_result()})
+    card = score.score_run(d, frozen=frozen)
+    assert card["verdict"] == "UNTESTABLE"
+    assert any(needle in f for f in card["prerequisite_failures"])
+
+
+def test_modal_cli_uses_frozen_without_numpy(tmp_path, monkeypatch):
+    def boom():
+        raise AssertionError("AWS registry must not load for a Modal run")
+    monkeypatch.setattr(score, "load_registry", boom)
+    d = _write(tmp_path / "m", _modal_summary(), {"result.json": _b1_result(decode_tok_s=1.5)})
+    assert score.main([str(d), "--write"]) == 0
+    assert "Measured B_SSD / cell spec" in (d / "scorecard.md").read_text()
+
+
+# --- Addendum 3: Modal rows at measured B_SSD (needs numpy + scipy) -------------
+
+def _modal_addendum():
+    pytest.importorskip("numpy")
+    pytest.importorskip("scipy")
+    return score.load_modal_addendum()
+
+
+def test_addendum3_self_check_reproduces_frozen_b1_rows():
+    pm = _modal_addendum()
+    chk = pm.self_check()
+    assert chk["pass"] and chk["rows_checked"] == 120          # 5 GPUs x 2 models x 3 hosts x 4
+
+
+def test_addendum3_scored_beside_frozen_rows(tmp_path, frozen):
+    pm = _modal_addendum()
+    bssd = 1.6 * 1e9                                            # far outside the 2.5 GB/s spec
+    p = pm.predict("L4", "dsv4_flash", 1, 64, bssd)
+    s = _modal_summary(measured_b_ssd_gib_s=bssd / (1 << 30), container_mib=98304)
+    d = _write(tmp_path, s, {"result.json": _b1_result(
+        decode_tok_s=p["decode_tps"][0], host_pack={"cuda0": {"hits": 54, "misses": 46}})})
+    card = score.score_run(d, frozen=frozen, addendum=pm)
+    assert card["metrics"]["decode_tps"]["grade"] == "UNTESTABLE"     # frozen: B_SSD gate
+    a3 = card["addendum3"]
+    assert a3["prerequisite_failures"] == []
+    assert a3["metrics"]["decode_tps"]["grade"] == "PASS"             # addendum: measured B_SSD
+    assert a3["rate_s"] == pytest.approx(pm.rate_s("L4", 64))
+    assert "Addendum 3 (Modal, measured B_SSD)" in score.render_md(card)
+
+
+def test_addendum3_host256_needs_the_big_container(tmp_path, frozen):
+    pm = _modal_addendum()
+    s = _modal_summary(host_gib_requested=256.0, host_gib_effective=256.0, container_mib=98304)
+    card = score.score_run(_write(tmp_path, s, {"result.json": _b1_result()}),
+                           frozen=frozen, addendum=pm)
+    assert card["addendum3"]["verdict"] == "UNTESTABLE"
+    assert "bench_<GPU>_h256" in card["addendum3"]["prerequisite_failures"][0]
+
+
+def test_addendum3_mimo_b8_scales_from_dsv4():
+    pm = _modal_addendum()
+    d8 = pm.predict("L40S", "dsv4_flash", 8, 64, 3e9)
+    m8 = pm.predict("L40S", "mimo_v2_flash", 8, 64, 3e9)
+    f = 288 / 258
+    assert m8["decode_tps"][0] == pytest.approx(d8["decode_tps"][0] / f)
+    assert m8["cold_records_per_tok"][0] == pytest.approx(d8["cold_records_per_tok"][0] * f)
+
+
+def test_addendum3_missing_deps_reported(tmp_path, frozen, monkeypatch):
+    def nope():
+        raise ImportError("no numpy")
+    monkeypatch.setattr(score, "load_modal_addendum", nope)
+    card = score.score_run(_write(tmp_path, _modal_summary(), {"result.json": _b1_result()}),
+                           frozen=frozen)
+    assert card["addendum3"]["verdict"] == "NOT SCORED"

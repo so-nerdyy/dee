@@ -17,7 +17,7 @@ Nothing here creates billable compute unless `--launch` is passed.
 | `score.py` | grades one run's evidence dir against the registered prediction (Addendum 2) | your machine |
 | `test_score.py` | pytest for the scorer and the b=8 harness additions | local |
 | `prompts_phase4_8.json` | the Phase-4/5 8-prompt workload, for `--cohort 0-7` b=8 runs | your machine |
-| `CAMPAIGN.md` | run order, cost estimates, exact commands, how to score and record results | - |
+| `../../modal/phase6/CAMPAIGN.md` | the Phase-6 runbook (Modal is the active platform; AWS is paused) | - |
 
 ## S3 layout (`s3://dee-p6-147224001180-use2/`)
 
