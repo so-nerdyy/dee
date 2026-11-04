@@ -1680,6 +1680,10 @@ def main() -> int:
     if SINGLE_GPU:
         single_budget = min(int(BUDGET_BYTES * 2),
                             int(4.0 * (1 << 30)))
+        # The 4 GiB cap is for a 16 GB T4/P100. Larger cards (Modal Phase 6:
+        # L40S 28 GiB, RTX PRO 6000 60 GiB registered) pass the exact budget.
+        if os.environ.get("NATIVE_SINGLE_GPU_BUDGET_BYTES"):
+            single_budget = int(os.environ["NATIVE_SINGLE_GPU_BUDGET_BYTES"])
         single_pack = pack_budget0 + pack_budget1
         eng0 = vm.build_native_engine(
             shard_paths, device_id=0, budget_bytes=single_budget,

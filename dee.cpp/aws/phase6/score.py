@@ -265,6 +265,11 @@ def _common_checks(ev: Evidence) -> list[str]:
     if s.get("exit_code") not in (0, None) or (ev.result is not None and r.get("status") != "COMPLETE"):
         fails.append(f"runner did not complete (exit_code={s.get('exit_code')}, "
                      f"status={r.get('status')})")
+    cls = r.get("classification") if ev.result is not None else None
+    if cls is not None and cls != "ACCEPT_CORRECTNESS":
+        failed = sorted(k for k, v in (r.get("gates") or {}).items()
+                        if v is False and k != "required_performance_hardware")
+        fails.append(f"runner correctness gate: {cls} (failed: {', '.join(failed) or '?'})")
     if ev.result is not None:
         if not r.get("stage_profile"):
             fails.append("no stage profile in result (section 0 prerequisite 4)")

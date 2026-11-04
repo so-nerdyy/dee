@@ -397,6 +397,18 @@ def test_suspect_bssd_untests_addendum3_and_warns(tmp_path, frozen):
     assert any("plausible NVMe" in w for w in card["warnings"])
 
 
+def test_rejected_correctness_is_untestable(tmp_path, frozen):
+    # run p6m-l4-h64-b1-r4: 16 tokens on L4 diverged from the sealed T4 tokens
+    res = _b1_result(classification="REJECT_NUMERICAL",
+                     gates={"exact_16_token_ids": False, "exact_decoded_text": False,
+                            "all_43_layers": True, "required_performance_hardware": False})
+    card = score.score_run(_write(tmp_path, _modal_summary(), {"result.json": res}),
+                           frozen=frozen)
+    assert card["verdict"] == "UNTESTABLE"
+    f = [x for x in card["prerequisite_failures"] if "correctness gate" in x]
+    assert f and "exact_16_token_ids" in f[0] and "required_performance" not in f[0]
+
+
 def test_runner_fatal_is_untestable_despite_exit_0(tmp_path, frozen):
     s = _modal_summary(runner_fatal=True, verdict="RUNNER_FATAL: RuntimeError: x")
     card = score.score_run(_write(tmp_path, s, {"result.json": _b1_result()}), frozen=frozen)

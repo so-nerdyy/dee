@@ -123,6 +123,11 @@ def test_host_budget_honored_compares_runner_knobs():
     assert host_budget_honored({"host_pack_bytes_gpu0_effective": 8 * gib,
                                 "host_pack_bytes_gpu1_effective": 8 * gib}, 16.0, 2)
     assert not host_budget_honored({}, 16.0, 1)
+    # one GPU, labels split 32/32 while the engine serves 64 (run r4)
+    assert host_budget_honored({"host_pack_bytes_gpu0_effective": 32 * gib,
+                                "host_pack_bytes_gpu1_effective": 32 * gib}, 64.0, 1)
+    assert not host_budget_honored({"host_pack_bytes_gpu0_effective": 32 * gib,
+                                    "host_pack_bytes_gpu1_effective": 16 * gib}, 64.0, 1)
 
 
 def test_host_pack_knobs_parsed_from_runner_log():

@@ -485,6 +485,8 @@ def _bench_impl(
             })
             if n_gpus == 1:
                 env["NATIVE_SINGLE_GPU"] = "1"
+                # else the runner caps one-GPU VRAM at min(2 x budget, 4 GiB)
+                env["NATIVE_SINGLE_GPU_BUDGET_BYTES"] = str(budget_mib << 20)
             if ignore_eos:
                 env["NATIVE_IGNORE_EOS"] = "1"
             if cohort:
