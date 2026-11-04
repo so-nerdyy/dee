@@ -260,6 +260,8 @@ def _common_checks(ev: Evidence) -> list[str]:
         fails.append("host budget not honored by the runner (host_budget_honored != true)")
     if not (s.get("measured_b_ssd_gib_s") or 0) > 0:
         fails.append("no measured B_SSD (fio randread probe)")
+    if s.get("runner_fatal"):
+        fails.append(f"runner logged FATAL ({str(s.get('verdict'))[:160]})")
     if s.get("exit_code") not in (0, None) or (ev.result is not None and r.get("status") != "COMPLETE"):
         fails.append(f"runner did not complete (exit_code={s.get('exit_code')}, "
                      f"status={r.get('status')})")
@@ -416,6 +418,9 @@ def score_addendum3(ev: Evidence, m: Measured, cell: str, model: str, b: int, ho
     if s.get("container_mib") is not None and int(s["container_mib"]) != want_mib:
         fails.append(f"container {s['container_mib']} MiB != registered {want_mib} MiB "
                      + ("(use bench_<GPU>_h256)" if host == 256 else ""))
+    if s.get("ssd_probe_suspect"):
+        fails.append(f"measured B_SSD {s.get('measured_b_ssd_gib_s')} GiB/s flagged implausible "
+                     "for NVMe (page cache / virtualized FS); Addendum 3 is evaluated AT B_SSD")
     out: dict = {"registry": "theory.predecl_modal (Addendum 3)",
                  "prerequisite_failures": fails}
     if fails:
@@ -566,6 +571,9 @@ def score_modal_run(ev: Evidence, fm: FrozenMatrix, addendum=None) -> dict:
         warnings.append(f"VRAM expert budget {budget >> 20} MiB vs the frozen row's "
                         f"{int(fm.vram_bytes[cell]) >> 20} MiB per GPU")
     probe = s.get("ssd_probe") or {}
+    if s.get("ssd_probe_suspect"):
+        warnings.append(f"measured B_SSD {s.get('measured_b_ssd_gib_s')} GiB/s is above any "
+                        "plausible NVMe; treat it as page cache, not disk")
     if probe.get("direct") is False:
         warnings.append("fio probe ran buffered (O_DIRECT refused); B_SSD may read high")
     if probe.get("on_volume") or s.get("store_on_volume"):

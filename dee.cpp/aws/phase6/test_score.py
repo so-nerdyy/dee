@@ -386,6 +386,24 @@ def test_addendum3_host256_needs_the_big_container(tmp_path, frozen):
     assert "bench_<GPU>_h256" in card["addendum3"]["prerequisite_failures"][0]
 
 
+def test_suspect_bssd_untests_addendum3_and_warns(tmp_path, frozen):
+    # run p6m-l4-h64-b1-r3: fio read page cache at 53.8 GiB/s
+    pm = _modal_addendum()
+    s = _modal_summary(measured_b_ssd_gib_s=53.84, ssd_probe_suspect=True, container_mib=98304)
+    card = score.score_run(_write(tmp_path, s, {"result.json": _b1_result()}),
+                           frozen=frozen, addendum=pm)
+    assert card["addendum3"]["verdict"] == "UNTESTABLE"
+    assert "implausible" in card["addendum3"]["prerequisite_failures"][0]
+    assert any("plausible NVMe" in w for w in card["warnings"])
+
+
+def test_runner_fatal_is_untestable_despite_exit_0(tmp_path, frozen):
+    s = _modal_summary(runner_fatal=True, verdict="RUNNER_FATAL: RuntimeError: x")
+    card = score.score_run(_write(tmp_path, s, {"result.json": _b1_result()}), frozen=frozen)
+    assert card["verdict"] == "UNTESTABLE"
+    assert any("FATAL" in f for f in card["prerequisite_failures"])
+
+
 def test_addendum3_mimo_b8_scales_from_dsv4():
     pm = _modal_addendum()
     d8 = pm.predict("L40S", "dsv4_flash", 8, 64, 3e9)

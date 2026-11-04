@@ -108,7 +108,10 @@ image_gpu = (
         "torch", "transformers", "safetensors", "numpy",
         "huggingface_hub", "hf_transfer", "pybind11", "requests",
     )
-    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
+    # add_python's interpreter records clang/clang++ in sysconfig and the image
+    # has only gcc: pin every setuptools build (harness and runner) to gcc.
+    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1", "CC": "gcc", "CXX": "g++",
+          "LDSHARED": "g++ -shared", "LDCXXSHARED": "g++ -shared"})
 )
 
 app = modal.App("dee-p6")
@@ -355,13 +358,7 @@ def _bench_impl(
                 [sys.executable, "pydee/setup.py", "build_ext", "--inplace"],
                 check=True, capture_output=True, text=True, timeout=1800,
                 cwd=str(dee), env={**os.environ,
-                                   "DEE_BUILD_DIR": str(build),
-                                   # add_python's interpreter records clang/clang++
-                                   # in sysconfig, and the image has only gcc. Build
-                                   # the binding with the toolchain CMake used.
-                                   "CC": "gcc", "CXX": "g++",
-                                   "LDSHARED": "g++ -shared",
-                                   "LDCXXSHARED": "g++ -shared"})
+                                   "DEE_BUILD_DIR": str(build)})
             log(f"[build] done in {cost_sofar():+0.2f}$ gpu-time so far")
 
             # ---- 2. checkpoint mount -------------------------------------------
@@ -415,12 +412,14 @@ def _bench_impl(
             if ssd_probe:
                 segs = sorted(json.loads(meta.read_text()).get("segments", []),
                               key=lambda s_: int(s_["bytes"]), reverse=True)
-                target = Path(store_path) / segs[0]["file"]
+                # Read across every segment file: a 6 GiB slice of one file staged
+                # minutes earlier sits in page cache, and run r3 read 53.8 GiB/s.
+                target = ":".join(str(Path(store_path) / sg["file"]) for sg in segs)
                 results, direct = {}, True
                 for rw in ("randread", "read"):
                     out_json = run_ev / f"fio-{rw}.json"
                     cmd = br.fio_command(rw=rw, path=target,
-                                         size_gib=br.PROBE_SIZE_GIB,
+                                         size_gib=max(br.PROBE_SIZE_GIB, store_gib),
                                          out_json=out_json)
                     log("+ " + " ".join(cmd))
                     r = subprocess.run(cmd, capture_output=True, text=True,
@@ -434,7 +433,14 @@ def _bench_impl(
                         subprocess.run(cmd, check=True, timeout=br.PROBE_RUNTIME_S * 4 + 120)
                     results[rw] = br.parse_fio_bandwidth_gib_s(
                         json.loads(out_json.read_text()))
+                # No single cloud NVMe reads 13 MiB random blocks above this; a
+                # higher reading is page cache / a virtualized FS, not the disk.
+                suspect = results["randread"] > SSD_PLAUSIBLE_MAX_GIB_S
+                if suspect:
+                    log(f"[ssd] SUSPECT: {results['randread']} GiB/s > "
+                        f"{SSD_PLAUSIBLE_MAX_GIB_S} GiB/s plausible NVMe ceiling")
                 summary.update({
+                    "ssd_probe_suspect": suspect,
                     "measured_b_ssd_gib_s": results["randread"],
                     "measured_b_ssd_seq_gib_s": results["read"],
                     "ssd_probe": {"file": str(target), "block_bytes": br.PROBE_RECORD_BYTES,
@@ -475,6 +481,7 @@ def _bench_impl(
                 "NATIVE_MODEL_CKPT": str(ckpt_dir),
                 "NATIVE_HEADERS_DIR": str(store_vol / "headers"),
                 "DEE_BUILD_DIR": str(build),
+                "NATIVE_CUDA_ARCHS": cuda_archs,
             })
             if n_gpus == 1:
                 env["NATIVE_SINGLE_GPU"] = "1"
@@ -552,7 +559,15 @@ def _bench_impl(
             summary["host_pack_effective_bytes"] = knobs
             honored = br.host_budget_honored(knobs, host_gib, n_gpus)
             summary["host_budget_honored"] = honored
-            if not honored:
+            # The runner exits 0 on failure by design (Kaggle evidence capture);
+            # its FATAL line is the real outcome.
+            fatal = next((ln for ln in all_lines if "] FATAL" in ln
+                          or ln.startswith("FATAL")), None)
+            summary["runner_fatal"] = fatal is not None
+            if fatal is not None:
+                errs = [ln for ln in all_lines if "Error" in ln]
+                summary["verdict"] = "RUNNER_FATAL: " + (errs[-1] if errs else fatal)[-300:]
+            elif not honored:
                 summary["verdict"] = (f"HOST_BUDGET_NOT_HONORED: {knobs} != "
                                       f"{host_gib} GiB / {n_gpus} GPU(s)")
 
@@ -591,6 +606,7 @@ def _bench_impl(
 # reserve). Registered in theory/predecl_modal.py (HOST_256_CONTAINER_MIB) and
 # priced there; run them through the bench_<GPU>_h256 functions below.
 HOST_256_MIB = 294912
+SSD_PLAUSIBLE_MAX_GIB_S = 16.0
 
 
 def _bench_dec(gpu_name: str, memory_mib: int = 0):
