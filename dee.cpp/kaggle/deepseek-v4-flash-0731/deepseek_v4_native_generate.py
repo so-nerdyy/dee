@@ -1244,7 +1244,9 @@ def main() -> int:
     log("=== build dee_core + FP4 regression tests (sm_60;sm_75, -j2) ===")
     build_jobs = max(1, min(2, os.cpu_count() or 2))
     run(["cmake", "-S", str(DEE), "-B", str(BUILD),
-         "-DCMAKE_CUDA_ARCHITECTURES=60;75", "-DDEE_CUDA=ON",
+         # Kaggle T4 default; the Modal harness passes the GPU's own arch.
+         "-DCMAKE_CUDA_ARCHITECTURES="
+         + os.environ.get("NATIVE_CUDA_ARCHS", "60;75"), "-DDEE_CUDA=ON",
          "-DDEE_BUILD_TESTS=ON", "-DCMAKE_BUILD_TYPE=Release"])
     run(["cmake", "--build", str(BUILD), "--target", "dee_core",
          "-j", str(build_jobs)])
