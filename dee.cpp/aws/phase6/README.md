@@ -14,6 +14,10 @@ Nothing here creates billable compute unless `--launch` is passed.
 | `store_build.py` | segmented DEE4 store build, resume-safe, synced to S3 | CPU instance |
 | `dense_manifest.py` | compact dense-only shard format (materialize on the instance) | both |
 | `test_phase6_aws.py` | pytest for the pure logic and the user-data contract | local |
+| `score.py` | grades one run's evidence dir against the registered prediction (Addendum 2) | your machine |
+| `test_score.py` | pytest for the scorer and the b=8 harness additions | local |
+| `prompts_phase4_8.json` | the Phase-4/5 8-prompt workload, for `--cohort 0-7` b=8 runs | your machine |
+| `CAMPAIGN.md` | run order, cost estimates, exact commands, how to score and record results | - |
 
 ## S3 layout (`s3://dee-p6-147224001180-use2/`)
 
@@ -53,7 +57,8 @@ to `src/phase6/` and then calls `RunInstances`.
 
 Flags: `--gpu {L4,2xL4,A10,L40S}`, `--model`, `--n-tokens`, `--host-gib` (0 = GPU default),
 `--budget-mib`, `--cache-reset`, `--cohort` (e.g. `0-7`, needs `--prompts-file`), `--prompt`,
-`--pinned <commit>`, `--run-id`, `--spot`, `--max-hours` (default 3).
+`--pinned <commit>`, `--run-id`, `--spot`, `--max-hours` (default 3), `--ignore-eos` (decode the
+full `--n-tokens` past EOS; required for scorable b=8 cohorts).
 
 CPU jobs (same flow, default c7i.4xlarge, 400 GiB root):
 

@@ -141,6 +141,8 @@ def build_runner_env(job: dict, *, base_env: dict[str, str], store_path: str,
     })
     if visible == 1:
         env["NATIVE_SINGLE_GPU"] = "1"
+    if job.get("ignore_eos"):
+        env["NATIVE_IGNORE_EOS"] = "1"
     if job.get("cohort"):
         groups = parse_cohort_spec(job["cohort"])
         prompts = job.get("prompts") or []
@@ -521,6 +523,7 @@ def run_bench(job: dict) -> dict:
     run.summary["n_tokens"] = job["n_tokens"]
     run.summary["cohort"] = job.get("cohort") or None
     run.summary["cache_reset"] = job["cache_reset"]
+    run.summary["ignore_eos"] = bool(job.get("ignore_eos"))
     base_env = dict(os.environ)
     base_env["PATH"] = (f"/opt/dee-p6/venv/bin:/usr/local/cuda/bin:"
                         f"{base_env.get('PATH', '')}")

@@ -158,6 +158,7 @@ def build_plan(args: argparse.Namespace) -> dict:
         "cohort": args.cohort,
         "prompts": prompts,
         "cache_reset": args.cache_reset,
+        "ignore_eos": args.ignore_eos,
         "pinned": args.pinned,
         "spot": args.spot,
         "max_hours": args.max_hours,
@@ -278,6 +279,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--prompts-file", default="",
                         help="JSON list of prompt strings for cohort mode")
     parser.add_argument("--prompt", default="")
+    parser.add_argument("--ignore-eos", action="store_true",
+                        help="decode the full --n-tokens even past EOS (needed for b=8 "
+                             "scoring: every row must run >= 64 steps)")
     parser.add_argument("--pinned", default="", help="commit to check out")
     parser.add_argument("--run-id", default="")
     parser.add_argument("--spot", action="store_true")
