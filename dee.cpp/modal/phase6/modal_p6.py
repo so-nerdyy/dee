@@ -565,6 +565,17 @@ def _bench_impl(
         except Exception as exc:  # noqa: BLE001
             summary["verdict"] = f"{type(exc).__name__}: {exc}"
             log(f"[fatal] {exc!r}")
+            # Build steps run with capture_output=True; keep what they printed,
+            # or a failed build is undiagnosable (run p6m-l4-h64-b1, 2026-11-04).
+            if isinstance(exc, subprocess.CalledProcessError):
+                for name in ("stdout", "stderr"):
+                    text = getattr(exc, name, None) or ""
+                    if isinstance(text, bytes):
+                        text = text.decode("utf-8", "replace")
+                    if text:
+                        summary[f"failed_step_{name}_tail"] = text[-8000:]
+                        for line in text.splitlines()[-60:]:
+                            log(f"[fatal:{name}] {line}")
             (run_ev / "summary.json").write_text(json.dumps(summary, indent=2))
             raise
         finally:
