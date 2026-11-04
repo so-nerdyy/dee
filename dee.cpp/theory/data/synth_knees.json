@@ -1,0 +1,51 @@
+{
+  "budgets_gib": [
+    4.0,
+    8.0,
+    12.0,
+    16.0,
+    20.0,
+    24.0,
+    32.0,
+    48.0,
+    64.0
+  ],
+  "generator_stats": {
+    "consecutive_token_overlap": 0.222025460913366,
+    "crosslayer_lift": 0.1662824142541147,
+    "crosslayer_lift_target": 12.2,
+    "overlap_target": 0.375,
+    "requests": 101904,
+    "tokens": 389,
+    "unique_records": 10121
+  },
+  "knees": [
+    {
+      "knee_gib_95pct_of_min": 32.0,
+      "min_hit_rate": 0.3242394504416094,
+      "n_requests": 5095
+    },
+    {
+      "knee_gib_95pct_of_min": 32.0,
+      "min_hit_rate": 0.32437732888801724,
+      "n_requests": 5099
+    },
+    {
+      "knee_gib_95pct_of_min": 12.0,
+      "min_hit_rate": 0.2541216879293425,
+      "n_requests": 20380
+    },
+    {
+      "knee_gib_95pct_of_min": 4.0,
+      "min_hit_rate": 0.08470445847371692,
+      "n_requests": 61142
+    },
+    {
+      "knee_gib_95pct_of_min": 4.0,
+      "min_hit_rate": 0.05082234259695399,
+      "n_requests": 101904
+    }
+  ],
+  "n_requests_total": 101904,
+  "n_tokens": 388
+}

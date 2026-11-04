@@ -1,0 +1,95 @@
+{
+  "registration_utc": "2026-10-08",
+  "self_check": {
+    "rows_checked": 72,
+    "max_rel_err": 0.0,
+    "pass": true
+  },
+  "cells": {
+    "aws-L4-g6.2xlarge": {
+      "frozen_gpu_cell": "1xL4",
+      "instance": "g6.2xlarge",
+      "usd_per_hour": 0.9776,
+      "vram_budget_mib": 3584,
+      "vram_records": 281,
+      "host_gib": [
+        16
+      ]
+    },
+    "aws-L4-g6.8xlarge": {
+      "frozen_gpu_cell": "1xL4",
+      "instance": "g6.8xlarge",
+      "usd_per_hour": 2.0144,
+      "vram_budget_mib": 3584,
+      "vram_records": 281,
+      "host_gib": [
+        64
+      ]
+    },
+    "aws-A10-g5.2xlarge": {
+      "frozen_gpu_cell": "1xA10",
+      "instance": "g5.2xlarge",
+      "usd_per_hour": 1.212,
+      "vram_budget_mib": 3584,
+      "vram_records": 281,
+      "host_gib": [
+        16
+      ]
+    },
+    "aws-A10-g5.8xlarge": {
+      "frozen_gpu_cell": "1xA10",
+      "instance": "g5.8xlarge",
+      "usd_per_hour": 2.448,
+      "vram_budget_mib": 3584,
+      "vram_records": 281,
+      "host_gib": [
+        64
+      ]
+    },
+    "aws-L40S-g6e.2xlarge": {
+      "frozen_gpu_cell": "1xL40S",
+      "instance": "g6e.2xlarge",
+      "usd_per_hour": 2.24208,
+      "vram_budget_mib": 28672,
+      "vram_records": 2248,
+      "host_gib": [
+        16
+      ]
+    },
+    "aws-L40S-g6e.4xlarge": {
+      "frozen_gpu_cell": "1xL40S",
+      "instance": "g6e.4xlarge",
+      "usd_per_hour": 3.00424,
+      "vram_budget_mib": 28672,
+      "vram_records": 2248,
+      "host_gib": [
+        64
+      ]
+    },
+    "aws-L40S-g6e.16xlarge": {
+      "frozen_gpu_cell": "1xL40S",
+      "instance": "g6e.16xlarge",
+      "usd_per_hour": 7.57719,
+      "vram_budget_mib": 28672,
+      "vram_records": 2248,
+      "host_gib": [
+        256
+      ]
+    }
+  },
+  "eta_storage": 0.29170032225974407,
+  "bssd_grid_gbps": [
+    0.5,
+    1.0,
+    1.5,
+    2.0,
+    2.5,
+    3.0,
+    4.0,
+    5.0,
+    6.0,
+    8.0
+  ],
+  "scoring_rule": "evaluate theory.predecl_aws.predict(cell, b, host, B_ssd) at B_ssd = summary.json measured_b_ssd_gib_s * 2^30 (fio randread, 13,369,344 B, iodepth 6, numjobs 3, O_DIRECT); the CSV grid is a human-readable sample of that frozen function",
+  "rows": 560
+}
