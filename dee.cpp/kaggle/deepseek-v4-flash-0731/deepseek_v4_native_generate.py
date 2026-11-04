@@ -2175,6 +2175,17 @@ def main() -> int:
                         hashlib.sha256(
                             t.detach().cpu().numpy().tobytes()
                         ).hexdigest() if torch.is_tensor(t) else None)
+                # Phase 6: the router's top-8 values + ids per row, so a
+                # cross-GPU expert flip shows the size of its near-tie
+                # (hashes alone say where, not by how much). Read-only.
+                # top-k selects on the bias-adjusted scores
+                rs = cap.get("router_bias_scores", cap.get("router_scores"))
+                if torch.is_tensor(rs) and rs.dim() >= 1:
+                    top = rs.detach().float().reshape(-1, rs.shape[-1]).topk(
+                        min(8, rs.shape[-1]), dim=-1)
+                    rec["router_top8_values"] = [
+                        [float(v) for v in row] for row in top.values.cpu()]
+                    rec["router_top8_ids"] = top.indices.cpu().tolist()
                 capture_jf.write(json.dumps(rec) + "\n")
                 capture_jf.flush()
             if int(layer_id) == cfg.n_layers - 1:

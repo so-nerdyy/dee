@@ -43,7 +43,35 @@ modal run modal/phase6/modal_p6_ops.py::store_status --model dsv4-flash   # stor
 | segmented store on `dee-stores` | `dsv4-flash/metadata.json`, journal complete | `modal run --detach modal/phase6/modal_p6_ops.py::build_store --model dsv4-flash` (**BILLS**, CPU, resume-safe) |
 | MiMo-Flash (second model) | same two steps with `--model mimo-flash` | only after the DSv4 slice is scored |
 
-## 2. Run order
+## 1b. Budget rules (2026-11-04: $30 total, shared by every model)
+
+- **Preflight before every GPU launch** (~$0.10 CPU, same image and commit as the run):
+  `modal run modal/phase6/modal_p6.py::preflight --gpu L4 --configs "$CFGS"`.
+  It builds the image, runs the harness build and the runner's own build, imports torch
+  (must be 2.10.0+cu128 on Python 3.12, the sealed build) and pydee, and checks the store
+  table, checkpoint, prompts and configs. Don't launch a GPU unless it prints `preflight_ok: true`.
+- **One container per GPU type.** `--configs` runs several rows in one container, so build,
+  store staging and the B_SSD probe are paid once. Each config is a fresh runner process,
+  with page cache dropped (best effort, and recorded), and is written to
+  `runs/<run_id>-<tag>`. A failing config doesn't stop the rest.
+- **Store seal during the copy.** Staging sha256-checks every segment against the metadata
+  table and sets `DEE4_STORE_SKIP_SEAL=1` for the runner. That's the same check, and it
+  saves ~17 min per run.
+- **Cost guards:** 20 min per b=1 config, 45 min per b=8 config, 150 min per container.
+- **b=1 diagnostics:** capture journal + router top-8 values per (step, layer), so a token
+  mismatch names its layer and how close the tie was.
+
+The L4 slice in one container:
+
+```
+CFGS='[{"tag":"b1-h64","host_gib":64,"n_tokens":16},
+       {"tag":"b1-h16","host_gib":16,"n_tokens":16},
+       {"tag":"b8-h64","host_gib":64,"n_tokens":65,"ignore_eos":true,"cohort":"0-7","prompts_file":"dee.cpp/aws/phase6/prompts_phase4_8.json"},
+       {"tag":"b8-h16","host_gib":16,"n_tokens":65,"ignore_eos":true,"cohort":"0-7","prompts_file":"dee.cpp/aws/phase6/prompts_phase4_8.json"}]'
+modal run --detach modal/phase6/modal_p6.py::bench_L4 --run-id p6m-l4-r5 --configs "$CFGS"
+```
+
+## 2. Run order (original plan, superseded by 1b for cost)
 
 Cheapest first, so a harness bug costs a dollar, not ten. The first run is the frozen headline cell.
 
