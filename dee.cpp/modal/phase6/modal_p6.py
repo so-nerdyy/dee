@@ -762,7 +762,8 @@ def preflight(gpu: str = "L4", model: str = "dsv4-flash", configs: str = "",
     step("fio", lambda: run(["fio", "--version"]).stdout.strip())
     step("clone", lambda: subprocess.run(_sh(_clone(pinned)), shell=True, check=True,
          capture_output=True, text=True).stdout.strip()[-40:])
-    step("harness_build", lambda: [run(c, cwd=str(dee), timeout=3000) for c in (
+    env_h = {**os.environ, "DEE_BUILD_DIR": str(dee / "build-modal")}   # as _bench_impl
+    step("harness_build", lambda: [run(c, cwd=str(dee), timeout=3000, env=env_h) for c in (
         ["cmake", "-S", ".", "-B", "build-modal", f"-DCMAKE_CUDA_ARCHITECTURES={archs}",
          "-DDEE_CUDA=ON", "-DDEE_BUILD_TESTS=ON", "-DCMAKE_BUILD_TYPE=Release"],
         ["cmake", "--build", "build-modal", "--target", "dee_core", "-j", "8"],
