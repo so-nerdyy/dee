@@ -83,10 +83,15 @@ GPU_SPECS = {
     "A10":        ("A10",        "86",        3584,  98304, 17.0),
     "L40S":       ("L40S",       "89",       28672, 131072, 32.0),
     "RTXPRO6000": ("RTX-PRO-6000", "120",    61440, 196608, 64.0),
+    # Diagnostic only (no frozen cell): the sealed reference hardware, used to
+    # bisect the r4 L4 token divergence (GPU arch vs one-GPU mode vs env/store).
+    "T4":         ("T4",         "75",        3584,  98304, 17.0),
+    "2xT4":       ("T4:2",       "75",        3584,  98304, 17.0),
 }
 GPU_PRICE_PER_S = {
     "L4": 0.000222, "2xL4": 2 * 0.000222, "A10": 0.000306,
     "L40S": 0.000542, "RTXPRO6000": 0.000842,
+    "T4": 0.000164, "2xT4": 2 * 0.000164,
 }
 # RAM $0.00000222/GiB/s, CPU $0.0000131/core/s -> container overhead matters;
 # RAM is sized per spec so host-tier sweeps stay inside the container.
@@ -104,8 +109,11 @@ image_gpu = (
     modal.Image.from_registry(
         "nvidia/cuda:12.8.1-devel-ubuntu22.04", add_python="3.11")
     .apt_install("git", "cmake", "build-essential", "zlib1g-dev", "fio")
+    # Same torch build as every sealed T4 run (environment.json: 2.10.0+cu128);
+    # an unpinned torch is one more variable in a cross-GPU token comparison.
+    .pip_install("torch==2.10.0", index_url="https://download.pytorch.org/whl/cu128")
     .pip_install(
-        "torch", "transformers", "safetensors", "numpy",
+        "transformers", "safetensors", "numpy",
         "huggingface_hub", "hf_transfer", "pybind11", "requests",
     )
     # add_python's interpreter records clang/clang++ in sysconfig and the image
@@ -647,6 +655,32 @@ def bench_2xL4(model: str = "dsv4-flash", n_tokens: int = 64,
              cohort: str = "", prompts_file: str = "",
              ssd_probe: bool = True) -> dict:
     return _bench_impl("2xL4", model, n_tokens, prompt, host_gib,
+                       budget_mib, cache_reset, local_store, pinned, run_id,
+                       ignore_eos, cohort, prompts_file, ssd_probe)
+
+
+@_bench_dec("T4")
+def bench_T4(model: str = "dsv4-flash", n_tokens: int = 64,
+               prompt: str = "", host_gib: float = 0.0, budget_mib: int = 0,
+               cache_reset: str = "cold", local_store: bool = True,
+               pinned: str = "", run_id: str = "",
+             ignore_eos: bool = False,
+             cohort: str = "", prompts_file: str = "",
+             ssd_probe: bool = True) -> dict:
+    return _bench_impl("T4", model, n_tokens, prompt, host_gib,
+                       budget_mib, cache_reset, local_store, pinned, run_id,
+                       ignore_eos, cohort, prompts_file, ssd_probe)
+
+
+@_bench_dec("2xT4")
+def bench_2xT4(model: str = "dsv4-flash", n_tokens: int = 64,
+               prompt: str = "", host_gib: float = 0.0, budget_mib: int = 0,
+               cache_reset: str = "cold", local_store: bool = True,
+               pinned: str = "", run_id: str = "",
+             ignore_eos: bool = False,
+             cohort: str = "", prompts_file: str = "",
+             ssd_probe: bool = True) -> dict:
+    return _bench_impl("2xT4", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
                        ignore_eos, cohort, prompts_file, ssd_probe)
 
