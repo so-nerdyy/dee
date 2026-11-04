@@ -1,0 +1,226 @@
+{
+  "assumptions": {
+    "B_SSD_mult": {
+      "cite": "Cell.B_ssd spec values are ASSUMPTION (Cell provenance); live runs must report measured B_SSD",
+      "range": [
+        0.9,
+        1.1
+      ],
+      "tag": "ASSUMPTION",
+      "value": 1.0
+    },
+    "COMPUTE_EFF": {
+      "cite": "FALSIFICATION.md data-needed (GPU GEMM microbenchmark missing); 0.6 of vendor dense-tensor peak",
+      "range": [
+        0.3,
+        0.8
+      ],
+      "tag": "ASSUMPTION",
+      "value": 0.6
+    },
+    "cpu_kernel_bound": {
+      "max_speedup_vs_measured": 90.0,
+      "portable_torch_ms_per_expert": 2750.0,
+      "tuned_kernel_bound_ms_per_expert": [
+        25.0,
+        30.0
+      ]
+    },
+    "dense_baseline_price_ambiguity": {
+      "cheap_reading_price_gpu_s": 0.0008952777777777777,
+      "cheap_reading_usd_per_1k": 0.035811111111111106,
+      "expensive_reading_usd_per_1k": 0.12892,
+      "note": "DENSE_BASELINE price_gpu_s=0.003223 $/GPU/s (= $11.60/GPU/h) conflicts with its own note '$3.223/GPU/h' (= 0.000895 $/GPU/s); 3.57x ambiguity (Phase-7 correction 2026-09-30). Both readings carried; every break-even kill criterion states which reading it assumes.",
+      "sensitivity_ratio": 3.6000000000000005
+    },
+    "eta_h_h2d_hiding": {
+      "cite": "THEORY.md 5.1 (eta_h = 0.5 ASSUMPTION)",
+      "range": [
+        0.3,
+        0.7
+      ],
+      "tag": "ASSUMPTION",
+      "value": 0.5
+    },
+    "eta_s_fill_hiding": {
+      "cite": "THEORY.md 5.1; FALSIFICATION P5 (0.15-0.45)",
+      "range": [
+        0.15,
+        0.45
+      ],
+      "tag": "CALIBRATED on anchor",
+      "value": 0.292
+    },
+    "finite_hit_prior": {
+      "calibration": "0.51 at 16 GiB pooled = midpoint of FALSIFICATION P2's registered 0.48-0.54 (ws-policy LRU replay, knee 16 GiB pooled; P2b: LRU -2.8pp vs MIN there; LRU reaches MIN by 32 GiB)",
+      "form": "piecewise linear in pooled host GiB through (0,0),(16,0.51),(32,0.53),(64,0.54),(256,0.54); the SHORT-WINDOW (4-20 decode token) LRU prior",
+      "known_model_error": "steady-state Che over-predicts short-window hits by +25pp at 16 GiB (FALSIFICATION known-failure 1) and is carried as the UPPER band edge (valid for >=512-token serving windows), NOT as the short-run nominal",
+      "points_gib": [
+        0,
+        16,
+        32,
+        64,
+        256
+      ],
+      "points_hit": [
+        0.0,
+        0.51,
+        0.53,
+        0.54,
+        0.54
+      ],
+      "saturation": "0.536-0.54 = the finite-window repeat ceiling (5,099 dedup cache requests - 2,364 unique records)/5,099 on the sealed window; P2c 850-1000 of 2,364-2,500 records ever repeat"
+    },
+    "host_hit_curve": {
+      "calibration_check": "curve reads 47.9% at 682 records/GPU vs anchor measured host share 51.3% pooled-dedup (residual -3.4pp); P2 band 0.48-0.54",
+      "dsv4_flash": {
+        "n50": 900,
+        "n80": 1523,
+        "n95": 2459,
+        "universe": 11776
+      },
+      "form": "piecewise log-linear through (0,0),(N50,0.50),(N80,0.80),(N95,0.95),(2.5*N95,0.99); 1.0 once per-GPU host slots >= universe records",
+      "known_model_error": "steady-state Che reads +25pp HIGH on short windows; finite-window Che reads up to -7pp LOW (FALSIFICATION.md known-failure 1)",
+      "mimo_v2_flash": {
+        "n50": 939,
+        "n80": 1590,
+        "n95": 2566,
+        "universe": 12288
+      }
+    },
+    "modal_prices": {
+      "cite": "AGENT_BRIEF price schedule; per-Cell price_tag=ASSUMPTION",
+      "tag": "ASSUMPTION",
+      "value": "see Cell entries"
+    },
+    "popularity_transfer_S_TRANSFER": {
+      "cite": "FALSIFICATION.md data-needed (no MiMo router traces); S_TRANSFER (provenance.csv); MIMO_TOPK is ASSUMPTION (data needed)",
+      "range": "MiMo ranges widened (hit +/-12pp vs +/-7pp; touch ratio assumes top-6)",
+      "tag": "ASSUMPTION",
+      "value": "DSv4-Flash closed form x MIMO_TOUCH_RATIO for MiMo-Flash"
+    },
+    "serve_structure": {
+      "arrival": "Poisson(lambda)",
+      "cross_request_popularity": "mixture of per-request popularity over K~Poisson(lambda*W) concurrent",
+      "prefill_positions": 512,
+      "request_tokens": 512,
+      "service": "decode batch-of-b, exponential-ish durations (M/M/1 per replica)"
+    },
+    "t_0_per_touch_us": {
+      "cite": "T4_TOUCH_OVERHEAD_US (provenance.csv); ranges = FALSIFICATION P8b 300-420, P8c 50-150 (union 50-420)",
+      "range": [
+        50.0,
+        420.0
+      ],
+      "tag": "CALIBRATED on anchor, carried cross-GPU",
+      "value": 387.4745031180017
+    },
+    "volume_price": {
+      "cite": "$0.09/GiB/mo, first 1 TiB free; 146.6 GiB store = $3.8/mo above free tier (THEORY.md 6) -- negligible",
+      "tag": "ASSUMPTION",
+      "value": 0.09
+    },
+    "ws_lru_knee_gib": {
+      "cite": "provenance.csv ws_lru_knee_gib (sealed-trace pooled LRU)",
+      "tag": "MEASURED",
+      "value": 16.0
+    }
+  },
+  "constants_registered_here": [
+    "predecl_registration_utc",
+    "predecl_mimo_layers",
+    "predecl_mimo_topk",
+    "predecl_mimo_touch_ratio",
+    "predecl_host_hit_curve",
+    "predecl_finite_hit_prior",
+    "predecl_eta_ranges",
+    "predecl_t0_range_us",
+    "predecl_bssd_mult_range",
+    "predecl_kill_rules",
+    "predecl_dense_price_readings",
+    "predecl_cpu_kernel_bound"
+  ],
+  "corrections_carried": [
+    "P4 cold bracket corrected to [67.84, 323.92] (Phase-7 orchestrator correction 2026-09-30)",
+    "host_pack hit share ground truth 51.3% pooled-dedup (46.8%/56.1% per-GPU); the Phase-7 brief's 23-25% band is the cuda0-only share 24.0% (data/anchor_gate.json host_share.definitions)",
+    "dense H100 price ambiguity: 0.003223 $/GPU/s vs its note $3.223/GPU/h (3.57x); both readings carried",
+    "$/1k tok = 1000 * rate_s / TPS (THEORY.md 6's printed formula was dimensionally wrong)"
+  ],
+  "horizon_convention": {
+    "b1_decode_tps": "finite_16tok primary (matches FALSIFICATION P1's short-window calibration)",
+    "b8_decode_tps": "steady_state primary (matches P1b's steady-state regime)",
+    "secondary_horizon": "quoted as the cold bracket; cold bracket = P4 construction [min(steady,finite), 2x max(steady,finite)]",
+    "usd_per_1k_tok": "steady-state TPS basis at BOTH b values (THEORY.md 6 economics convention; reproduces serve_cost_frontier.csv exactly and P15c's ratio identity 1.08 (1xL4) ... 2.29 (2xT4) vs dense 0.12892 $/1k tok)"
+  },
+  "registration": {
+    "campaign": "Phase-7 component D -- pre-registered Phase-6 prediction matrix",
+    "freeze_rule": "ranges and kill criteria frozen at commit; later information may only be appended as dated addenda in PREDICTIONS_PHASE6.md",
+    "frozen_commit": "<orchestrator fills SHA>",
+    "hardware_runs_existing_at_freeze": 0,
+    "utc": "2026-09-30T03:45:16Z"
+  },
+  "scope": {
+    "metrics": [
+      "decode_tps",
+      "host_hit_rate",
+      "cold_records_per_tok",
+      "usd_per_1k_tok"
+    ],
+    "reference_rows_non_phase6": {
+      "cells": [
+        "2xT4",
+        "CPU-only"
+      ],
+      "count": 24,
+      "note": "2xT4 anchor (calibration/correctness instrument) and CPU-only (portable-torch measured); not Phase-6 Modal configs"
+    },
+    "scored_cells": 60,
+    "scored_grid": {
+      "b": [
+        1,
+        8
+      ],
+      "cells": [
+        "1xL4",
+        "2xL4",
+        "1xA10",
+        "1xL40S",
+        "1xRTXPRO6000"
+      ],
+      "host_gib_total": [
+        16,
+        64,
+        256
+      ],
+      "models": [
+        "dsv4_flash",
+        "mimo_v2_flash"
+      ]
+    },
+    "storage_provisioning": {
+      "dsv4_flash_full_store": "146.625 GiB packed (11776 records x 13369344 B)",
+      "mimo_v2_flash_full_store": "153.0 GiB packed (12,288 records x 13,369,344 B; AGENT_BRIEF.md says 12,032 records -- inconsistent, see PREDICTIONS_PHASE6.md section 7)",
+      "per_cell": "every cell needs the full packed store on local NVMe (>= 153 GiB scratch for MiMo-Flash) plus the host budget in RAM and the per-GPU VRAM expert cache (L4/A10 22 GiB = 1,766 records; L40S 48 GiB = 3,754; RTX PRO 6000 96 GiB = 7,508); at host 256 GiB the DSv4-Flash store (146.6 GiB) fits whole in host RAM and the MiMo-Flash store (153.0 GiB) fits tightly -- cold start amortizes after the first fill"
+    }
+  },
+  "scoring_rules": {
+    "cold_records_per_tok": "kill if measured outside [0.75*lo, 1.25*hi] of the [steady-Che, 2x finite-Che] bracket (P4 construction)",
+    "decode_tps": "kill if measured outside [0.70*lo, 1.43*hi]",
+    "grading": "PASS = every measured metric inside its [lo,hi] range; KILLED = any metric outside its kill band (or outside a referenced FALSIFICATION id's own registered kill band, whichever is tighter); UNTESTABLE = missing prerequisite/artifact, or the value lands in the deliberate gap band between range edge and kill edge (weakened, neither confirmed nor killed)",
+    "host_hit_rate": "kill if measured outside nominal -/+ 0.15 (DSv4) or -/+ 0.22 (MiMo, S_TRANSFER)",
+    "metric_artifact_map": {
+      "cold_records_per_tok": "per_token_accounting storage_requests / decode tokens (byte_accounting.storage_requests_per_generated_token)",
+      "decode_tps": "result.json decode_tok_s (cross-check decode_tokens/decode_wall_s)",
+      "host_hit_rate": "result.json host_pack hits/(hits+misses) (pooled_dedup definition per data/anchor_gate.json host_share.definitions; 51.3% anchor figure)",
+      "usd_per_1k_tok": "Modal billing receipt: 1000 * (billed_s * rate_s) / emitted_tokens; cross-check 1000 * rate_s / decode_tok_s"
+    },
+    "prerequisites_per_cell": "billed Modal run on the named config at the named host budget, full packed store on local NVMe, >= 16 decode tokens, stage profile captured, measured B_SSD reported",
+    "registered_id_rule": "where a row references a FALSIFICATION.md id, that id's own registered kill criterion additionally applies and is the tighter one where they conflict",
+    "usd_per_1k_tok": "kill if measured outside [0.60*lo, 1.67*hi]"
+  },
+  "sim_reconciliation": null,
+  "sim_status_at_freeze": {
+    "results_SIM": "None -- Component A simulator outputs (data/sim_*.json) were not present at freeze; sim column reads 'pending sim'",
+    "results_SOLVE": "None -- Component B solver outputs (data/solve_*.csv) were not present at freeze"
+  }
+}
