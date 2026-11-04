@@ -506,8 +506,13 @@ def host_budget_honored(run_knobs: dict[str, int], host_gib: float,
                         visible_gpus: int) -> bool:
     if not run_knobs:
         return False
-    requested = int(host_gib / visible_gpus * (1 << 30))
-    return all(abs(value - requested) <= (1 << 20) for value in run_knobs.values())
+    # TOTAL basis: the knobs must add up to the requested host tier. Per-knob
+    # equality broke on one GPU, where the runner's [p4cfg] labels still split
+    # the total across gpu0/gpu1 while SINGLE_GPU serves all of it (run
+    # p6m-l4-h64-b1-r4: 32 + 32 GiB labels, host_pack=64.00GiB in the engine).
+    del visible_gpus
+    requested = int(host_gib * (1 << 30))
+    return abs(sum(run_knobs.values()) - requested) <= (1 << 20) * len(run_knobs)
 
 
 def run_bench(job: dict) -> dict:
