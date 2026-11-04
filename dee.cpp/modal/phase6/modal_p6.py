@@ -107,14 +107,16 @@ image_cpu = (
 # CUDA 12.8 devel covers sm_75..sm_120; add_python keeps a clean 3.11.
 image_gpu = (
     modal.Image.from_registry(
-        "nvidia/cuda:12.8.1-devel-ubuntu22.04", add_python="3.11")
+        "nvidia/cuda:12.8.1-devel-ubuntu22.04", add_python="3.12")
     .apt_install("git", "cmake", "build-essential", "zlib1g-dev", "fio")
     # Same torch build as every sealed T4 run (environment.json: 2.10.0+cu128);
     # an unpinned torch is one more variable in a cross-GPU token comparison.
     .pip_install("torch==2.10.0", index_url="https://download.pytorch.org/whl/cu128")
     .pip_install(
-        "transformers", "safetensors", "numpy",
+        "torch==2.10.0",   # restated so no later resolve can move it
+        "transformers", "safetensors", "numpy", "setuptools",  # 3.12 ships none
         "huggingface_hub", "hf_transfer", "pybind11", "requests",
+        extra_index_url="https://download.pytorch.org/whl/cu128",
     )
     # add_python's interpreter records clang/clang++ in sysconfig and the image
     # has only gcc: pin every setuptools build (harness and runner) to gcc.
@@ -258,6 +260,8 @@ def _bench_impl(
     prompts_file: str = "",       # repo-relative JSON list, e.g. dee.cpp/aws/phase6/prompts_phase4_8.json
     ssd_probe: bool = True,       # fio B_SSD probe (frozen section 0 prerequisite 5)
     container_mib: int = 0,       # 0 -> GPU_SPECS memory; bench_*_h256 pass HOST_256_MIB
+    configs: str = "",            # JSON list of per-config overrides (CONFIG_KEYS); one
+                                  # container runs them in order, each -> runs/<run_id>-<tag>
 ) -> dict:
         import concurrent.futures
         import json
@@ -320,6 +324,8 @@ def _bench_impl(
                 raise RuntimeError(
                     f"host budget {host_gib} GiB + 12 GiB reserve exceeds the "
                     f"{ram_gib:.0f} GiB container; raise GPU_SPECS memory first")
+            # Validate every config before anything bills past this point.
+            cfg_list = _parse_configs(configs, host_gib, ram_gib)
             nvidia = subprocess.run(
                 ["nvidia-smi", "--query-gpu=name,memory.total,driver_version",
                  "--format=csv,noheader"],
@@ -399,7 +405,9 @@ def _bench_impl(
                         "(local NVMe)")
                     t0 = time.monotonic()
                     local = Path("/tmp/dee4-store")
-                    shutil.copytree(store_vol, local)
+                    seal = _stage_and_seal(store_vol, local,
+                                           json.loads(meta.read_text()), log)
+                    summary["store_seal"] = seal
                     store_path = str(local)
                     dt = time.monotonic() - t0
                     log(f"[store] staged in {dt:.0f}s "
@@ -461,138 +469,215 @@ def _bench_impl(
                 if results["randread"] <= 0:
                     raise RuntimeError("SSD probe produced no bandwidth; unscorable")
 
-            # ---- 4. run the native generate driver ------------------------------
-            env = dict(os.environ)
-            pack_per_gpu = host_gib / n_gpus
-            env.update({
-                "NATIVE_SOURCE_TREE": str(src_root),
-                "NATIVE_RUN_ID": run_id,
-                "NATIVE_ARM_ID": f"p6-{gpu_name}",
-                # validated campaign modes (runner defaults are legacy:
-                # rank_priority eviction + fp16 cache) — set explicitly.
-                "NATIVE_EXPERT_STORE": "dee4_segmented",
-                "NATIVE_DEE4_SEGMENTED_STORE": store_path,
-                "NATIVE_CACHE_DTYPE": "fp4",
-                "NATIVE_EVICTION_POLICY": "lru",
-                "NATIVE_HOST_CACHE_MODE": "lru",
-                "NATIVE_SOURCE_READ_LANES": "4",
-                "NATIVE_SOURCE_READ_QUEUE_DEPTH": "6",
-                "NATIVE_N_TOKENS": str(n_tokens),
-                "NATIVE_LRU_TOTAL_CAP_GIB": str(host_gib),
-                "NATIVE_BUDGET_BYTES": str(budget_mib << 20),
-                "NATIVE_HOST_PACK_GPU0_BYTES": str(int(pack_per_gpu * (1 << 30))),
-                "NATIVE_HOST_PACK_GPU1_BYTES": str(int(pack_per_gpu * (1 << 30))),
-                "NATIVE_CACHE_RESET": cache_reset,
-                "NATIVE_FORCE_TMP": "1",
-                "NATIVE_TRACE_REQUESTS": "1",
-                "NATIVE_PROFILE": "1",
-                "NATIVE_MODEL_CKPT": str(ckpt_dir),
-                "NATIVE_HEADERS_DIR": str(store_vol / "headers"),
-                "DEE_BUILD_DIR": str(build),
-                "NATIVE_CUDA_ARCHS": cuda_archs,
-            })
-            if n_gpus == 1:
-                env["NATIVE_SINGLE_GPU"] = "1"
-                # else the runner caps one-GPU VRAM at min(2 x budget, 4 GiB)
-                env["NATIVE_SINGLE_GPU_BUDGET_BYTES"] = str(budget_mib << 20)
-            if ignore_eos:
-                env["NATIVE_IGNORE_EOS"] = "1"
-            if cohort:
-                if not prompts_file:
-                    raise ValueError("cohort mode needs prompts_file (fail-closed)")
-                prompts = json.loads((src_root / prompts_file).read_text("utf-8"))
-                groups = br.parse_cohort_spec(cohort)
-                br.check_cohort_against_prompts(groups, len(prompts))
-                env["NATIVE_COHORT_JSON"] = br.cohort_json(groups)
-                env["NATIVE_PROMPTS_JSON"] = json.dumps(prompts)
-            elif prompt:
-                env["NATIVE_PROMPT"] = prompt
-            log(f"[run] n_tokens={n_tokens} host_gib={host_gib} "
-                f"budget_mib={budget_mib} cache={cache_reset} "
-                f"store={'local' if store_path.startswith('/tmp') else 'vol'}")
+            seg_files = [Path(store_path) / sg["file"] for sg in
+                         json.loads(meta.read_text()).get("segments", [])]
 
-            runner = src_root / spec["runner"]
-            proc = subprocess.Popen(
-                [sys.executable, str(runner)], env=env, cwd=str(ev_root),
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1)
+            # ---- 4. one or more runner configs in this container ----------------
+            # Build, store staging + seal and the B_SSD probe are paid once; each
+            # config is a fresh runner process (cold engine caches), and the
+            # store's page cache is dropped (best effort) before each one.
+            base_summary = dict(summary)
+            base_run_id, base_ev = run_id, run_ev
+            outcomes: list = []
+            for cfg in cfg_list:
+              t_cfg = time.monotonic()
+              try:
+                if cfg is not None:
+                    host_gib = float(cfg.get("host_gib", base_summary["host_gib_requested"]))
+                    n_tokens = int(cfg.get("n_tokens", base_summary["n_tokens"]))
+                    ignore_eos = bool(cfg.get("ignore_eos", False))
+                    cohort = str(cfg.get("cohort", ""))
+                    prompts_file = str(cfg.get("prompts_file", ""))
+                    prompt = str(cfg.get("prompt", ""))
+                    run_id = f"{base_run_id}-{cfg['tag']}"
+                    run_ev = ev_root / "runs" / run_id
+                    run_ev.mkdir(parents=True, exist_ok=True)
+                    for fj in base_ev.glob("fio-*.json"):
+                        shutil.copy2(fj, run_ev / fj.name)
+                    log_path = run_ev / "bench.log"
+                    summary = {**base_summary, "run_id": run_id,
+                               "parent_run_id": base_run_id,
+                               "host_gib_requested": host_gib,
+                               "host_gib_effective": host_gib, "n_tokens": n_tokens,
+                               "ignore_eos": ignore_eos, "cohort": cohort or None,
+                               "verdict": "UNKNOWN", "config": cfg}
+                summary["page_cache_drop"] = _drop_page_cache(seg_files, log)
+                preexisting = {f.name: f.stat().st_mtime
+                               for f in ev_root.iterdir() if f.is_file()}
 
-            # Heartbeat: GPU util + proc RSS + bounded volume commit so a
-            # dark run can never happen (CACHE1c lesson).
-            stop = threading.Event()
-            pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                # ---- 4. run the native generate driver ------------------------------
+                env = dict(os.environ)
+                pack_per_gpu = host_gib / n_gpus
+                env.update({
+                    "NATIVE_SOURCE_TREE": str(src_root),
+                    "NATIVE_RUN_ID": run_id,
+                    "NATIVE_ARM_ID": f"p6-{gpu_name}",
+                    # validated campaign modes (runner defaults are legacy:
+                    # rank_priority eviction + fp16 cache) — set explicitly.
+                    "NATIVE_EXPERT_STORE": "dee4_segmented",
+                    "NATIVE_DEE4_SEGMENTED_STORE": store_path,
+                    "NATIVE_CACHE_DTYPE": "fp4",
+                    "NATIVE_EVICTION_POLICY": "lru",
+                    "NATIVE_HOST_CACHE_MODE": "lru",
+                    "NATIVE_SOURCE_READ_LANES": "4",
+                    "NATIVE_SOURCE_READ_QUEUE_DEPTH": "6",
+                    "NATIVE_N_TOKENS": str(n_tokens),
+                    "NATIVE_LRU_TOTAL_CAP_GIB": str(host_gib),
+                    "NATIVE_BUDGET_BYTES": str(budget_mib << 20),
+                    "NATIVE_HOST_PACK_GPU0_BYTES": str(int(pack_per_gpu * (1 << 30))),
+                    "NATIVE_HOST_PACK_GPU1_BYTES": str(int(pack_per_gpu * (1 << 30))),
+                    "NATIVE_CACHE_RESET": cache_reset,
+                    "NATIVE_FORCE_TMP": "1",
+                    "NATIVE_TRACE_REQUESTS": "1",
+                    "NATIVE_PROFILE": "1",
+                    "NATIVE_MODEL_CKPT": str(ckpt_dir),
+                    "NATIVE_HEADERS_DIR": str(store_vol / "headers"),
+                    "DEE_BUILD_DIR": str(build),
+                    "NATIVE_CUDA_ARCHS": cuda_archs,
+                })
+                if (summary.get("store_seal") or {}).get("verified"):
+                    # every segment was sha256-checked while staging (same seal
+                    # the engine would recompute); skip the ~17 min re-hash
+                    env["DEE4_STORE_SKIP_SEAL"] = "1"
+                if not cohort:
+                    # b=1 diagnostics: per-(step, layer) tensor hashes + router
+                    # top-8 scores, so a token mismatch names its layer and gap.
+                    env["NATIVE_CAPTURE_JOURNAL"] = "1"
+                    env["NATIVE_ROUTE_WEIGHT_JOURNAL"] = "1"
+                if n_gpus == 1:
+                    env["NATIVE_SINGLE_GPU"] = "1"
+                    # else the runner caps one-GPU VRAM at min(2 x budget, 4 GiB)
+                    env["NATIVE_SINGLE_GPU_BUDGET_BYTES"] = str(budget_mib << 20)
+                if ignore_eos:
+                    env["NATIVE_IGNORE_EOS"] = "1"
+                if cohort:
+                    if not prompts_file:
+                        raise ValueError("cohort mode needs prompts_file (fail-closed)")
+                    prompts = json.loads((src_root / prompts_file).read_text("utf-8"))
+                    groups = br.parse_cohort_spec(cohort)
+                    br.check_cohort_against_prompts(groups, len(prompts))
+                    env["NATIVE_COHORT_JSON"] = br.cohort_json(groups)
+                    env["NATIVE_PROMPTS_JSON"] = json.dumps(prompts)
+                elif prompt:
+                    env["NATIVE_PROMPT"] = prompt
+                log(f"[run] n_tokens={n_tokens} host_gib={host_gib} "
+                    f"budget_mib={budget_mib} cache={cache_reset} "
+                    f"store={'local' if store_path.startswith('/tmp') else 'vol'}")
 
-            def _hb() -> None:
-                while not stop.wait(300):
-                    try:
-                        alive = proc.poll() is None
-                        snap = subprocess.run(
-                            ["nvidia-smi", "--query-gpu=utilization.gpu,"
-                             "memory.used", "--format=csv,noheader"],
-                            capture_output=True, text=True,
-                            timeout=15).stdout.strip()
-                        log(f"[hb] alive={alive} gpu=[{snap}] "
-                            f"cost=${cost_sofar():.2f}")
-                        fut = pool.submit(vol_evid.commit)
+                runner = src_root / spec["runner"]
+                proc = subprocess.Popen(
+                    [sys.executable, str(runner)], env=env, cwd=str(ev_root),
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, bufsize=1)
+                # Watchdog: a hung runner must not bill the container to its
+                # timeout. From r4 (2.4 s/token at b=1, no seal): b=1 16 tokens
+                # ~5 min; b=8 65 tokens est. 20-25 min. Past the limit: kill,
+                # record the failure, go on to the next config.
+                limit_s = CONFIG_TIMEOUT_B8_S if cohort else CONFIG_TIMEOUT_B1_S
+                killed = threading.Event()
+
+                def _kill() -> None:
+                    killed.set()
+                    log(f"[watchdog] runner exceeded {limit_s}s; killing")
+                    proc.kill()
+                watchdog = threading.Timer(limit_s, _kill)
+                watchdog.daemon = True
+                watchdog.start()
+
+                # Heartbeat: GPU util + proc RSS + bounded volume commit so a
+                # dark run can never happen (CACHE1c lesson).
+                stop = threading.Event()
+                pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+                def _hb() -> None:
+                    while not stop.wait(300):
                         try:
-                            fut.result(timeout=90)
-                        except Exception:
-                            log("[hb] volume commit skipped (timeout)")
-                    except Exception as exc:  # noqa: BLE001
-                        log(f"[hb] error (continuing): {exc!r}")
+                            alive = proc.poll() is None
+                            snap = subprocess.run(
+                                ["nvidia-smi", "--query-gpu=utilization.gpu,"
+                                 "memory.used", "--format=csv,noheader"],
+                                capture_output=True, text=True,
+                                timeout=15).stdout.strip()
+                            log(f"[hb] alive={alive} gpu=[{snap}] "
+                                f"cost=${cost_sofar():.2f}")
+                            fut = pool.submit(vol_evid.commit)
+                            try:
+                                fut.result(timeout=90)
+                            except Exception:
+                                log("[hb] volume commit skipped (timeout)")
+                        except Exception as exc:  # noqa: BLE001
+                            log(f"[hb] error (continuing): {exc!r}")
 
-            threading.Thread(target=_hb, daemon=True).start()
+                threading.Thread(target=_hb, daemon=True).start()
 
-            tail: list[str] = []
-            all_lines: list[str] = []
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                line = line.rstrip("\n")
-                log(f"[runner] {line}")
-                all_lines.append(line)
-                tail.append(line)
-                if len(tail) > 80:
-                    tail.pop(0)
-            code = proc.wait()
-            stop.set()
-            wall_s = round(time.monotonic() - t_start, 1)
-            log(f"[run] exit={code} wall={wall_s}s est_cost=${cost_sofar()}")
-            summary.update({"exit_code": code, "wall_s": wall_s,
-                            "est_gpu_cost_usd": cost_sofar(),
-                            "log_tail": tail[-50:]})
-            verdict = "UNKNOWN"
-            for ln in tail:
-                if ln.startswith("VERDICT:"):
-                    verdict = ln.split(":", 1)[1].strip()
-            summary["verdict"] = verdict
-            knobs = br.host_pack_effective_bytes(all_lines)
-            summary["host_pack_effective_bytes"] = knobs
-            honored = br.host_budget_honored(knobs, host_gib, n_gpus)
-            summary["host_budget_honored"] = honored
-            # The runner exits 0 on failure by design (Kaggle evidence capture);
-            # its FATAL line is the real outcome.
-            fatal = next((ln for ln in all_lines if "] FATAL" in ln
-                          or ln.startswith("FATAL")), None)
-            summary["runner_fatal"] = fatal is not None
-            if fatal is not None:
-                errs = [ln for ln in all_lines if "Error" in ln]
-                summary["verdict"] = "RUNNER_FATAL: " + (errs[-1] if errs else fatal)[-300:]
-            elif not honored:
-                summary["verdict"] = (f"HOST_BUDGET_NOT_HONORED: {knobs} != "
-                                      f"{host_gib} GiB / {n_gpus} GPU(s)")
+                tail: list[str] = []
+                all_lines: list[str] = []
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    line = line.rstrip("\n")
+                    log(f"[runner] {line}")
+                    all_lines.append(line)
+                    tail.append(line)
+                    if len(tail) > 80:
+                        tail.pop(0)
+                code = proc.wait()
+                watchdog.cancel()
+                stop.set()
+                if killed.is_set():
+                    raise RuntimeError(f"runner killed by watchdog after {limit_s}s")
+                wall_s = round(time.monotonic() - t_start, 1)
+                log(f"[run] exit={code} wall={wall_s}s est_cost=${cost_sofar()}")
+                summary.update({"exit_code": code, "wall_s": wall_s,
+                                "est_gpu_cost_usd": cost_sofar(),
+                                "log_tail": tail[-50:]})
+                verdict = "UNKNOWN"
+                for ln in tail:
+                    if ln.startswith("VERDICT:"):
+                        verdict = ln.split(":", 1)[1].strip()
+                summary["verdict"] = verdict
+                knobs = br.host_pack_effective_bytes(all_lines)
+                summary["host_pack_effective_bytes"] = knobs
+                honored = br.host_budget_honored(knobs, host_gib, n_gpus)
+                summary["host_budget_honored"] = honored
+                # The runner exits 0 on failure by design (Kaggle evidence capture);
+                # its FATAL line is the real outcome.
+                fatal = next((ln for ln in all_lines if "] FATAL" in ln
+                              or ln.startswith("FATAL")), None)
+                summary["runner_fatal"] = fatal is not None
+                if fatal is not None:
+                    errs = [ln for ln in all_lines if "Error" in ln]
+                    summary["verdict"] = "RUNNER_FATAL: " + (errs[-1] if errs else fatal)[-300:]
+                elif not honored:
+                    summary["verdict"] = (f"HOST_BUDGET_NOT_HONORED: {knobs} != "
+                                          f"{host_gib} GiB / {n_gpus} GPU(s)")
 
-            # ---- 5. collect evidence -------------------------------------------
-            for f in ev_root.iterdir():
-                if (f.is_file() and f.name not in ("bench.log",)
-                        and f.name.endswith((".json", ".jsonl", ".log"))
-                        and f.stat().st_mtime > preexisting.get(f.name, 0)):
-                    try:
-                        shutil.copy2(f, run_ev / f.name)
-                    except OSError:
-                        pass
-            (run_ev / "summary.json").write_text(
-                json.dumps(summary, indent=2))
-            return summary
+                # ---- 5. collect evidence -------------------------------------------
+                for f in ev_root.iterdir():
+                    if (f.is_file() and f.name not in ("bench.log",)
+                            and f.name.endswith((".json", ".jsonl", ".log"))
+                            and f.stat().st_mtime > preexisting.get(f.name, 0)):
+                        try:
+                            shutil.copy2(f, run_ev / f.name)
+                        except OSError:
+                            pass
+                summary["config_wall_s"] = round(time.monotonic() - t_cfg, 1)
+                (run_ev / "summary.json").write_text(
+                    json.dumps(summary, indent=2))
+              except Exception as exc:  # noqa: BLE001
+                if cfg is None:
+                    raise
+                # one config failing must not cost the rest of the container
+                summary["verdict"] = f"{type(exc).__name__}: {exc}"
+                log(f"[fatal:{cfg['tag']}] {exc!r}")
+                (run_ev / "summary.json").write_text(json.dumps(summary, indent=2))
+              finally:
+                vol_evid.commit()
+              outcomes.append({"run_id": run_id, "verdict": summary.get("verdict")})
+            if cfg_list[0] is None:
+                return summary
+            log_path = base_ev / "bench.log"
+            log(f"[configs] {json.dumps(outcomes)}")
+            return {"run_id": base_run_id, "configs": outcomes}
         except Exception as exc:  # noqa: BLE001
             summary["verdict"] = f"{type(exc).__name__}: {exc}"
             log(f"[fatal] {exc!r}")
@@ -612,6 +697,261 @@ def _bench_impl(
         finally:
             vol_evid.commit()
 
+# Cost guards (L4 all-in ~$1.94/h): no config may run away, and no container
+# may outlive a few configs' worth of time.
+CONFIG_TIMEOUT_B1_S = 20 * 60
+CONFIG_TIMEOUT_B8_S = 45 * 60
+FUNCTION_TIMEOUT_S = 150 * 60
+CONFIG_KEYS = {"tag", "host_gib", "n_tokens", "ignore_eos", "cohort",
+               "prompts_file", "prompt"}
+
+
+@app.function(
+    image=image_gpu,          # the exact GPU image, on CPU: nvcc needs no GPU
+    cpu=8,
+    memory=16384,
+    timeout=3600,
+    volumes={VOL_MODELS: vol_models, VOL_STORES: vol_stores},
+)
+def preflight(gpu: str = "L4", model: str = "dsv4-flash", configs: str = "",
+              pinned: str = "") -> dict:
+    """Everything a bench run can fail on before inference, for ~$0.10 of CPU.
+
+    Builds the image, clones the same commit, runs the harness build AND the
+    runner's own build (its cmake/pydee steps, arch from GPU_SPECS), imports
+    pydee and torch, and checks the store table, checkpoint, prompts and
+    configs. Runs r1-r3 each paid a GPU container to find one of these.
+    """
+    import json
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    out: dict = {"gpu": gpu, "model": model, "checks": {}}
+    chk = out["checks"]
+
+    def step(name, fn):
+        try:
+            chk[name] = {"ok": True, "detail": fn()}
+        except Exception as exc:  # noqa: BLE001
+            detail = f"{type(exc).__name__}: {exc}"
+            if isinstance(exc, subprocess.CalledProcessError):
+                detail += " | " + ((exc.stderr or "") + (exc.stdout or ""))[-3000:]
+            chk[name] = {"ok": False, "detail": detail}
+        print(f"[preflight] {name}: {'OK' if chk[name]['ok'] else 'FAIL'} "
+              f"{str(chk[name]['detail'])[:300]}", flush=True)
+
+    def run(cmd, **kw):
+        return subprocess.run(cmd, check=True, capture_output=True, text=True, **kw)
+
+    _spec, archs, budget, mem, _host = GPU_SPECS[gpu]
+    spec = MODELS[model]
+    src = Path("/tmp/dsv4-native-src")
+    dee = src / "dee.cpp"
+    step("python_torch", lambda: run([sys.executable, "-c",
+         "import sys, torch, transformers, numpy, setuptools, pybind11; "
+         "print(sys.version.split()[0], torch.__version__, torch.version.cuda, "
+         "transformers.__version__, numpy.__version__)"]).stdout.strip())
+    def pinned_torch():
+        got = str(chk["python_torch"]["detail"])
+        if not got.startswith("3.12") or " 2.10.0+cu128 12.8 " not in got:
+            raise RuntimeError(f"want python 3.12 + torch 2.10.0+cu128, got {got}")
+        return got
+    step("torch_pinned", pinned_torch)
+    step("fio", lambda: run(["fio", "--version"]).stdout.strip())
+    step("clone", lambda: subprocess.run(_sh(_clone(pinned)), shell=True, check=True,
+         capture_output=True, text=True).stdout.strip()[-40:])
+    step("harness_build", lambda: [run(c, cwd=str(dee), timeout=3000) for c in (
+        ["cmake", "-S", ".", "-B", "build-modal", f"-DCMAKE_CUDA_ARCHITECTURES={archs}",
+         "-DDEE_CUDA=ON", "-DDEE_BUILD_TESTS=ON", "-DCMAKE_BUILD_TYPE=Release"],
+        ["cmake", "--build", "build-modal", "--target", "dee_core", "-j", "8"],
+        ["cmake", "--build", "build-modal", "--target", "test_dee4_segmented", "-j", "8"],
+        [sys.executable, "pydee/setup.py", "build_ext", "--inplace"])] and "ok")
+    # the runner's own build: same commands it runs (build-kaggle, its arch env)
+    env_r = {**os.environ, "DEE_BUILD_DIR": str(dee / "build-kaggle")}
+    step("runner_build", lambda: [run(c, cwd=str(dee), timeout=3000, env=env_r) for c in (
+        ["cmake", "-S", ".", "-B", "build-kaggle", f"-DCMAKE_CUDA_ARCHITECTURES={archs}",
+         "-DDEE_CUDA=ON", "-DDEE_BUILD_TESTS=ON", "-DCMAKE_BUILD_TYPE=Release"],
+        ["cmake", "--build", "build-kaggle", "--target", "dee_core", "-j", "8"],
+        ["cmake", "--build", "build-kaggle", "--target", "test_deepseek_v4_fp4_cuda",
+         "-j", "8"],
+        ["cmake", "--build", "build-kaggle", "--target", "test_deepseek_v4_fp4_expert",
+         "-j", "8"],
+        [sys.executable, "pydee/setup.py", "build_ext", "--inplace"])] and "ok")
+    def pydee_import():
+        r = subprocess.run([sys.executable, "-c", "import pydee; print(pydee.__file__)"],
+                           cwd=str(dee), capture_output=True, text=True)
+        if r.returncode == 0:
+            return r.stdout.strip()
+        if "libcuda" in r.stderr:   # no driver in a CPU container: link is still checked
+            return "import needs the GPU driver (expected on CPU); extension built"
+        raise RuntimeError(r.stderr[-1500:])
+    step("pydee_import", pydee_import)
+    def runner_src():
+        txt = (src / spec["runner"]).read_text()
+        need = ("NATIVE_CUDA_ARCHS", "NATIVE_SINGLE_GPU_BUDGET_BYTES", "router_top8_values")
+        missing = [k for k in need if k not in txt]
+        if missing:
+            raise RuntimeError(f"runner at this commit lacks {missing}")
+        return "ok"
+    step("runner_source", runner_src)
+
+    def store():
+        meta = json.loads((Path(VOL_STORES) / spec["store_dir"] / "metadata.json").read_text())
+        segs = meta.get("segments", [])
+        bad = [sg["file"] for sg in segs if len(str(sg.get("sha256", ""))) != 64]
+        sizes = [(Path(VOL_STORES) / spec["store_dir"] / sg["file"]).stat().st_size
+                 == int(sg["bytes"]) for sg in segs]
+        if not segs or bad or not all(sizes):
+            raise RuntimeError(f"segments={len(segs)} no_sha={bad[:3]} "
+                               f"size_ok={sum(sizes)}/{len(segs)}")
+        return f"{len(segs)} segments, {sum(int(x['bytes']) for x in segs) / 2**30:.1f} GiB"
+    step("store_table", store)
+    def ckpt():
+        n = len(list((Path(VOL_MODELS) / spec["ckpt_dir"]).rglob("*.safetensors")))
+        if n == 0:
+            raise RuntimeError("no .safetensors under the checkpoint dir")
+        return f"{n} shards"
+    step("checkpoint", ckpt)
+
+    def cfgs():
+        parsed = _parse_configs(configs, _host, mem / 1024.0)
+        for c in parsed:
+            if c and c.get("prompts_file"):
+                pr = json.loads((src / c["prompts_file"]).read_text("utf-8"))
+                if not isinstance(pr, list) or not pr:
+                    raise ValueError(f"{c['prompts_file']}: not a prompt list")
+        return f"{len(parsed)} config(s)"
+    step("configs", cfgs)
+    out["ok"] = all(v["ok"] for v in chk.values())
+    print(json.dumps({"preflight_ok": out["ok"]}), flush=True)
+    return out
+
+
+def _parse_configs(configs: str, host_gib: float, ram_gib: float) -> list:
+    """[None] for a single run, else validated config dicts (fail-closed)."""
+    import json
+    if not configs:
+        return [None]
+    cfgs = json.loads(configs)
+    if not isinstance(cfgs, list) or not cfgs:
+        raise ValueError("configs must be a non-empty JSON list")
+    tags = set()
+    for c in cfgs:
+        unknown = set(c) - CONFIG_KEYS
+        if unknown or not c.get("tag") or c["tag"] in tags:
+            raise ValueError(f"bad config {c}: unknown={sorted(unknown)} (tag required, unique)")
+        tags.add(c["tag"])
+        if float(c.get("host_gib", host_gib)) + 12.0 > ram_gib:
+            raise RuntimeError(f"config {c['tag']}: host + 12 GiB > {ram_gib:.0f} GiB container")
+        if c.get("cohort") and not c.get("prompts_file"):
+            raise ValueError(f"config {c['tag']}: cohort needs prompts_file")
+        if c.get("cohort") and int(c.get("n_tokens", 0)) < 65:
+            raise ValueError(f"config {c['tag']}: b=8 scoring needs n_tokens >= 65")
+        if c.get("cohort") and not c.get("ignore_eos"):
+            raise ValueError(f"config {c['tag']}: b=8 scoring needs ignore_eos")
+    return cfgs
+
+
+def _stage_and_seal(src, dst, meta: dict, log) -> dict:
+    """Copy the store to local disk, sha256-checking every segment on the way.
+
+    The same per-segment seal the engine recomputes at open (DEE4 metadata
+    `segments[].sha256`), computed on the bytes as they are written, so the
+    runner can skip its ~17 min re-hash (DEE4_STORE_SKIP_SEAL). Each file's
+    pages are fsync'd and fadvise(DONTNEED)'d after writing, so staging does
+    not leave the store in page cache. A mismatch raises: never serve it.
+    """
+    import concurrent.futures
+    import hashlib
+    import os
+    import shutil
+    import time
+    from pathlib import Path
+
+    src, dst = Path(src), Path(dst)
+    want = {sg["file"]: sg.get("sha256") for sg in meta.get("segments", [])}
+    files = [f for f in src.rglob("*") if f.is_file()]
+    t0 = time.monotonic()
+
+    def one(f):
+        rel = f.relative_to(src).as_posix()
+        out = dst / rel
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if rel not in want:
+            shutil.copy2(f, out)
+            return rel, None, f.stat().st_size
+        h = hashlib.sha256()
+        n = 0
+        with open(f, "rb", buffering=0) as fi, open(out, "wb", buffering=0) as fo:
+            while True:
+                buf = fi.read(16 << 20)
+                if not buf:
+                    break
+                h.update(buf)
+                fo.write(buf)
+                n += len(buf)
+            fo.flush()
+            os.fsync(fo.fileno())
+            for fd in (fi.fileno(), fo.fileno()):
+                try:
+                    os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+                except (AttributeError, OSError):
+                    pass
+        return rel, h.hexdigest(), n
+
+    bad, total, sealed = [], 0, 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        for rel, digest, n in pool.map(one, files):
+            total += n
+            if digest is not None:
+                sealed += 1
+                if want[rel] and digest != want[rel]:
+                    bad.append(rel)
+    missing = sorted(set(want) - {f.relative_to(src).as_posix() for f in files})
+    dt = time.monotonic() - t0
+    log(f"[store] staged + sealed {sealed}/{len(want)} segments, "
+        f"{total / (1 << 30):.1f} GiB in {dt:.0f}s ({total / (1 << 30) / max(dt, 1e-6):.2f} GiB/s)")
+    if bad or missing:
+        raise RuntimeError(f"store seal failed: sha256 mismatch {bad[:3]} missing {missing[:3]}")
+    no_seal = [k for k, v in want.items() if not v]
+    return {"verified": not no_seal, "segments": sealed, "unsealed_in_metadata": no_seal[:3],
+            "stage_s": round(dt, 1), "gib": round(total / (1 << 30), 1)}
+
+
+def _drop_page_cache(files, log) -> dict:
+    """Best-effort: fadvise(DONTNEED) the store, and report whether it took.
+
+    Under gVisor this may be a no-op; the Cached delta in the summary says so,
+    so a "cold" config is never assumed cold without evidence.
+    """
+    import os
+
+    def cached_gib():
+        try:
+            for line in open("/proc/meminfo", encoding="ascii"):
+                if line.startswith("Cached:"):
+                    return round(int(line.split()[1]) / (1 << 20), 2)
+        except OSError:
+            pass
+        return None
+
+    before = cached_gib()
+    for f in files:
+        try:
+            fd = os.open(f, os.O_RDONLY)
+            try:
+                os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+            finally:
+                os.close(fd)
+        except (AttributeError, OSError):
+            pass
+    after = cached_gib()
+    log(f"[cache] drop store pages: Cached {before} -> {after} GiB")
+    return {"cached_gib_before": before, "cached_gib_after": after}
+
+
 # 256 GiB host-tier cells need a bigger container than GPU_SPECS gives (host +
 # reserve). Registered in theory/predecl_modal.py (HOST_256_CONTAINER_MIB) and
 # priced there; run them through the bench_<GPU>_h256 functions below.
@@ -627,7 +967,7 @@ def _bench_dec(gpu_name: str, memory_mib: int = 0):
         gpu=_spec,
         cpu=8,
         memory=memory_mib or _mem,
-        timeout=6 * 3600,
+        timeout=FUNCTION_TIMEOUT_S,
         volumes={VOL_MODELS: vol_models, VOL_STORES: vol_stores,
                  VOL_EVID: vol_evid},
     )
@@ -640,10 +980,10 @@ def bench_L4(model: str = "dsv4-flash", n_tokens: int = 64,
              pinned: str = "", run_id: str = "",
              ignore_eos: bool = False,
              cohort: str = "", prompts_file: str = "",
-             ssd_probe: bool = True) -> dict:
+             ssd_probe: bool = True, configs: str = "") -> dict:
     return _bench_impl("L4", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
-                       ignore_eos, cohort, prompts_file, ssd_probe)
+                       ignore_eos, cohort, prompts_file, ssd_probe, 0, configs)
 
 
 @_bench_dec("2xL4")
@@ -653,10 +993,10 @@ def bench_2xL4(model: str = "dsv4-flash", n_tokens: int = 64,
                pinned: str = "", run_id: str = "",
              ignore_eos: bool = False,
              cohort: str = "", prompts_file: str = "",
-             ssd_probe: bool = True) -> dict:
+             ssd_probe: bool = True, configs: str = "") -> dict:
     return _bench_impl("2xL4", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
-                       ignore_eos, cohort, prompts_file, ssd_probe)
+                       ignore_eos, cohort, prompts_file, ssd_probe, 0, configs)
 
 
 @_bench_dec("T4")
@@ -666,10 +1006,10 @@ def bench_T4(model: str = "dsv4-flash", n_tokens: int = 64,
                pinned: str = "", run_id: str = "",
              ignore_eos: bool = False,
              cohort: str = "", prompts_file: str = "",
-             ssd_probe: bool = True) -> dict:
+             ssd_probe: bool = True, configs: str = "") -> dict:
     return _bench_impl("T4", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
-                       ignore_eos, cohort, prompts_file, ssd_probe)
+                       ignore_eos, cohort, prompts_file, ssd_probe, 0, configs)
 
 
 @_bench_dec("2xT4")
@@ -679,10 +1019,10 @@ def bench_2xT4(model: str = "dsv4-flash", n_tokens: int = 64,
                pinned: str = "", run_id: str = "",
              ignore_eos: bool = False,
              cohort: str = "", prompts_file: str = "",
-             ssd_probe: bool = True) -> dict:
+             ssd_probe: bool = True, configs: str = "") -> dict:
     return _bench_impl("2xT4", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
-                       ignore_eos, cohort, prompts_file, ssd_probe)
+                       ignore_eos, cohort, prompts_file, ssd_probe, 0, configs)
 
 
 @_bench_dec("A10")
@@ -692,10 +1032,10 @@ def bench_A10(model: str = "dsv4-flash", n_tokens: int = 64,
               pinned: str = "", run_id: str = "",
              ignore_eos: bool = False,
              cohort: str = "", prompts_file: str = "",
-             ssd_probe: bool = True) -> dict:
+             ssd_probe: bool = True, configs: str = "") -> dict:
     return _bench_impl("A10", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
-                       ignore_eos, cohort, prompts_file, ssd_probe)
+                       ignore_eos, cohort, prompts_file, ssd_probe, 0, configs)
 
 
 @_bench_dec("L40S")
@@ -705,10 +1045,10 @@ def bench_L40S(model: str = "dsv4-flash", n_tokens: int = 64,
                pinned: str = "", run_id: str = "",
              ignore_eos: bool = False,
              cohort: str = "", prompts_file: str = "",
-             ssd_probe: bool = True) -> dict:
+             ssd_probe: bool = True, configs: str = "") -> dict:
     return _bench_impl("L40S", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
-                       ignore_eos, cohort, prompts_file, ssd_probe)
+                       ignore_eos, cohort, prompts_file, ssd_probe, 0, configs)
 
 
 @_bench_dec("RTXPRO6000")
@@ -718,10 +1058,10 @@ def bench_RTXPRO6000(model: str = "dsv4-flash", n_tokens: int = 64,
                      local_store: bool = True, pinned: str = "",
                      run_id: str = "", ignore_eos: bool = False,
                      cohort: str = "", prompts_file: str = "",
-                     ssd_probe: bool = True) -> dict:
+                     ssd_probe: bool = True, configs: str = "") -> dict:
     return _bench_impl("RTXPRO6000", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
-                       ignore_eos, cohort, prompts_file, ssd_probe)
+                       ignore_eos, cohort, prompts_file, ssd_probe, 0, configs)
 
 
 @_bench_dec("L4", HOST_256_MIB)
@@ -730,10 +1070,11 @@ def bench_L4_h256(model: str = "dsv4-flash", n_tokens: int = 64,
                    cache_reset: str = "cold", local_store: bool = True,
                    pinned: str = "", run_id: str = "", ignore_eos: bool = False,
                    cohort: str = "", prompts_file: str = "",
-                   ssd_probe: bool = True) -> dict:
+                   ssd_probe: bool = True, configs: str = "") -> dict:
     return _bench_impl("L4", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
-                       ignore_eos, cohort, prompts_file, ssd_probe, HOST_256_MIB)
+                       ignore_eos, cohort, prompts_file, ssd_probe, HOST_256_MIB,
+                       configs)
 
 
 @_bench_dec("2xL4", HOST_256_MIB)
@@ -742,10 +1083,11 @@ def bench_2xL4_h256(model: str = "dsv4-flash", n_tokens: int = 64,
                    cache_reset: str = "cold", local_store: bool = True,
                    pinned: str = "", run_id: str = "", ignore_eos: bool = False,
                    cohort: str = "", prompts_file: str = "",
-                   ssd_probe: bool = True) -> dict:
+                   ssd_probe: bool = True, configs: str = "") -> dict:
     return _bench_impl("2xL4", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
-                       ignore_eos, cohort, prompts_file, ssd_probe, HOST_256_MIB)
+                       ignore_eos, cohort, prompts_file, ssd_probe, HOST_256_MIB,
+                       configs)
 
 
 @_bench_dec("A10", HOST_256_MIB)
@@ -754,10 +1096,11 @@ def bench_A10_h256(model: str = "dsv4-flash", n_tokens: int = 64,
                    cache_reset: str = "cold", local_store: bool = True,
                    pinned: str = "", run_id: str = "", ignore_eos: bool = False,
                    cohort: str = "", prompts_file: str = "",
-                   ssd_probe: bool = True) -> dict:
+                   ssd_probe: bool = True, configs: str = "") -> dict:
     return _bench_impl("A10", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
-                       ignore_eos, cohort, prompts_file, ssd_probe, HOST_256_MIB)
+                       ignore_eos, cohort, prompts_file, ssd_probe, HOST_256_MIB,
+                       configs)
 
 
 @_bench_dec("L40S", HOST_256_MIB)
@@ -766,10 +1109,11 @@ def bench_L40S_h256(model: str = "dsv4-flash", n_tokens: int = 64,
                    cache_reset: str = "cold", local_store: bool = True,
                    pinned: str = "", run_id: str = "", ignore_eos: bool = False,
                    cohort: str = "", prompts_file: str = "",
-                   ssd_probe: bool = True) -> dict:
+                   ssd_probe: bool = True, configs: str = "") -> dict:
     return _bench_impl("L40S", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
-                       ignore_eos, cohort, prompts_file, ssd_probe, HOST_256_MIB)
+                       ignore_eos, cohort, prompts_file, ssd_probe, HOST_256_MIB,
+                       configs)
 
 
 @_bench_dec("RTXPRO6000", HOST_256_MIB)
@@ -778,10 +1122,11 @@ def bench_RTXPRO6000_h256(model: str = "dsv4-flash", n_tokens: int = 64,
                    cache_reset: str = "cold", local_store: bool = True,
                    pinned: str = "", run_id: str = "", ignore_eos: bool = False,
                    cohort: str = "", prompts_file: str = "",
-                   ssd_probe: bool = True) -> dict:
+                   ssd_probe: bool = True, configs: str = "") -> dict:
     return _bench_impl("RTXPRO6000", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
-                       ignore_eos, cohort, prompts_file, ssd_probe, HOST_256_MIB)
+                       ignore_eos, cohort, prompts_file, ssd_probe, HOST_256_MIB,
+                       configs)
 
 
 @app.local_entrypoint()
