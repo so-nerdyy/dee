@@ -1,0 +1,240 @@
+{
+  "schema": "dee.route_pipeline.fill_matrix_ingest/v1",
+  "source": "fill-live-t4x2-20260909/session-summary.json",
+  "gate": "PASS",
+  "gpus": [
+    "Tesla T4, 7.5, 15360 MiB",
+    "Tesla T4, 7.5, 15360 MiB"
+  ],
+  "fill_arm": {
+    "exit_code": 0,
+    "classification": "ACCEPT_CORRECTNESS",
+    "decode_wall_s": 71.479,
+    "cap_check_ok": true,
+    "run_id": "host-sync-profile-17g-20260905-v1"
+  },
+  "variant_rules": [
+    "run-id",
+    "profile-guard",
+    "profile-env",
+    "patch-apply",
+    "emission"
+  ],
+  "fill_patch_sha256": "b68da4a91a9408da62552161345ecd1fd3ffed0e30427857be1d9d22b7efcd80",
+  "journal": {
+    "rows": 688,
+    "uses": 5676,
+    "bad_lines": 0,
+    "path": "/kaggle/working/fill/journal.txt"
+  },
+  "replay_stdout": {
+    "replay_production": null,
+    "replay_lanes1": null,
+    "replay_qdepth1": null,
+    "rider_seq": null,
+    "rider_rand": null
+  },
+  "cases": {
+    "replay_production": {
+      "batches": 1892,
+      "requests": 11352,
+      "bytes": 80831053824,
+      "misses": 6046,
+      "evictions": 4714,
+      "cache_hit_rate": 0.46740662438336855,
+      "req_service_ms": {
+        "mean": 57.39066038231149,
+        "p50": 4.01635,
+        "p95": 162.203184,
+        "max": 353.268649
+      },
+      "batch_wall_ms": {
+        "sum": 261447.683937,
+        "mean": 138.18587945930233
+      },
+      "worker_sum_ms": {
+        "sum": 651498.77666
+      },
+      "within_batch_busy_frac": {
+        "mean": 0.9593151183524264,
+        "p50": 0.999704451448118
+      },
+      "reserve_ms": {
+        "mean": 7.080487713002114,
+        "p95": 52.867013
+      },
+      "wake_ms": {
+        "mean": 138.18518822727273,
+        "p95": 320.061543
+      },
+      "cold_half_req_mean_ms": 64.64266495119803,
+      "warm_half_req_mean_ms": 50.13865581342495
+    },
+    "replay_lanes1": {
+      "batches": 1892,
+      "requests": 11352,
+      "bytes": 80831053824,
+      "misses": 6046,
+      "evictions": 4714,
+      "cache_hit_rate": 0.46740662438336855,
+      "req_service_ms": {
+        "mean": 18.911380919309373,
+        "p50": 3.530594,
+        "p95": 54.793063,
+        "max": 208.932877
+      },
+      "batch_wall_ms": {
+        "sum": 214687.364325,
+        "mean": 113.47112279334038
+      },
+      "worker_sum_ms": {
+        "sum": 214681.996196
+      },
+      "within_batch_busy_frac": {
+        "mean": 0.9597847806895773,
+        "p50": 0.9999765017157919
+      },
+      "reserve_ms": {
+        "mean": 7.083833684460888,
+        "p95": 54.107606
+      },
+      "wake_ms": {
+        "mean": 113.47051262896406,
+        "p95": 271.026607
+      },
+      "cold_half_req_mean_ms": 19.37432954809725,
+      "warm_half_req_mean_ms": 18.448432290521495
+    },
+    "replay_qdepth1": {
+      "batches": 11352,
+      "requests": 11352,
+      "bytes": 80831053824,
+      "misses": 6046,
+      "evictions": 4714,
+      "cache_hit_rate": 0.46740662438336855,
+      "req_service_ms": {
+        "mean": 17.977718596282593,
+        "p50": 3.339004,
+        "p95": 53.996836,
+        "max": 210.194007
+      },
+      "batch_wall_ms": {
+        "sum": 204090.385505,
+        "mean": 17.978363768939396
+      },
+      "worker_sum_ms": {
+        "sum": 204083.061505
+      },
+      "within_batch_busy_frac": {
+        "mean": 0.5325395316865077,
+        "p50": 0.9996782113056137
+      },
+      "reserve_ms": {
+        "mean": 1.195371882311487,
+        "p95": 10.170286
+      },
+      "wake_ms": {
+        "mean": 17.978159343111347,
+        "p95": 53.997421
+      },
+      "cold_half_req_mean_ms": 18.08126897445384,
+      "warm_half_req_mean_ms": 17.874168218111347
+    },
+    "rider_seq": {
+      "rider": {
+        "pattern": "seq",
+        "records": 2364,
+        "lanes": [
+          {
+            "lanes": 1,
+            "wall_ms": 88890.3,
+            "gibps": 0.331134
+          },
+          {
+            "lanes": 2,
+            "wall_ms": 79585.2,
+            "gibps": 0.36985
+          },
+          {
+            "lanes": 3,
+            "wall_ms": 78055.6,
+            "gibps": 0.377097
+          },
+          {
+            "lanes": 4,
+            "wall_ms": 79746,
+            "gibps": 0.369104
+          },
+          {
+            "lanes": 5,
+            "wall_ms": 81901,
+            "gibps": 0.359392
+          },
+          {
+            "lanes": 6,
+            "wall_ms": 82982.5,
+            "gibps": 0.354708
+          },
+          {
+            "lanes": 7,
+            "wall_ms": 84322.9,
+            "gibps": 0.34907
+          },
+          {
+            "lanes": 8,
+            "wall_ms": 85187.5,
+            "gibps": 0.345527
+          }
+        ]
+      }
+    },
+    "rider_rand": {
+      "rider": {
+        "pattern": "rand",
+        "records": 2364,
+        "lanes": [
+          {
+            "lanes": 1,
+            "wall_ms": 79027.5,
+            "gibps": 0.37246
+          },
+          {
+            "lanes": 2,
+            "wall_ms": 64373.2,
+            "gibps": 0.457249
+          },
+          {
+            "lanes": 3,
+            "wall_ms": 61801.2,
+            "gibps": 0.476279
+          },
+          {
+            "lanes": 4,
+            "wall_ms": 58189.9,
+            "gibps": 0.505836
+          },
+          {
+            "lanes": 5,
+            "wall_ms": 85628.3,
+            "gibps": 0.343748
+          },
+          {
+            "lanes": 6,
+            "wall_ms": 59136,
+            "gibps": 0.497743
+          },
+          {
+            "lanes": 7,
+            "wall_ms": 62953,
+            "gibps": 0.467564
+          },
+          {
+            "lanes": 8,
+            "wall_ms": 60775.8,
+            "gibps": 0.484314
+          }
+        ]
+      }
+    }
+  }
+}

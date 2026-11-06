@@ -1,0 +1,28 @@
+{
+  "recorded_at_utc": "2026-09-18T09:36:27Z",
+  "run_id": "p4-campaign",
+  "arm_id": "a2_fp4",
+  "cache_dtype": "fp4",
+  "expert_store": "dee4_segmented",
+  "dee4_trace_path": "/tmp/dsv4-dee4-v3-trace/metadata.json",
+  "dee4_validate_samples": 12,
+  "profile_stages": true,
+  "n_tokens": 128,
+  "cache_budget_bytes_per_gpu": 3758096384,
+  "cache_budget_gib_per_gpu": 3.5,
+  "host_pack_requested_bytes": [
+    9126805504,
+    9126805504
+  ],
+  "host_pack_runtime_cap_gib_total": 17.0,
+  "eviction_policy": "lru",
+  "host_cache_mode": "lru",
+  "cache_reset": "warm",
+  "trace_requests": true,
+  "ignore_eos": true,
+  "source_read_lanes": 4,
+  "source_read_queue_depth": 6,
+  "force_tmp": true,
+  "source_path": "/tmp/dee-p4-src/dee.cpp/kaggle/deepseek-v4-flash-0731/run_config.json",
+  "source_sha256": "29c960e0560ee90dd1b43d65cdb6ad05748fc91ce381e0da0ef2c94dc8b1e0fe"
+}

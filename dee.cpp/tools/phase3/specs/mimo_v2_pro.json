@@ -1,0 +1,25 @@
+{
+  "model": "XiaomiMiMo/MiMo-V2.6-Pro-RL",
+  "revision": "73875d00b30a89ef8cc353a0b60b0e9f9561952d",
+  "codec": "deepseek-fp4-e2m1-e8m0",
+  "codec_note": "Same mxfp4 wire format as Flash — packed e2m1 nibbles + ue8m0/32 scales; larger hidden (6144) gives bigger records.",
+  "experts_per_layer": 384,
+  "record_bytes": 20054016,
+  "n_buckets": 69,
+  "layer_start": 1,
+  "n_layers": 70,
+  "n_mtp_buckets": 0,
+  "projections": {"w1": "gate_proj", "w3": "up_proj", "w2": "down_proj"},
+  "kind_field": {"weight": "weight", "scale": "weight_scale"},
+  "tensor_pattern": "model.layers.{layer}.mlp.experts.{expert}.{proj}.{kind}",
+  "expert_name_re": "^model\\.layers\\.(\\d+)\\.mlp\\.experts\\.(\\d+)\\.((?:gate|up|down)_proj)\\.(weight|weight_scale)$",
+  "coverage_re": "\\.mlp\\.experts\\.",
+  "expected": {
+    "w1.weight": {"dtype": "U8", "shape": [2048, 3072], "nbytes": 6291456},
+    "w3.weight": {"dtype": "U8", "shape": [2048, 3072], "nbytes": 6291456},
+    "w2.weight": {"dtype": "U8", "shape": [6144, 1024], "nbytes": 6291456},
+    "w1.scale":  {"dtype": "U8", "shape": [2048, 192],  "nbytes": 393216},
+    "w3.scale":  {"dtype": "U8", "shape": [2048, 192],  "nbytes": 393216},
+    "w2.scale":  {"dtype": "U8", "shape": [6144, 64],   "nbytes": 393216}
+  }
+}

@@ -1,0 +1,375 @@
+{
+  "brief_band_note": "The Phase-7 brief's '23-25% host_pack hit share' band matches ONLY cuda0_hits/pooled_requests (target 0.2399).  The registered gate definition is pooled_dedup = 0.5134 (2,618/5,099).  THEORY.md L327 is internally inconsistent (cites 2,618/5,099 for a 23-25% claim).  All 8 definitions are reported above and in data/anchor_gate.json host_share.definitions \u2014 the discrepancy is data, not something to paper over.",
+  "constants_used": {
+    "dense_call_ms": 13.272,
+    "fill_lanes": 3,
+    "layer_split": 22,
+    "orch_ms_CALIBRATED": 0.0,
+    "queue_depth": 6,
+    "read_ms_mean": 103.5997,
+    "touch_ms": 0.3936882868217054,
+    "vram_policy": "priority_lru (RankPriority, vram_cache.h:244)"
+  },
+  "dimensions": [
+    {
+      "dimension": "storage_requests_per_decode_token.mean",
+      "magnitude": "rel err +0.000 (sim 83.47 vs target 83.47)",
+      "sim": 83.46666666666667,
+      "status": "PASS",
+      "target": 83.46666666666667,
+      "tolerance": "mean within +-10% (got +0.00%)"
+    },
+    {
+      "dimension": "storage_requests_per_decode_token.per_token",
+      "magnitude": "max |rel err| 0.000 at token 1 (sim 96 vs target 96)",
+      "sim": "15/15 tokens",
+      "status": "PASS",
+      "target": ">=12/15 tokens within +-15%%",
+      "tolerance": "per-token +-15%% on >=12/15"
+    },
+    {
+      "dimension": "storage_requests.prefill",
+      "magnitude": "sim 1229 vs 1229 (+0.00%)",
+      "sim": 1229,
+      "status": "PASS",
+      "target": 1229,
+      "tolerance": "+-15% (reported)"
+    },
+    {
+      "dimension": "storage_requests.whole_gen_per_emitted_token",
+      "magnitude": "sim 155.062 vs 155.062 (+0.00%)",
+      "sim": 155.0625,
+      "status": "PASS",
+      "target": 155.0625,
+      "tolerance": "+-15% (reported)"
+    },
+    {
+      "dimension": "host_pack_hit_share.pooled_dedup",
+      "magnitude": "+0.00 pp (sim 0.5134 vs target 0.5134)",
+      "sim": 0.5134340066679741,
+      "status": "PASS",
+      "target": 0.5134340066679741,
+      "tolerance": "+-3.0 pp"
+    },
+    {
+      "dimension": "pooled_counters.cold_loads",
+      "magnitude": "+0 records (+0.000%)",
+      "sim": 4444,
+      "status": "PASS",
+      "target": 4444,
+      "tolerance": "+-5%"
+    },
+    {
+      "dimension": "pooled_counters.resident_hits",
+      "magnitude": "+0 records (+0.000%)",
+      "sim": 655,
+      "status": "PASS",
+      "target": 655,
+      "tolerance": "+-20%"
+    },
+    {
+      "dimension": "pooled_counters.h2d_copies",
+      "magnitude": "+0 records (+0.000%)",
+      "sim": 4444,
+      "status": "PASS",
+      "target": 4444,
+      "tolerance": "+-5%"
+    },
+    {
+      "dimension": "decode_wall_shape.mean",
+      "magnitude": "-11.55% (sim 4214.7 ms vs target 4765.3 ms)",
+      "sim": 4214.720357392763,
+      "status": "PASS",
+      "target": 4765.287399999999,
+      "tolerance": "mean within +-30%%"
+    },
+    {
+      "dimension": "decode_wall_shape.per_token",
+      "magnitude": "max |rel err| 0.242 (sim 5246 vs target 6919 ms)",
+      "sim": "15/15 tokens",
+      "status": "PASS",
+      "target": ">=12/15 within +-50%%",
+      "tolerance": "per-token +-50%% on >=12/15"
+    },
+    {
+      "dimension": "decode_wall_shape.spearman",
+      "magnitude": "rho = 0.9195 over the 15 measured per-token walls",
+      "sim": "0.9195",
+      "status": "PASS",
+      "target": ">= 0.5",
+      "tolerance": "Spearman rho >= 0.5"
+    },
+    {
+      "dimension": "decode_wall.prefill_ms (reported)",
+      "magnitude": "-19.5% (sim 74046 ms vs target 91939 ms)",
+      "sim": 74046.1487043414,
+      "status": "PASS",
+      "target": 91938.637,
+      "tolerance": "+-30%% (reported)"
+    }
+  ],
+  "fit_holdout_split": {
+    "fit": "NOTHING \u2014 every sim constant is MEASURED / DERIVED / ASSUMPTION (theory/sim/constants.py).  One methodological choice is disclosed: the wall-timing STRUCTURE (per-call blocking fill makespan, demand-gated along the layer chain) was compared with four alternative decompositions and is reported as a fit-side structural selection in SIM_VS_THEORY.md; the alternatives are quantified there.",
+    "holdout": "every registered dimension \u2014 storage_requests per token (mean + shape + prefill + whole-gen), all 8 host_pack share definitions, pooled cold_loads / resident_hits / h2d_copies, and the decode wall shape (mean + per-token + Spearman)."
+  },
+  "gate_status": "PASS",
+  "host_share_definitions": {
+    "cuda0_hits_over_pooled_requests": {
+      "denominator": 5099,
+      "formula": "host_pack.cuda0.hits / pooled dedup requests",
+      "hits": 1223,
+      "in_brief_band_23_25pct": true,
+      "value": 0.23985095116689548
+    },
+    "cuda1_hits_over_pooled_requests": {
+      "denominator": 5099,
+      "formula": "host_pack.cuda1.hits / pooled dedup requests",
+      "hits": 1395,
+      "in_brief_band_23_25pct": false,
+      "value": 0.27358305550107864
+    },
+    "decode_only_dedup": {
+      "denominator": 3870,
+      "formula": "decode rows: sum(hits) / sum(hits+misses)",
+      "hits": 2618,
+      "in_brief_band_23_25pct": false,
+      "value": 0.6764857881136951
+    },
+    "hits_over_device_fills": {
+      "denominator": 4444,
+      "formula": "sum(host_pack_hits) / sum(cold_loads)",
+      "hits": 2618,
+      "in_brief_band_23_25pct": false,
+      "value": 0.5891089108910891
+    },
+    "hits_over_raw_slots": {
+      "denominator": 5676,
+      "formula": "sum(host_pack_hits) / raw rank slots",
+      "hits": 2618,
+      "in_brief_band_23_25pct": false,
+      "value": 0.46124031007751937
+    },
+    "per_gpu.cuda0": {
+      "denominator": 2613,
+      "formula": "host_pack.cuda0.hits / (hits+misses) [cuda0]",
+      "hits": 1223,
+      "in_brief_band_23_25pct": false,
+      "value": 0.46804439341752774
+    },
+    "per_gpu.cuda1": {
+      "denominator": 2486,
+      "formula": "host_pack.cuda1.hits / (hits+misses) [cuda1]",
+      "hits": 1395,
+      "in_brief_band_23_25pct": false,
+      "value": 0.5611423974255833
+    },
+    "pooled_dedup": {
+      "denominator": 5099,
+      "formula": "sum(host_pack_hits) / sum(host_pack_hits+misses)",
+      "hits": 2618,
+      "in_brief_band_23_25pct": false,
+      "value": 0.5134340066679741
+    }
+  },
+  "host_share_registered_definition": {
+    "definition": "pooled_dedup = sum(host_pack_hits) / sum(host_pack_hits + host_pack_misses)",
+    "tol_pp": 3.0
+  },
+  "n_dimensions": 12,
+  "n_fail": 0,
+  "per_token": {
+    "sim_cold_loads": [
+      1229,
+      191,
+      184,
+      187,
+      209,
+      220,
+      217,
+      230,
+      227,
+      227,
+      215,
+      218,
+      223,
+      224,
+      221,
+      222
+    ],
+    "sim_h2d_copies": [
+      1229,
+      191,
+      184,
+      187,
+      209,
+      220,
+      217,
+      230,
+      227,
+      227,
+      215,
+      218,
+      223,
+      224,
+      221,
+      222
+    ],
+    "sim_resident_hits": [
+      0,
+      67,
+      74,
+      71,
+      49,
+      38,
+      41,
+      28,
+      31,
+      31,
+      43,
+      40,
+      35,
+      34,
+      37,
+      36
+    ],
+    "sim_storage_requests": [
+      1229,
+      96,
+      69,
+      80,
+      111,
+      125,
+      114,
+      96,
+      80,
+      56,
+      64,
+      79,
+      61,
+      69,
+      91,
+      61
+    ],
+    "sim_wall_ms": [
+      74046.1487043414,
+      4414.295161865521,
+      3665.8896450924076,
+      4081.670487744137,
+      4913.232173047596,
+      5245.85684716898,
+      5245.85684716898,
+      4830.07600451725,
+      3915.3581506834453,
+      3499.577308031716,
+      3832.2019821530994,
+      4497.4513303958665,
+      3582.7334765620617,
+      3665.8896450924076,
+      4414.295161865972,
+      3416.4211395019956
+    ],
+    "target_cold_loads": [
+      1229,
+      191,
+      184,
+      187,
+      209,
+      220,
+      217,
+      230,
+      227,
+      227,
+      215,
+      218,
+      223,
+      224,
+      221,
+      222
+    ],
+    "target_h2d_copies": [
+      1229,
+      191,
+      184,
+      187,
+      209,
+      220,
+      217,
+      230,
+      227,
+      227,
+      215,
+      218,
+      223,
+      224,
+      221,
+      222
+    ],
+    "target_resident_hits": [
+      0,
+      67,
+      74,
+      71,
+      49,
+      38,
+      41,
+      28,
+      31,
+      31,
+      43,
+      40,
+      35,
+      34,
+      37,
+      36
+    ],
+    "target_storage_requests": [
+      1229,
+      96,
+      69,
+      80,
+      111,
+      125,
+      114,
+      96,
+      80,
+      56,
+      64,
+      79,
+      61,
+      69,
+      91,
+      61
+    ],
+    "target_wall_ms": [
+      91938.637,
+      5754.45,
+      4117.283,
+      4311.571,
+      6084.462,
+      6919.384,
+      6106.814,
+      5181.947,
+      4642.983,
+      3469.485,
+      3563.975,
+      4650.073,
+      3582.416,
+      4204.776,
+      5129.065,
+      3760.627
+    ]
+  },
+  "pooled": {
+    "sim_cold_loads": 4444,
+    "sim_h2d_copies": 4444,
+    "sim_host_hits": 2618,
+    "sim_host_misses": 2481,
+    "sim_requests": 5099,
+    "sim_resident_hits": 655,
+    "target_cold_loads": 4444,
+    "target_h2d_copies": 4444,
+    "target_host_hits": 2618,
+    "target_requests": 5099,
+    "target_resident_hits": 655
+  }
+}

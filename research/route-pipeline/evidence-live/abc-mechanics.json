@@ -1,0 +1,65 @@
+{
+  "gpu": "Tesla T4",
+  "cases": {
+    "A_hash_staging": {
+      "status": "ok",
+      "metrics": {
+        "fixture": "synthetic",
+        "reads": 18,
+        "bytes": 240648192,
+        "route_table_realism": "ROUTE_TABLE_REALISM_NOT_MEASURED",
+        "serial_ms": {
+          "p50": 117.32398599997396,
+          "mean": 135.78394599999228,
+          "min": 107.90117199985616,
+          "n": 5
+        },
+        "batched_ms": {
+          "p50": 213.02888999980496,
+          "mean": 195.02075520003928,
+          "min": 138.8594110003396,
+          "n": 5
+        },
+        "hidden_ms": -95.704903999831
+      }
+    },
+    "B_contention": {
+      "status": "ok",
+      "metrics": {
+        "fixture": "synthetic",
+        "shape_note": "ASSUMED 4096x2048 fp16",
+        "alone_ms": {
+          "p50": 0.07904735000465735,
+          "mean": 1.974060049997206,
+          "min": 0.07672364999962156,
+          "n": 5
+        },
+        "loaded_ms": {
+          "p50": 3.5619823499928316,
+          "mean": 3.727520769994044,
+          "min": 3.5020055999893884,
+          "n": 5
+        },
+        "efficiency_c": 0.0222
+      }
+    },
+    "C_barrier": {
+      "status": "ok",
+      "metrics": {
+        "sync_ms": {
+          "p50": 0.009046499826581567,
+          "mean": 0.011803949905697664,
+          "min": 0.008123999577946961,
+          "n": 20
+        },
+        "event_ms": {
+          "p50": 0.005691000069418806,
+          "mean": 0.009997399911298999,
+          "min": 0.005019000127504114,
+          "n": 20
+        }
+      }
+    }
+  },
+  "status": "ok"
+}

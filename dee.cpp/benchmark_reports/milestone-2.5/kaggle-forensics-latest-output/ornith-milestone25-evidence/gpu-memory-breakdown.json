@@ -1,0 +1,651 @@
+{
+  "artifact": "gpu-memory-breakdown",
+  "primary": {
+    "per_gpu": [
+      {
+        "device": "cuda:0",
+        "inferred_cuda_context_libraries_and_other_bytes": 330897408,
+        "native_allocation_ledger": {
+          "device_expert_cache_reserved_bytes": 1006632960,
+          "device_fixed_work_buffer_bytes": 1822720,
+          "device_moe_batch_buffer_bytes": 471040,
+          "device_oracle_scratch_bytes": 0,
+          "device_prefetch_staging_bytes": 125829120,
+          "device_router_dynamic_bytes": 256000,
+          "device_router_weight_bytes": 20971520
+        },
+        "native_total_device_bytes": 1155983360,
+        "negative_residual_warning": false,
+        "nvml_reconciliation_delta_bytes": 330897408,
+        "nvml_scope": "process",
+        "peak_nvml_used_bytes": 5026873344,
+        "peak_pytorch_active_bytes": 3502453760,
+        "peak_pytorch_allocated_bytes": 3502453760,
+        "peak_pytorch_inactive_split_bytes": 122605056,
+        "peak_pytorch_reserved_bytes": 3539992576,
+        "pytorch_dense_weight_bytes": 2448353920,
+        "pytorch_live_generation_input_bytes": 48,
+        "pytorch_other_peak_allocation_bytes": 1021618512,
+        "pytorch_recurrent_or_kv_state_bytes": 32481280,
+        "pytorch_reserved_but_unused_bytes": 37538816,
+        "reconciliation_equation": "NVML = PyTorch reserved + exact native CUDA allocations + inferred residual"
+      },
+      {
+        "device": "cuda:1",
+        "inferred_cuda_context_libraries_and_other_bytes": 330897408,
+        "native_allocation_ledger": {
+          "device_expert_cache_reserved_bytes": 1006632960,
+          "device_fixed_work_buffer_bytes": 1822720,
+          "device_moe_batch_buffer_bytes": 471040,
+          "device_oracle_scratch_bytes": 0,
+          "device_prefetch_staging_bytes": 125829120,
+          "device_router_dynamic_bytes": 256000,
+          "device_router_weight_bytes": 20971520
+        },
+        "native_total_device_bytes": 1155983360,
+        "negative_residual_warning": false,
+        "nvml_reconciliation_delta_bytes": 330897408,
+        "nvml_scope": "process",
+        "peak_nvml_used_bytes": 5026873344,
+        "peak_pytorch_active_bytes": 3502947328,
+        "peak_pytorch_allocated_bytes": 3502947328,
+        "peak_pytorch_inactive_split_bytes": 103727616,
+        "peak_pytorch_reserved_bytes": 3539992576,
+        "pytorch_dense_weight_bytes": 2448358016,
+        "pytorch_live_generation_input_bytes": 0,
+        "pytorch_other_peak_allocation_bytes": 1022108032,
+        "pytorch_recurrent_or_kv_state_bytes": 32481280,
+        "pytorch_reserved_but_unused_bytes": 37045248,
+        "reconciliation_equation": "NVML = PyTorch reserved + exact native CUDA allocations + inferred residual"
+      }
+    ],
+    "run_id": "dual-cold-primary"
+  },
+  "primary_run": "dual-cold-primary",
+  "runs": [
+    {
+      "per_gpu": [
+        {
+          "device": "cuda:0",
+          "inferred_cuda_context_libraries_and_other_bytes": 330897408,
+          "native_allocation_ledger": {
+            "device_expert_cache_reserved_bytes": 1006632960,
+            "device_fixed_work_buffer_bytes": 1822720,
+            "device_moe_batch_buffer_bytes": 471040,
+            "device_oracle_scratch_bytes": 0,
+            "device_prefetch_staging_bytes": 125829120,
+            "device_router_dynamic_bytes": 256000,
+            "device_router_weight_bytes": 20971520
+          },
+          "native_total_device_bytes": 1155983360,
+          "negative_residual_warning": false,
+          "nvml_reconciliation_delta_bytes": 330897408,
+          "nvml_scope": "process",
+          "peak_nvml_used_bytes": 5026873344,
+          "peak_pytorch_active_bytes": 3502453760,
+          "peak_pytorch_allocated_bytes": 3502453760,
+          "peak_pytorch_inactive_split_bytes": 122605056,
+          "peak_pytorch_reserved_bytes": 3539992576,
+          "pytorch_dense_weight_bytes": 2448353920,
+          "pytorch_live_generation_input_bytes": 48,
+          "pytorch_other_peak_allocation_bytes": 1021618512,
+          "pytorch_recurrent_or_kv_state_bytes": 32481280,
+          "pytorch_reserved_but_unused_bytes": 37538816,
+          "reconciliation_equation": "NVML = PyTorch reserved + exact native CUDA allocations + inferred residual"
+        },
+        {
+          "device": "cuda:1",
+          "inferred_cuda_context_libraries_and_other_bytes": 330897408,
+          "native_allocation_ledger": {
+            "device_expert_cache_reserved_bytes": 1006632960,
+            "device_fixed_work_buffer_bytes": 1822720,
+            "device_moe_batch_buffer_bytes": 471040,
+            "device_oracle_scratch_bytes": 0,
+            "device_prefetch_staging_bytes": 125829120,
+            "device_router_dynamic_bytes": 256000,
+            "device_router_weight_bytes": 20971520
+          },
+          "native_total_device_bytes": 1155983360,
+          "negative_residual_warning": false,
+          "nvml_reconciliation_delta_bytes": 330897408,
+          "nvml_scope": "process",
+          "peak_nvml_used_bytes": 5026873344,
+          "peak_pytorch_active_bytes": 3502947328,
+          "peak_pytorch_allocated_bytes": 3502947328,
+          "peak_pytorch_inactive_split_bytes": 103727616,
+          "peak_pytorch_reserved_bytes": 3539992576,
+          "pytorch_dense_weight_bytes": 2448358016,
+          "pytorch_live_generation_input_bytes": 0,
+          "pytorch_other_peak_allocation_bytes": 1022108032,
+          "pytorch_recurrent_or_kv_state_bytes": 32481280,
+          "pytorch_reserved_but_unused_bytes": 37045248,
+          "reconciliation_equation": "NVML = PyTorch reserved + exact native CUDA allocations + inferred residual"
+        }
+      ],
+      "run_id": "dual-cold-primary"
+    },
+    {
+      "per_gpu": [
+        {
+          "device": "cuda:0",
+          "inferred_cuda_context_libraries_and_other_bytes": 330897408,
+          "native_allocation_ledger": {
+            "device_expert_cache_reserved_bytes": 1006632960,
+            "device_fixed_work_buffer_bytes": 1822720,
+            "device_moe_batch_buffer_bytes": 471040,
+            "device_oracle_scratch_bytes": 0,
+            "device_prefetch_staging_bytes": 125829120,
+            "device_router_dynamic_bytes": 256000,
+            "device_router_weight_bytes": 20971520
+          },
+          "native_total_device_bytes": 1155983360,
+          "negative_residual_warning": false,
+          "nvml_reconciliation_delta_bytes": 330897408,
+          "nvml_scope": "process",
+          "peak_nvml_used_bytes": 4020240384,
+          "peak_pytorch_active_bytes": 2507827200,
+          "peak_pytorch_allocated_bytes": 2507827200,
+          "peak_pytorch_inactive_split_bytes": 50195456,
+          "peak_pytorch_reserved_bytes": 2533359616,
+          "pytorch_dense_weight_bytes": 2448353920,
+          "pytorch_live_generation_input_bytes": 48,
+          "pytorch_other_peak_allocation_bytes": 26991952,
+          "pytorch_recurrent_or_kv_state_bytes": 32481280,
+          "pytorch_reserved_but_unused_bytes": 25532416,
+          "reconciliation_equation": "NVML = PyTorch reserved + exact native CUDA allocations + inferred residual"
+        },
+        {
+          "device": "cuda:1",
+          "inferred_cuda_context_libraries_and_other_bytes": 330897408,
+          "native_allocation_ledger": {
+            "device_expert_cache_reserved_bytes": 1006632960,
+            "device_fixed_work_buffer_bytes": 1822720,
+            "device_moe_batch_buffer_bytes": 471040,
+            "device_oracle_scratch_bytes": 0,
+            "device_prefetch_staging_bytes": 125829120,
+            "device_router_dynamic_bytes": 256000,
+            "device_router_weight_bytes": 20971520
+          },
+          "native_total_device_bytes": 1155983360,
+          "negative_residual_warning": false,
+          "nvml_reconciliation_delta_bytes": 330897408,
+          "nvml_scope": "process",
+          "peak_nvml_used_bytes": 4020240384,
+          "peak_pytorch_active_bytes": 2507824640,
+          "peak_pytorch_allocated_bytes": 2507824640,
+          "peak_pytorch_inactive_split_bytes": 46032896,
+          "peak_pytorch_reserved_bytes": 2533359616,
+          "pytorch_dense_weight_bytes": 2448358016,
+          "pytorch_live_generation_input_bytes": 0,
+          "pytorch_other_peak_allocation_bytes": 26985344,
+          "pytorch_recurrent_or_kv_state_bytes": 32481280,
+          "pytorch_reserved_but_unused_bytes": 25534976,
+          "reconciliation_equation": "NVML = PyTorch reserved + exact native CUDA allocations + inferred residual"
+        }
+      ],
+      "run_id": "dual-warm-profiled"
+    },
+    {
+      "per_gpu": [
+        {
+          "device": "cuda:0",
+          "inferred_cuda_context_libraries_and_other_bytes": 314120192,
+          "native_allocation_ledger": {
+            "device_expert_cache_reserved_bytes": 1006632960,
+            "device_fixed_work_buffer_bytes": 1822720,
+            "device_moe_batch_buffer_bytes": 471040,
+            "device_oracle_scratch_bytes": 0,
+            "device_prefetch_staging_bytes": 125829120,
+            "device_router_dynamic_bytes": 256000,
+            "device_router_weight_bytes": 20971520
+          },
+          "native_total_device_bytes": 1155983360,
+          "negative_residual_warning": false,
+          "nvml_reconciliation_delta_bytes": 314120192,
+          "nvml_scope": "process",
+          "peak_nvml_used_bytes": 4003463168,
+          "peak_pytorch_active_bytes": 2507827200,
+          "peak_pytorch_allocated_bytes": 2507827200,
+          "peak_pytorch_inactive_split_bytes": 50195456,
+          "peak_pytorch_reserved_bytes": 2533359616,
+          "pytorch_dense_weight_bytes": 2448353920,
+          "pytorch_live_generation_input_bytes": 48,
+          "pytorch_other_peak_allocation_bytes": 26991952,
+          "pytorch_recurrent_or_kv_state_bytes": 32481280,
+          "pytorch_reserved_but_unused_bytes": 25532416,
+          "reconciliation_equation": "NVML = PyTorch reserved + exact native CUDA allocations + inferred residual"
+        },
+        {
+          "device": "cuda:1",
+          "inferred_cuda_context_libraries_and_other_bytes": 314120192,
+          "native_allocation_ledger": {
+            "device_expert_cache_reserved_bytes": 1006632960,
+            "device_fixed_work_buffer_bytes": 1822720,
+            "device_moe_batch_buffer_bytes": 471040,
+            "device_oracle_scratch_bytes": 0,
+            "device_prefetch_staging_bytes": 125829120,
+            "device_router_dynamic_bytes": 256000,
+            "device_router_weight_bytes": 20971520
+          },
+          "native_total_device_bytes": 1155983360,
+          "negative_residual_warning": false,
+          "nvml_reconciliation_delta_bytes": 314120192,
+          "nvml_scope": "process",
+          "peak_nvml_used_bytes": 4003463168,
+          "peak_pytorch_active_bytes": 2507824640,
+          "peak_pytorch_allocated_bytes": 2507824640,
+          "peak_pytorch_inactive_split_bytes": 46032896,
+          "peak_pytorch_reserved_bytes": 2533359616,
+          "pytorch_dense_weight_bytes": 2448358016,
+          "pytorch_live_generation_input_bytes": 0,
+          "pytorch_other_peak_allocation_bytes": 26985344,
+          "pytorch_recurrent_or_kv_state_bytes": 32481280,
+          "pytorch_reserved_but_unused_bytes": 25534976,
+          "reconciliation_equation": "NVML = PyTorch reserved + exact native CUDA allocations + inferred residual"
+        }
+      ],
+      "run_id": "dual-warm-control"
+    },
+    {
+      "per_gpu": [
+        {
+          "device": "cuda:0",
+          "inferred_cuda_context_libraries_and_other_bytes": 314120192,
+          "native_allocation_ledger": {
+            "device_expert_cache_reserved_bytes": 1006632960,
+            "device_fixed_work_buffer_bytes": 1822720,
+            "device_moe_batch_buffer_bytes": 471040,
+            "device_oracle_scratch_bytes": 0,
+            "device_prefetch_staging_bytes": 125829120,
+            "device_router_dynamic_bytes": 256000,
+            "device_router_weight_bytes": 20971520
+          },
+          "native_total_device_bytes": 1155983360,
+          "negative_residual_warning": false,
+          "nvml_reconciliation_delta_bytes": 314120192,
+          "nvml_scope": "process",
+          "peak_nvml_used_bytes": 5010096128,
+          "peak_pytorch_active_bytes": 3502453760,
+          "peak_pytorch_allocated_bytes": 3502453760,
+          "peak_pytorch_inactive_split_bytes": 122605056,
+          "peak_pytorch_reserved_bytes": 3539992576,
+          "pytorch_dense_weight_bytes": 2448353920,
+          "pytorch_live_generation_input_bytes": 48,
+          "pytorch_other_peak_allocation_bytes": 1021618512,
+          "pytorch_recurrent_or_kv_state_bytes": 32481280,
+          "pytorch_reserved_but_unused_bytes": 37538816,
+          "reconciliation_equation": "NVML = PyTorch reserved + exact native CUDA allocations + inferred residual"
+        },
+        {
+          "device": "cuda:1",
+          "inferred_cuda_context_libraries_and_other_bytes": 314120192,
+          "native_allocation_ledger": {
+            "device_expert_cache_reserved_bytes": 1006632960,
+            "device_fixed_work_buffer_bytes": 1822720,
+            "device_moe_batch_buffer_bytes": 471040,
+            "device_oracle_scratch_bytes": 0,
+            "device_prefetch_staging_bytes": 125829120,
+            "device_router_dynamic_bytes": 256000,
+            "device_router_weight_bytes": 20971520
+          },
+          "native_total_device_bytes": 1155983360,
+          "negative_residual_warning": false,
+          "nvml_reconciliation_delta_bytes": 314120192,
+          "nvml_scope": "process",
+          "peak_nvml_used_bytes": 5010096128,
+          "peak_pytorch_active_bytes": 3502947328,
+          "peak_pytorch_allocated_bytes": 3502947328,
+          "peak_pytorch_inactive_split_bytes": 103727616,
+          "peak_pytorch_reserved_bytes": 3539992576,
+          "pytorch_dense_weight_bytes": 2448358016,
+          "pytorch_live_generation_input_bytes": 0,
+          "pytorch_other_peak_allocation_bytes": 1022108032,
+          "pytorch_recurrent_or_kv_state_bytes": 32481280,
+          "pytorch_reserved_but_unused_bytes": 37045248,
+          "reconciliation_equation": "NVML = PyTorch reserved + exact native CUDA allocations + inferred residual"
+        }
+      ],
+      "run_id": "dual-warm-reference-present"
+    },
+    {
+      "per_gpu": [
+        {
+          "device": "cuda:0",
+          "inferred_cuda_context_libraries_and_other_bytes": 314120192,
+          "native_allocation_ledger": {
+            "device_expert_cache_reserved_bytes": 1006632960,
+            "device_fixed_work_buffer_bytes": 1822720,
+            "device_moe_batch_buffer_bytes": 471040,
+            "device_oracle_scratch_bytes": 0,
+            "device_prefetch_staging_bytes": 125829120,
+            "device_router_dynamic_bytes": 256000,
+            "device_router_weight_bytes": 20971520
+          },
+          "native_total_device_bytes": 1155983360,
+          "negative_residual_warning": false,
+          "nvml_reconciliation_delta_bytes": 314120192,
+          "nvml_scope": "process",
+          "peak_nvml_used_bytes": 4003463168,
+          "peak_pytorch_active_bytes": 2507827200,
+          "peak_pytorch_allocated_bytes": 2507827200,
+          "peak_pytorch_inactive_split_bytes": 50195456,
+          "peak_pytorch_reserved_bytes": 2533359616,
+          "pytorch_dense_weight_bytes": 2448353920,
+          "pytorch_live_generation_input_bytes": 32,
+          "pytorch_other_peak_allocation_bytes": 27012448,
+          "pytorch_recurrent_or_kv_state_bytes": 32460800,
+          "pytorch_reserved_but_unused_bytes": 25532416,
+          "reconciliation_equation": "NVML = PyTorch reserved + exact native CUDA allocations + inferred residual"
+        },
+        {
+          "device": "cuda:1",
+          "inferred_cuda_context_libraries_and_other_bytes": 312023040,
+          "native_allocation_ledger": {
+            "device_expert_cache_reserved_bytes": 1006632960,
+            "device_fixed_work_buffer_bytes": 1822720,
+            "device_moe_batch_buffer_bytes": 471040,
+            "device_oracle_scratch_bytes": 0,
+            "device_prefetch_staging_bytes": 125829120,
+            "device_router_dynamic_bytes": 256000,
+            "device_router_weight_bytes": 20971520
+          },
+          "native_total_device_bytes": 1155983360,
+          "negative_residual_warning": false,
+          "nvml_reconciliation_delta_bytes": 312023040,
+          "nvml_scope": "process",
+          "peak_nvml_used_bytes": 4001366016,
+          "peak_pytorch_active_bytes": 2507824640,
+          "peak_pytorch_allocated_bytes": 2507824640,
+          "peak_pytorch_inactive_split_bytes": 46032896,
+          "peak_pytorch_reserved_bytes": 2533359616,
+          "pytorch_dense_weight_bytes": 2448358016,
+          "pytorch_live_generation_input_bytes": 0,
+          "pytorch_other_peak_allocation_bytes": 27005824,
+          "pytorch_recurrent_or_kv_state_bytes": 32460800,
+          "pytorch_reserved_but_unused_bytes": 25534976,
+          "reconciliation_equation": "NVML = PyTorch reserved + exact native CUDA allocations + inferred residual"
+        }
+      ],
+      "run_id": "dual-cache-disabled"
+    },
+    {
+      "per_gpu": [
+        {
+          "device": "cuda:0",
+          "inferred_cuda_context_libraries_and_other_bytes": 314120192,
+          "native_allocation_ledger": {
+            "device_expert_cache_reserved_bytes": 503316480,
+            "device_fixed_work_buffer_bytes": 1822720,
+            "device_moe_batch_buffer_bytes": 471040,
+            "device_oracle_scratch_bytes": 0,
+            "device_prefetch_staging_bytes": 125829120,
+            "device_router_dynamic_bytes": 256000,
+            "device_router_weight_bytes": 20971520
+          },
+          "native_total_device_bytes": 652666880,
+          "negative_residual_warning": false,
+          "nvml_reconciliation_delta_bytes": 314120192,
+          "nvml_scope": "process",
+          "peak_nvml_used_bytes": 3500146688,
+          "peak_pytorch_active_bytes": 2507827200,
+          "peak_pytorch_allocated_bytes": 2507827200,
+          "peak_pytorch_inactive_split_bytes": 50195456,
+          "peak_pytorch_reserved_bytes": 2533359616,
+          "pytorch_dense_weight_bytes": 2448353920,
+          "pytorch_live_generation_input_bytes": 32,
+          "pytorch_other_peak_allocation_bytes": 27012448,
+          "pytorch_recurrent_or_kv_state_bytes": 32460800,
+          "pytorch_reserved_but_unused_bytes": 25532416,
+          "reconciliation_equation": "NVML = PyTorch reserved + exact native CUDA allocations + inferred residual"
+        },
+        {
+          "device": "cuda:1",
+          "inferred_cuda_context_libraries_and_other_bytes": 312023040,
+          "native_allocation_ledger": {
+            "device_expert_cache_reserved_bytes": 503316480,
+            "device_fixed_work_buffer_bytes": 1822720,
+            "device_moe_batch_buffer_bytes": 471040,
+            "device_oracle_scratch_bytes": 0,
+            "device_prefetch_staging_bytes": 125829120,
+            "device_router_dynamic_bytes": 256000,
+            "device_router_weight_bytes": 20971520
+          },
+          "native_total_device_bytes": 652666880,
+          "negative_residual_warning": false,
+          "nvml_reconciliation_delta_bytes": 312023040,
+          "nvml_scope": "process",
+          "peak_nvml_used_bytes": 3498049536,
+          "peak_pytorch_active_bytes": 2507824640,
+          "peak_pytorch_allocated_bytes": 2507824640,
+          "peak_pytorch_inactive_split_bytes": 46032896,
+          "peak_pytorch_reserved_bytes": 2533359616,
+          "pytorch_dense_weight_bytes": 2448358016,
+          "pytorch_live_generation_input_bytes": 0,
+          "pytorch_other_peak_allocation_bytes": 27005824,
+          "pytorch_recurrent_or_kv_state_bytes": 32460800,
+          "pytorch_reserved_but_unused_bytes": 25534976,
+          "reconciliation_equation": "NVML = PyTorch reserved + exact native CUDA allocations + inferred residual"
+        }
+      ],
+      "run_id": "dual-cache-capacity-4"
+    },
+    {
+      "per_gpu": [
+        {
+          "device": "cuda:0",
+          "inferred_cuda_context_libraries_and_other_bytes": 315022336,
+          "native_allocation_ledger": {
+            "device_expert_cache_reserved_bytes": 1006632960,
+            "device_fixed_work_buffer_bytes": 1822720,
+            "device_moe_batch_buffer_bytes": 3556352,
+            "device_oracle_scratch_bytes": 0,
+            "device_prefetch_staging_bytes": 125829120,
+            "device_router_dynamic_bytes": 2560000,
+            "device_router_weight_bytes": 20971520
+          },
+          "native_total_device_bytes": 1161372672,
+          "negative_residual_warning": false,
+          "nvml_reconciliation_delta_bytes": 315022336,
+          "nvml_scope": "process",
+          "peak_nvml_used_bytes": 4009754624,
+          "peak_pytorch_active_bytes": 2508384768,
+          "peak_pytorch_allocated_bytes": 2508384768,
+          "peak_pytorch_inactive_split_bytes": 50195456,
+          "peak_pytorch_reserved_bytes": 2533359616,
+          "pytorch_dense_weight_bytes": 2448353920,
+          "pytorch_live_generation_input_bytes": 104,
+          "pytorch_other_peak_allocation_bytes": 27477784,
+          "pytorch_recurrent_or_kv_state_bytes": 32552960,
+          "pytorch_reserved_but_unused_bytes": 24974848,
+          "reconciliation_equation": "NVML = PyTorch reserved + exact native CUDA allocations + inferred residual"
+        },
+        {
+          "device": "cuda:1",
+          "inferred_cuda_context_libraries_and_other_bytes": 314763264,
+          "native_allocation_ledger": {
+            "device_expert_cache_reserved_bytes": 1006632960,
+            "device_fixed_work_buffer_bytes": 1822720,
+            "device_moe_batch_buffer_bytes": 3815424,
+            "device_oracle_scratch_bytes": 0,
+            "device_prefetch_staging_bytes": 125829120,
+            "device_router_dynamic_bytes": 2560000,
+            "device_router_weight_bytes": 20971520
+          },
+          "native_total_device_bytes": 1161631744,
+          "negative_residual_warning": false,
+          "nvml_reconciliation_delta_bytes": 314763264,
+          "nvml_scope": "process",
+          "peak_nvml_used_bytes": 4009754624,
+          "peak_pytorch_active_bytes": 2508345344,
+          "peak_pytorch_allocated_bytes": 2508345344,
+          "peak_pytorch_inactive_split_bytes": 46032896,
+          "peak_pytorch_reserved_bytes": 2533359616,
+          "pytorch_dense_weight_bytes": 2448358016,
+          "pytorch_live_generation_input_bytes": 0,
+          "pytorch_other_peak_allocation_bytes": 27434368,
+          "pytorch_recurrent_or_kv_state_bytes": 32552960,
+          "pytorch_reserved_but_unused_bytes": 25014272,
+          "reconciliation_equation": "NVML = PyTorch reserved + exact native CUDA allocations + inferred residual"
+        }
+      ],
+      "run_id": "dual-long-prompt"
+    },
+    {
+      "per_gpu": [
+        {
+          "device": "cuda:0",
+          "inferred_cuda_context_libraries_and_other_bytes": 314120192,
+          "native_allocation_ledger": {
+            "device_expert_cache_reserved_bytes": 1006632960,
+            "device_fixed_work_buffer_bytes": 1822720,
+            "device_moe_batch_buffer_bytes": 471040,
+            "device_oracle_scratch_bytes": 0,
+            "device_prefetch_staging_bytes": 125829120,
+            "device_router_dynamic_bytes": 256000,
+            "device_router_weight_bytes": 20971520
+          },
+          "native_total_device_bytes": 1155983360,
+          "negative_residual_warning": false,
+          "nvml_reconciliation_delta_bytes": 314120192,
+          "nvml_scope": "process",
+          "peak_nvml_used_bytes": 4003463168,
+          "peak_pytorch_active_bytes": 2507827200,
+          "peak_pytorch_allocated_bytes": 2507827200,
+          "peak_pytorch_inactive_split_bytes": 50195456,
+          "peak_pytorch_reserved_bytes": 2533359616,
+          "pytorch_dense_weight_bytes": 2448353920,
+          "pytorch_live_generation_input_bytes": 24,
+          "pytorch_other_peak_allocation_bytes": 27022696,
+          "pytorch_recurrent_or_kv_state_bytes": 32450560,
+          "pytorch_reserved_but_unused_bytes": 25532416,
+          "reconciliation_equation": "NVML = PyTorch reserved + exact native CUDA allocations + inferred residual"
+        },
+        {
+          "device": "cuda:1",
+          "inferred_cuda_context_libraries_and_other_bytes": 312023040,
+          "native_allocation_ledger": {
+            "device_expert_cache_reserved_bytes": 1006632960,
+            "device_fixed_work_buffer_bytes": 1822720,
+            "device_moe_batch_buffer_bytes": 471040,
+            "device_oracle_scratch_bytes": 0,
+            "device_prefetch_staging_bytes": 125829120,
+            "device_router_dynamic_bytes": 256000,
+            "device_router_weight_bytes": 20971520
+          },
+          "native_total_device_bytes": 1155983360,
+          "negative_residual_warning": false,
+          "nvml_reconciliation_delta_bytes": 312023040,
+          "nvml_scope": "process",
+          "peak_nvml_used_bytes": 4001366016,
+          "peak_pytorch_active_bytes": 2507824640,
+          "peak_pytorch_allocated_bytes": 2507824640,
+          "peak_pytorch_inactive_split_bytes": 46032896,
+          "peak_pytorch_reserved_bytes": 2533359616,
+          "pytorch_dense_weight_bytes": 2448358016,
+          "pytorch_live_generation_input_bytes": 0,
+          "pytorch_other_peak_allocation_bytes": 27016064,
+          "pytorch_recurrent_or_kv_state_bytes": 32450560,
+          "pytorch_reserved_but_unused_bytes": 25534976,
+          "reconciliation_equation": "NVML = PyTorch reserved + exact native CUDA allocations + inferred residual"
+        }
+      ],
+      "run_id": "dual-one-token"
+    },
+    {
+      "per_gpu": [
+        {
+          "device": "cuda:0",
+          "inferred_cuda_context_libraries_and_other_bytes": 494022656,
+          "native_allocation_ledger": {
+            "device_expert_cache_reserved_bytes": 2013265920,
+            "device_fixed_work_buffer_bytes": 3645440,
+            "device_moe_batch_buffer_bytes": 942080,
+            "device_oracle_scratch_bytes": 0,
+            "device_prefetch_staging_bytes": 251658240,
+            "device_router_dynamic_bytes": 512000,
+            "device_router_weight_bytes": 41943040
+          },
+          "native_total_device_bytes": 2311966720,
+          "negative_residual_warning": false,
+          "nvml_reconciliation_delta_bytes": 494022656,
+          "nvml_scope": "process",
+          "peak_nvml_used_bytes": 7809794048,
+          "peak_pytorch_active_bytes": 4988653056,
+          "peak_pytorch_allocated_bytes": 4988653056,
+          "peak_pytorch_inactive_split_bytes": 49828352,
+          "peak_pytorch_reserved_bytes": 5003804672,
+          "pytorch_dense_weight_bytes": 4896711936,
+          "pytorch_live_generation_input_bytes": 32,
+          "pytorch_other_peak_allocation_bytes": 27019488,
+          "pytorch_recurrent_or_kv_state_bytes": 64921600,
+          "pytorch_reserved_but_unused_bytes": 15151616,
+          "reconciliation_equation": "NVML = PyTorch reserved + exact native CUDA allocations + inferred residual"
+        }
+      ],
+      "run_id": "single-t4-warm"
+    }
+  ],
+  "schema_version": 1,
+  "scope_note": "PyTorch counters exclude dee.cpp cudaMalloc allocations. Native counters are exact allocation sizes. The residual is explicitly inferred, chiefly CUDA context/libraries when NVML process accounting is available.",
+  "warm": {
+    "per_gpu": [
+      {
+        "device": "cuda:0",
+        "inferred_cuda_context_libraries_and_other_bytes": 330897408,
+        "native_allocation_ledger": {
+          "device_expert_cache_reserved_bytes": 1006632960,
+          "device_fixed_work_buffer_bytes": 1822720,
+          "device_moe_batch_buffer_bytes": 471040,
+          "device_oracle_scratch_bytes": 0,
+          "device_prefetch_staging_bytes": 125829120,
+          "device_router_dynamic_bytes": 256000,
+          "device_router_weight_bytes": 20971520
+        },
+        "native_total_device_bytes": 1155983360,
+        "negative_residual_warning": false,
+        "nvml_reconciliation_delta_bytes": 330897408,
+        "nvml_scope": "process",
+        "peak_nvml_used_bytes": 4020240384,
+        "peak_pytorch_active_bytes": 2507827200,
+        "peak_pytorch_allocated_bytes": 2507827200,
+        "peak_pytorch_inactive_split_bytes": 50195456,
+        "peak_pytorch_reserved_bytes": 2533359616,
+        "pytorch_dense_weight_bytes": 2448353920,
+        "pytorch_live_generation_input_bytes": 48,
+        "pytorch_other_peak_allocation_bytes": 26991952,
+        "pytorch_recurrent_or_kv_state_bytes": 32481280,
+        "pytorch_reserved_but_unused_bytes": 25532416,
+        "reconciliation_equation": "NVML = PyTorch reserved + exact native CUDA allocations + inferred residual"
+      },
+      {
+        "device": "cuda:1",
+        "inferred_cuda_context_libraries_and_other_bytes": 330897408,
+        "native_allocation_ledger": {
+          "device_expert_cache_reserved_bytes": 1006632960,
+          "device_fixed_work_buffer_bytes": 1822720,
+          "device_moe_batch_buffer_bytes": 471040,
+          "device_oracle_scratch_bytes": 0,
+          "device_prefetch_staging_bytes": 125829120,
+          "device_router_dynamic_bytes": 256000,
+          "device_router_weight_bytes": 20971520
+        },
+        "native_total_device_bytes": 1155983360,
+        "negative_residual_warning": false,
+        "nvml_reconciliation_delta_bytes": 330897408,
+        "nvml_scope": "process",
+        "peak_nvml_used_bytes": 4020240384,
+        "peak_pytorch_active_bytes": 2507824640,
+        "peak_pytorch_allocated_bytes": 2507824640,
+        "peak_pytorch_inactive_split_bytes": 46032896,
+        "peak_pytorch_reserved_bytes": 2533359616,
+        "pytorch_dense_weight_bytes": 2448358016,
+        "pytorch_live_generation_input_bytes": 0,
+        "pytorch_other_peak_allocation_bytes": 26985344,
+        "pytorch_recurrent_or_kv_state_bytes": 32481280,
+        "pytorch_reserved_but_unused_bytes": 25534976,
+        "reconciliation_equation": "NVML = PyTorch reserved + exact native CUDA allocations + inferred residual"
+      }
+    ],
+    "run_id": "dual-warm-profiled"
+  }
+}

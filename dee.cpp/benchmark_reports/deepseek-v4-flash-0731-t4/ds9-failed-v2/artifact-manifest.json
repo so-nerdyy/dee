@@ -1,0 +1,88 @@
+{
+  "artifacts": [
+    {
+      "bytes": 466,
+      "path": "bootstrap-environment.json",
+      "sha256": "cbe209719dd9a32ebf325110cf788a01ee2ad71c30d804b8b4d644149ba49190"
+    },
+    {
+      "bytes": 59,
+      "path": "cuda-capability-probe.json",
+      "sha256": "5f3a56f90e298f9976b3e34fb137f9d035b21ed3e87e9adf9d3ea5e7e901d4a7"
+    },
+    {
+      "bytes": 1320,
+      "path": "fatal-error.json",
+      "sha256": "e925482849ba6967f9dcefa51a18a4d2eb233539f15c57d8e41dc469aed37a07"
+    },
+    {
+      "bytes": 161,
+      "path": "logs/pip-install.log",
+      "sha256": "c0e7e1103412f3bb3cf3560c460232ecd518fff340ac398d073e2ba169cf2721"
+    }
+  ],
+  "fatal_error": {
+    "message": "'w1.weight'",
+    "traceback": "Traceback (most recent call last):\n  File \"/kaggle/src/script.py\", line 607, in main\n    ref_out, ref_sigs, ref_caps, ref_states = run_sequence(ref_layer)\n                                              ^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/kaggle/src/script.py\", line 600, in run_sequence\n    out = layer.forward(x_step, start_pos, capture=cap)\n          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/kaggle/temp/dsv4-source/dee.cpp/scripts/deepseek_v4_layer_reference.py\", line 462, in forward\n    x = self.ffn_fn(x, input_ids, c)\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/kaggle/temp/dsv4-source/dee.cpp/scripts/deepseek_v4_layer_reference.py\", line 401, in _ffn_fp32_direct\n    out = moe.moe_layer_forward(\n          ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/kaggle/temp/dsv4-source/dee.cpp/scripts/deepseek_v4_moe_reference.py\", line 161, in moe_layer_forward\n    out = routed_expert_forward_weighted(\n          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/kaggle/temp/dsv4-source/dee.cpp/scripts/deepseek_v4_moe_reference.py\", line 98, in routed_expert_forward_weighted\n    w1 = ds7.dequantize_expert_weight(t[\"w1.weight\"], t[\"w1.scale\"])\n                                      ~^^^^^^^^^^^^^\nKeyError: 'w1.weight'\n",
+    "type": "KeyError"
+  },
+  "module_sha256": {
+    "cache": "c4d16b0cef031f1bbf8ed0c2a989e7a60394bc7f740973a85ed9a24e7271f0df",
+    "contract": "1b85c9bb513732329fb01f59571bf5b7f02de3fa0e3b4b5d109c36d9bc27e0f5",
+    "corpus": "9ffdb43f736a7dbade969619af44c8e8d817038be194050e3106eb51aa6ea215",
+    "expert_reference": "9c28375b17898a6908d61ca3a769f4ba2eab4104e4049439cfa76784eaa86ef5",
+    "layer_candidate": "72f21efc14e8b41bee65b2ad8d98cab9ae74286ce1fca54913ce3a930d386686",
+    "layer_common": "005c168e578724c4284a23c61273f65449a7a8b910e82782cbeb0100857121cc",
+    "layer_reference": "83d2498c59c2e53cc0626764ce69e2dda52f3d8c2387ea54fbdef70e64f37cbd",
+    "moe_reference": "895d1b1c97c201e45ab1ea2cfd1c9b16344e848b07d2469a5a88d5c7d037fb81",
+    "support": "58161d1525a4bbea1ea19779447006690602154ea680649cd0c4ba9b438d639b"
+  },
+  "performance_comparable": false,
+  "repository_commit": "84e3221eeb28945a0f29fa5d00a8995f48ee49c6",
+  "required_paths": [
+    {
+      "bytes": 466,
+      "path": "bootstrap-environment.json",
+      "present": true
+    },
+    {
+      "bytes": 59,
+      "path": "cuda-capability-probe.json",
+      "present": true
+    },
+    {
+      "bytes": null,
+      "path": "/kaggle/working/dsv4-ds9-evidence-20260731T120000Z-dsv4-ds9-one-layer/environment.json",
+      "present": false
+    },
+    {
+      "bytes": null,
+      "path": "/kaggle/working/dsv4-ds9-evidence-20260731T120000Z-dsv4-ds9-one-layer/ds9-one-layer-evidence.json",
+      "present": false
+    },
+    {
+      "bytes": null,
+      "path": "/kaggle/working/dsv4-ds9-evidence-20260731T120000Z-dsv4-ds9-one-layer/manifest.sha256",
+      "present": false
+    },
+    {
+      "bytes": 161,
+      "path": "logs/pip-install.log",
+      "present": true
+    }
+  ],
+  "result": "FAIL",
+  "run_id": "20260731T120000Z-dsv4-ds9-one-layer",
+  "schema_version": 1,
+  "terminal_verdict": "INVALID_EXPERIMENT",
+  "validation_failures": [
+    {
+      "details": [
+        "/kaggle/working/dsv4-ds9-evidence-20260731T120000Z-dsv4-ds9-one-layer/environment.json",
+        "/kaggle/working/dsv4-ds9-evidence-20260731T120000Z-dsv4-ds9-one-layer/ds9-one-layer-evidence.json",
+        "/kaggle/working/dsv4-ds9-evidence-20260731T120000Z-dsv4-ds9-one-layer/manifest.sha256"
+      ],
+      "name": "required_artifacts_present"
+    }
+  ]
+}

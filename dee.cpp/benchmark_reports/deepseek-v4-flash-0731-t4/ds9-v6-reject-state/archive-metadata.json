@@ -1,0 +1,8 @@
+{
+  "archive": "/kaggle/working/dsv4-ds9-evidence-20260731T120000Z-dsv4-ds9-one-layer.tar.gz",
+  "archive_sha256": "8be8e42f653baa7651be7d778e14540763ab923a493e5fdfa3e60b442763dc68",
+  "excluded_from_archive": [
+    "archive-metadata.json"
+  ],
+  "manifest_sha256": "2fb67cc98f46654ebb0f5c7018dbef6c77fdd9eb519e9dc7bcb769cb0312c8e6"
+}

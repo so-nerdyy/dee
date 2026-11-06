@@ -17,9 +17,9 @@ import struct
 import sys
 import zipfile
 
-ORACLE = "/mnt/c/Users/carth/Downloads/dynamic_expert_eviction/oracle.pt"
-MANIFEST = "/tmp/oracle_manifest.json"
-CHECK = "/tmp/oracle_cpp_check.json"
+ORACLE = sys.argv[1] if len(sys.argv) > 1 else "oracle.pt"
+MANIFEST = sys.argv[2] if len(sys.argv) > 2 else "/tmp/oracle_manifest.json"
+CHECK = sys.argv[3] if len(sys.argv) > 3 else "/tmp/oracle_cpp_check.json"
 
 # local-name -> (out, in) for the 3 linears of the Oracle MLP
 LINEAR = {

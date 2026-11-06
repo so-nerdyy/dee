@@ -1,0 +1,33 @@
+{
+  "accounted_ms": 57037.483791,
+  "unknown_ms": 9195.516209,
+  "closure_fraction": 0.861164,
+  "wall_ms": 66233.0,
+  "by_field_ms": {
+    "route_d2h_host_wait_ms": 15.373221,
+    "native_call_wall_ms": 56883.089371,
+    "combine_ms": 139.021199
+  },
+  "by_field_nested_ms": {
+    "decode_ms": 43.881629,
+    "fill_wait_ms": 41990.496096,
+    "native_output_sync_wait_ms": 4894.044812,
+    "expert_compute_ms": 256.48416
+  },
+  "extras_detail_ms": {
+    "stage_enqueue_wait_ms": 9435.749756,
+    "readiness_wait_ms": 27.479487,
+    "gather_scatter_wait_ms": 114.143674,
+    "shared_device_ms": 308.356544
+  },
+  "unmeasured_top_level_fields": 1935,
+  "nested_excluded": [
+    "decode_ms",
+    "expert_compute_ms",
+    "fill_wait_ms",
+    "h2d_ms",
+    "native_output_sync_wait_ms",
+    "source_wait_ms"
+  ],
+  "forced": false
+}

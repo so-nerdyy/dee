@@ -1,0 +1,9 @@
+budget_records,budget_gib,gain_conditional_mass,gain_per_byte,model
+1,0.012451171875,28.906276050957423,2.162131219823308e-06,linear_equal_cost (greedy top-m is optimal)
+2,0.02490234375,55.61229496021464,2.079843818822174e-06,linear_equal_cost (greedy top-m is optimal)
+4,0.0498046875,104.68300426120527,1.9575194613364212e-06,linear_equal_cost (greedy top-m is optimal)
+8,0.099609375,190.66378083011537,1.7826583416332485e-06,linear_equal_cost (greedy top-m is optimal)
+16,0.19921875,350.7696877586055,1.6398041283785387e-06,linear_equal_cost (greedy top-m is optimal)
+32,0.3984375,635.6847374526874,1.485873057451172e-06,linear_equal_cost (greedy top-m is optimal)
+64,0.796875,1141.179618003389,1.3337177599217247e-06,linear_equal_cost (greedy top-m is optimal)
+128,1.59375,1975.540060033401,1.1544251325278896e-06,linear_equal_cost (greedy top-m is optimal)

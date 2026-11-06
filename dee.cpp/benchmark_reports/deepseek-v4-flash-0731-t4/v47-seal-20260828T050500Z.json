@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "id": "v47-seal-p2.3-fp4-repair",
+  "run_id": "p2.3-fp4-repair-v47",
+  "date": "2026-08-28T05:05:00Z",
+  "classification_recorded_by_run": "REJECT_NUMERICAL",
+  "overturned_by_forensics": true,
+  "corrected_finding": "Exactness contract SATISFIED; the sole failing gate (exact_decoded_text) was corrupted by the push pipeline, not by the model.",
+  "evidence_dir": "dee.cpp/benchmark_reports/deepseek-v4-flash-0731-t4/v47-evidence-20260827Tterminal/",
+  "identity": {
+    "pinned_commit": "3178542769ca95c4f1e5ed693f2fe25b7883a1be",
+    "executing_harness_sha256": "2d89df4475c367264696619a5925754374106aad617e2df96f67489a5b42583f",
+    "cloned_harness_sha256": "ca13ccf6fa34aba1c9e1fd19d69b9cdff27257c68614d91d0ff30aa8c89958f6",
+    "run_config_sha256": "535ce039ae850d3de733ac920831c4619dcc47ebf8c06063d25792c6f593c0fa",
+    "model_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+    "gpu": "2x Tesla T4 (sm_75, compute 7.5) confirmed via nvidia-smi inside run",
+    "cache_dtype": "fp4 (packed bytes resident; software decode -> FP16 scratch)",
+    "expert_store_backend": "safetensors (canonical control backend per A/B spec)",
+    "cache_budget": "3.50 GiB/GPU VRAM LRU; 8.5/8.5 GiB host pack"
+  },
+  "gates": {
+    "exact_16_token_ids": true,
+    "all_43_layers": true,
+    "finite_outputs": true,
+    "numpy_bridge_calls_zero": true,
+    "full_hidden_d2h_zero": true,
+    "raw_expert_output_d2h_zero": true,
+    "official_router_authoritative": true,
+    "no_cpu_fallback": true,
+    "required_hardware": true,
+    "exact_decoded_text_recorded": false
+  },
+  "forensics": {
+    "observed": "integrity.json expected_decoded_text contained U+00E2 U+20AC U+201C (cp1252 mojibake of UTF-8 E2 80 93 en dash) while result.json decoded_text contained the correct U+2013.",
+    "chain": [
+      "Token IDs identical to seal: [666, 95140, 96807, 343, 4470, 20, 1127, 3298, 22, 22604, 515, 411, 3947, 85349, 14, 6341].",
+      "Pinned repo harness (git show 3178542) contains correct UTF-8 en dash; sha256 ca13ccf6 matches cloned_harness_sha256.",
+      "executing_harness_sha256 2d89df44 differs -> the pushed package copy was transcoded (cp1252 round-trip) on the Windows push host, corrupting the only non-ASCII string literal.",
+      "REAL_GENERATION_LEDGER v44 row and v47 result.json both carry the correct U+2013; the seal constant as executed did not."
+    ],
+    "fix": "Harness seal constant re-expressed as ASCII escape \\u2013 plus import-time fail-closed byte assert (local commit following this seal)."
+  },
+  "ab_vs_v44": {
+    "decode_wall_s": {"v44": 5789.652, "v47": 5493.133, "delta_pct": -5.1},
+    "decode_tok_s": {"v44": 0.002764, "v47": 0.002913},
+    "median_inter_token_ms": {"v44": 369291.19, "v47": 347688.18, "delta_pct": -5.85},
+    "p95_inter_token_ms": {"v44": null, "v47": 542232.96},
+    "cold_loads": {"v44": {"cuda0": 2509, "cuda1": 2391}, "v47": {"cuda0": 2285, "cuda1": 2206}},
+    "host_pack_hits": {"v44": {"cuda0": 1222, "cuda1": 1395}, "v47": {"cuda0": 1222, "cuda1": 1395}},
+    "peak_vram_gib": {"v44": {"cuda0": 7.131, "cuda1": 8.747}, "v47": {"cuda0": 7.131, "cuda1": 8.747}},
+    "prefill_ms": {"v47": 5391360.49},
+    "total_wall_s": {"v47": 10885.58}
+  },
+  "disposition": [
+    "Retain the run's recorded REJECT_NUMERICAL classification and artifacts untouched (never overwrite rejected evidence).",
+    "Record corrected finding here and in REAL_GENERATION_LEDGER.jsonl.",
+    "Rerun the identical canonical A/B (v48) on the fixed judge to mint an unambiguous ACCEPT artifact before packed FP4 becomes the default residency format.",
+    "Then launch the DEE4+FP4 profiled campaign (v49)."
+  ]
+}

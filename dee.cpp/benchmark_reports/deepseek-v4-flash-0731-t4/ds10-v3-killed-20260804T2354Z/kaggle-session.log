@@ -1,0 +1,13 @@
+[{"stream_name":"stderr","time":1.904808972,"data":"Cloning into '/kaggle/temp/dsv4-source'...\n"}
+,{"stream_name":"stdout","time":21.857616001,"data":"pinned commit 6298ab6955d9f836ae540317ac790911e3f15fe6\n"}
+,{"stream_name":"stdout","time":21.857689927,"data":"harness sha 9d91d80329c18a658f1839a23ffbd1c4d0211e34b1232348f8f7fbe00546ca34\n"}
+,{"stream_name":"stderr","time":43.335665043,"data":"/kaggle/temp/dsv4-source/dee.cpp/scripts/deepseek_v4_model.py:157: UserWarning: The given buffer is not writable, and PyTorch does not support non-writable tensors. This means you can write to the underlying (supposedly non-writable) buffer using the tensor. You may want to copy the buffer to protect its data or make it writable before converting it to a tensor. This type of warning will be suppressed for the rest of this program. (Triggered internally at /pytorch/torch/csrc/utils/tensor_new.cpp:1581.)\n"}
+,{"stream_name":"stderr","time":43.335733368,"data":"  t = torch.frombuffer(data, dtype=dtype).reshape(row[\"shape\"])\n"}
+,{"stream_name":"stderr","time":2623.642151822,"data":"Killed\n"}
+,{"stream_name":"stderr","time":2628.046797031,"data":"/usr/local/lib/python3.12/dist-packages/mistune.py:435: SyntaxWarning: invalid escape sequence '\\|'\n"}
+,{"stream_name":"stderr","time":2628.04684445,"data":"  cells[i][c] = re.sub('\\\\\\\\\\|', '|', cell)\n"}
+,{"stream_name":"stderr","time":2628.645972168,"data":"/usr/local/lib/python3.12/dist-packages/nbconvert/filters/filter_links.py:36: SyntaxWarning: invalid escape sequence '\\_'\n"}
+,{"stream_name":"stderr","time":2628.646025043,"data":"  text = re.sub(r'_', '\\_', text) # Escape underscores in display text\n"}
+,{"stream_name":"stderr","time":2631.603781949,"data":"[NbConvertApp] Converting notebook __script__.ipynb to html\n"}
+,{"stream_name":"stderr","time":2633.368567191,"data":"[NbConvertApp] Writing 370167 bytes to __results__.html\n"}
+]

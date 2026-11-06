@@ -1,0 +1,240 @@
+{
+  "schema": "dee4-v3-trace-repack-report",
+  "source_repository": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "source_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+  "trace_journal_sha256": "665aac3e8db570237c6dc6acaf08dc39f2af890e8a04e400ce7154f1a858dae1",
+  "trace_final_chain_sha256": "086f8ca83b6a3c467cdf950096141fa9bc3e55a285d7d1fed8a0ad9913e3eb3d",
+  "selection_sha256": "7f41f8d0351491ce9d4b11b5317257c3dfb3ec282666fcac7cd711aa9bcd99bf",
+  "trace_record_count": 688,
+  "trace_completed_forwards": 16,
+  "num_layers": 43,
+  "experts_per_layer": 256,
+  "total_experts": 2364,
+  "record_bytes": 13369344,
+  "estimated_total_gib": 29.4345703125,
+  "shard_count": 48,
+  "layers": [
+    {
+      "layer": 0,
+      "experts_repacked": 97,
+      "bytes": 1296826368
+    },
+    {
+      "layer": 1,
+      "experts_repacked": 99,
+      "bytes": 1323565056
+    },
+    {
+      "layer": 2,
+      "experts_repacked": 99,
+      "bytes": 1323565056
+    },
+    {
+      "layer": 3,
+      "experts_repacked": 56,
+      "bytes": 748683264
+    },
+    {
+      "layer": 4,
+      "experts_repacked": 52,
+      "bytes": 695205888
+    },
+    {
+      "layer": 5,
+      "experts_repacked": 55,
+      "bytes": 735313920
+    },
+    {
+      "layer": 6,
+      "experts_repacked": 49,
+      "bytes": 655097856
+    },
+    {
+      "layer": 7,
+      "experts_repacked": 49,
+      "bytes": 655097856
+    },
+    {
+      "layer": 8,
+      "experts_repacked": 43,
+      "bytes": 574881792
+    },
+    {
+      "layer": 9,
+      "experts_repacked": 58,
+      "bytes": 775421952
+    },
+    {
+      "layer": 10,
+      "experts_repacked": 60,
+      "bytes": 802160640
+    },
+    {
+      "layer": 11,
+      "experts_repacked": 52,
+      "bytes": 695205888
+    },
+    {
+      "layer": 12,
+      "experts_repacked": 54,
+      "bytes": 721944576
+    },
+    {
+      "layer": 13,
+      "experts_repacked": 54,
+      "bytes": 721944576
+    },
+    {
+      "layer": 14,
+      "experts_repacked": 45,
+      "bytes": 601620480
+    },
+    {
+      "layer": 15,
+      "experts_repacked": 59,
+      "bytes": 788791296
+    },
+    {
+      "layer": 16,
+      "experts_repacked": 46,
+      "bytes": 614989824
+    },
+    {
+      "layer": 17,
+      "experts_repacked": 44,
+      "bytes": 588251136
+    },
+    {
+      "layer": 18,
+      "experts_repacked": 49,
+      "bytes": 655097856
+    },
+    {
+      "layer": 19,
+      "experts_repacked": 64,
+      "bytes": 855638016
+    },
+    {
+      "layer": 20,
+      "experts_repacked": 59,
+      "bytes": 788791296
+    },
+    {
+      "layer": 21,
+      "experts_repacked": 54,
+      "bytes": 721944576
+    },
+    {
+      "layer": 22,
+      "experts_repacked": 49,
+      "bytes": 655097856
+    },
+    {
+      "layer": 23,
+      "experts_repacked": 47,
+      "bytes": 628359168
+    },
+    {
+      "layer": 24,
+      "experts_repacked": 43,
+      "bytes": 574881792
+    },
+    {
+      "layer": 25,
+      "experts_repacked": 43,
+      "bytes": 574881792
+    },
+    {
+      "layer": 26,
+      "experts_repacked": 47,
+      "bytes": 628359168
+    },
+    {
+      "layer": 27,
+      "experts_repacked": 53,
+      "bytes": 708575232
+    },
+    {
+      "layer": 28,
+      "experts_repacked": 53,
+      "bytes": 708575232
+    },
+    {
+      "layer": 29,
+      "experts_repacked": 55,
+      "bytes": 735313920
+    },
+    {
+      "layer": 30,
+      "experts_repacked": 48,
+      "bytes": 641728512
+    },
+    {
+      "layer": 31,
+      "experts_repacked": 60,
+      "bytes": 802160640
+    },
+    {
+      "layer": 32,
+      "experts_repacked": 36,
+      "bytes": 481296384
+    },
+    {
+      "layer": 33,
+      "experts_repacked": 43,
+      "bytes": 574881792
+    },
+    {
+      "layer": 34,
+      "experts_repacked": 44,
+      "bytes": 588251136
+    },
+    {
+      "layer": 35,
+      "experts_repacked": 64,
+      "bytes": 855638016
+    },
+    {
+      "layer": 36,
+      "experts_repacked": 45,
+      "bytes": 601620480
+    },
+    {
+      "layer": 37,
+      "experts_repacked": 47,
+      "bytes": 628359168
+    },
+    {
+      "layer": 38,
+      "experts_repacked": 51,
+      "bytes": 681836544
+    },
+    {
+      "layer": 39,
+      "experts_repacked": 60,
+      "bytes": 802160640
+    },
+    {
+      "layer": 40,
+      "experts_repacked": 53,
+      "bytes": 708575232
+    },
+    {
+      "layer": 41,
+      "experts_repacked": 62,
+      "bytes": 828899328
+    },
+    {
+      "layer": 42,
+      "experts_repacked": 64,
+      "bytes": 855638016
+    }
+  ],
+  "errors": [],
+  "success": true,
+  "total_experts_repacked": 2364,
+  "total_bytes_repacked": 31605129216,
+  "total_elapsed_s": 616.111,
+  "throughput_mibps": 48.921,
+  "data_sha256": "c83462ba50d2154a241cabf7d2b8d084e46f2eaa54416a96c90770ca7172d6e8"
+}

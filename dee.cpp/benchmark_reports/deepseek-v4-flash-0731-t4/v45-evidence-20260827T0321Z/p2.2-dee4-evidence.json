@@ -1,0 +1,8 @@
+{
+  "dee4_mbps": 469.8,
+  "safetensors_mbps": 190.9234064209841,
+  "speedup": 2.460672626823429,
+  "repack_s": 108.29576767599974,
+  "repack_gib": 9.5625,
+  "io_count_reduction": "378 random -> 6 sequential"
+}

@@ -1,0 +1,894 @@
+{
+  "schema_version": 1,
+  "id": "ORNITH-LAYER0-PARITY-2026-07-23T04:56:59Z",
+  "timestamp_utc": "2026-07-23T04:56:59Z",
+  "pass": true,
+  "model": "deepreinforce-ai/Ornith-1.0-35B",
+  "execution_path": "real tokenizer -> real embedding -> real complete layer 0 -> real router/top-k -> dee.cpp real experts -> real shared expert/combine -> hidden state",
+  "checkpoint": {
+    "model_dir": "/kaggle/input/datasets/nivind/ornith-1-0-35b",
+    "shard_map": [
+      {
+        "filename": "model-00001-of-00016.safetensors",
+        "tensor_groups": [
+          "embedding",
+          "first_complete_transformer_block",
+          "layer0_router",
+          "layer0_routed_experts",
+          "layer0_shared_expert",
+          "layer0_output_projection",
+          "lm_head"
+        ],
+        "tensor_count": 786,
+        "reason": "contains the real tokenizer embedding, complete layer 0, router, all routed/shared experts, layer-0 output projection, and LM head",
+        "size_bytes": 4324097448,
+        "cumulative_inventory_bytes": 4324097448,
+        "required_for_layer0_milestone": true,
+        "present": true,
+        "downloaded_by_this_run": false
+      },
+      {
+        "filename": "model-00016-of-00016.safetensors",
+        "tensor_groups": [
+          "final_output_norm"
+        ],
+        "tensor_count": 1,
+        "reason": "contains the final RMSNorm used only after all 40 transformer blocks",
+        "size_bytes": 2565780424,
+        "cumulative_inventory_bytes": 6889877872,
+        "required_for_layer0_milestone": false,
+        "present": true,
+        "downloaded_by_this_run": false
+      }
+    ],
+    "additional_download_bytes": 0
+  },
+  "runtime": {
+    "python": "3.12.13 (main, Mar  4 2026, 09:23:07) [GCC 11.4.0]",
+    "torch": "2.10.0+cu128",
+    "transformers": "5.14.1",
+    "numpy": "2.0.2",
+    "dee_cpp_backend": "CPU FP32 (real BF16 weights converted by dee.cpp)",
+    "model_reference_device": "cpu"
+  },
+  "selective_loading": {
+    "loaded_non_expert_tensor_count": 17,
+    "loaded_non_expert_tensors": [
+      "model.language_model.embed_tokens.weight",
+      "model.language_model.layers.0.linear_attn.dt_bias",
+      "model.language_model.layers.0.linear_attn.A_log",
+      "model.language_model.layers.0.linear_attn.conv1d.weight",
+      "model.language_model.layers.0.linear_attn.norm.weight",
+      "model.language_model.layers.0.linear_attn.out_proj.weight",
+      "model.language_model.layers.0.linear_attn.in_proj_qkv.weight",
+      "model.language_model.layers.0.linear_attn.in_proj_z.weight",
+      "model.language_model.layers.0.linear_attn.in_proj_b.weight",
+      "model.language_model.layers.0.linear_attn.in_proj_a.weight",
+      "model.language_model.layers.0.mlp.gate.weight",
+      "model.language_model.layers.0.mlp.shared_expert.gate_proj.weight",
+      "model.language_model.layers.0.mlp.shared_expert.up_proj.weight",
+      "model.language_model.layers.0.mlp.shared_expert.down_proj.weight",
+      "model.language_model.layers.0.mlp.shared_expert_gate.weight",
+      "model.language_model.layers.0.input_layernorm.weight",
+      "model.language_model.layers.0.post_attention_layernorm.weight"
+    ],
+    "lazy_reference_experts_loaded": [
+      9,
+      11,
+      14,
+      18,
+      19,
+      21,
+      25,
+      26,
+      27,
+      30,
+      31,
+      35,
+      36,
+      37,
+      40,
+      42,
+      43,
+      45,
+      46,
+      49,
+      55,
+      56,
+      58,
+      59,
+      65,
+      68,
+      70,
+      71,
+      77,
+      78,
+      79,
+      81,
+      85,
+      88,
+      91,
+      93,
+      95,
+      96,
+      99,
+      102,
+      103,
+      106,
+      107,
+      112,
+      118,
+      119,
+      120,
+      124,
+      127,
+      128,
+      131,
+      134,
+      136,
+      138,
+      139,
+      143,
+      146,
+      153,
+      154,
+      160,
+      163,
+      165,
+      167,
+      168,
+      171,
+      173,
+      175,
+      176,
+      179,
+      180,
+      181,
+      187,
+      189,
+      195,
+      200,
+      203,
+      206,
+      208,
+      210,
+      211,
+      212,
+      213,
+      218,
+      219,
+      222,
+      224,
+      226,
+      227,
+      228,
+      230,
+      238,
+      239,
+      241,
+      247,
+      250,
+      251,
+      252,
+      254,
+      255
+    ],
+    "lazy_reference_expert_count": 99
+  },
+  "results": [
+    {
+      "prompt": "Capital of France is",
+      "token_ids": [
+        61445,
+        314,
+        9338,
+        369
+      ],
+      "token_count": 4,
+      "embedding": {
+        "shape": [
+          1,
+          4,
+          2048
+        ],
+        "dtype": "torch.bfloat16",
+        "sha256_fp32": "bb1321d8c50ecda688d9339e288317276feb47e46f8d878744351db7f59d27b8",
+        "l2_norm": 0.9602933526039124
+      },
+      "selected_experts_order": [
+        [
+          70,
+          112,
+          120,
+          222,
+          238,
+          43,
+          31,
+          139
+        ],
+        [
+          11,
+          226,
+          247,
+          128,
+          96,
+          171,
+          107,
+          187
+        ],
+        [
+          139,
+          181,
+          81,
+          230,
+          19,
+          208,
+          254,
+          71
+        ],
+        [
+          11,
+          112,
+          127,
+          49,
+          153,
+          85,
+          146,
+          18
+        ]
+      ],
+      "routing_order_match": true,
+      "topk_membership_match": true,
+      "metrics": {
+        "router_logits": {
+          "shape_match": true,
+          "shape": [
+            4,
+            256
+          ],
+          "max_abs_error": 0.0,
+          "max_relative_error": 0.0,
+          "relative_l2_error": 0.0,
+          "max_error_coordinate": [
+            0,
+            0
+          ],
+          "reference_at_max": -6.21875,
+          "candidate_at_max": -6.21875
+        },
+        "routing_weights": {
+          "shape_match": true,
+          "shape": [
+            4,
+            8
+          ],
+          "max_abs_error": 0.0,
+          "max_relative_error": 0.0,
+          "relative_l2_error": 0.0,
+          "max_error_coordinate": [
+            0,
+            0
+          ],
+          "reference_at_max": 0.296875,
+          "candidate_at_max": 0.296875
+        },
+        "expert_outputs": {
+          "shape_match": true,
+          "shape": [
+            4,
+            8,
+            2048
+          ],
+          "max_abs_error": 1.1920928955078125e-07,
+          "max_relative_error": 0.18939833343029022,
+          "relative_l2_error": 7.792935292064372e-07,
+          "max_error_coordinate": [
+            0,
+            6,
+            841
+          ],
+          "reference_at_max": -0.0682651549577713,
+          "candidate_at_max": -0.06826503574848175
+        },
+        "combined_routed_moe": {
+          "shape_match": true,
+          "shape": [
+            4,
+            2048
+          ],
+          "max_abs_error": 1.7229467630386353e-08,
+          "max_relative_error": 0.01674428954720497,
+          "relative_l2_error": 6.019635770827163e-07,
+          "max_error_coordinate": [
+            0,
+            1990
+          ],
+          "reference_at_max": -0.0021428039763122797,
+          "candidate_at_max": -0.0021427867468446493
+        },
+        "hidden_states": {
+          "shape_match": true,
+          "shape": [
+            1,
+            4,
+            2048
+          ],
+          "max_abs_error": 5.960464477539063e-08,
+          "max_relative_error": 0.0007217610836960375,
+          "relative_l2_error": 1.6749103847450993e-07,
+          "max_error_coordinate": [
+            0,
+            3,
+            1269
+          ],
+          "reference_at_max": 0.5198150873184204,
+          "candidate_at_max": 0.5198151469230652
+        }
+      },
+      "tolerances": {
+        "expert_outputs_max_abs": 0.002,
+        "expert_outputs_relative_l2": 0.0002,
+        "combined_moe_max_abs": 0.002,
+        "combined_moe_relative_l2": 0.0002,
+        "hidden_states_max_abs": 0.002,
+        "hidden_states_relative_l2": 0.0002
+      },
+      "first_difference": null,
+      "timing_seconds": {
+        "transformers_reference": 1.1535976889999802,
+        "dee_cpp_full_block": 0.847408693000034
+      },
+      "pass": true
+    },
+    {
+      "prompt": "7 * 6 =",
+      "token_ids": [
+        22,
+        348,
+        220,
+        21
+      ],
+      "token_count": 4,
+      "embedding": {
+        "shape": [
+          1,
+          4,
+          2048
+        ],
+        "dtype": "torch.bfloat16",
+        "sha256_fp32": "ccc8219d984216e3948409a52f458b339997d9b4492ab0c5d397759dd5f86b5d",
+        "l2_norm": 0.769478440284729
+      },
+      "selected_experts_order": [
+        [
+          238,
+          112,
+          25,
+          252,
+          200,
+          43,
+          160,
+          95
+        ],
+        [
+          88,
+          219,
+          99,
+          30,
+          230,
+          112,
+          103,
+          154
+        ],
+        [
+          168,
+          181,
+          206,
+          255,
+          58,
+          167,
+          189,
+          30
+        ],
+        [
+          252,
+          25,
+          42,
+          238,
+          56,
+          45,
+          165,
+          59
+        ]
+      ],
+      "routing_order_match": true,
+      "topk_membership_match": true,
+      "metrics": {
+        "router_logits": {
+          "shape_match": true,
+          "shape": [
+            4,
+            256
+          ],
+          "max_abs_error": 0.0,
+          "max_relative_error": 0.0,
+          "relative_l2_error": 0.0,
+          "max_error_coordinate": [
+            0,
+            0
+          ],
+          "reference_at_max": -4.84375,
+          "candidate_at_max": -4.84375
+        },
+        "routing_weights": {
+          "shape_match": true,
+          "shape": [
+            4,
+            8
+          ],
+          "max_abs_error": 0.0,
+          "max_relative_error": 0.0,
+          "relative_l2_error": 0.0,
+          "max_error_coordinate": [
+            0,
+            0
+          ],
+          "reference_at_max": 0.275390625,
+          "candidate_at_max": 0.275390625
+        },
+        "expert_outputs": {
+          "shape_match": true,
+          "shape": [
+            4,
+            8,
+            2048
+          ],
+          "max_abs_error": 1.341104507446289e-07,
+          "max_relative_error": 0.02006795071065426,
+          "relative_l2_error": 7.492265584265864e-07,
+          "max_error_coordinate": [
+            0,
+            1,
+            750
+          ],
+          "reference_at_max": 0.1388648897409439,
+          "candidate_at_max": 0.13886502385139465
+        },
+        "combined_routed_moe": {
+          "shape_match": true,
+          "shape": [
+            4,
+            2048
+          ],
+          "max_abs_error": 3.3527612686157227e-08,
+          "max_relative_error": 0.0012832402717322111,
+          "relative_l2_error": 6.498228976887441e-07,
+          "max_error_coordinate": [
+            0,
+            750
+          ],
+          "reference_at_max": 0.03750837221741676,
+          "candidate_at_max": 0.03750840574502945
+        },
+        "hidden_states": {
+          "shape_match": true,
+          "shape": [
+            1,
+            4,
+            2048
+          ],
+          "max_abs_error": 5.960464477539063e-08,
+          "max_relative_error": 0.010554090142250061,
+          "relative_l2_error": 2.4942805147417005e-07,
+          "max_error_coordinate": [
+            0,
+            0,
+            1269
+          ],
+          "reference_at_max": 0.5043941140174866,
+          "candidate_at_max": 0.5043940544128418
+        }
+      },
+      "tolerances": {
+        "expert_outputs_max_abs": 0.002,
+        "expert_outputs_relative_l2": 0.0002,
+        "combined_moe_max_abs": 0.002,
+        "combined_moe_relative_l2": 0.0002,
+        "hidden_states_max_abs": 0.002,
+        "hidden_states_relative_l2": 0.0002
+      },
+      "first_difference": null,
+      "timing_seconds": {
+        "transformers_reference": 0.9556352150002567,
+        "dee_cpp_full_block": 0.8631867069998407
+      },
+      "pass": true
+    },
+    {
+      "prompt": "def fibonacci(n):",
+      "token_ids": [
+        727,
+        73111,
+        1393,
+        1590
+      ],
+      "token_count": 4,
+      "embedding": {
+        "shape": [
+          1,
+          4,
+          2048
+        ],
+        "dtype": "torch.bfloat16",
+        "sha256_fp32": "f939a441dc80f5d39741890e4f875004f19fec8f7195a0dfdfe7312c4b052e66",
+        "l2_norm": 0.9959067702293396
+      },
+      "selected_experts_order": [
+        [
+          238,
+          173,
+          43,
+          112,
+          200,
+          143,
+          95,
+          106
+        ],
+        [
+          163,
+          211,
+          195,
+          77,
+          203,
+          37,
+          26,
+          138
+        ],
+        [
+          211,
+          37,
+          27,
+          139,
+          55,
+          251,
+          224,
+          79
+        ],
+        [
+          91,
+          227,
+          119,
+          9,
+          118,
+          35,
+          213,
+          179
+        ]
+      ],
+      "routing_order_match": true,
+      "topk_membership_match": true,
+      "metrics": {
+        "router_logits": {
+          "shape_match": true,
+          "shape": [
+            4,
+            256
+          ],
+          "max_abs_error": 0.0,
+          "max_relative_error": 0.0,
+          "relative_l2_error": 0.0,
+          "max_error_coordinate": [
+            0,
+            0
+          ],
+          "reference_at_max": -6.28125,
+          "candidate_at_max": -6.28125
+        },
+        "routing_weights": {
+          "shape_match": true,
+          "shape": [
+            4,
+            8
+          ],
+          "max_abs_error": 0.0,
+          "max_relative_error": 0.0,
+          "relative_l2_error": 0.0,
+          "max_error_coordinate": [
+            0,
+            0
+          ],
+          "reference_at_max": 0.2412109375,
+          "candidate_at_max": 0.2412109375
+        },
+        "expert_outputs": {
+          "shape_match": true,
+          "shape": [
+            4,
+            8,
+            2048
+          ],
+          "max_abs_error": 1.7881393432617188e-07,
+          "max_relative_error": 0.017925560474395752,
+          "relative_l2_error": 6.740079727546832e-07,
+          "max_error_coordinate": [
+            0,
+            6,
+            1260
+          ],
+          "reference_at_max": 0.0727674588561058,
+          "candidate_at_max": 0.07276728004217148
+        },
+        "combined_routed_moe": {
+          "shape_match": true,
+          "shape": [
+            4,
+            2048
+          ],
+          "max_abs_error": 3.725290298461914e-08,
+          "max_relative_error": 0.002023594221100211,
+          "relative_l2_error": 5.133662354833723e-07,
+          "max_error_coordinate": [
+            0,
+            1269
+          ],
+          "reference_at_max": -0.09703145176172256,
+          "candidate_at_max": -0.09703148901462555
+        },
+        "hidden_states": {
+          "shape_match": true,
+          "shape": [
+            1,
+            4,
+            2048
+          ],
+          "max_abs_error": 2.9802322387695312e-08,
+          "max_relative_error": 0.0023021772503852844,
+          "relative_l2_error": 1.8678369635970003e-07,
+          "max_error_coordinate": [
+            0,
+            0,
+            28
+          ],
+          "reference_at_max": 0.04823940247297287,
+          "candidate_at_max": 0.04823937267065048
+        }
+      },
+      "tolerances": {
+        "expert_outputs_max_abs": 0.002,
+        "expert_outputs_relative_l2": 0.0002,
+        "combined_moe_max_abs": 0.002,
+        "combined_moe_relative_l2": 0.0002,
+        "hidden_states_max_abs": 0.002,
+        "hidden_states_relative_l2": 0.0002
+      },
+      "first_difference": null,
+      "timing_seconds": {
+        "transformers_reference": 0.9936068529996192,
+        "dee_cpp_full_block": 0.7951936019999266
+      },
+      "pass": true
+    },
+    {
+      "prompt": "Once upon a time",
+      "token_ids": [
+        12162,
+        5028,
+        264,
+        854
+      ],
+      "token_count": 4,
+      "embedding": {
+        "shape": [
+          1,
+          4,
+          2048
+        ],
+        "dtype": "torch.bfloat16",
+        "sha256_fp32": "216e63ea64c3109d6037c5db22a972018f1cc7a1696c9c0390b7d9a1aea8c0a4",
+        "l2_norm": 0.9716385006904602
+      },
+      "selected_experts_order": [
+        [
+          40,
+          112,
+          238,
+          65,
+          218,
+          212,
+          46,
+          200
+        ],
+        [
+          228,
+          102,
+          21,
+          210,
+          14,
+          93,
+          250,
+          239
+        ],
+        [
+          136,
+          78,
+          241,
+          56,
+          131,
+          238,
+          14,
+          68
+        ],
+        [
+          180,
+          36,
+          134,
+          175,
+          176,
+          210,
+          65,
+          124
+        ]
+      ],
+      "routing_order_match": true,
+      "topk_membership_match": true,
+      "metrics": {
+        "router_logits": {
+          "shape_match": true,
+          "shape": [
+            4,
+            256
+          ],
+          "max_abs_error": 0.0,
+          "max_relative_error": 0.0,
+          "relative_l2_error": 0.0,
+          "max_error_coordinate": [
+            0,
+            0
+          ],
+          "reference_at_max": -7.4375,
+          "candidate_at_max": -7.4375
+        },
+        "routing_weights": {
+          "shape_match": true,
+          "shape": [
+            4,
+            8
+          ],
+          "max_abs_error": 0.0,
+          "max_relative_error": 0.0,
+          "relative_l2_error": 0.0,
+          "max_error_coordinate": [
+            0,
+            0
+          ],
+          "reference_at_max": 0.2890625,
+          "candidate_at_max": 0.2890625
+        },
+        "expert_outputs": {
+          "shape_match": true,
+          "shape": [
+            4,
+            8,
+            2048
+          ],
+          "max_abs_error": 8.344650268554688e-07,
+          "max_relative_error": 0.5598227381706238,
+          "relative_l2_error": 5.708727828991257e-07,
+          "max_error_coordinate": [
+            3,
+            0,
+            664
+          ],
+          "reference_at_max": -0.5351751446723938,
+          "candidate_at_max": -0.5351743102073669
+        },
+        "combined_routed_moe": {
+          "shape_match": true,
+          "shape": [
+            4,
+            2048
+          ],
+          "max_abs_error": 3.2782554626464844e-07,
+          "max_relative_error": 0.1148957833647728,
+          "relative_l2_error": 5.530864058478471e-07,
+          "max_error_coordinate": [
+            3,
+            664
+          ],
+          "reference_at_max": -0.21814128756523132,
+          "candidate_at_max": -0.21814095973968506
+        },
+        "hidden_states": {
+          "shape_match": true,
+          "shape": [
+            1,
+            4,
+            2048
+          ],
+          "max_abs_error": 3.2782554626464844e-07,
+          "max_relative_error": 0.009077155962586403,
+          "relative_l2_error": 4.897410192746176e-07,
+          "max_error_coordinate": [
+            0,
+            3,
+            664
+          ],
+          "reference_at_max": -0.22899028658866882,
+          "candidate_at_max": -0.22898995876312256
+        }
+      },
+      "tolerances": {
+        "expert_outputs_max_abs": 0.002,
+        "expert_outputs_relative_l2": 0.0002,
+        "combined_moe_max_abs": 0.002,
+        "combined_moe_relative_l2": 0.0002,
+        "hidden_states_max_abs": 0.002,
+        "hidden_states_relative_l2": 0.0002
+      },
+      "first_difference": null,
+      "timing_seconds": {
+        "transformers_reference": 0.9398965790005605,
+        "dee_cpp_full_block": 0.7546624249998786
+      },
+      "pass": true
+    }
+  ],
+  "timing_seconds": {
+    "model_selective_load": 1.8131847189997643,
+    "dee_engine_init": 0.005510058000254503,
+    "reference_expert_weight_load": 3.44498200700491,
+    "dee_cpp_expert_forward_total": 3.0827126340018367,
+    "end_to_end": 9.255698728000425
+  },
+  "memory": {
+    "rss_start_bytes": 880197632,
+    "rss_after_selective_model_load_bytes": 1149984768,
+    "rss_peak_observed_bytes": 4921565184,
+    "rss_final_bytes": 4921565184
+  },
+  "gpu": {
+    "before": {
+      "name": "Tesla T4",
+      "total_mib": 15360,
+      "used_mib": 3,
+      "free_mib": 14909
+    },
+    "after": {
+      "name": "Tesla T4",
+      "total_mib": 15360,
+      "used_mib": 3,
+      "free_mib": 14909
+    }
+  },
+  "dee_engine_stats": {
+    "tokens": 0,
+    "elapsed_sec": 0,
+    "tok_per_sec": 0,
+    "cache_hits": 0,
+    "cache_loads": 0,
+    "cold_loads": 0,
+    "resident_hits": 0,
+    "inflight_hits": 0,
+    "evictions": 0,
+    "h2d_bytes": 0,
+    "h2d_copies": 0,
+    "hidden_finite": true,
+    "peak_vram": 0,
+    "current_vram": 0,
+    "resident_experts": 0,
+    "host_pinned_expert_staging_bytes": 0,
+    "host_pageable_expert_staging_bytes": 1245708288,
+    "host_router_weight_bytes": 0,
+    "host_hidden_buffer_bytes": 16384,
+    "host_prefetch_ring_bytes": 0,
+    "host_prefetch_ring_slots": 0,
+    "peak_transient_host_bytes": 0,
+    "device_expert_cache_reserved_bytes": 50331648,
+    "device_prefetch_staging_bytes": 0,
+    "device_fixed_work_buffer_bytes": 0,
+    "device_router_weight_bytes": 0,
+    "device_router_dynamic_bytes": 0,
+    "device_moe_batch_buffer_bytes": 0,
+    "device_oracle_scratch_bytes": 0
+  }
+}

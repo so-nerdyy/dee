@@ -1,0 +1,196 @@
+{
+  "tokens": [
+    {
+      "token": 0,
+      "layers": 43,
+      "by_field_ms": {
+        "route_d2h_host_wait_ms": 1.32155,
+        "native_call_wall_ms": 68261.701296,
+        "shared_expert_ms": 0,
+        "combine_ms": 42.043501,
+        "orchestration_ms": 0,
+        "handoff_ms": 0
+      }
+    },
+    {
+      "token": 7,
+      "layers": 43,
+      "by_field_ms": {
+        "route_d2h_host_wait_ms": 1.353194,
+        "native_call_wall_ms": 5261.975659,
+        "shared_expert_ms": 0,
+        "combine_ms": 8.729609,
+        "orchestration_ms": 0,
+        "handoff_ms": 0
+      }
+    },
+    {
+      "token": 8,
+      "layers": 43,
+      "by_field_ms": {
+        "route_d2h_host_wait_ms": 0.955209,
+        "native_call_wall_ms": 3531.649499,
+        "shared_expert_ms": 0,
+        "combine_ms": 8.944466,
+        "orchestration_ms": 0,
+        "handoff_ms": 0
+      }
+    },
+    {
+      "token": 9,
+      "layers": 43,
+      "by_field_ms": {
+        "route_d2h_host_wait_ms": 0.960921,
+        "native_call_wall_ms": 3870.759173,
+        "shared_expert_ms": 0,
+        "combine_ms": 9.00246,
+        "orchestration_ms": 0,
+        "handoff_ms": 0
+      }
+    },
+    {
+      "token": 10,
+      "layers": 43,
+      "by_field_ms": {
+        "route_d2h_host_wait_ms": 1.00937,
+        "native_call_wall_ms": 5278.142237,
+        "shared_expert_ms": 0,
+        "combine_ms": 9.6794,
+        "orchestration_ms": 0,
+        "handoff_ms": 0
+      }
+    },
+    {
+      "token": 11,
+      "layers": 43,
+      "by_field_ms": {
+        "route_d2h_host_wait_ms": 1.058976,
+        "native_call_wall_ms": 6067.677711,
+        "shared_expert_ms": 0,
+        "combine_ms": 9.466042,
+        "orchestration_ms": 0,
+        "handoff_ms": 0
+      }
+    },
+    {
+      "token": 12,
+      "layers": 43,
+      "by_field_ms": {
+        "route_d2h_host_wait_ms": 1.031398,
+        "native_call_wall_ms": 5609.686658,
+        "shared_expert_ms": 0,
+        "combine_ms": 9.475318,
+        "orchestration_ms": 0,
+        "handoff_ms": 0
+      }
+    },
+    {
+      "token": 13,
+      "layers": 43,
+      "by_field_ms": {
+        "route_d2h_host_wait_ms": 0.938974,
+        "native_call_wall_ms": 4787.193733,
+        "shared_expert_ms": 0,
+        "combine_ms": 9.627783,
+        "orchestration_ms": 0,
+        "handoff_ms": 0
+      }
+    },
+    {
+      "token": 14,
+      "layers": 43,
+      "by_field_ms": {
+        "route_d2h_host_wait_ms": 0.962791,
+        "native_call_wall_ms": 4038.165624,
+        "shared_expert_ms": 0,
+        "combine_ms": 9.343078,
+        "orchestration_ms": 0,
+        "handoff_ms": 0
+      }
+    },
+    {
+      "token": 15,
+      "layers": 43,
+      "by_field_ms": {
+        "route_d2h_host_wait_ms": 1.007934,
+        "native_call_wall_ms": 2970.587978,
+        "shared_expert_ms": 0,
+        "combine_ms": 8.898757,
+        "orchestration_ms": 0,
+        "handoff_ms": 0
+      }
+    },
+    {
+      "token": 16,
+      "layers": 43,
+      "by_field_ms": {
+        "route_d2h_host_wait_ms": 0.946091,
+        "native_call_wall_ms": 3296.046717,
+        "shared_expert_ms": 0,
+        "combine_ms": 9.325307,
+        "orchestration_ms": 0,
+        "handoff_ms": 0
+      }
+    },
+    {
+      "token": 17,
+      "layers": 43,
+      "by_field_ms": {
+        "route_d2h_host_wait_ms": 1.010974,
+        "native_call_wall_ms": 3879.376227,
+        "shared_expert_ms": 0,
+        "combine_ms": 9.336566,
+        "orchestration_ms": 0,
+        "handoff_ms": 0
+      }
+    },
+    {
+      "token": 18,
+      "layers": 43,
+      "by_field_ms": {
+        "route_d2h_host_wait_ms": 1.045364,
+        "native_call_wall_ms": 2535.139416,
+        "shared_expert_ms": 0,
+        "combine_ms": 9.688962,
+        "orchestration_ms": 0,
+        "handoff_ms": 0
+      }
+    },
+    {
+      "token": 19,
+      "layers": 43,
+      "by_field_ms": {
+        "route_d2h_host_wait_ms": 1.089088,
+        "native_call_wall_ms": 1850.074759,
+        "shared_expert_ms": 0,
+        "combine_ms": 8.96381,
+        "orchestration_ms": 0,
+        "handoff_ms": 0
+      }
+    },
+    {
+      "token": 20,
+      "layers": 43,
+      "by_field_ms": {
+        "route_d2h_host_wait_ms": 1.003688,
+        "native_call_wall_ms": 2369.866017,
+        "shared_expert_ms": 0,
+        "combine_ms": 9.187933,
+        "orchestration_ms": 0,
+        "handoff_ms": 0
+      }
+    },
+    {
+      "token": 21,
+      "layers": 43,
+      "by_field_ms": {
+        "route_d2h_host_wait_ms": 0.999249,
+        "native_call_wall_ms": 1536.747963,
+        "shared_expert_ms": 0,
+        "combine_ms": 9.351708,
+        "orchestration_ms": 0,
+        "handoff_ms": 0
+      }
+    }
+  ]
+}

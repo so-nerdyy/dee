@@ -1,0 +1,26 @@
+{
+ "verdict": "ROUTER_IMPLEMENTATION_EXACT_INPUT_DRIVEN_FLIP",
+ "reasons": [
+  "router exact for identical input (CPU and CUDA agree on both inputs at the flip token); top-k kernel semantics exact on identical scores; router-input delta bounded by bf16 storage rounding (max_abs_in_bf16_steps=2.0); flip reproduced by the input difference alone on identical implementations",
+  "per-token selected expert SETS are identical at every checked token; the exact tuple gate fails only on intra-set rank order (ordering artifact of bounded storage rounding)"
+ ],
+ "flip_token": 4,
+ "flip_scope": "ORDERING_WITHIN_SET",
+ "sets_identical": true,
+ "symmetric_difference": [],
+ "flip_reproduced_by_input": true,
+ "input_max_ulp": 264634367,
+ "input_count_diff": 3595,
+ "input_max_abs": 0.015625,
+ "bf16_storage_bound": {
+  "max_abs": 0.015625,
+  "max_magnitude": 1.84375,
+  "bf16_ulp_at_max_magnitude": 0.0078125,
+  "max_abs_in_bf16_steps": 2.0,
+  "fraction_within_one_bf16_step": 0.9451446533203125,
+  "within_bf16_storage_bound": true
+ },
+ "sensitivity_explained": false,
+ "dx_vs_min_reverse_ratio": null,
+ "evidence_step": 0
+}

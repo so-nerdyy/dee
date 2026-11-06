@@ -1,0 +1,9 @@
+{
+  "status": "ERROR",
+  "classification": "INVALID_EXPERIMENT",
+  "performance_eligible": false,
+  "failed_at_utc": "2026-08-27T03:26:21Z",
+  "error_type": "RuntimeError",
+  "error": "command failed: /tmp/dsv4-native-src/dee.cpp/build-kaggle/test_deepseek_v4_fp4_expert",
+  "traceback": "Traceback (most recent call last):\n  File \"/kaggle/src/script.py\", line 1308, in <module>\n    main()\n  File \"/kaggle/src/script.py\", line 805, in main\n    run([str(BUILD / target)], cwd=str(DEE))\n  File \"/kaggle/src/script.py\", line 312, in run\n    raise RuntimeError(\"command failed: \"\nRuntimeError: command failed: /tmp/dsv4-native-src/dee.cpp/build-kaggle/test_deepseek_v4_fp4_expert\n"
+}

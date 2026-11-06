@@ -51,11 +51,13 @@ static void test_swiglu_tiny() {
 static void test_engine_e2e() {
     dee::EngineConfig cfg;
     cfg.shard_path = "tests/data/ornith_moe256.safetensors";
-    cfg.oracle_path = "/mnt/c/Users/carth/Downloads/dynamic_expert_eviction/oracle.pt";
+    cfg.oracle_path = "oracle.pt";
     cfg.num_tokens = 4;
     cfg.topk = 8;
     cfg.num_layers = 8;
     cfg.budget_bytes = 4 * 3ULL * 2048 * 64 * 4;  // 4 experts (inter=64) -> forces eviction
+    cfg.profile_stages = true;
+    cfg.trace_requests = true;
 
     dee::Engine engine;
     if (!engine.init(cfg)) {
@@ -70,9 +72,37 @@ static void test_engine_e2e() {
     const dee::EngineStats& s = engine.stats();
     CHECK(s.hidden_finite, "output hidden all-finite");
     CHECK(s.prefetch_issued > 0, "prefetcher issued transfers");
+    CHECK(s.prefetch_issued == s.resident_hits + s.inflight_hits + s.cold_loads,
+          "request classification invariant");
+    CHECK(s.profile.enabled, "stage profile enabled");
+    CHECK(s.profile.trace.size() == s.prefetch_issued, "request trace covers every request");
+    CHECK(s.profile.layer_count == static_cast<uint64_t>(cfg.num_tokens * cfg.num_layers),
+          "layer timing count excludes no measured layers");
+    CHECK(s.profile.oracle_calls == static_cast<uint64_t>(cfg.num_tokens * cfg.num_layers),
+          "Oracle internal profiler counts every measured prediction");
+    CHECK(s.profile.oracle_ms[static_cast<size_t>(dee::OracleStage::Linear0)] > 0.0,
+          "Oracle internal profiler measures first matrix operation");
     CHECK(s.cache_loads > 0, "cache performed loads");
     // with an 8-expert activation and 4-expert budget, eviction MUST occur
     CHECK(s.evictions > 0, "cache evictions occurred (budget < topk*depth pressure)");
+    CHECK(engine.reset_external_profile(),
+          "external profiler resets counters without rebuilding the engine");
+    engine.set_external_token(7);
+    std::vector<float> external_input(2048, 0.01f);
+    std::vector<float> external_output(2048, 0.0f);
+    engine.forward_layer(0, external_input.data(), external_output.data());
+    const std::string external_profile = engine.external_profile_json(1.0);
+    CHECK(external_profile.find("\"enabled\":true") != std::string::npos,
+          "external profile JSON is enabled");
+    CHECK(external_profile.find("\"token\":7") != std::string::npos,
+          "external profile preserves caller token context");
+    CHECK(external_profile.find("\"host_tensor_preparation\"") != std::string::npos,
+          "external profile exposes host tensor preparation category");
+    const dee::EngineStats memory_stats = engine.runtime_stats();
+    CHECK(memory_stats.device_expert_cache_reserved_bytes > 0,
+          "runtime stats expose the reserved expert-cache arena");
+    CHECK(memory_stats.host_hidden_buffer_bytes > 0,
+          "runtime stats expose native host work buffers");
     printf("    tok/s=%.3f peak_vram=%.1fMB loads=%llu evict=%llu fb=%llu\n",
            s.tok_per_sec, s.peak_vram / (1024.0*1024.0),
            (unsigned long long)s.cache_loads, (unsigned long long)s.evictions,
