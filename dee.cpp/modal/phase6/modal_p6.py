@@ -479,7 +479,7 @@ def _bench_impl(
             base_summary = dict(summary)
             base_run_id, base_ev = run_id, run_ev
             outcomes: list = []
-            for cfg in cfg_list:
+            for cfg_index, cfg in enumerate(cfg_list):
               t_cfg = time.monotonic()
               try:
                 if cfg is not None:
@@ -500,7 +500,11 @@ def _bench_impl(
                                "host_gib_requested": host_gib,
                                "host_gib_effective": host_gib, "n_tokens": n_tokens,
                                "ignore_eos": ignore_eos, "cohort": cohort or None,
-                               "verdict": "UNKNOWN", "config": cfg}
+                               "verdict": "UNKNOWN", "config": cfg,
+                               # gVisor ignores DONTNEED: rows after the first
+                               # read a store earlier rows warmed (r5: b1-h16
+                               # prefill 22 s vs b1-h64 35 s, same tokens)
+                               "config_index": cfg_index}
                 summary["page_cache_drop"] = _drop_page_cache(seg_files, log)
                 preexisting = {f.name: f.stat().st_mtime
                                for f in ev_root.iterdir() if f.is_file()}
@@ -632,8 +636,9 @@ def _bench_impl(
                                 "log_tail": tail[-50:]})
                 verdict = "UNKNOWN"
                 for ln in tail:
-                    if ln.startswith("VERDICT:"):
-                        verdict = ln.split(":", 1)[1].strip()
+                    # runner prints "[hh:mm:ss] === VERDICT: <cls>; ... ==="
+                    if "VERDICT:" in ln:
+                        verdict = ln.split("VERDICT:", 1)[1].strip(" =")
                 summary["verdict"] = verdict
                 knobs = br.host_pack_effective_bytes(all_lines)
                 summary["host_pack_effective_bytes"] = knobs
@@ -791,7 +796,7 @@ def preflight(gpu: str = "L4", model: str = "dsv4-flash", configs: str = "",
     step("pydee_import", pydee_import)
     def runner_src():
         txt = (src / spec["runner"]).read_text()
-        need = ("NATIVE_CUDA_ARCHS", "NATIVE_SINGLE_GPU_BUDGET_BYTES", "router_top8_values")
+        need = ("NATIVE_CUDA_ARCHS", "NATIVE_SINGLE_GPU_BUDGET_BYTES", "router_bias_top8")
         missing = [k for k in need if k not in txt]
         if missing:
             raise RuntimeError(f"runner at this commit lacks {missing}")

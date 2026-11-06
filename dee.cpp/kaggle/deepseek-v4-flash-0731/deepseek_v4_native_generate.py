@@ -2178,14 +2178,22 @@ def main() -> int:
                 # Phase 6: the router's top-8 values + ids per row, so a
                 # cross-GPU expert flip shows the size of its near-tie
                 # (hashes alone say where, not by how much). Read-only.
-                # top-k selects on the bias-adjusted scores
-                rs = cap.get("router_bias_scores", cap.get("router_scores"))
-                if torch.is_tensor(rs) and rs.dim() >= 1:
-                    top = rs.detach().float().reshape(-1, rs.shape[-1]).topk(
-                        min(8, rs.shape[-1]), dim=-1)
-                    rec["router_top8_values"] = [
-                        [float(v) for v in row] for row in top.values.cpu()]
-                    rec["router_top8_ids"] = top.indices.cpu().tolist()
+                # Both score sets, labelled: top-k selects on the
+                # bias-adjusted ones, the routing weights use the raw ones.
+                # Plus the chosen ids per row, so analysis can align rows.
+                for src_key, out_key in (("router_bias_scores", "router_bias_top8"),
+                                         ("router_scores", "router_raw_top8")):
+                    rs = cap.get(src_key)
+                    if torch.is_tensor(rs) and rs.dim() >= 1:
+                        top = rs.detach().float().reshape(-1, rs.shape[-1]).topk(
+                            min(8, rs.shape[-1]), dim=-1)
+                        rec[f"{out_key}_values"] = [
+                            [float(v) for v in row] for row in top.values.cpu()]
+                        rec[f"{out_key}_ids"] = top.indices.cpu().tolist()
+                eids = cap.get("expert_ids")
+                if torch.is_tensor(eids):
+                    rec["expert_ids_rows"] = eids.detach().reshape(
+                        -1, eids.shape[-1]).cpu().tolist()
                 capture_jf.write(json.dumps(rec) + "\n")
                 capture_jf.flush()
             if int(layer_id) == cfg.n_layers - 1:
