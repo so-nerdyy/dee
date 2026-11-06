@@ -267,7 +267,8 @@ def _common_checks(ev: Evidence) -> list[str]:
                      f"status={r.get('status')})")
     cls = r.get("classification") if ev.result is not None else None
     if cls is not None and cls != "ACCEPT_CORRECTNESS":
-        failed = sorted(k for k, v in (r.get("gates") or {}).items()
+        gates = r.get("sealed_contract_gates") or r.get("gates") or {}
+        failed = sorted(k for k, v in gates.items()
                         if v is False and k != "required_performance_hardware")
         fails.append(f"runner correctness gate: {cls} (failed: {', '.join(failed) or '?'})")
     if ev.result is not None:
@@ -576,6 +577,9 @@ def score_modal_run(ev: Evidence, fm: FrozenMatrix, addendum=None) -> dict:
         warnings.append(f"VRAM expert budget {budget >> 20} MiB vs the frozen row's "
                         f"{int(fm.vram_bytes[cell]) >> 20} MiB per GPU")
     probe = s.get("ssd_probe") or {}
+    if int(s.get("config_index") or 0) > 0:
+        warnings.append(f"row {s['config_index'] + 1} of a multi-config container: earlier rows "
+                        "warmed the page cache (not droppable under gVisor); timings read fast")
     if s.get("ssd_probe_suspect"):
         warnings.append(f"measured B_SSD {s.get('measured_b_ssd_gib_s')} GiB/s is above any "
                         "plausible NVMe; treat it as page cache, not disk")
