@@ -81,7 +81,7 @@ GPU_SPECS = {
     "L4":         ("L4",         "89",        3584,  98304, 17.0),
     "2xL4":       ("L4:2",       "89",        3584,  98304, 17.0),
     "A10":        ("A10",        "86",        3584,  98304, 17.0),
-    "L40S":       ("L40S",       "89",       28672, 131072, 32.0),
+    "L40S":       ("L40S",       "89",       26624, 131072, 32.0),
     "RTXPRO6000": ("RTX-PRO-6000", "120",    61440, 196608, 64.0),
     # Diagnostic only (no frozen cell): the sealed reference hardware, used to
     # bisect the r4 L4 token divergence (GPU arch vs one-GPU mode vs env/store).
@@ -326,6 +326,7 @@ def _bench_impl(
                     f"{ram_gib:.0f} GiB container; raise GPU_SPECS memory first")
             # Validate every config before anything bills past this point.
             cfg_list = _parse_configs(configs, host_gib, ram_gib)
+            summary["vram_fit"] = _vram_fit(gpu_name, model, budget_mib)
             nvidia = subprocess.run(
                 ["nvidia-smi", "--query-gpu=name,memory.total,driver_version",
                  "--format=csv,noheader"],
@@ -830,9 +831,37 @@ def preflight(gpu: str = "L4", model: str = "dsv4-flash", configs: str = "",
                     raise ValueError(f"{c['prompts_file']}: not a prompt list")
         return f"{len(parsed)} config(s)"
     step("configs", cfgs)
+    step("vram_fit", lambda: _vram_fit(gpu, model))
     out["ok"] = all(v["ok"] for v in chk.values())
     print(json.dumps({"preflight_ok": out["ok"]}), flush=True)
     return out
+
+
+# VRAM fit, from measured evidence (not a guess): torch's own peak per GPU,
+# before the engine's expert cache. dsv4 one GPU: r5 on L4 peaked 16.16 GiB
+# (r4 15.75); two GPUs split: sealed v54 on 2xT4 peaked 8.75 GiB on cuda1.
+# p6m-t4-r1 (1xT4, 14.57 GiB usable) died OOM in build_candidate: $0.27 lost
+# to a check this table now makes before anything bills.
+TORCH_PEAK_GIB = {"dsv4-flash": {1: 16.2, 2: 8.8}}
+GPU_USABLE_GIB = {"T4": 14.57, "2xT4": 14.57, "L4": 22.0, "2xL4": 22.0, "A10": 22.0,
+                  "L40S": 44.4, "RTXPRO6000": 94.5}
+VRAM_MARGIN_GIB = 0.5
+
+
+def _vram_fit(gpu: str, model: str, budget_mib: int = 0) -> str:
+    """Raise unless torch's measured peak + expert cache fits each GPU."""
+    spec, _archs, dfl_budget, _mem, _host = GPU_SPECS[gpu]
+    n = int(spec.split(":")[1]) if ":" in spec else 1
+    peak = TORCH_PEAK_GIB.get(model, {}).get(n)
+    if peak is None:
+        return f"no measured torch peak for {model} on {n} GPU(s); fit unchecked"
+    need = peak + (budget_mib or dfl_budget) / 1024.0 + VRAM_MARGIN_GIB
+    have = GPU_USABLE_GIB[gpu]
+    if need > have:
+        raise RuntimeError(f"{model} on {gpu}: needs ~{need:.1f} GiB/GPU (torch peak {peak} + "
+                           f"cache {(budget_mib or dfl_budget) / 1024.0:.1f} + margin) > "
+                           f"{have} GiB usable")
+    return f"~{need:.1f} of {have} GiB per GPU"
 
 
 def _parse_configs(configs: str, host_gib: float, ram_gib: float) -> list:
