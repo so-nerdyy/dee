@@ -77,3 +77,18 @@ def test_drop_page_cache_reports_meminfo(tmp_path):
     f.write_bytes(b"x" * 4096)
     out = m._drop_page_cache([f, tmp_path / "absent"], lambda *_: None)
     assert set(out) == {"cached_gib_before", "cached_gib_after"}
+
+
+def test_vram_fit_refuses_dsv4_on_one_t4():
+    with pytest.raises(RuntimeError, match="usable"):
+        m._vram_fit("T4", "dsv4-flash")          # p6m-t4-r1 OOM
+
+
+@pytest.mark.parametrize("gpu", ["2xT4", "L4", "2xL4", "A10", "L40S", "RTXPRO6000"])
+def test_vram_fit_allows_the_cells_that_ran_or_fit(gpu):
+    assert "GiB per GPU" in m._vram_fit(gpu, "dsv4-flash")
+
+
+def test_vram_fit_refuses_an_oversized_budget_override():
+    with pytest.raises(RuntimeError):
+        m._vram_fit("L40S", "dsv4-flash", budget_mib=28672)

@@ -93,7 +93,7 @@ Notes on the flags:
 - **`--host-gib` is always explicit.** The default (17 GiB, the sealed T4 split) is not a frozen
   budget, and the scorer marks it UNTESTABLE. The function refuses when host + 12 GiB reserve
   exceeds the container's RAM, instead of clamping.
-- Leave `--budget-mib` at the GPU default (3,584 MiB on L4/A10, 28,672 on L40S, 61,440 on RTX). The
+- Leave `--budget-mib` at the GPU default (3,584 MiB on L4/A10, 26,624 on L40S, 61,440 on RTX; the L40S default was 28,672 until the VRAM-fit check showed 16.2 GiB torch peak + 28 GiB cache overflows 44.4 GiB). The
   frozen rows assumed 22 / 48 / 96 GiB, which can't fit next to the 8.238 GiB dense backbone on
   L4/A10 (Addendum 2 item 2). The scorecard reports this as a warning on every run.
 - The function now runs a **fio B_SSD probe** after staging the store (13,369,344 B blocks,
