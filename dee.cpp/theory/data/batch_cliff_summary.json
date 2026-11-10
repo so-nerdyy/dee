@@ -1,0 +1,58 @@
+{
+  "b8_cliff_gib_measured_sets": 18.94,
+  "b8_cliff_gib_model": 16.4,
+  "b8_cliff_records_model": 1317.2,
+  "b8_step_distinct_measured_mean": 1521,
+  "popularity_source": "sealed_dsv4_empirical_inclusion",
+  "r5_check": [
+    {
+      "b": 1,
+      "capacity_records": 5140,
+      "corrected_nominal": 0.54,
+      "host_gib": 64,
+      "measured_hit": 0.5745,
+      "registered_nominal": 0.54,
+      "reuse_horizon_K": 100000,
+      "run": "p6m-l4-r5-b1-h64",
+      "step_lru_hit": 1.0,
+      "step_set_U1": 318.7
+    },
+    {
+      "b": 1,
+      "capacity_records": 1285,
+      "corrected_nominal": 0.51,
+      "host_gib": 16,
+      "measured_hit": 0.5578,
+      "registered_nominal": 0.51,
+      "reuse_horizon_K": 7,
+      "run": "p6m-l4-r5-b1-h16",
+      "step_lru_hit": 0.7147,
+      "step_set_U1": 318.7
+    },
+    {
+      "b": 8,
+      "capacity_records": 5140,
+      "corrected_nominal": 0.54,
+      "host_gib": 64,
+      "measured_hit": 0.8351,
+      "registered_nominal": 0.54,
+      "reuse_horizon_K": 100000,
+      "run": "p6m-l4-r5-b8-h64",
+      "step_lru_hit": 1.0,
+      "step_set_U1": 1317.2
+    },
+    {
+      "b": 8,
+      "capacity_records": 1285,
+      "corrected_nominal": 0.0,
+      "host_gib": 16,
+      "measured_hit": 0.0,
+      "registered_nominal": 0.51,
+      "reuse_horizon_K": 0,
+      "run": "p6m-l4-r5-b8-h16",
+      "step_lru_hit": 0.0,
+      "step_set_U1": 1317.2
+    }
+  ],
+  "records_with_nonzero_pi": 2364
+}
