@@ -467,3 +467,26 @@ budgets. With the 1.70x B_SSD it stays UNTESTABLE on the frozen row and KILLED o
 **Harness changes these runs led to** (merged): PR #15 added gate names in scorecards, the
 warm-cache warning, both router score sets in the dump, and a verdict fix. PR #16 added the
 VRAM-fit check in preflight and bench, and lowered the L40S default cache.
+
+#### Addendum 4, follow-up: b=1 host hit and cold reads rescored (2026-11-10)
+
+Addendum 4 left these two metrics ungraded because `score.py` stopped at the runner gate. They are
+now scored with `score.py --own-reference` (new, opt-in, tested): it requires the two b=1 runs to
+share GPU, commit, budget and model, to differ in host GiB, and to have identical token ids and
+identical routed-expert and route-weight journals (run_id and chain hashes ignored). Then it waives
+only `exact_16_token_ids` and `exact_decoded_text`. Both runs pass that check, re-fetched with
+`modal volume get` on 2026-11-10 and byte-identical to the earlier copies. The card carries the
+OWN-REFERENCE warning. This is the weaker gate described in Addendum 4, so these grades inherit its
+limit: they say nothing about whether one-GPU mode is bug-free. No Modal container was started.
+
+| row | metric | measured | Add.3 nominal [range] | Add.3 grade | frozen grade | evidence |
+|---|---|---|---|---|---|---|
+| b=1 h64 | host hit (2,930/5,100 prompt-scoped) | 0.5745 | 0.54 [0.47, 1.0], kill <0.4 | PASS | PASS | runs/p6m-l4-r5-b1-h64 |
+| b=1 h64 | cold rec/tok | 135.6 | 147.75 [0, 295.5], kill >369.4 | PASS | PASS | same |
+| b=1 h16 | host hit (2,845/5,100 prompt-scoped) | 0.5578 | 0.51 [0.44, 0.753], kill <0.45 or >0.57 (P2) | PASS | PASS | runs/p6m-l4-r5-b1-h16 |
+| b=1 h16 | cold rec/tok | 140.9 | 185.0 [81.9, 370.0] | PASS | PASS | same |
+
+The h16 host hit sits 0.012 under the P2 upper kill edge (0.57). The b=1 window is one prefill plus
+15 decode steps from a cold start, and cold rec/tok is `storage_requests_per_generated_token`, so
+it includes the prefill reads. The decode tok/s and $/1k grades in Addendum 4 are unchanged. Updated
+scorecards and SCOREBOARD.jsonl lines 5-6 supersede lines 1-2 for these two runs.

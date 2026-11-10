@@ -107,6 +107,7 @@ class Evidence:
     result_name: str | None
     checkpoint: list[dict] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
+    own_reference: dict | None = None  # set by --own-reference after verify_own_reference()
 
 
 def _read_json(path: Path) -> dict:
@@ -249,6 +250,46 @@ def measure(ev: Evidence, usd_per_hour: float) -> Measured:
 # Prerequisites (section 0, adapted by Addendum 2) and grading (section 4)
 # ---------------------------------------------------------------------------
 
+# --own-reference (Addendum 4, 2026-11-10): the L4 b=1 output differs from the sealed T4 answer and
+# nothing separates GPU rounding from a one-GPU-mode bug, so on that cell the exact-vs-T4 gates are
+# replaced by a pair check: two host budgets on the same GPU must be bit-identical. Weaker than
+# the exact gate. Only these two gates can be waived, and only for classification REJECT_NUMERICAL.
+OWN_REFERENCE_WAIVABLE = {"exact_16_token_ids", "exact_decoded_text"}
+_JOURNAL_IGNORE = {"run_id", "chain_sha256", "previous_chain_sha256"}
+
+
+def _jsonl(path: Path) -> list[dict]:
+    return [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+
+
+def verify_own_reference(a: Evidence, b: Evidence) -> list[str]:
+    """Return the reasons the pair is NOT a valid own-reference pair (empty list = valid)."""
+    why: list[str] = []
+    sa, sb = a.summary, b.summary
+    if a.result is None or b.result is None:
+        return ["a run has no result.json"]
+    for k in ("gpu", "n_gpus", "commit", "budget_mib", "model"):
+        if sa.get(k) != sb.get(k):
+            why.append(f"runs differ in {k}: {sa.get(k)!r} vs {sb.get(k)!r}")
+    if sa.get("host_gib_requested") == sb.get("host_gib_requested"):
+        why.append("both runs used the same host budget; the pair must differ in host GiB")
+    if batch_of(a.result) != 1 or batch_of(b.result) != 1:
+        why.append("own-reference is registered for b=1 only")
+    ta, tb = a.result.get("generated_token_ids"), b.result.get("generated_token_ids")
+    if not ta or ta != tb:
+        why.append("generated token ids differ (or are missing)")
+    for name in ("routed_experts.jsonl", "route_weights.jsonl"):
+        pa, pb = a.root / name, b.root / name
+        if not (pa.is_file() and pb.is_file()):
+            why.append(f"{name} missing")
+            continue
+        ra, rb = _jsonl(pa), _jsonl(pb)
+        strip = lambda rows: [{k: v for k, v in r.items() if k not in _JOURNAL_IGNORE} for r in rows]
+        if not ra or strip(ra) != strip(rb):
+            why.append(f"{name} differs between the runs (ignoring run_id and chain hashes)")
+    return why
+
+
 def _common_checks(ev: Evidence) -> list[str]:
     """Section-0 checks that do not depend on the platform's cell table."""
     s, r = ev.summary, ev.result or {}
@@ -270,6 +311,10 @@ def _common_checks(ev: Evidence) -> list[str]:
         gates = r.get("sealed_contract_gates") or r.get("gates") or {}
         failed = sorted(k for k, v in gates.items()
                         if v is False and k != "required_performance_hardware")
+        if (ev.own_reference and cls == "REJECT_NUMERICAL"
+                and set(failed) <= OWN_REFERENCE_WAIVABLE):
+            cls = None  # waived: the pair check in verify_own_reference() stands in for it
+    if cls is not None and cls != "ACCEPT_CORRECTNESS":
         fails.append(f"runner correctness gate: {cls} (failed: {', '.join(failed) or '?'})")
     if ev.result is not None:
         if not r.get("stage_profile"):
@@ -336,8 +381,10 @@ def overall(grades: list[str]) -> str:
 
 
 def score_run(root: Path, reg: Registry | None = None,
-              frozen: "FrozenMatrix | None" = None, addendum=None) -> dict:
+              frozen: "FrozenMatrix | None" = None, addendum=None,
+              own_reference: dict | None = None) -> dict:
     ev = load_evidence(Path(root))
+    ev.own_reference = own_reference
     if is_modal(ev.summary):
         return score_modal_run(ev, frozen or load_frozen(), addendum)
     reg = reg or load_registry()
@@ -536,6 +583,11 @@ def score_modal_run(ev: Evidence, fm: FrozenMatrix, addendum=None) -> dict:
     if host is None or float(host) not in FROZEN_HOSTS:
         fails.append(f"host {host} GiB is not a frozen budget {list(FROZEN_HOSTS)}")
     fails += _common_checks(ev)
+    if ev.own_reference and (ev.result or {}).get("classification") == "REJECT_NUMERICAL":
+        warnings.append("OWN-REFERENCE gate (Addendum 4): exact_16_token_ids/exact_decoded_text vs "
+                        "the sealed T4 answer were waived because this run is bit-identical to "
+                        f"{ev.own_reference['peer_run_id']} at another host budget. Weaker than the "
+                        "exact gate; it does not show one-GPU mode is bug-free.")
     if s.get("host_basis", "TOTAL") != "TOTAL":
         fails.append("host provisioning basis is not TOTAL (assumption A13)")
     card: dict = {
@@ -545,6 +597,7 @@ def score_modal_run(ev: Evidence, fm: FrozenMatrix, addendum=None) -> dict:
         "measured_b_ssd_gib_s": s.get("measured_b_ssd_gib_s"),
         "est_cost_usd": s.get("est_gpu_cost_usd"), "result_file": ev.result_name,
         "prerequisite_failures": fails, "warnings": warnings, "registry": fm.source,
+        "own_reference": ev.own_reference,
         "registered_id_tightening": "row prediction_ids per section 4 (P1, P1b, P2, P14, "
                                     "P15b/P15c vs the EXPENSIVE dense reading 0.12892 $/1k)",
         "not_applied": "P5/P8b/P16/P17 (need a stage-profile bucket analysis; read the "
@@ -714,8 +767,26 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--write", action="store_true", help="write scorecard.json/.md into each dir")
     ap.add_argument("--json", action="store_true", help="print JSON instead of markdown")
     ap.add_argument("--ledger", type=Path, help="append one JSON line per run to this file")
+    ap.add_argument("--own-reference", action="store_true",
+                    help="b=1 own-reference gate (Addendum 4): needs exactly two evidence dirs, "
+                         "same GPU, different host budgets, bit-identical tokens and route "
+                         "journals; then waives only exact_16_token_ids/exact_decoded_text")
     args = ap.parse_args(argv)
     cache: dict = {}
+    own: dict[Path, dict] = {}
+    if args.own_reference:
+        if len(args.evidence) != 2:
+            ap.error("--own-reference needs exactly two evidence dirs")
+        ea, eb = (load_evidence(r) for r in args.evidence)
+        why = verify_own_reference(ea, eb)
+        if why:
+            ap.error("not a valid own-reference pair: " + "; ".join(why))
+        for r, e, o in ((args.evidence[0], ea, eb), (args.evidence[1], eb, ea)):
+            own[r] = {"peer_run_id": o.summary.get("run_id"),
+                      "checks": ["same gpu/commit/budget/model", "different host_gib",
+                                 "identical generated_token_ids",
+                                 "identical routed_experts and route_weights (ex run_id/chain)"],
+                      "waived_gates": sorted(OWN_REFERENCE_WAIVABLE)}
 
     def reg_for(root: Path):
         if is_modal(_read_json(root / "summary.json")):
@@ -724,7 +795,7 @@ def main(argv: list[str] | None = None) -> int:
 
     for root in args.evidence:
         reg, frozen = reg_for(root)
-        card = score_run(root, reg, frozen)
+        card = score_run(root, reg, frozen, own_reference=own.get(root))
         md = render_md(card)
         print(json.dumps(card, indent=2, default=float) if args.json else md)
         if args.write:
