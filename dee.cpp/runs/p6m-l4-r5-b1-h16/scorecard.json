@@ -1,0 +1,25 @@
+{
+  "run_id": "p6m-l4-r5-b1-h16",
+  "evidence_dir": "runs/p6m-l4-r5-b1-h16",
+  "platform": "modal",
+  "cell": "1xL4",
+  "model": "dsv4_flash",
+  "gpu": "L4",
+  "host_gib": 16.0,
+  "host_basis": "TOTAL",
+  "spot": false,
+  "commit": "311d9d0bf821c08f35d2a6fb94640a533c9d41b9",
+  "measured_b_ssd_gib_s": 3.9552,
+  "est_cost_usd": 0.128,
+  "result_file": "result.json",
+  "prerequisite_failures": [
+    "runner correctness gate: REJECT_NUMERICAL (failed: ?)"
+  ],
+  "warnings": [],
+  "registry": "theory/data/predecl_matrix.csv (frozen 2026-09-30)",
+  "registered_id_tightening": "row prediction_ids per section 4 (P1, P1b, P2, P14, P15b/P15c vs the EXPENSIVE dense reading 0.12892 $/1k)",
+  "not_applied": "P5/P8b/P16/P17 (need a stage-profile bucket analysis; read the profile by hand), P2b (needs a MIN replay of the route journal)",
+  "b": 1,
+  "verdict": "UNTESTABLE",
+  "metrics": {}
+}
