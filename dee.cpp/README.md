@@ -1,196 +1,225 @@
-# dee.cpp — Dynamic Expert Eviction Inference Engine
+# dee.cpp: Dynamic Expert Eviction
 
-> A high-performance C++ inference engine optimized for **Dynamic Expert Eviction (DEE)**:
-> run large Mixture-of-Experts models (e.g. Ornith-1.0-35B, 256 experts / top-8) on
-> consumer hardware (NVMe SSD + RTX 3090, 24 GB VRAM) by streaming only the
-> Oracle-predicted experts into VRAM.
+`dee.cpp` is a correctness-first C++17/CUDA implementation of the Dynamic
+Expert Eviction control path: a safetensors shard is mapped read-only, Oracle
+predictions select experts, a fixed cache manages residency, and CUDA runs a
+small mixed-precision SwiGLU reference kernel on resident expert weights.
 
-## Why this exists
+On the default CUDA streaming path, BF16 weights are quantized once into
+per-projection INT8 pinned sources, transferred as INT8, dequantized to FP16 on
+the prefetch stream, and stay FP16 in the expert cache. cuBLAS reads FP16
+weights and activations with FP32 accumulation. Pass `--transfer-dtype bf16`
+for lossless BF16 transfer, or `--cache-dtype fp32` for the exact
+BF16-to-FP32 cache and SGEMV fallback.
+Frequently reused packed source blobs are materialized once in a bounded 192 MiB
+pinned-host cache; shards that exceed that bound fall back to the bounded
+staging ring. The configured cache remains 6 MiB; FP16 doubles its physical
+expert capacity from four to eight entries.
 
-The Python prototype proved the concept end-to-end:
+Oracle matrix products use a runtime-dispatched AVX2/FMA dot product on
+supported x86 CPUs and retain a portable scalar fallback.
 
-- Runs a ~70 GB / 35B MoE in **~1 GB** resident memory.
-- **100% Oracle recall** of the truly-activated top-8 experts.
-- Throughput was the blocker: **0.05 tok/s**, bottlenecked by Python + PyTorch
-  hooks + Kaggle network storage.
+The supported implementation is deliberately singular:
 
-`dee.cpp` replaces that with a native engine built on **ggml** (llama.cpp's
-tensor backend) targeting **30+ tok/s** on a single RTX 3090.
-
-## Architecture (high level)
-
-```
-            NVMe SSD (.safetensors / .gguf)
-                  │  mmap + async prefetch
-                  ▼
-        ┌─────────────────────────────┐
-        │  WeightMmap  (read-only)    │   zero-copy file mapping
-        └─────────────────────────────┘
-                  │  cudaMemcpyAsync (prefetch stream)
-                  ▼
-        ┌─────────────────────────────┐
-        │  VramCacheManager (LRU)      │   predicted experts live in VRAM
-        │  - priority queue           │
-        │  - sync fallback on miss    │
-        └─────────────────────────────┘
-                  │  compute stream
-                  ▼
-        ┌─────────────────────────────┐
-        │  MoE forward (ggml graph)    │   only resident experts
-        └─────────────────────────────┘
-                  ▲
-        ┌─────────────────────────────┐
-        │  Oracle (3-layer MLP)        │   predicts next-layer experts
-        │  loads oracle.pt weights     │
-        └─────────────────────────────┘
+```text
+WeightMmap -> TensorResolver -> OracleScheduler (oracle.h)
+           -> VramCacheManager (vram_cache.h) -> AsyncPrefetcher -> Engine
 ```
 
-## Build
+The older duplicate cache/scheduler/generation prototype has been removed; see
+[`legacy/README.md`](legacy/README.md).
 
-See `CMakeLists.txt`. Requires CMake ≥ 3.18 and (for GPU) CUDA Toolkit.
+## Lightning AI / NVIDIA T4 benchmark
+
+From a fresh Ubuntu Lightning Studio with an NVIDIA T4 (compute capability
+`sm_75`), CUDA 13, CMake, Python 3, and Git LFS:
 
 ```bash
-cmake -B build -DDEE_CUDA=ON
-cmake --build build -j
+git clone https://github.com/so-nerdyy/dee.git
+cd dee/dee.cpp
+git lfs pull
+./scripts/setup_lightning_t4.sh
+./scripts/setup_lightning_t4.sh --benchmark
 ```
 
-## Status
+The setup script verifies `nvidia-smi`, `nvcc`, and Git LFS; rejects an
+unresolved `oracle.pt` LFS pointer; deterministically generates the synthetic
+benchmark shard; configures `sm_75`; builds; and runs a CUDA smoke test.  The
+benchmark form additionally uses two warmup tokens before measuring 32 tokens.
 
-- [x] Step 1 — cloned & analyzed llama.cpp (mmap / MoE / offload)
-- [x] Step 2 — CMake + directory skeleton
-- [x] Step 3 — C++ architecture (this doc)
-- [x] Step 4 — WeightMmap + TensorResolver (data layer) + smoke test PASS
-- [x] Step 5 — VramCacheManager (LRU + Oracle-priority, arena + free-list) + test PASS
-- [x] Step 6 — AsyncPrefetcher (decoupled stream + per-transfer events, mock + CUDA-guarded) + test PASS
-- [x] Step 7 — Oracle loader (dependency-free PyTorch .pt ZIP+pickle reader) + OracleScheduler (3-layer MLP → top-K) + test PASS + torch-free Python cross-check EXACT match
-- [x] Step 8 — MoE forward (SwiGLU, raw C++) + autoregressive DEE loop wired Oracle→Prefetcher→Cache + CLI driver (dee_cli) + test PASS + CPU-mock run verified
-- [x] Step 9 — CUDA GPU port: real SwiGLU `__global__` kernels + async prefetcher (cudaMemcpyAsync H2D + per-expert cudaEvent_t sync) + cudaMalloc VRAM + cudaMemGetInfo reporting; guarded by `#ifdef DEE_CUDA`, builds clean on CPU, DEE_CUDA=ON configured for the RTX 3090
-- [ ] Step 10 — final benchmark on RTX 3090 (real hardware)
-
-> Note: Steps 5 and 6 were implemented in this session (VramCacheManager then
-> AsyncPrefetcher). The broad CUDA arch list ("60;70;75;80;86;89;90") is set in
-> CMakeLists.txt. The Step 8 CLI driver is deferred until Step 7 (Oracle) and
-> the forward pass exist.
-
-## Build
+Equivalent manual build:
 
 ```bash
-# CPU-only (data layer, no CUDA needed) — verified green:
-cmake -B build -DDEE_BUILD_GGML=ON -DDEE_CUDA=OFF
-cmake --build build -j
-./build/test_weight_mmap
-
-# RTX 3090 (sm_86) — requires CUDA Toolkit 12.x:
-cmake -B build -DDEE_BUILD_GGML=ON -DDEE_CUDA=ON
-cmake --build build -j
+rm -rf build
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DDEE_CUDA=ON \
+  -DDEE_BUILD_TESTS=OFF \
+  -DDEE_BUILD_GGML=OFF \
+  -DCMAKE_CUDA_ARCHITECTURES=75
+cmake --build build --parallel "$(nproc)"
+./build/dee_cli \
+  --shard tests/data/ornith_moe256.safetensors \
+  --oracle oracle.pt \
+  --tokens 32 --warmup 2 --topk 8 --layers 40 --cuda
 ```
 
-Step 4 status: the data layer (WeightMmap + TensorResolver) is pure POSIX/C++ and
-is fully unit-tested without ggml. `DEE_BUILD_GGML=ON` additionally compiles the
-vendored ggml backend (CPU) and links it into `dee_core` for the forward pass.
+`CMAKE_CUDA_ARCHITECTURES` is respected when supplied. If omitted for a CUDA
+build, dee.cpp defaults to `75` rather than compiling every historical GPU
+architecture.
 
-## Step 8 — MoE forward + DEE loop + CLI driver
+### Assets
 
-The runtime (`Engine` in `src/engine.cpp`) wires the full Dynamic Expert
-Eviction pipeline for one autoregressive token:
+`oracle.pt` is stored in Git LFS. Run `git lfs pull` after clone. The CLI and
+Engine detect the text LFS pointer and print that exact recovery command.
 
-```
-for token in 0..N:
-  hidden = embed(token)                 # mock: deterministic init
-  for layer L in 0..L-1:
-    experts = oracle.predict(L, hidden, topk)   # which experts activate
-    for e in experts: prefetcher.prefetch(L, e) # stream gate|up|down into VRAM
-    for e in experts: prefetcher.wait(L, e)     # sync fallback if needed
-    hidden = moe_swiglu(L, hidden, experts)     # SwiGLU combine (RMS-norm)
-```
-
-- **SwiGLU** is plain C++ matmul (row-major gate/up/down slices carved out of
-  one F32 expert blob). The CUDA/ggml kernel slots in later behind the same API.
-- Each expert's `gate|up|down` weights are bundled into a single F32 staging blob,
-  prefetched as one VRAM block, and sliced in the forward pass.
-- `OracleScheduler.predict` (Step 7) drives which experts get staged; the
-  `VramCacheManager` evicts by `last_used + priority`, so top-ranked experts
-  survive under a tight VRAM budget.
-
-### Synthetic shard
-
-`tests/gen_moe_shard.py` writes `tests/data/ornith_moe256.safetensors`: 256
-experts at layer 0 (Ornith naming, BF16, hidden=2048, inter=64) so top-8 Oracle
-prediction exercises real prefetch + cache-eviction pressure. Experts 0/1/2 carry
-canonical KNOWN values; 3..255 a deterministic filler. (The real multi-layer
-shard maps every layer to its own experts; the mock maps all layers to layer 0.)
-
-### CLI driver
+`tests/data/ornith_moe256.safetensors` is intentionally generated rather than
+committed as a large normal Git object:
 
 ```bash
-./build/dee_cli --shard tests/data/ornith_moe256.safetensors \
-                --oracle /path/to/oracle.pt --tokens 16 --topk 8 --layers 40
-# optional: --budget BYTES (default 4 experts), --cuda (real CUDA path)
+python3 tests/gen_moe_shard.py tests/data/ornith_moe256.safetensors
 ```
 
-### Verified results (CPU-mock, honest local numbers — WSL, no GPU)
+The generator has no third-party Python dependency and produces the same
+single-layer, 256-expert BF16 shard every time. It is a synthetic benchmark
+asset, not an Ornith model checkpoint.
 
-| scenario            | throughput | peak VRAM | evictions | cache hits | finite |
-|---------------------|-----------:|----------:|----------:|-----------:|:------:|
-| budget = 4 experts  | 0.84 tok/s | 6.0 MB    | 5116      | 0          | yes    |
-| budget = 16 experts | 0.85 tok/s | 24.0 MB   | 5104      | 0          | yes    |
+### CLI
 
-The 0.8 tok/s is single-threaded naive matmul on a CPU-only box — the point of
-`dee.cpp` is the RTX 3090 path, where the same control flow runs the SwiGLU on
-the GPU and the prefetcher overlaps NVMe→VRAM copies with compute. Evictions are
-high because the per-layer Oracle scatters predictions across the 256-expert
-space (realistic DEE pressure); the cache-hit path is covered by
-`test_vram_cache`. All 6 ctest suites pass (incl. `test_engine`: SwiGLU kernel
-matches a hand-computed 2×2 case, and the e2e loop produces finite output with
-real eviction activity).
+```text
+dee_cli --help
+dee_cli --shard PATH --oracle PATH --tokens N --warmup N --topk N --layers N
+        --budget BYTES --prefetch-depth N --cache-dtype fp16|fp32
+        --transfer-dtype int8|bf16|int4 --cuda
+        --profile-stages --profile-scenario MODE --profile-json PATH
+        --profile-timeline PATH --trace-requests PATH --verbose
+```
 
-## Step 9 — CUDA GPU port
+Defaults are `tests/data/ornith_moe256.safetensors` and `oracle.pt`, relative to
+the project root. The CLI validates malformed numeric arguments, missing files,
+unresolved LFS pointers, CPU-only `--cuda`, and CUDA runtime failures before
+starting a benchmark. It reports device/runtime metadata, warmup and measured
+tokens, throughput, cache budget/peak, cache activity, prefetch activity, and
+whether the output is finite.
 
-The CPU forward path is replaced by a real CUDA path behind `#ifdef DEE_CUDA`:
+### Stage profiling and request traces
 
-- **SwiGLU kernels** (`src/swiglu_cuda.cu`): two `__global__` phases per expert —
-  `swiglu_h_kernel` computes `h[i] = silu(Wg[i,:]·x)·(Wu[i,:]·x)` (one thread per
-  `inter` row), `swiglu_y_kernel` computes `y[o] = Σ_i Wd[o·inter+i]·h[i]` (one
-  thread per `hidden` output), then `combine_kernel` mean-pools the K expert
-  outputs. All launched on a dedicated **compute stream**.
-- **Async prefetcher (CUDA)** (`src/async_prefetcher.cpp`): `prefetch()` issues
-  `cudaMemcpyAsync(host_staging → cudaMalloc arena, stream=secondary)` straight
-  from the mmap-derived host blob, then `cudaEventRecord`s a **per-expert
-  `cudaEvent_t`**. `wait()` calls `cudaEventSynchronize(expert_event)` — the
-  compute stream only blocks on the one expert it needs *now* (sync fallback), so
-  independent transfers never stall it.
-- **VRAM arena**: the `VramCacheManager` backend switches to `cudaMalloc`/
-  `cudaFree` under `use_cuda`, so `cache_.data(L,e)` returns a device pointer the
-  kernel reads directly. `Engine::init` also `cudaMemGetInfo`s total/free GPU
-  memory and reports it; `dee_cli --cuda` switches the backend + kernel path.
-
-### Build (RTX 3090 / sm_86 — requires CUDA Toolkit 12.x)
+Detailed profiling is opt-in so CUDA timing events do not affect the normal
+regression benchmark. Warmup uses a separate unprofiled Engine instance, so
+all reported stage timings and counters cover measured tokens only:
 
 ```bash
-cmake -B build -DDEE_CUDA=ON -DDEE_BUILD_TESTS=ON -DDEE_BUILD_GGML=OFF
-cmake --build build -j
-./build/dee_cli --cuda --shard tests/data/ornith_moe256.safetensors \
-                --oracle /path/to/oracle.pt --tokens 32 --topk 8 --layers 40
-# typename           throughput  peak VRAM  evictions  finite
-# CPU-mock (WSL)     0.84 tok/s   6.0 MB     5116       yes
-# RTX 3090 (target)  (run on HW)  (run on HW) (run on HW)  yes
+./build/dee_cli \
+  --shard tests/data/ornith_moe256.safetensors \
+  --oracle oracle.pt \
+  --tokens 32 --warmup 2 --topk 8 --layers 40 --cuda \
+  --profile-stages \
+  --profile-json benchmark_reports/t4-stage-profile.json
 ```
 
-### Honest status of this step
+Add the request trace only when working-set analysis is needed:
 
-This WSL dev box has **no nvcc/CUDA toolkit and no GPU**, so the `DEE_CUDA=ON`
-binary could not be compiled or run here. What WAS verified:
-- The `DEE_CUDA=OFF` build (all the new code behind `#ifdef DEE_CUDA`) compiles
-  clean and **all 6 ctest suites still pass**; the CPU-mock CLI runs unchanged.
-- The CUDA source was reviewed line-by-line for correctness (kernel launch
-  syntax, `cudaMemcpyAsync` HostToDevice from the mmap host pointer, per-expert
-  `cudaEvent_t` record/sync, `cudaMemGetInfo`, device-buffer lifetimes, and
-  `cudaMalloc`/`cudaFree` teardown via the cache destructor). One definite
-  compile bug (`float**` passed to `cudaMalloc` which needs `void**`) was found
-  and fixed.
+```bash
+./build/dee_cli \
+  --shard tests/data/ornith_moe256.safetensors \
+  --oracle oracle.pt \
+  --tokens 32 --warmup 2 --topk 8 --layers 40 --cuda \
+  --profile-stages \
+  --profile-json benchmark_reports/t4-stage-profile.json \
+  --trace-requests benchmark_reports/t4-request-trace.json
+```
 
-The CUDA path is therefore **compile-reviewed but not runtime-verified** on this
-box. The CMake configuration (`find_package(CUDAToolkit)`, `enable_language(CUDA)`,
-broad arch list, `DEE_CUDA_SRC` glob + `CUDA::cudart` link) is in place so it
-should compile on the 3090 machine with the command above. Final throughput /
-VRAM numbers come from the Step 10 run on real hardware.
+The stage profile reports CPU wall-clock spans, CUDA-event device durations,
+operation counts, token latency percentiles, request classification, transfer
+volume, and working-set/reuse statistics. CUDA timing uses a bounded reusable
+event pool and collects samples only at synchronization points already present
+in the runtime. BF16 cache conversion is reported separately from H2D and
+projection time. The request trace also includes the final hidden vector for
+FP32/FP16 validation and is not enabled by the normal benchmark command.
+
+Add `--profile-timeline benchmark_reports/t4-timeline.json` for a Chrome trace
+and exact common-origin copy/compute interval union. The summary reports copy
+and compute utilization, overlap, idle bubbles, transfer queue depth, and
+host-wait reasons. This detailed timeline is intentionally opt-in.
+
+Quantized transfer modes pre-pack a bounded persistent host source cache before
+timed decoding. The CLI reports startup cost, packed expert count, and packed
+bytes separately. Use `--dynamic-quantization` to retain first-touch
+quantization for cold-start/control comparisons.
+
+Compare numerical output and expert routes between two request-trace reports:
+
+```bash
+python3 scripts/compare_benchmark_outputs.py reference.json candidate.json \
+  --max-abs 0 --relative-rmse 0 --require-exact-routes
+```
+
+Summarize working-set and reuse-distance behavior with:
+
+```bash
+python3 scripts/analyze_request_trace.py \
+  benchmark_reports/t4-request-trace.json \
+  --output benchmark_reports/t4-working-set.json
+```
+
+For controlled A-G decomposition, run:
+
+```bash
+./scripts/profile_scenarios.sh
+```
+
+This writes one JSON report for each of `end-to-end`, `full-resident`,
+`resident-bypass`, `transfer-only`, `compute-only`, `oracle-only`, and
+`cache-metadata-only`. Full-resident and resident-bypass preload every physical
+expert before the measured clock and retain the Oracle-driven request sequence.
+The other modes are explicit ablations: disabled compute means their recurrent
+hidden state and later Oracle choices cannot be identical to end-to-end. The
+compute-only mode uses a deterministic expert schedule and does not include
+Oracle time. These modes are diagnostic controls, not alternative throughput
+claims; the default 6 MiB end-to-end regression remains unchanged.
+
+### What the benchmark means
+
+This is a synthetic-kernel/control-path benchmark. It validates cache
+residency, bounded pinned BF16 source/staging memory, H2D transfers, GPU cache
+conversion, and FP32/FP16 cuBLAS SwiGLU correctness. It is **not complete 35B
+end-to-end model inference**, and the
+reference kernels must not be interpreted as a claim of 30+ tok/s on a
+real 35B model. In particular, the first copy from file-backed/pageable data
+into pinned memory is host work; only the pinned-host-to-device leg is
+asynchronous.
+
+INT8 is validated for this deterministic synthetic workload but is not a
+model-quality claim. `--transfer-dtype int4` is opt-in and experimental: it is
+faster here but has a larger measured output error and requires calibration on
+real checkpoints before use in complete inference.
+
+The measured T4 profiling campaign, controlled A-G decomposition, accepted
+optimization, and rejected experiments are recorded in
+[`T4_PROFILE_RESULTS.md`](T4_PROFILE_RESULTS.md).
+
+### Debugging CUDA
+
+```bash
+nvidia-smi
+CUDA_LAUNCH_BLOCKING=1 ./build/dee_cli --cuda --tokens 1 --topk 1 --layers 1
+compute-sanitizer --tool memcheck ./build/dee_cli --cuda --tokens 1 --topk 1 --layers 1
+compute-sanitizer --tool racecheck ./build/dee_cli --cuda --tokens 1 --topk 1 --layers 1
+```
+
+For close launch-site error checking, configure with
+`-DDEE_CUDA_VALIDATE=ON`. This synchronizes after individual kernel launches
+and is intended for validation, not performance measurement.
+
+## CPU test suite
+
+```bash
+cmake -S . -B build-cpu \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DDEE_CUDA=OFF \
+  -DDEE_BUILD_TESTS=ON
+cmake --build build-cpu --parallel "$(nproc)"
+ctest --test-dir build-cpu --output-on-failure
+```
+
+The test build generates deterministic safetensors test assets automatically.

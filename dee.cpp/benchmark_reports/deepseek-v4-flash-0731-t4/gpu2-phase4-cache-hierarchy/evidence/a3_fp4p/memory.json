@@ -1,0 +1,18 @@
+{
+  "status": "RUNNING",
+  "startup_process": {
+    "VmPeak": 0.05,
+    "VmLck": 0.0,
+    "VmHWM": 0.03,
+    "VmRSS": 0.03,
+    "VmData": 0.03,
+    "VmSwap": 0.0
+  },
+  "startup_system": {
+    "MemTotal": 31.35,
+    "MemAvailable": 29.35,
+    "Cached": 9.62,
+    "SReclaimable": 0.54
+  },
+  "startup_gpu": {}
+}

@@ -1,0 +1,73 @@
+{
+  "classification": "REJECT_NUMERICAL",
+  "run_id": "p2.3-real-fp4-v45",
+  "sealed_at_utc": "2026-08-27T03:12:53.552Z",
+  "kernel": "nivind/dee-cpp-dsv4-native-generate",
+  "kernel_version": 45,
+  "repository": "https://github.com/so-nerdyy/dee.git",
+  "branch": "freebuff/deepseek-v4-flash-0731-t4",
+  "git_commit": "f017d12b110ae0acc40ac164e123f9330866c6e0",
+  "model_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+  "hardware": {
+    "requested": "2x Tesla T4",
+    "observed_gpu_count": 2,
+    "observed_gpu_names": ["Tesla T4", "Tesla T4"],
+    "performance_hardware_eligible": true
+  },
+  "configuration": {
+    "cache_dtype": "fp4",
+    "n_tokens": 16,
+    "cache_budget_gib_per_gpu": 3.5,
+    "host_pack_runtime_budget_gib": [8.5, 8.5],
+    "expert_store_backend": "safetensors"
+  },
+  "terminal_result": {
+    "tokens_generated": 0,
+    "first_failed_stage": "prefill LM-head finite check",
+    "error_type": "FloatingPointError",
+    "error": "non-finite logits",
+    "exact_token_gate": "NOT_REACHED",
+    "decoded_text_gate": "NOT_REACHED",
+    "performance_comparison_to_v44": "INVALID"
+  },
+  "root_cause": {
+    "status": "ATTRIBUTED_STATICALLY_FROM_THE_EXERCISED_PATH",
+    "file": "dee.cpp/src/engine.cpp",
+    "function": "Engine::moe_forward_batch_device_impl",
+    "description": "The real model uses moe_forward_batch_device. Its packed-FP4 branch accepted DeviceCacheDType::Fp4E2m1 but passed the packed cache block directly to swiglu_expert_batch_fp16_cuda without decode_fp4_cache_block_to_scratch. Existing packed-cache tests only exercised moe_forward_experts, whose decode step was present.",
+    "repair_gate": "Add the missing decode on the compute stream and a packed-FP4 moe_forward_batch_device CUDA regression before rerun."
+  },
+  "component_evidence": {
+    "classification": "ACCEPT_COMPONENT",
+    "note": "Informational only; v45 live serving still used canonical safetensors.",
+    "dee4_contiguous_mib_s": 469.8,
+    "safetensors_scatter_mib_s": 190.9234064209841,
+    "speedup": 2.460672626823429,
+    "repack_seconds": 108.29576767599974,
+    "repacked_gib": 9.5625
+  },
+  "baseline_reference": {
+    "id": "v44-p22-real-baseline",
+    "git_commit": "e093bae645e8f3908f861066d8c561c59a3ff6b7",
+    "decode_wall_s": 5789.652,
+    "median_inter_token_ms": 369291.19,
+    "decode_tok_s_unrounded": 0.00259,
+    "h2d_bytes": 65509785600,
+    "cold_loads": {"cuda0": 2509, "cuda1": 2391}
+  },
+  "identity": {
+    "prelaunch_manifest": "v45-prelaunch-20260827T023352Z.json",
+    "prelaunch_manifest_sha256": "be63868d349f213bd8ca871953d8b802c9408416477306744e01d556dff1cc90",
+    "harness_sha256": "bbc9c11db59f45ad99acf01155e43390566ed31f856e6ffaae525d41193f88ad",
+    "run_config_sha256": "83c6263ed8bae0d0209213c15e9db50f468338cdfa59520f75284dd1c815e355",
+    "kernel_metadata_sha256": "55c0c63ad29a2e2adc8168b1282ec986f71273dd746a3a4bb9535787d70cd58b"
+  },
+  "downloaded_evidence": {
+    "directory": "v45-evidence-20260827T0321Z",
+    "error.txt": {"bytes": 689, "sha256": "b0c8f76aa7da256ccf518b73187fac58c9286c87c60f1ca64cb549b4207a959b"},
+    "generated_checkpoint.jsonl": {"bytes": 0, "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+    "native-generate-result.json": {"bytes": 754, "sha256": "7ed9b1b0269db2c6c001d7eb3ddfe3266b6013d7a2e1a12d4872b417b9baa1e3"},
+    "p2.2-dee4-evidence.json": {"bytes": 209, "sha256": "4fcaed323ffd901fc18c03e6cd1f7b20abda327bef148b867204634e49b6e2a3"},
+    "progress.log": {"bytes": 3573, "sha256": "d52cd0db7842f7c909a1f1144477f398b8034bf4f2a3fc311c9173750ebf7ac1"}
+  }
+}

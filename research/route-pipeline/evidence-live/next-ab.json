@@ -1,0 +1,24 @@
+{
+  "classification": "EVENT_HANDOFF_PROMOTED",
+  "candidate": "EVENT_HANDOFF",
+  "mechanism": "per-layer event handoff replacing full stream sync",
+  "files_affected": [
+    "dee.cpp/src/engine.cpp",
+    "dee.cpp/pydee/pydee.cpp"
+  ],
+  "telemetry_required": [
+    "wait ms eliminated",
+    "lifetime proofs"
+  ],
+  "correctness_gates": [
+    "identical output",
+    "no premature reuse",
+    "deterministic completion"
+  ],
+  "ab_shape": {
+    "baseline": "current exact runtime",
+    "candidate": "current exact runtime + EVENT_HANDOFF ONLY"
+  },
+  "replication": "matched off/on, same prompt/tokens/hardware; abort on any gate failure or output mismatch",
+  "runner_up": []
+}

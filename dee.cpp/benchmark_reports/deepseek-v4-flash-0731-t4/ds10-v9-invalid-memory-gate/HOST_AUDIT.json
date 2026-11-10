@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "result": "FAIL",
+  "classification": "INVALID_EXPERIMENT",
+  "run_id": "20260805T023525Z",
+  "stage": "v5",
+  "reported_verdict": "ACCEPT_DUAL_T4_FIRST_TOKEN",
+  "first_failing_gate": "generation_memory",
+  "failed_gates": [
+    "alternate_current_rss_ceiling",
+    "alternate_peak_rss_ceiling",
+    "runtime_verdict_omitted_generation_memory",
+    "pre_fix_host_sealer_omitted_generation_memory"
+  ],
+  "host_memory": {
+    "primary_current_rss_bytes": 3583107072,
+    "primary_peak_rss_bytes": 6673666048,
+    "alternate_current_rss_bytes": 13977284608,
+    "alternate_peak_rss_bytes": 17153708032,
+    "ceiling_bytes": 12000000000
+  },
+  "token_evidence": {
+    "token_id": 666,
+    "decoded_fragment": "**",
+    "cold_warm_equal": true,
+    "deterministic_rerun": true,
+    "cache_capacity_variation_equal": true
+  },
+  "note": "Token equality is genuine, but the run is not an acceptance because both the runtime verdict and the pre-fix host sealer failed to include the recorded generation memory ceiling in their pass conditions."
+}

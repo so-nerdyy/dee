@@ -1,0 +1,212 @@
+{
+ "runs": [
+  {
+   "journals": [
+    {
+     "label": "q0",
+     "path": "benchmark_reports/deepseek-v4-flash-0731-t4/gpu2-phase3-fullstore/routed_experts-a1-q0.jsonl",
+     "sha256": "591072115feb12fe818b0caea4018f03ced23cacc6cb7a7a5544a3f31f3132d8",
+     "records": 688
+    }
+   ],
+   "config": {
+    "vram_bytes": 3758096384,
+    "vram_dtype": "fp16",
+    "vram_policy": "priority_lru",
+    "host_bytes": 0.0,
+    "host_scope": "per-device",
+    "host_policy": "lru",
+    "host_consult": "eager",
+    "queue_depth": 6,
+    "regime": "cold",
+    "prewarm": null,
+    "static_hotset": null,
+    "freq_weight": 1048576,
+    "segmented_probation": 0.2,
+    "persist": true,
+    "layer_split": 22,
+    "num_layers": 43,
+    "num_experts": 256,
+    "topk": 6
+   },
+   "cap_slots": 74,
+   "host_capacity_records": 0,
+   "blob_bytes": 50331648,
+   "record_bytes": 13369344,
+   "cache_batch": 74,
+   "queue_depth": 6,
+   "belady_bounds": {
+    "vram:cuda:0:all": 763,
+    "vram:cuda:1:all": 979
+   }
+  },
+  {
+   "journals": [
+    {
+     "label": "q0",
+     "path": "benchmark_reports/deepseek-v4-flash-0731-t4/gpu2-phase3-fullstore/routed_experts-a1-q0.jsonl",
+     "sha256": "591072115feb12fe818b0caea4018f03ced23cacc6cb7a7a5544a3f31f3132d8",
+     "records": 688
+    }
+   ],
+   "config": {
+    "vram_bytes": 3758096384,
+    "vram_dtype": "fp16",
+    "vram_policy": "priority_lru",
+    "host_bytes": 4294967296.0,
+    "host_scope": "per-device",
+    "host_policy": "lru",
+    "host_consult": "eager",
+    "queue_depth": 6,
+    "regime": "cold",
+    "prewarm": null,
+    "static_hotset": null,
+    "freq_weight": 1048576,
+    "segmented_probation": 0.2,
+    "persist": true,
+    "layer_split": 22,
+    "num_layers": 43,
+    "num_experts": 256,
+    "topk": 6
+   },
+   "cap_slots": 74,
+   "host_capacity_records": 321,
+   "blob_bytes": 50331648,
+   "record_bytes": 13369344,
+   "cache_batch": 74,
+   "queue_depth": 6,
+   "belady_bounds": {
+    "host:cuda:0:pall": 1329,
+    "host:cuda:1:pall": 1461,
+    "vram:cuda:0:all": 763,
+    "vram:cuda:1:all": 979
+   }
+  },
+  {
+   "journals": [
+    {
+     "label": "q0",
+     "path": "benchmark_reports/deepseek-v4-flash-0731-t4/gpu2-phase3-fullstore/routed_experts-a1-q0.jsonl",
+     "sha256": "591072115feb12fe818b0caea4018f03ced23cacc6cb7a7a5544a3f31f3132d8",
+     "records": 688
+    }
+   ],
+   "config": {
+    "vram_bytes": 3758096384,
+    "vram_dtype": "fp16",
+    "vram_policy": "priority_lru",
+    "host_bytes": 9126805504.0,
+    "host_scope": "per-device",
+    "host_policy": "lru",
+    "host_consult": "eager",
+    "queue_depth": 6,
+    "regime": "cold",
+    "prewarm": null,
+    "static_hotset": null,
+    "freq_weight": 1048576,
+    "segmented_probation": 0.2,
+    "persist": true,
+    "layer_split": 22,
+    "num_layers": 43,
+    "num_experts": 256,
+    "topk": 6
+   },
+   "cap_slots": 74,
+   "host_capacity_records": 682,
+   "blob_bytes": 50331648,
+   "record_bytes": 13369344,
+   "cache_batch": 74,
+   "queue_depth": 6,
+   "belady_bounds": {
+    "host:cuda:0:pall": 1347,
+    "host:cuda:1:pall": 1461,
+    "vram:cuda:0:all": 763,
+    "vram:cuda:1:all": 979
+   }
+  },
+  {
+   "journals": [
+    {
+     "label": "q0",
+     "path": "benchmark_reports/deepseek-v4-flash-0731-t4/gpu2-phase3-fullstore/routed_experts-a1-q0.jsonl",
+     "sha256": "591072115feb12fe818b0caea4018f03ced23cacc6cb7a7a5544a3f31f3132d8",
+     "records": 688
+    }
+   ],
+   "config": {
+    "vram_bytes": 3758096384,
+    "vram_dtype": "fp16",
+    "vram_policy": "priority_lru",
+    "host_bytes": 18253611008.0,
+    "host_scope": "per-device",
+    "host_policy": "lru",
+    "host_consult": "eager",
+    "queue_depth": 6,
+    "regime": "cold",
+    "prewarm": null,
+    "static_hotset": null,
+    "freq_weight": 1048576,
+    "segmented_probation": 0.2,
+    "persist": true,
+    "layer_split": 22,
+    "num_layers": 43,
+    "num_experts": 256,
+    "topk": 6
+   },
+   "cap_slots": 74,
+   "host_capacity_records": 1365,
+   "blob_bytes": 50331648,
+   "record_bytes": 13369344,
+   "cache_batch": 74,
+   "queue_depth": 6,
+   "belady_bounds": {
+    "host:cuda:0:pall": 1347,
+    "host:cuda:1:pall": 1461,
+    "vram:cuda:0:all": 763,
+    "vram:cuda:1:all": 979
+   }
+  },
+  {
+   "journals": [
+    {
+     "label": "q0",
+     "path": "benchmark_reports/deepseek-v4-flash-0731-t4/gpu2-phase3-fullstore/routed_experts-a1-q0.jsonl",
+     "sha256": "591072115feb12fe818b0caea4018f03ced23cacc6cb7a7a5544a3f31f3132d8",
+     "records": 688
+    }
+   ],
+   "config": {
+    "vram_bytes": 3758096384,
+    "vram_dtype": "fp16",
+    "vram_policy": "priority_lru",
+    "host_bytes": 34359738368.0,
+    "host_scope": "per-device",
+    "host_policy": "lru",
+    "host_consult": "eager",
+    "queue_depth": 6,
+    "regime": "cold",
+    "prewarm": null,
+    "static_hotset": null,
+    "freq_weight": 1048576,
+    "segmented_probation": 0.2,
+    "persist": true,
+    "layer_split": 22,
+    "num_layers": 43,
+    "num_experts": 256,
+    "topk": 6
+   },
+   "cap_slots": 74,
+   "host_capacity_records": 2570,
+   "blob_bytes": 50331648,
+   "record_bytes": 13369344,
+   "cache_batch": 74,
+   "queue_depth": 6,
+   "belady_bounds": {
+    "host:cuda:0:pall": 1347,
+    "host:cuda:1:pall": 1461,
+    "vram:cuda:0:all": 763,
+    "vram:cuda:1:all": 979
+   }
+  }
+ ]
+}

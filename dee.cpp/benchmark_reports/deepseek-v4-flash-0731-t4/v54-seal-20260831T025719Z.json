@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "id": "v54-seal-p2.3-dee4-trace-fillpool",
+  "run_id": "p2.3-dee4-trace-fillpool-v54",
+  "sealed_at_utc": "2026-08-31T02:56:53Z",
+  "classification": "ACCEPT_CORRECTNESS",
+  "acceptance_scope": "accepted exact live DEE4 trace-serving generation with fill-pool source-read scheduling on one 2x Tesla T4 run",
+  "performance_eligible": true,
+  "performance_acceptance": false,
+  "performance_acceptance_reason": "This is not ACCEPT_PERFORMANCE: one unprofiled run does not satisfy the required independent replication gate, and timings are retained without a speedup claim.",
+  "evidence_dir": "dee.cpp/benchmark_reports/deepseek-v4-flash-0731-t4/v54-evidence-20260831T025719Z/",
+  "repository": "https://github.com/so-nerdyy/dee.git",
+  "branch": "freebuff/deepseek-v4-flash-0731-t4",
+  "identity": {
+    "pinned_commit": "5835f4cc7f4501e99579a5b25dd2b74e256e4e7b",
+    "model_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+    "executing_harness_sha256": "5052409fc9883bd8cb6119acf305dc52352e36de4f0f089a0c37fdbe0623b447",
+    "cloned_harness_sha256": "20ecc0614e03b50fc354c593b0fb719a5165c2b7bc478453f20061d2d196a0ac",
+    "run_config_sha256": "abca5e2c20db51258f9682b8602f6ef17d021e1210ef34685f7e852f725c1368",
+    "kernel_metadata_sha256": "b4f3f5ea04a8099801fe6f03611e9bffb5ad7e4e6e420020ba4d2174ff11ea79"
+  },
+  "hardware": {
+    "requested": "2x Tesla T4",
+    "observed": "2x Tesla T4",
+    "compute_capability": [7.5, 7.5],
+    "performance_hardware_eligible": true
+  },
+  "configuration": {
+    "cache_dtype": "fp4",
+    "cache_representation": "packed FP4 bytes resident; compute-time FP16 scratch decode",
+    "expert_store_backend": "dee4_trace",
+    "expert_store_path": "/tmp/dsv4-dee4-v3-trace/metadata.json",
+    "n_tokens": 16,
+    "profile_stages": false,
+    "vram_cache_gib_per_gpu": 3.5,
+    "host_pack_runtime_cap_gib_total": 17.0,
+    "source_read_queue_depth": 6,
+    "source_read_lanes": 3
+  },
+  "correctness": {
+    "expected_token_ids": [666, 95140, 96807, 343, 4470, 20, 1127, 3298, 22, 22604, 515, 411, 3947, 85349, 14, 6341],
+    "actual_token_ids": [666, 95140, 96807, 343, 4470, 20, 1127, 3298, 22, 22604, 515, 411, 3947, 85349, 14, 6341],
+    "decoded_text": "**Alan Turing (1912\u20131954)** was an English mathematician, computer",
+    "actual_token_ids_sha256": "4e4ffae391ca0b3ff72acd84f5ba2afb2b138a4af6fd6eb59128a3635ff87698",
+    "actual_decoded_text_sha256": "7fc87fbf71af7f5f3510bc2fd01a9342a866f9b4daa8382b52fd21e5a1e160e9",
+    "tokens_match": "16/16 exact",
+    "layers_executed": 43,
+    "finite_outputs": true
+  },
+  "gates": {
+    "exact_16_token_ids": true,
+    "exact_decoded_text": true,
+    "all_43_layers": true,
+    "finite_outputs_observed": true,
+    "numpy_bridge_calls_zero": true,
+    "full_hidden_d2h_zero": true,
+    "raw_expert_output_d2h_zero": true,
+    "official_router_authoritative": true,
+    "no_cpu_expert_fallback": true,
+    "effective_cuda_execution": true,
+    "effective_cache_dtype": true,
+    "effective_expert_store": true,
+    "dee4_contiguous_reads": true,
+    "dee4_integrity_identity": true,
+    "dee4_trace_metadata_linkage": true,
+    "route_journal_complete": true,
+    "required_performance_hardware": true,
+    "all_non_hardware_gates_pass": true
+  },
+  "live_dee4_trace_verification": {
+    "backend": "dee4_trace",
+    "created_this_run": true,
+    "format": "dee4-v3-trace",
+    "data_sha256": "c83462ba50d2154a241cabf7d2b8d084e46f2eaa54416a96c90770ca7172d6e8",
+    "record_bytes": 13369344,
+    "records": 2364,
+    "total_bytes": 31605129216,
+    "metadata_record_indices": "0..2363 contiguous",
+    "integrity_records_complete": true,
+    "lookup_failures": {"cuda0": 0, "cuda1": 0},
+    "contiguous_source_reads": {"cuda0": 1390, "cuda1": 1091},
+    "v50_trace_linkage": {
+      "trace_journal_sha256": "665aac3e8db570237c6dc6acaf08dc39f2af890e8a04e400ce7154f1a858dae1",
+      "trace_final_chain_sha256": "086f8ca83b6a3c467cdf950096141fa9bc3e55a285d7d1fed8a0ad9913e3eb3d",
+      "selection_sha256": "7f41f8d0351491ce9d4b11b5317257c3dfb3ec282666fcac7cd711aa9bcd99bf"
+    }
+  },
+  "route_journal_verification": {
+    "artifact": "routed_experts.jsonl",
+    "file_bytes": 324658,
+    "file_sha256": "0a5ac54c8ef6347f31043a0f33908245e2825358db39ec431c4d03221602a9a1",
+    "record_count": 688,
+    "record_indices": "0..687 contiguous",
+    "steps": "0..15",
+    "layers_per_step": "0..42 exactly once for every step",
+    "row_shape": "step 0: 7 prefill rows; steps 1..15: 1 decode row per layer",
+    "topk": 6,
+    "genesis_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "final_chain_sha256": "24f805b83b50fff0d0767456855292ba6b5b011263e6848392827d7d5e7df4c2",
+    "independent_recompute": "all 688 canonical payload SHA-256 values and predecessor links recomputed and verified"
+  },
+  "fill_pool_source_read_telemetry": {
+    "queue_depth": 6,
+    "lanes": 3,
+    "cuda0": {
+      "source_read_batches": 413,
+      "concurrent_source_read_batches": 319,
+      "source_read_batch_wall_ms": 54444.211469,
+      "source_read_overlap_ms": 89311.003646,
+      "source_read_overlap_percent": 62.127179531638994
+    },
+    "cuda1": {
+      "source_read_batches": 351,
+      "concurrent_source_read_batches": 247,
+      "source_read_batch_wall_ms": 42084.071657,
+      "source_read_overlap_ms": 69312.384313,
+      "source_read_overlap_percent": 62.22140357405474
+    }
+  },
+  "measured_runtime": {
+    "build_seconds": 81.73,
+    "total_wall_seconds": 168.42,
+    "prefill_seconds": 96.76387,
+    "decode_wall_seconds": 71.127,
+    "decode_tokens": 15,
+    "decode_tokens_per_second": 0.211,
+    "median_inter_token_ms": 4415.02,
+    "p95_inter_token_ms": 6875.74
+  },
+  "raw_bundle_verification": {
+    "source_dir": "dee.cpp/tmp/v54-live-20260831T025719Z/",
+    "copy_verification": "18 files and 9,771,777 bytes; every relative path, byte count, and SHA-256 matches source",
+    "result_equals_native_result": true,
+    "integrity_artifact_hashes_recomputed": true
+  },
+  "caveats": [
+    "This is ACCEPT_CORRECTNESS, not ACCEPT_PERFORMANCE.",
+    "The one-run timings and fill-pool lane telemetry are evidence only; independent replication remains required before a performance acceptance or speedup claim.",
+    "profile_stages=false, so v54 does not supply a stage-profiler decomposition."
+  ],
+  "raw_file_hashes": {
+    "dee-cpp-dsv4-native-generate.log": {"bytes": 1643046, "sha256": "9587e4c7f53514e1912391fdc9f5c1d7bf1933956cbe28e4d774e67f4d45423c"},
+    "dee4-import-validation.json": {"bytes": 31565, "sha256": "75b5773f326038675f40c1c63b02b6f57c7ec640e358ae3f852cc8506ac82593"},
+    "dee4-integrity.jsonl": {"bytes": 1712656, "sha256": "55129bc080555d57caff1d89899de0e3cd85a8f5cfa57668b1b4ce6b1545fea4"},
+    "dee4-metadata.json": {"bytes": 188948, "sha256": "04c84e2d797b753a6ce9a3d926c763aee227bb29a9c5bb2366542401df84a1fb"},
+    "dee4-repack_report.json": {"bytes": 4683, "sha256": "284551f4341e88bbcc45e2e5bfd31f2028413f22654dd95b7077bae9493d5814"},
+    "dee4-trace-validation.json": {"bytes": 892, "sha256": "063ed2d0a97a226207d87fbd6ed92ade39a84f86947ecf15e0d7795bc7631718"},
+    "environment.json": {"bytes": 1228, "sha256": "c1eb7fe172bf863fdd8d9d94d5dcae39e5b668280bc2d8d214759c01102c32b9"},
+    "generated_checkpoint.jsonl": {"bytes": 110461, "sha256": "a18dab47ca1cb86d6cf53612175292f018ef95413d6f340c60c7c0bc8f705bd3"},
+    "integrity.json": {"bytes": 5816, "sha256": "a0f19b689303c1eee20bdc487fefb3c106cdcdee1378c8c749b234b4c18d931f"},
+    "memory.json": {"bytes": 907, "sha256": "256d7bb63c6fb6b2d39a39a5f55fe09c52f92508681e17af2ae7c974f15e9548"},
+    "model.safetensors.index.json": {"bytes": 5602871, "sha256": "98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b"},
+    "native-generate-result.json": {"bytes": 38229, "sha256": "6168ad7cf9bc47fe1471d278c0d40a6b76bdbc2dd4afadb4aa642af716701ab6"},
+    "p2.2-dee4-evidence.json": {"bytes": 1812, "sha256": "bb4280f211119c5ba8e3de312ebe66a1eb87d8d269adf7a46d2b834f7db57897"},
+    "profile.json": {"bytes": 31617, "sha256": "2875b4dcada3e80dd7dc96bcd9eee3345126e68851608a3d9343cb86ee9c330d"},
+    "progress.log": {"bytes": 33477, "sha256": "3e8442f0fae6a7b33d785bd10a389cd3fddfa1a3768dfdcd664f21b5515c35ef"},
+    "result.json": {"bytes": 38229, "sha256": "6168ad7cf9bc47fe1471d278c0d40a6b76bdbc2dd4afadb4aa642af716701ab6"},
+    "routed_experts.jsonl": {"bytes": 324658, "sha256": "0a5ac54c8ef6347f31043a0f33908245e2825358db39ec431c4d03221602a9a1"},
+    "run_config.json": {"bytes": 682, "sha256": "bdd7c2deb87b073d20577a2fccccddc2667c266d76d47be7d6276f2d0701b872"}
+  }
+}

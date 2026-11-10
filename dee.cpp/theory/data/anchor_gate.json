@@ -1,0 +1,434 @@
+{
+  "config": {
+    "fill_lanes": 3,
+    "host_budget_bytes_per_gpu": 9126805504,
+    "host_slots_per_gpu": 682,
+    "layer_count_executed": 43,
+    "max_fill_queue_depth": 6,
+    "record_bytes": 13369344.0,
+    "vram_budget_bytes_per_gpu": 3758096384,
+    "vram_slots_per_gpu": 281
+  },
+  "decode_storage_requests": [
+    96,
+    69,
+    80,
+    111,
+    125,
+    114,
+    96,
+    80,
+    56,
+    64,
+    79,
+    61,
+    69,
+    91,
+    61
+  ],
+  "decode_tok_s": 0.21,
+  "decode_wall_ms": [
+    5754.45,
+    4117.283,
+    4311.571,
+    6084.462,
+    6919.384,
+    6106.814,
+    5181.947,
+    4642.983,
+    3469.485,
+    3563.975,
+    4650.073,
+    3582.416,
+    4204.776,
+    5129.065,
+    3760.627
+  ],
+  "decode_wall_s": 71.479,
+  "decode_wall_shape_stats": {
+    "max_ms": 6919.384,
+    "mean_ms": 4765.287399999999,
+    "min_ms": 3469.485,
+    "std_ms": 1031.6131722697742
+  },
+  "gate_tolerance": {
+    "calibration_policy": "any sim parameter fitted to anchor data must be declared CALIBRATED with fitted quantity + residual, and the gate then holds only over quantities NOT used in the fit (the fit/holdout split must be stated in SIM_VS_THEORY.md)",
+    "decode_wall_shape": {
+      "mean_tol_rel": 0.3,
+      "min_tokens_in_tol": 12,
+      "per_token_tol_rel": 0.5,
+      "spearman_min": 0.5
+    },
+    "host_pack_hit_share": {
+      "definition": "pooled_dedup = sum(host_pack_hits) / sum(host_pack_hits + host_pack_misses)",
+      "tol_pp": 3.0
+    },
+    "pooled_counters": {
+      "cold_loads_tol_rel": 0.05,
+      "h2d_copies_tol_rel": 0.05,
+      "resident_hits_tol_rel": 0.2
+    },
+    "storage_requests_per_decode_token": {
+      "mean_tol_rel": 0.1,
+      "min_tokens_in_tol": 12,
+      "per_token_tol_rel": 0.15
+    }
+  },
+  "host_share": {
+    "bands": {
+      "brief_claim_host_share": [
+        0.23,
+        0.25
+      ],
+      "brief_claim_storage_requests": [
+        83,
+        155
+      ],
+      "measured_decode_storage_requests": {
+        "max": 125,
+        "mean": 83.46666666666667,
+        "min": 56
+      },
+      "measured_whole_gen_storage_requests_per_emitted_token": 155.0625,
+      "note": "brief bands are aggregate/loose: 83 = mean decode storage_requests (measured 56-125 per token), 155 = whole-generation per-emitted-token incl. prefill amortization"
+    },
+    "definitions": {
+      "cuda0_hits_over_pooled_requests": {
+        "denominator": 5099,
+        "formula": "host_pack.cuda0.hits / pooled dedup requests",
+        "hits": 1223,
+        "in_brief_band_23_25pct": true,
+        "value": 0.23985095116689548
+      },
+      "cuda1_hits_over_pooled_requests": {
+        "denominator": 5099,
+        "formula": "host_pack.cuda1.hits / pooled dedup requests",
+        "hits": 1395,
+        "in_brief_band_23_25pct": false,
+        "value": 0.27358305550107864
+      },
+      "decode_only_dedup": {
+        "denominator": 3870,
+        "formula": "decode rows: sum(hits) / sum(hits+misses)",
+        "hits": 2618,
+        "in_brief_band_23_25pct": false,
+        "value": 0.6764857881136951
+      },
+      "hits_over_device_fills": {
+        "denominator": 4444,
+        "formula": "sum(host_pack_hits) / sum(cold_loads) (fill-source reading; ambiguous: host lookup may also run on VRAM-resident hits)",
+        "hits": 2618,
+        "in_brief_band_23_25pct": false,
+        "value": 0.5891089108910891
+      },
+      "hits_over_raw_slots": {
+        "denominator": 5676,
+        "formula": "sum(host_pack_hits) / raw rank slots",
+        "hits": 2618,
+        "in_brief_band_23_25pct": false,
+        "value": 0.46124031007751937
+      },
+      "per_gpu.cuda0": {
+        "denominator": 2613,
+        "formula": "host_pack.cuda0.hits / (hits+misses) [cuda0]",
+        "hits": 1223,
+        "in_brief_band_23_25pct": false,
+        "value": 0.46804439341752774
+      },
+      "per_gpu.cuda1": {
+        "denominator": 2486,
+        "formula": "host_pack.cuda1.hits / (hits+misses) [cuda1]",
+        "hits": 1395,
+        "in_brief_band_23_25pct": false,
+        "value": 0.5611423974255833
+      },
+      "pooled_dedup": {
+        "denominator": 5099,
+        "formula": "sum(host_pack_hits) / sum(host_pack_hits+misses)",
+        "hits": 2618,
+        "in_brief_band_23_25pct": false,
+        "value": 0.5134340066679741
+      }
+    },
+    "device_fills_total": 4444,
+    "gpu_totals": {
+      "cuda0": {
+        "cold_loads": 2285,
+        "device_evictions": 2004,
+        "fill_lanes": 3,
+        "h2d_bytes": 30548951040,
+        "h2d_copies": 2285,
+        "host_budget_bytes": 9126805504,
+        "host_pack_evictions": 708,
+        "host_pack_hits": 1223,
+        "host_pack_misses": 1390,
+        "host_slots": 682,
+        "max_fill_queue_depth": 6,
+        "mean_read_ms": 103.599670928777,
+        "p50_read_ms": 104.49955,
+        "p95_read_ms": 163.912439,
+        "requests": 2613,
+        "resident_experts": 281,
+        "resident_hits": 328,
+        "source_read_bytes": 18583388160,
+        "source_reads": 1390
+      },
+      "cuda1": {
+        "cold_loads": 2159,
+        "device_evictions": 1878,
+        "fill_lanes": 3,
+        "h2d_bytes": 28864413696,
+        "h2d_copies": 2159,
+        "host_budget_bytes": 9126805504,
+        "host_pack_evictions": 409,
+        "host_pack_hits": 1395,
+        "host_pack_misses": 1091,
+        "host_slots": 682,
+        "max_fill_queue_depth": 6,
+        "mean_read_ms": 103.58979490284142,
+        "p50_read_ms": 102.234066,
+        "p95_read_ms": 164.018101,
+        "requests": 2486,
+        "resident_experts": 281,
+        "resident_hits": 327,
+        "source_read_bytes": 14585954304,
+        "source_reads": 1091
+      }
+    },
+    "resident_hits_total": 655
+  },
+  "per_token": [
+    {
+      "cold_loads": 1229,
+      "evictions": 667,
+      "h2d_bytes": 16430923776,
+      "h2d_copies": 1229,
+      "host_pack_hits": 0,
+      "host_pack_misses": 1229,
+      "phase": "prefill",
+      "resident_hits": 0,
+      "step": 0,
+      "storage_requests": 1229,
+      "wall_ms": 91938.637
+    },
+    {
+      "cold_loads": 191,
+      "evictions": 191,
+      "h2d_bytes": 2553544704,
+      "h2d_copies": 191,
+      "host_pack_hits": 162,
+      "host_pack_misses": 96,
+      "phase": "decode",
+      "resident_hits": 67,
+      "step": 1,
+      "storage_requests": 96,
+      "wall_ms": 5754.45
+    },
+    {
+      "cold_loads": 184,
+      "evictions": 184,
+      "h2d_bytes": 2459959296,
+      "h2d_copies": 184,
+      "host_pack_hits": 189,
+      "host_pack_misses": 69,
+      "phase": "decode",
+      "resident_hits": 74,
+      "step": 2,
+      "storage_requests": 69,
+      "wall_ms": 4117.283
+    },
+    {
+      "cold_loads": 187,
+      "evictions": 187,
+      "h2d_bytes": 2500067328,
+      "h2d_copies": 187,
+      "host_pack_hits": 178,
+      "host_pack_misses": 80,
+      "phase": "decode",
+      "resident_hits": 71,
+      "step": 3,
+      "storage_requests": 80,
+      "wall_ms": 4311.571
+    },
+    {
+      "cold_loads": 209,
+      "evictions": 209,
+      "h2d_bytes": 2794192896,
+      "h2d_copies": 209,
+      "host_pack_hits": 147,
+      "host_pack_misses": 111,
+      "phase": "decode",
+      "resident_hits": 49,
+      "step": 4,
+      "storage_requests": 111,
+      "wall_ms": 6084.462
+    },
+    {
+      "cold_loads": 220,
+      "evictions": 220,
+      "h2d_bytes": 2941255680,
+      "h2d_copies": 220,
+      "host_pack_hits": 133,
+      "host_pack_misses": 125,
+      "phase": "decode",
+      "resident_hits": 38,
+      "step": 5,
+      "storage_requests": 125,
+      "wall_ms": 6919.384
+    },
+    {
+      "cold_loads": 217,
+      "evictions": 217,
+      "h2d_bytes": 2901147648,
+      "h2d_copies": 217,
+      "host_pack_hits": 144,
+      "host_pack_misses": 114,
+      "phase": "decode",
+      "resident_hits": 41,
+      "step": 6,
+      "storage_requests": 114,
+      "wall_ms": 6106.814
+    },
+    {
+      "cold_loads": 230,
+      "evictions": 230,
+      "h2d_bytes": 3074949120,
+      "h2d_copies": 230,
+      "host_pack_hits": 162,
+      "host_pack_misses": 96,
+      "phase": "decode",
+      "resident_hits": 28,
+      "step": 7,
+      "storage_requests": 96,
+      "wall_ms": 5181.947
+    },
+    {
+      "cold_loads": 227,
+      "evictions": 227,
+      "h2d_bytes": 3034841088,
+      "h2d_copies": 227,
+      "host_pack_hits": 178,
+      "host_pack_misses": 80,
+      "phase": "decode",
+      "resident_hits": 31,
+      "step": 8,
+      "storage_requests": 80,
+      "wall_ms": 4642.983
+    },
+    {
+      "cold_loads": 227,
+      "evictions": 227,
+      "h2d_bytes": 3034841088,
+      "h2d_copies": 227,
+      "host_pack_hits": 202,
+      "host_pack_misses": 56,
+      "phase": "decode",
+      "resident_hits": 31,
+      "step": 9,
+      "storage_requests": 56,
+      "wall_ms": 3469.485
+    },
+    {
+      "cold_loads": 215,
+      "evictions": 215,
+      "h2d_bytes": 2874408960,
+      "h2d_copies": 215,
+      "host_pack_hits": 194,
+      "host_pack_misses": 64,
+      "phase": "decode",
+      "resident_hits": 43,
+      "step": 10,
+      "storage_requests": 64,
+      "wall_ms": 3563.975
+    },
+    {
+      "cold_loads": 218,
+      "evictions": 218,
+      "h2d_bytes": 2914516992,
+      "h2d_copies": 218,
+      "host_pack_hits": 179,
+      "host_pack_misses": 79,
+      "phase": "decode",
+      "resident_hits": 40,
+      "step": 11,
+      "storage_requests": 79,
+      "wall_ms": 4650.073
+    },
+    {
+      "cold_loads": 223,
+      "evictions": 223,
+      "h2d_bytes": 2981363712,
+      "h2d_copies": 223,
+      "host_pack_hits": 197,
+      "host_pack_misses": 61,
+      "phase": "decode",
+      "resident_hits": 35,
+      "step": 12,
+      "storage_requests": 61,
+      "wall_ms": 3582.416
+    },
+    {
+      "cold_loads": 224,
+      "evictions": 224,
+      "h2d_bytes": 2994733056,
+      "h2d_copies": 224,
+      "host_pack_hits": 189,
+      "host_pack_misses": 69,
+      "phase": "decode",
+      "resident_hits": 34,
+      "step": 13,
+      "storage_requests": 69,
+      "wall_ms": 4204.776
+    },
+    {
+      "cold_loads": 221,
+      "evictions": 221,
+      "h2d_bytes": 2954625024,
+      "h2d_copies": 221,
+      "host_pack_hits": 167,
+      "host_pack_misses": 91,
+      "phase": "decode",
+      "resident_hits": 37,
+      "step": 14,
+      "storage_requests": 91,
+      "wall_ms": 5129.065
+    },
+    {
+      "cold_loads": 222,
+      "evictions": 222,
+      "h2d_bytes": 2967994368,
+      "h2d_copies": 222,
+      "host_pack_hits": 197,
+      "host_pack_misses": 61,
+      "phase": "decode",
+      "resident_hits": 36,
+      "step": 15,
+      "storage_requests": 61,
+      "wall_ms": 3760.627
+    }
+  ],
+  "source": {
+    "commit": "217a33359b06a0453444a698ec52e4078b77e388",
+    "result_json": "dee.cpp/experiments/route_pipeline/fill-live-t4x2-20260909/result.json",
+    "routed_experts": "dee.cpp/experiments/route_pipeline/fill-live-t4x2-20260909/routed_experts.jsonl",
+    "run_id": "host-sync-profile-17g-20260905-v1"
+  },
+  "stream": {
+    "dedup_cache_requests": 5099,
+    "experts_per_layer": 256,
+    "layer_calls": 688,
+    "layers": 43,
+    "raw_rank_slots": 5676,
+    "records_used_by_ge2_layer_calls": 935,
+    "token_rows": 946,
+    "topk": 6,
+    "unique_records": 2364
+  },
+  "whole_gen": {
+    "expert_h2d_bytes_total": 59413364736,
+    "storage_bytes_per_generated_token": 2073083904.0,
+    "storage_bytes_total": 33169342464,
+    "storage_requests_per_generated_token": 155.0625,
+    "storage_requests_total": 2481
+  }
+}

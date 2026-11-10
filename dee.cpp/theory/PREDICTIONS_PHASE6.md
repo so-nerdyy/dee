@@ -1,0 +1,492 @@
+# PREDICTIONS_PHASE6.md — pre-registered Phase-6 prediction matrix (FROZEN)
+
+**This file is the scoreboard the Phase-6 Modal hardware campaign will be graded
+against. Its git commit timestamp is the pre-registration of record.**
+
+---
+
+## 0. Header block
+
+| field | value |
+|---|---|
+| registration timestamp | **2026-09-30 (UTC)** — registration instant `2026-09-30T03:45:16Z`, Phase-7 campaign clock |
+| frozen at commit | the commit introducing this file on `research/phase7-theory` — registration of record = that commit's timestamp (`git log --follow -- dee.cpp/theory/PREDICTIONS_PHASE6.md`) |
+| campaign | Phase-7 component D — pre-registered Phase-6 prediction matrix |
+| hardware runs existing at freeze | **0** (no Phase-6 hardware run existed when these ranges were written) |
+| freeze rule | Sections 0–5 and the four matrix tables are **FROZEN** at the freeze commit. Ranges and kill criteria must NOT be edited later. Later information may ONLY be appended as clearly-marked, timestamped **ADDENDA** (section 6+). |
+| machine-readable twin | `theory/predecl.py` stage `predecl` → [`data/predecl_matrix.csv`](data/predecl_matrix.csv) (336 rows = 84 config cells × 4 metrics) + [`data/predecl_meta.json`](data/predecl_meta.json). `python -m theory.run_all predecl` regenerates both deterministically (no RNG). |
+| source tags at freeze | **every row is `CLOSED-FORM-ONLY (sim pending at freeze)`** — Component A's simulator outputs (`data/sim_*.json`) and Component C's solver outputs (`data/solve_*.csv`) did not exist at freeze (checked 2026-09-30). SIM-PREDICTED tagging and the sim-vs-closed-form disagreement table go in the ADDENDUM only. |
+
+### Scope
+
+- **60 scored Phase-6 cells** = 5 Modal cells (**1xL4, 2xL4, 1xA10, 1xL40S, RTX PRO 6000**) × 2 models (**DSv4-Flash** `dsv4_flash`, **MiMo-Flash** `mimo_v2_flash`) × batch **b ∈ {1, 8}** × host budget **{16, 64, 256} GiB** — each predicting 4 metrics (decode tok/s, host-tier hit %, cold records/tok, $/1k tok), each with nominal + working range + kill criterion.
+- **24 reference rows** (2xT4 anchor, CPU-only) marked **non-Phase-6** — correctness/calibration instruments and a CPU floor, not Modal campaign targets (section 2).
+- Host budgets are **TOTAL GiB, split evenly over GPUs** (the engine host tier is per-GPU); the LRU-knee evidence is on a **pooled** basis (assumption A13). A run that provisions per-GPU instead must say so or the row is UNTESTABLE.
+
+### Storage provisioning per cell (stated honestly)
+
+- **DSv4-Flash** full packed store = **146.625 GiB** (11,776 records × 13,369,344 B = 157,437,394,944 B). **MiMo-Flash** full store = **153.0 GiB** (12,288 records × 13,369,344 B; AGENT_BRIEF.md claims 12,032 records — inconsistent, see §3b; provision 153 GiB to cover both).
+- Every scored cell needs: the full packed store on **local NVMe** (≥ 153 GiB scratch free), the named host budget in RAM, and the per-GPU VRAM expert cache (L4/A10 **22 GiB = 1,766 records/GPU**; L40S **48 GiB = 3,855**; RTX PRO 6000 **96 GiB = 7,710**; 2xT4 3.5 GiB = 281/GPU).
+- At host 256 GiB the DSv4 store (146.6 GiB) fits whole in host RAM and the MiMo store (153.0 GiB) fits **tightly** (98% of budget — provisioning note: no headroom for a second model copy). The first fill is still charged to the measurement window; steady-state rows assume the fill has been amortized and finite-window rows (b=1) assume a **cold-ish** start.
+- Volume cost of the store: $0.09/GiB/mo above the 1 TiB free tier ≈ **$3.8/mo** for 146.6 GiB — negligible vs compute (THEORY.md 6).
+
+### Scoring rules (how a cell is graded)
+
+- **PASS** — every measured metric lands inside its registered `[lo, hi]` range.
+- **KILLED** — any measured metric lands outside its kill band `<kill_lo | >kill_hi`, **or** outside the registered kill band of a FALSIFICATION.md id the row references (the effective kill band is the **intersection**; the registered id governs where they conflict). A killed row is marked `KILLED (date, evidence path)` here in an addendum and the theory is corrected — not defended.
+- **WEAKENED** — a metric lands in the deliberate gap between a range edge and its kill edge (neither confirmed nor killed); logged in the addendum with magnitude.
+- **UNTESTABLE** — missing prerequisite/artifact (see below) or a metric's measurement definition ambiguous (e.g. host provisioning basis unstated). Unscored; counts as no evidence.
+
+### Hardware-run prerequisites per cell (a run missing any → UNTESTABLE)
+
+1. billed Modal run on the **named config** at the **named host budget** (billing receipt captured);
+2. full packed store on local NVMe as sized above;
+3. **≥ 16 decode tokens** generated (b=1 rows are scored on the finite 16-token window, b=8 rows on the steady-state regime; a 4-token run may only be used for the host-hit and cold brackets, never for decode TPS);
+4. **stage profile captured** (fills/compute/H2D/dense buckets — needed to adjudicate limiter claims and P5/P8b);
+5. **measured B_SSD reported** (rows are registered against Cell spec × 0.9–1.1; a run outside that band is UNTESTABLE for decode TPS and $/1k tok);
+6. host provisioning **basis stated** (total vs per-GPU).
+
+---
+
+## 1. The 60-cell matrix (4 tables: one per model × b)
+
+Cell format: `nominal [lo-hi] kill <kill_lo\|>kill_hi`. `CF` = CLOSED-FORM-ONLY (sim pending at freeze). Decode tok/s horizon: **finite 16-token at b=1** (P1 convention), **steady-state at b=8** (P1b convention). $/1k tok is on the **steady-state TPS basis at both b** (THEORY.md 6 economics convention — the b=1 rows of `serve_cost_frontier.csv` embed steady TPS; this is the P15c identity's basis). Host hit % is a **FINITE/STEADY band**: nominal = finite-window LRU prior (short 4–20 token runs should land near it), upper edge = steady-Che (valid for ≥512-token serving windows; known **+25pp** over-prediction on short windows, FALSIFICATION known-failure 1). Host hit % is the host-tier hit share `hits/(hits+misses)`, pooled_dedup definition. Cold-rec lower edge `0` is the steady-Che floor (the model legitimately reads ~0 cold once host+VRAM cover the working set; a cold start's compulsory reads live in the nominal/horizon terms) — the falsifiable content of that metric is the **upper** edge and the P4 bracket.
+
+#### DSv4-Flash, b=1 (primary horizon: finite 16-token)
+
+| cell | host GiB | decode tok/s | host hit % | cold rec/tok | $/1k tok | src | IDs |
+|---|---|---|---|---|---|---|---|
+| 1xL4 | 16 | 1.3 [1-2.11] kill <0.702\|>3.02 | 51 [44-75.3] kill <37\|>80.3 | 156.1 [15.7-312.2] kill <11.8\|>390.3 | 0.0854 [0.032-0.0998] kill <0.0192\|>0.167 | CF | P2,P2b,P3,P4 |
+| 1xL4 | 64 | 1.35 [1.05-2.22] kill <0.733\|>3.17 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 0.0766 [0.0185-0.0844] kill <0.0111\|>0.141 | CF | P1,P2,P3,P4 |
+| 1xL4 | 256 | 1.35 [1.05-2.22] kill <0.733\|>3.17 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 0.14 [0.0338-0.154] kill <0.0203\|>0.257 | CF | P15c,P2,P3,P4 |
+| 2xL4 | 16 | 2.33 [1.85-4.31] kill <1.29\|>6.17 | 51 [44-75.3] kill <37\|>80.3 | 147.8 [0-295.5] kill <0\|>369.4 | 0.102 [0.0177-0.111] kill <0.0106\|>0.185 | CF | P2,P2b,P3,P4 |
+| 2xL4 | 64 | 2.33 [1.85-4.31] kill <1.29\|>6.17 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 0.116 [0.0201-0.125] kill <0.012\|>0.21 | CF | P2,P3,P4 |
+| 2xL4 | 256 | 2.33 [1.85-4.31] kill <1.29\|>6.17 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 0.172 [0.0296-0.185] kill <0.0178\|>0.31 | CF | P15c,P2,P3,P4 |
+| 1xA10 | 16 | 1.49 [1.16-2.48] kill <0.809\|>3.55 | 51 [44-75.3] kill <37\|>80.3 | 156.1 [15.7-312.2] kill <11.8\|>390.3 | 0.0977 [0.0349-0.113] kill <0.0209\|>0.189 | CF | P2,P2b,P3,P4 |
+| 1xA10 | 64 | 1.55 [1.2-2.6] kill <0.843\|>3.72 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 0.0888 [0.0213-0.0979] kill <0.0128\|>0.163 | CF | P2,P3,P4 |
+| 1xA10 | 256 | 1.55 [1.2-2.6] kill <0.843\|>3.72 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 0.152 [0.0364-0.167] kill <0.0218\|>0.279 | CF | P15c,P2,P3,P4 |
+| 1xL40S | 16 | 2.63 [2.1-5.08] kill <1.47\|>7.27 | 51 [44-75.3] kill <37\|>80.3 | 147.8 [0-295.5] kill <0\|>369.4 | 0.114 [0.0181-0.124] kill <0.0109\|>0.206 | CF | P2,P2b,P3,P4 |
+| 1xL40S | 64 | 2.63 [2.1-5.08] kill <1.47\|>7.27 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 0.128 [0.0203-0.138] kill <0.0122\|>0.231 | CF | P2,P3,P4 |
+| 1xL40S | 256 | 2.63 [2.1-5.08] kill <1.47\|>7.27 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 0.182 [0.0289-0.197] kill <0.0174\|>0.329 | CF | P15c,P2,P3,P4 |
+| 1xRTX PRO 6000 | 16 | 3.19 [2.58-6.69] kill <1.8\|>9.56 | 51 [44-75.3] kill <37\|>80.3 | 147.8 [0-295.5] kill <0\|>369.4 | 0.163 [0.0236-0.177] kill <0.0142\|>0.296 | CF | P2,P2b,P3,P4 |
+| 1xRTX PRO 6000 | 64 | 3.19 [2.58-6.69] kill <1.8\|>9.56 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 0.177 [0.0256-0.192] kill <0.0154\|>0.32 | CF | P2,P3,P4 |
+| 1xRTX PRO 6000 | 256 | 3.19 [2.58-6.69] kill <1.8\|>9.56 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 0.23 [0.0333-0.25] kill <0.02\|>0.417 | CF | P15c,P2,P3,P4 |
+| 2xT4 *(ref)* | 16 | 0.178 [0.135-0.254] kill <0.0944\|>0.363 | 51 [44-75.3] kill <37\|>80.3 | 179.4 [74.1-358.8] kill <55.6\|>448.5 | 0.398 [0.277-0.518] kill <0.166\|>0.865 | CF | P3c,P5,P2,P2b,P3,P4,P3b |
+| 2xT4 *(ref)* | 64 | 0.212 [0.161-0.303] kill <0.113\|>0.434 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 0.112 [0.0724-0.127] kill <0.0435\|>0.212 | CF | P3c,P5,P2,P3,P4,P3b |
+| 2xT4 *(ref)* | 256 | 0.212 [0.161-0.303] kill <0.113\|>0.434 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 0.295 [0.19-0.334] kill <0.114\|>0.558 | CF | P3c,P5,P2,P3,P4,P3b |
+| CPU-only *(ref)* | 16 | 0 [0-0.118] kill <0\|>0.263 | 51 [44-75.3] kill <37\|>80.3 | 190.3 [86.9-380.6] kill <65.1\|>475.8 | 345.3 [3.84-690.7] kill <2.3\|>1153 | CF | P2,P2b,P3,P4 |
+| CPU-only *(ref)* | 64 | 0 [0-0.118] kill <0\|>0.263 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 426.1 [4.73-852.2] kill <2.84\|>1423 | CF | P2,P3,P4 |
+| CPU-only *(ref)* | 256 | 0 [0-0.118] kill <0\|>0.263 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 749.7 [8.33-1499] kill <5\|>2504 | CF | P2,P3,P4 |
+
+*(ref) = reference row, non-Phase-6.*
+
+#### DSv4-Flash, b=8 (primary horizon: steady-state)
+
+| cell | host GiB | decode tok/s | host hit % | cold rec/tok | $/1k tok | src | IDs |
+|---|---|---|---|---|---|---|---|
+| 1xL4 | 16 | 1.62 [1.23-2.54] kill <0.864\|>3.63 | 51 [44-75.3] kill <37\|>80.3 | 156.1 [124.0-312.2] kill <93\|>390.3 | 0.254 [0.162-0.333] kill <0.0972\|>0.556 | CF | P2,P2b,P3,P4 |
+| 1xL4 | 64 | 6.75 [5.44-16] kill <3.81\|>22.9 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 0.0767 [0.0323-0.0951] kill <0.0194\|>0.159 | CF | P2,P3,P4 |
+| 1xL4 | 256 | 6.75 [5.44-16] kill <3.81\|>22.9 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 0.14 [0.0589-0.173] kill <0.0354\|>0.29 | CF | P2,P3,P4,P15 |
+| 2xL4 | 16 | 14.6 [13.5-78.3] kill <9.48\|>112.0 | 51 [44-75.3] kill <37\|>80.3 | 147.8 [0-295.5] kill <0\|>369.4 | 0.0538 [0.01-0.0581] kill <0\|>0.097 | CF | P2,P2b,P3,P4 |
+| 2xL4 | 64 | 14.6 [13.5-78.3] kill <9.48\|>112.0 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 0.0611 [0.0114-0.0659] kill <0\|>0.11 | CF | P2,P3,P4 |
+| 2xL4 | 256 | 14.6 [13.5-78.3] kill <9.48\|>112.0 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 0.0902 [0.0169-0.0974] kill <0.0101\|>0.163 | CF | P1b,P15b,P2,P3,P4,P15 |
+| 1xA10 | 16 | 1.85 [1.42-2.95] kill <0.992\|>4.22 | 51 [44-75.3] kill <37\|>80.3 | 156.1 [124.0-312.2] kill <93\|>390.3 | 0.267 [0.168-0.349] kill <0.101\|>0.583 | CF | P2,P2b,P3,P4 |
+| 1xA10 | 64 | 6.76 [5.45-16.1] kill <3.82\|>23 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 0.0889 [0.0374-0.11] kill <0.0224\|>0.184 | CF | P2,P3,P4 |
+| 1xA10 | 256 | 6.76 [5.45-16.1] kill <3.82\|>23 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 0.152 [0.0639-0.189] kill <0.0383\|>0.315 | CF | P2,P3,P4,P15 |
+| 1xL40S | 16 | 15 [13.8-88.8] kill <9.69\|>126.9 | 51 [44-75.3] kill <37\|>80.3 | 147.8 [0-295.5] kill <0\|>369.4 | 0.0597 [0.0101-0.0646] kill <0\|>0.108 | CF | P2,P2b,P3,P4 |
+| 1xL40S | 64 | 15 [13.8-88.8] kill <9.69\|>126.9 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 0.0669 [0.0113-0.0723] kill <0\|>0.121 | CF | P2,P3,P4 |
+| 1xL40S | 256 | 15 [13.8-88.8] kill <9.69\|>126.9 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 0.0954 [0.0161-0.103] kill <0\|>0.172 | CF | P15b,P2,P3,P4,P14,P15 |
+| 1xRTX PRO 6000 | 16 | 15.3 [14.1-102.0] kill <9.89\|>145.9 | 51 [44-75.3] kill <37\|>80.3 | 147.8 [0-295.5] kill <0\|>369.4 | 0.085 [0.0127-0.092] kill <0\|>0.154 | CF | P2,P2b,P3,P4 |
+| 1xRTX PRO 6000 | 64 | 15.3 [14.1-102.0] kill <9.89\|>145.9 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 0.092 [0.0138-0.0995] kill <0\|>0.166 | CF | P2,P3,P4 |
+| 1xRTX PRO 6000 | 256 | 15.3 [14.1-102.0] kill <9.89\|>145.9 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 0.12 [0.018-0.13] kill <0.0108\|>0.217 | CF | P15b,P2,P3,P4,P15 |
+| 2xT4 *(ref)* | 16 | 0.0779 [0.0585-0.111] kill <0.041\|>0.159 | 51 [44-75.3] kill <37\|>80.3 | 179.4 [179.4-840.8] kill <134.6\|>1051 | 2 [1.4-2.66] kill <0.842\|>4.45 | CF | P3c,P5,P2,P2b,P3,P4,P3b |
+| 2xT4 *(ref)* | 64 | 1.31 [1-2.07] kill <0.7\|>2.96 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 0.201 [0.127-0.262] kill <0.076\|>0.438 | CF | P3c,P5,P2,P3,P4,P3b |
+| 2xT4 *(ref)* | 256 | 1.31 [1-2.07] kill <0.7\|>2.96 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 0.527 [0.333-0.688] kill <0.2\|>1.15 | CF | P3c,P5,P2,P3,P4,P3b,P15 |
+| CPU-only *(ref)* | 16 | 0.0103 [0-0.931] kill <0\|>2.07 | 51 [44-75.3] kill <37\|>80.3 | 190.3 [190.3-1083] kill <142.7\|>1354 | 44 [0.489-88] kill <0.293\|>146.9 | CF | P2,P2b,P3,P4 |
+| CPU-only *(ref)* | 64 | 0.0105 [0-0.947] kill <0\|>2.11 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 53.3 [0.593-106.7] kill <0.356\|>178.1 | CF | P2,P3,P4 |
+| CPU-only *(ref)* | 256 | 0.0105 [0-0.947] kill <0\|>2.11 | 54 [47-100.0] kill <40\|>100.0 | 147.8 [0-295.5] kill <0\|>369.4 | 93.8 [1.04-187.6] kill <0.625\|>313.4 | CF | P2,P3,P4,P15 |
+
+*(ref) = reference row, non-Phase-6.*
+
+#### MiMo-Flash, b=1 (primary horizon: finite 16-token)
+
+| cell | host GiB | decode tok/s | host hit % | cold rec/tok | $/1k tok | src | IDs |
+|---|---|---|---|---|---|---|---|
+| 1xL4 | 16 | 1.16 [0.898-1.89] kill <0.629\|>2.71 | 51 [39-75.9] kill <27\|>83.9 | 174.3 [17.6-348.5] kill <13.2\|>435.6 | 0.0953 [0.0358-0.111] kill <0.0215\|>0.186 | CF | P2,P2b,P3,P4 |
+| 1xL4 | 64 | 1.21 [0.938-1.99] kill <0.656\|>2.84 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 0.0855 [0.0207-0.0942] kill <0.0124\|>0.157 | CF | P1,P2,P3,P4 |
+| 1xL4 | 256 | 1.21 [0.938-1.99] kill <0.656\|>2.84 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 0.156 [0.0377-0.172] kill <0.0226\|>0.287 | CF | P15c,P2,P3,P4 |
+| 2xL4 | 16 | 2.09 [1.65-3.86] kill <1.16\|>5.52 | 51 [39-75.9] kill <27\|>83.9 | 164.9 [0-329.9] kill <0\|>412.3 | 0.114 [0.0197-0.123] kill <0.0118\|>0.206 | CF | P2,P2b,P3,P4 |
+| 2xL4 | 64 | 2.09 [1.65-3.86] kill <1.16\|>5.52 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 0.13 [0.0224-0.14] kill <0.0134\|>0.234 | CF | P2,P3,P4 |
+| 2xL4 | 256 | 2.09 [1.65-3.86] kill <1.16\|>5.52 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 0.192 [0.0331-0.207] kill <0.0198\|>0.346 | CF | P15c,P2,P3,P4 |
+| 1xA10 | 16 | 1.33 [1.03-2.22] kill <0.724\|>3.18 | 51 [39-75.9] kill <27\|>83.9 | 174.3 [17.6-348.5] kill <13.2\|>435.6 | 0.109 [0.039-0.127] kill <0.0234\|>0.211 | CF | P2,P2b,P3,P4 |
+| 1xA10 | 64 | 1.39 [1.08-2.33] kill <0.755\|>3.33 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 0.0991 [0.0238-0.109] kill <0.0143\|>0.182 | CF | P2,P3,P4 |
+| 1xA10 | 256 | 1.39 [1.08-2.33] kill <0.755\|>3.33 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 0.169 [0.0406-0.187] kill <0.0244\|>0.312 | CF | P15c,P2,P3,P4 |
+| 1xL40S | 16 | 2.35 [1.88-4.55] kill <1.31\|>6.51 | 51 [39-75.9] kill <27\|>83.9 | 164.9 [0-329.9] kill <0\|>412.3 | 0.128 [0.0202-0.138] kill <0.0121\|>0.23 | CF | P2,P2b,P3,P4 |
+| 1xL40S | 64 | 2.35 [1.88-4.55] kill <1.31\|>6.51 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 0.143 [0.0227-0.154] kill <0.0136\|>0.258 | CF | P2,P3,P4 |
+| 1xL40S | 256 | 2.35 [1.88-4.55] kill <1.31\|>6.51 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 0.204 [0.0323-0.22] kill <0.0194\|>0.368 | CF | P15c,P2,P3,P4 |
+| 1xRTX PRO 6000 | 16 | 2.85 [2.31-5.99] kill <1.62\|>8.56 | 51 [39-75.9] kill <27\|>83.9 | 164.9 [0-329.9] kill <0\|>412.3 | 0.183 [0.0264-0.198] kill <0.0158\|>0.33 | CF | P2,P2b,P3,P4 |
+| 1xRTX PRO 6000 | 64 | 2.85 [2.31-5.99] kill <1.62\|>8.56 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 0.197 [0.0286-0.214] kill <0.0171\|>0.357 | CF | P2,P3,P4 |
+| 1xRTX PRO 6000 | 256 | 2.85 [2.31-5.99] kill <1.62\|>8.56 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 0.257 [0.0372-0.279] kill <0.0223\|>0.465 | CF | P15c,P2,P3,P4 |
+| 2xT4 *(ref)* | 16 | 0.159 [0.121-0.227] kill <0.0846\|>0.325 | 51 [39-75.9] kill <27\|>83.9 | 200.3 [82.7-400.5] kill <62\|>500.7 | 0.444 [0.309-0.578] kill <0.186\|>0.965 | CF | P3c,P5,P2,P2b,P3,P4,P3b |
+| 2xT4 *(ref)* | 64 | 0.19 [0.144-0.272] kill <0.101\|>0.389 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 0.125 [0.0809-0.142] kill <0.0485\|>0.237 | CF | P3c,P5,P2,P3,P4,P3b |
+| 2xT4 *(ref)* | 256 | 0.19 [0.144-0.272] kill <0.101\|>0.389 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 0.329 [0.212-0.373] kill <0.127\|>0.622 | CF | P3c,P5,P2,P3,P4,P3b |
+| CPU-only *(ref)* | 16 | 0 [0-0.106] kill <0\|>0.236 | 51 [39-75.9] kill <27\|>83.9 | 212.4 [97-424.9] kill <72.7\|>531.1 | 385.5 [4.28-771.0] kill <2.57\|>1288 | CF | P2,P2b,P3,P4 |
+| CPU-only *(ref)* | 64 | 0 [0-0.106] kill <0\|>0.236 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 475.7 [5.29-951.3] kill <3.17\|>1589 | CF | P2,P3,P4 |
+| CPU-only *(ref)* | 256 | 0 [0-0.106] kill <0\|>0.236 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 836.9 [9.3-1674] kill <5.58\|>2795 | CF | P2,P3,P4 |
+
+*(ref) = reference row, non-Phase-6.*
+
+#### MiMo-Flash, b=8 (primary horizon: steady-state)
+
+| cell | host GiB | decode tok/s | host hit % | cold rec/tok | $/1k tok | src | IDs |
+|---|---|---|---|---|---|---|---|
+| 1xL4 | 16 | 1.45 [1.11-2.27] kill <0.774\|>3.25 | 51 [39-75.9] kill <27\|>83.9 | 174.3 [138.4-348.5] kill <103.8\|>435.6 | 0.284 [0.181-0.372] kill <0.109\|>0.621 | CF | P2,P2b,P3,P4 |
+| 1xL4 | 64 | 6.05 [4.88-14.4] kill <3.41\|>20.5 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 0.0856 [0.0361-0.106] kill <0.0216\|>0.177 | CF | P2,P3,P4 |
+| 1xL4 | 256 | 6.05 [4.88-14.4] kill <3.41\|>20.5 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 0.156 [0.0658-0.194] kill <0.0395\|>0.323 | CF | P2,P3,P4,P15 |
+| 2xL4 | 16 | 13.1 [12.1-70.1] kill <8.5\|>100.3 | 51 [39-75.9] kill <27\|>83.9 | 164.9 [0-329.9] kill <0\|>412.3 | 0.06 [0.0112-0.0648] kill <0\|>0.108 | CF | P2,P2b,P3,P4 |
+| 2xL4 | 64 | 13.1 [12.1-70.1] kill <8.5\|>100.3 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 0.0682 [0.0127-0.0736] kill <0\|>0.123 | CF | P2,P3,P4 |
+| 2xL4 | 256 | 13.1 [12.1-70.1] kill <8.5\|>100.3 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 0.101 [0.0188-0.109] kill <0.0113\|>0.182 | CF | P1b,P15b,P2,P3,P4,P15 |
+| 1xA10 | 16 | 1.66 [1.27-2.65] kill <0.889\|>3.78 | 51 [39-75.9] kill <27\|>83.9 | 174.3 [138.4-348.5] kill <103.8\|>435.6 | 0.298 [0.187-0.39] kill <0.112\|>0.651 | CF | P2,P2b,P3,P4 |
+| 1xA10 | 64 | 6.06 [4.88-14.4] kill <3.42\|>20.6 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 0.0993 [0.0417-0.123] kill <0.025\|>0.206 | CF | P2,P3,P4 |
+| 1xA10 | 256 | 6.06 [4.88-14.4] kill <3.42\|>20.6 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 0.17 [0.0713-0.21] kill <0.0428\|>0.352 | CF | P2,P3,P4,P15 |
+| 1xL40S | 16 | 13.4 [12.4-79.5] kill <8.68\|>113.7 | 51 [39-75.9] kill <27\|>83.9 | 164.9 [0-329.9] kill <0\|>412.3 | 0.0667 [0.0112-0.0721] kill <0\|>0.12 | CF | P2,P2b,P3,P4 |
+| 1xL40S | 64 | 13.4 [12.4-79.5] kill <8.68\|>113.7 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 0.0746 [0.0126-0.0807] kill <0\|>0.135 | CF | P2,P3,P4 |
+| 1xL40S | 256 | 13.4 [12.4-79.5] kill <8.68\|>113.7 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 0.106 [0.0179-0.115] kill <0.0108\|>0.192 | CF | P15b,P2,P3,P4,P14,P15 |
+| 1xRTX PRO 6000 | 16 | 13.7 [12.7-91.4] kill <8.86\|>130.7 | 51 [39-75.9] kill <27\|>83.9 | 164.9 [0-329.9] kill <0\|>412.3 | 0.0949 [0.0142-0.103] kill <0\|>0.172 | CF | P2,P2b,P3,P4 |
+| 1xRTX PRO 6000 | 64 | 13.7 [12.7-91.4] kill <8.86\|>130.7 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 0.103 [0.0154-0.111] kill <0\|>0.186 | CF | P2,P3,P4 |
+| 1xRTX PRO 6000 | 256 | 13.7 [12.7-91.4] kill <8.86\|>130.7 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 0.134 [0.0201-0.145] kill <0.012\|>0.242 | CF | P15b,P2,P3,P4,P15 |
+| 2xT4 *(ref)* | 16 | 0.0698 [0.0524-0.0995] kill <0.0367\|>0.142 | 51 [39-75.9] kill <27\|>83.9 | 200.3 [200.3-938.6] kill <150.2\|>1173 | 2.23 [1.57-2.97] kill <0.94\|>4.97 | CF | P3c,P5,P2,P2b,P3,P4,P3b |
+| 2xT4 *(ref)* | 64 | 1.17 [0.896-1.86] kill <0.627\|>2.65 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 0.224 [0.141-0.293] kill <0.0849\|>0.489 | CF | P3c,P5,P2,P3,P4,P3b |
+| 2xT4 *(ref)* | 256 | 1.17 [0.896-1.86] kill <0.627\|>2.65 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 0.588 [0.371-0.768] kill <0.223\|>1.28 | CF | P3c,P5,P2,P3,P4,P3b,P15 |
+| CPU-only *(ref)* | 16 | 0 [0-0.834] kill <0\|>1.85 | 51 [39-75.9] kill <27\|>83.9 | 212.4 [212.4-1209] kill <159.3\|>1511 | 49.1 [0.545-98.2] kill <0.327\|>164.0 | CF | P2,P2b,P3,P4 |
+| CPU-only *(ref)* | 64 | 0 [0-0.849] kill <0\|>1.89 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 59.5 [0.661-119.1] kill <0.397\|>198.8 | CF | P2,P3,P4 |
+| CPU-only *(ref)* | 256 | 0 [0-0.849] kill <0\|>1.89 | 54 [42-100.0] kill <30\|>100.0 | 164.9 [0-329.9] kill <0\|>412.3 | 104.7 [1.16-209.5] kill <0.698\|>349.8 | CF | P2,P3,P4,P15 |
+
+*(ref) = reference row, non-Phase-6.*
+
+### Range derivations (cited per metric — what each band is computed from)
+
+- **decode tok/s** — nominal = the substrate's own `tps_pred` column of [`data/roofline_curves.csv`](data/roofline_curves.csv) (the THEORY.md 5.1 closed form `T_pred = t_dense + t_compute + (1-eta_s)t_storage + (1-eta_h)t_h2d` instantiated on the empirical DSv4 popularity model), scaled ×1.1163 (= MIMO_TOUCH_RATIO) for MiMo-Flash. This reproduces the registered centers exactly: P1 1.35, P1b 14.6. **Range = T_pred at B_SSD 0.9x-1.1x spec, COMPUTE_EFF 0.3-0.8, t_0 50-420 µs, eta_s 0.15-0.45, eta_h 0.3-0.7** (32-corner envelope of the same closed form). Kill = [0.70×lo, 1.43×hi], tightened to FALSIFICATION's own bands where an id applies (P1: 0.9-2.1; P1b: 8-28).
+- **host-tier hit %** — the **Che finite/steady band**. Nominal = finite-window LRU prior (`predecl_finite_hit_prior`: 51% at 16 GiB pooled = P2's registered 0.48-0.54 midpoint; saturating at 0.536-0.54 = the sealed-window repeat ceiling (5,099−2,364)/5,099, cf. P2c 850-1000 of 2,364-2,500 records ever repeat). Upper edge = steady-Che (HOST_HIT_CURVE over [`data/cache_store_knees.csv`](data/cache_store_knees.csv) H50/H80/H95 + 1.0 once pooled slots ≥ universe) — the model that is known to **over-predict short windows by +25pp** and governs ≥512-token serving windows. MiMo bands widened (−12pp/+8pp; kill −24pp/+16pp) for `S_TRANSFER`. At host 16 GiB rows the P2 kill band 0.45-0.57 governs short-window measurements (registered-ID rule). Independent of b.
+- **cold records/token** — the **FALSIFICATION P4 bracket construction**, order-clamped: `[min(steady-Che, finite-Che), 2 × max(steady-Che, finite-Che)]`, nominal = finite-Che (anchor check: 162 predicted vs 155.06 measured `storage_requests/token`, +4.5%). The anchor-calibrated bracket is the corrected P4 value **[67.84, 323.92]** (Phase-7 correction 2026-09-30; the old "[46, 324]" text was a mismatch). The steady-Che floor of `0` at big budgets is honest (the model reads ~0 cold once host+VRAM cover the working set); the falsifiable content is the upper edge and the bracket. Kill = [0.75×lo, 1.25×hi]; P3's own kill 70-260 governs the anchor-sized rows (2xT4 reference at 16 GiB).
+- **$/1k tok** — `$/1k tok = 1000 × rate_s / TPS` on the **steady-horizon TPS at the row's own b** (THEORY.md 6 economics convention). Nominal reproduces [`data/serve_cost_frontier.csv`](data/serve_cost_frontier.csv) exactly and with it the registered identities: P14 0.095 (0.07-0.13), P15b ratios 0.70 (2xL4) / 0.74 (1xL40S) / 0.93 (1xRTX PRO 6000), P15c ratios 1.08 (1xL4) … 2.29 (2xT4) against the dense baseline **0.12892 $/1k tok (expensive price reading)**, and THEORY.md 6's table (0.527 at 2xT4 b=8/256, 93.8 at CPU-only). Range = relative T_pred envelope. Kill = [0.60×lo, 1.67×hi]; P14's kill $0.05-0.20 (plus its TPS cross-check 8-28 tok/s) and P15b/P15c ratio kills govern their rows (see §4).
+
+### Example rows verbatim (machine-readable column form, = `data/predecl_matrix.csv` columns)
+
+| cell | model | b | host | metric | nominal | lo | hi | kill_lo | kill_hi | source_tag | prediction_ids |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1xL4 | dsv4_flash | 1 | 64 | decode_tps | 1.35 | 1.05 | 2.22 | 0.733 | 3.17 | CLOSED-FORM-ONLY (sim pending at freeze) | P1 |
+| 1xL4 | dsv4_flash | 1 | 64 | host_hit_rate | 0.54 | 0.47 | 1 | 0.4 | 1 | CLOSED-FORM-ONLY (sim pending at freeze) | P2 |
+| 1xL4 | dsv4_flash | 1 | 64 | cold_records_per_tok | 147.8 | 0 | 295.5 | 0 | 369.4 | CLOSED-FORM-ONLY (sim pending at freeze) | P3,P4 |
+| 1xL4 | dsv4_flash | 1 | 64 | usd_per_1k_tok | 0.0766 | 0.0185 | 0.0844 | 0.0111 | 0.141 | CLOSED-FORM-ONLY (sim pending at freeze) | - |
+| 2xL4 | dsv4_flash | 8 | 256 | decode_tps | 14.6 | 13.5 | 78.3 | 9.48 | 112.0 | CLOSED-FORM-ONLY (sim pending at freeze) | P1b,P15b |
+| 2xL4 | dsv4_flash | 8 | 256 | host_hit_rate | 0.54 | 0.47 | 1 | 0.4 | 1 | CLOSED-FORM-ONLY (sim pending at freeze) | P2 |
+| 2xL4 | dsv4_flash | 8 | 256 | cold_records_per_tok | 147.8 | 0 | 295.5 | 0 | 369.4 | CLOSED-FORM-ONLY (sim pending at freeze) | P3,P4 |
+| 2xL4 | dsv4_flash | 8 | 256 | usd_per_1k_tok | 0.0902 | 0.0169 | 0.0974 | 0.0101 | 0.163 | CLOSED-FORM-ONLY (sim pending at freeze) | P15b,P15 |
+| 1xL40S | dsv4_flash | 8 | 256 | decode_tps | 15 | 13.8 | 88.8 | 9.69 | 126.9 | CLOSED-FORM-ONLY (sim pending at freeze) | P15b |
+| 1xL40S | dsv4_flash | 8 | 256 | host_hit_rate | 0.54 | 0.47 | 1 | 0.4 | 1 | CLOSED-FORM-ONLY (sim pending at freeze) | P2 |
+| 1xL40S | dsv4_flash | 8 | 256 | cold_records_per_tok | 147.8 | 0 | 295.5 | 0 | 369.4 | CLOSED-FORM-ONLY (sim pending at freeze) | P3,P4 |
+| 1xL40S | dsv4_flash | 8 | 256 | usd_per_1k_tok | 0.0954 | 0.0161 | 0.103 | 0 | 0.172 | CLOSED-FORM-ONLY (sim pending at freeze) | P14,P15b,P15 |
+| 1xL4 | mimo_v2_flash | 1 | 16 | decode_tps | 1.16 | 0.898 | 1.89 | 0.629 | 2.71 | CLOSED-FORM-ONLY (sim pending at freeze) | - |
+| 1xL4 | mimo_v2_flash | 1 | 16 | host_hit_rate | 0.51 | 0.39 | 0.759 | 0.27 | 0.839 | CLOSED-FORM-ONLY (sim pending at freeze) | P2,P2b |
+| 1xL4 | mimo_v2_flash | 1 | 16 | cold_records_per_tok | 174.3 | 17.6 | 348.5 | 13.2 | 435.6 | CLOSED-FORM-ONLY (sim pending at freeze) | P3,P4 |
+| 1xL4 | mimo_v2_flash | 1 | 16 | usd_per_1k_tok | 0.0953 | 0.0358 | 0.111 | 0.0215 | 0.186 | CLOSED-FORM-ONLY (sim pending at freeze) | - |
+| 2xT4 | dsv4_flash | 1 | 16 | decode_tps | 0.178 | 0.135 | 0.254 | 0.0944 | 0.363 | REFERENCE-NON-PHASE6; CLOSED-FORM-ONLY (sim pending at freeze) | P3c,P5 |
+| 2xT4 | dsv4_flash | 1 | 16 | host_hit_rate | 0.51 | 0.44 | 0.753 | 0.37 | 0.803 | REFERENCE-NON-PHASE6; CLOSED-FORM-ONLY (sim pending at freeze) | P2,P2b |
+| 2xT4 | dsv4_flash | 1 | 16 | cold_records_per_tok | 179.4 | 74.1 | 358.8 | 55.6 | 448.5 | REFERENCE-NON-PHASE6; CLOSED-FORM-ONLY (sim pending at freeze) | P3,P4,P3b |
+| 2xT4 | dsv4_flash | 1 | 16 | usd_per_1k_tok | 0.398 | 0.277 | 0.518 | 0.166 | 0.865 | REFERENCE-NON-PHASE6; CLOSED-FORM-ONLY (sim pending at freeze) | - |
+
+---
+
+## 2. Reference rows (NON-Phase-6 — never counted in the 60)
+
+The 24 `*(ref)*` rows above (2 cells × 2 models × 2 b × 3 host budgets = 24 config cells × 4 metrics) are **reference rows, non-Phase-6**. They are not Modal campaign targets and do not count toward the 60:
+
+- **2xT4 (anchor)** — the calibration/correctness instrument (fill-live-t4x2-20260909). It carries P3c (whole-generation TPS incl. prefill, 0.062-0.13, kill outside 0.05-0.16), P5 (eta_s 0.15-0.45, kill 0.10-0.55 on a second platform — the Phase-6 cells ARE the second platform for P5), P3b (device fills/token 190-260, kill 150-320, read from `cold_loads` per decode token), and at 16 GiB the P3/P4 anchor-sized cold bracket (nominal 179.4 [74.1-358.8]; P3's registered kill 70-260 tightens it). Its measured anchor values are 0.21 tok/s, host share 51.3% pooled-dedup (46.8%/56.1% per-GPU), 155.06 storage_requests/token — the calibration points behind the priors.
+- **CPU-only** — portable-torch MEASURED floor (2,750 ms/expert, AGENTS.md CPU 6/10). Nominal decode TPS ~0.01-0.013; range upper edge = the **unbuilt** tuned-kernel arithmetic bound (25-30 ms/expert, ~90x) — DATA NEEDED (tuned AVX2 expert kernel). $/1k tok rows ($44-750) are included to keep the cost picture honest: CPU execution is 360-5,800x worse than dense (THEORY.md 6).
+
+---
+
+## 3. Assumptions ledger
+
+Each assumption with its range and its FALSIFICATION.md citation (all constants also registered in `theory/predecl.py` with provenance → [`data/provenance.csv`](data/provenance.csv) picks them up automatically).
+
+| # | assumption | value | range used in bands | tag | source / citation |
+|---|---|---|---|---|---|
+| A1 | COMPUTE_EFF (fraction of vendor dense-tensor peak realized by batched FP4→FP16 dequant GEMMs) | 0.6 | 0.3-0.8 (TPS/cost corners) | ASSUMPTION | FALSIFICATION.md "data needed" (GPU GEMM microbenchmark missing); provenance `compute_eff_assumption` |
+| A2 | t_0 per-touch dispatch cost | 387.47 µs | 50-420 µs = union of P8c (50-150, batched kernel) and P8b (300-420, anchor dispatch path) | CALIBRATED on anchor (`T4_TOUCH_OVERHEAD_US`), carried cross-GPU | FALSIFICATION P8b/P8c |
+| A3 | eta_s fill-over-compute hiding | 0.292 | 0.15-0.45 | CALIBRATED on anchor | THEORY.md 5.1; FALSIFICATION **P5** (0.15-0.45; kill 0.10-0.55 second platform) |
+| A4 | eta_h H2D hiding | 0.5 | 0.3-0.7 | ASSUMPTION | THEORY.md 5.1 (`eta_h = 0.5` ASSUMPTION); width chosen here |
+| A5 | B_SSD per cell | Cell spec: L4 2.5 / 2xL4 5.0 / A10 3.0 / L40S 6.0 / RTX 8.0 GB/s | 0.9-1.1× spec | ASSUMPTION | `constants.Cell` provenance (price/`B_ssd` all ASSUMPTION); live run must report measured B_SSD or the row is UNTESTABLE |
+| A6 | popularity transfer `S_TRANSFER` (MiMo-Flash) | DSv4 closed form × MIMO_TOUCH_RATIO **1.1163** (48 layers × topk 6 / (43 × 6) = 288/258; records byte-identical 13,369,344 B) | MiMo hit band widened −12pp/+8pp (kill −24pp/+16pp); MIMO_TOPK=6 is itself ASSUMPTION | ASSUMPTION | FALSIFICATION "data needed" (no MiMo router traces exist); `S_TRANSFER`; **DATA NEEDED**: confirm routed top-k from `tools/phase3/specs/mimo_v2_flash.json` |
+| A7 | Modal price schedule | L4 $0.000222/s, A10 $0.000306/s, L40S $0.000542/s, RTX PRO 6000 $0.000842/s, CPU $0.0000131/core/s, RAM $0.00000222/GiB/s | as listed (no band) | ASSUMPTION | AGENT_BRIEF.md price schedule; `MODAL_PRICES` |
+| A8 | volume storage | $0.09/GiB/mo, first 1 TiB free | — | ASSUMPTION | `VOLUME_PRICE_GIB_MO`; 146.6 GiB store = **$3.8/mo** above free tier — negligible vs compute (THEORY.md 6) |
+| A9 | **dense-residency baseline** | 8×H100-80GB-class, 568 GiB resident, 200 tok/s achieved | **price AMBIGUOUS — carried both**: 0.003223 $/GPU/s = $11.60/GPU/h → **$0.12892/1k tok (expensive reading)**; the note's "$3.223/GPU/h" = 0.000895 $/GPU/s → **$0.03581/1k tok (cheap reading)**; 3.57× sensitivity | ASSUMPTION | `DENSE_BASELINE` (Phase-7 correction 2026-09-30). **P15b/P15c as registered were written against the expensive reading** (ratios 0.49-0.93 / 1.08-2.29 reproduce against 0.12892). Under the cheap reading P15b **flips** (ratios 2.5-4.2× against dee). Every break-even kill criterion states its reading; until a dense stack is actually measured (P15) the reading is unresolved and break-even outcomes are graded "vs expensive-reading baseline" with the cheap-reading ratio reported alongside |
+| A10 | host-tier hit priors | finite-window LRU prior 51% @ 16 GiB pooled saturating 0.536-0.54 (sealed repeat ceiling (5,099−2,364)/5,099); steady-Che as upper edge | finite −7pp / steady +5pp (DSv4); −12pp/+8pp (MiMo); kills at 2× | DERIVED | FALSIFICATION **P2** (0.48-0.54, kill 0.45-0.57), **P2c** (850-1000 of 2,364-2,500 ever repeat), known-failure 1 (**+25pp steady-Che error on short windows**); `HOST_HIT_CURVE` from `cache_store_knees.csv` |
+| A11 | $/1k tok formula & basis | `$/1k tok = 1000 × rate_s / TPS`, steady-horizon TPS at the row's own b | — | DERIVED (economics convention) | THEORY.md 6 — its printed formula was **dimensionally wrong** (corrected 2026-09-30); reproduces `serve_cost_frontier.csv` + P14/P15b/P15c centers exactly |
+| A12 | CPU expert execution | 2,750 ms/expert portable-torch | 25-30 ms/expert tuned-kernel bound (~90×) as range ceiling | MEASURED (nominal) + DATA NEEDED (ceiling) | AGENTS.md CPU 6/10; FALSIFICATION "data needed" (tuned AVX2 kernel) |
+| A13 | host budget basis | 16/64/256 GiB **TOTAL**, split evenly over GPUs (engine host tier is per-GPU) | if provisioned **per GPU**, pooled basis doubles and multi-GPU rows shift ~one prior point up (16/GPU → 32 pooled ≈ 53%) | ASSUMPTION (convention) | `ws_lru_knee_gib` = 16 GiB **pooled** (provenance.csv); run must state its basis or row is UNTESTABLE |
+| A14 | measurement protocol shape | ≥ 16 decode tokens; b=1 scored on the finite 16-token window (cold-ish start), b=8 on the steady regime | — | ASSUMPTION (protocol) | P1/P3 conventions (16-token horizon); P13/P9-P12 are explicitly NOT scored here (see §5) |
+
+### 3b. Internal inconsistencies found in THEORY.md / FALSIFICATION.md / brief (frozen observations, reported not hidden)
+
+1. **host_pack hit share arithmetic** — THEORY.md 5.2 (L327) says "host tier absorbs 23-25% of fills: host_pack hits 2,618/5,099" — but 2,618/5,099 = **51.3%**, not 23-25%. The 23-25% band is the **cuda0-only share (24.0%)**; pooled-dedup ground truth is **51.3%** (per-GPU 46.8%/56.1%) per `data/anchor_gate.json` `host_share.definitions` (also pre-noted in provenance.csv `anchor_host_share_definitions`). This matrix uses the 51.3%/finite-prior treatment; the Phase-7 brief's 23-25% band is definition-mismatched.
+2. **dense H100 price ambiguity (3.57×)** — `DENSE_BASELINE` `price_gpu_s=0.003223` ($11.60/GPU/h) vs its own note "$3.223/GPU/h" (= 0.000895 $/GPU/s). Both readings carried (A9); flips P15b under the cheap reading.
+3. **MiMo-Flash record count** — AGENT_BRIEF.md L22-23 says 12,032 records; THEORY.md L40-41 and `cache_store_knees.csv` say 48×256 = **12,288** (153.0 GiB). This matrix uses 12,288/153.0 GiB (MIMO_LAYERS=48 registered) and provisions 153 GiB scratch to cover either.
+4. **THEORY.md 6's printed cost formula** `hardware_rate_s / (TPS_pred * 1000)` is dimensionally wrong; corrected to `1000 × rate_s / TPS` (serving.py implements the correct form; Phase-7 correction 2026-09-30).
+5. **Cross-reference error** — THEORY.md 6 (L393) cites "(FALSIFICATION.md, P7)" for the dense-baseline falsification risk, but the dense-baseline prediction is **P15** (P7 is the popularity-entropy prediction). This matrix scores P15/P15b/P15c against the dense baseline.
+6. **P4 bracket text vs construction** — the old P4 text "[46, 324]" mismatched its own construction (steady 67.84 / 2×finite 323.92); corrected by Phase-7 orchestrator 2026-09-30 to **[67.8, 323.9]** — carried here.
+7. **P4 semantics vs batch rows** — P4's "[steady-Che, 2× finite-Che]" assumes steady ≤ finite; the substrate's **b=8** steady rows violate it (2xT4 h16: steady 420.4 vs finite 179.4 rec/tok) because the batch mixture `u_i(8)` inflates steady-Che. Bracket order-clamped to `[min(s,f), 2×max(s,f)]`; semantic tension flagged, not silently absorbed.
+8. **`roofline_curves.csv` MiMo transferred rows are structurally suspect** — the `zipf_mandelbrot_transferred (ASSUMPTION)` rows imply ~8 cold records/token at b=1 (`U_per_layer` 0.125) against the structural bound L×topk = **288 distinct picks per decode token** (top-k picks are distinct per layer-call), and their cold/token scales **up** with b (8.2 → 22-29) while DSv4's scales down (156 → 124). This matrix therefore derives MiMo rows as **DSv4 × MIMO_TOUCH_RATIO (1.1163)** — structurally consistent (288/258) — and does not use the transferred rows; recorded here so the disagreement is visible.
+9. **Horizon mixing in `serve_cost_frontier.csv`** — its b=1 rows embed **steady-state** TPS (not the finite-horizon decode TPS). That is the economics convention this matrix adopts for $/1k tok (and the P15c identity's basis), but the decode column and cost column are therefore **not the same horizon at b=1** (decode = finite 16-tok per P1; cost = steady per THEORY.md 6). Stated so the tables are not misread.
+
+---
+
+## 4. Scoring + kill-criteria summary (which measurement artifact field each metric reads)
+
+| metric | measurement artifact field | registered range construction | kill rule (row band) | registered-id tightening (intersection governs) |
+|---|---|---|---|---|
+| decode TPS | `result.json` → `decode_tok_s` (cross-check `decode_tokens / decode_wall_s`) | nominal = `roofline_curves.csv` `tps_pred` (finite 16-tok at b=1, steady at b=8); range = T_pred envelope (A1-A5 corners) | outside [0.70×lo, 1.43×hi] | **P1** rows → FALSIFICATION kill outside **0.9-2.1**; **P1b** rows → outside **8-28**; **P14** row → its TPS cross-check outside **8-28** |
+| host-tier hit rate | `result.json` → `host_pack` hits/(hits+misses), **pooled_dedup** definition (`data/anchor_gate.json` `host_share.definitions`; 51.3% anchor figure) | FINITE/STEADY band (A10): nominal finite-LRU prior, hi = steady-Che | outside [nominal−2×w_lo, steady+2×w_hi] | **P2** rows (host 16 GiB) → outside **0.45-0.57** (short windows); **P2b** additionally: LRU-vs-MIN gap < −6pp (needs Belady-MIN replay of the run's router journal) |
+| cold records/token | `per_token_accounting` → `storage_requests / decode tokens` (`byte_accounting.storage_requests_per_generated_token`) | P4 bracket `[min(steady,finite), 2×max(steady,finite)]` (nominal = finite-Che) | outside [0.75×lo, 1.25×hi] | **P3** rows at anchor sizing (2xT4/16 GiB) → outside **70-260**; **P4** → any matched run outside the bracket [67.84, 323.92]-style construction kills P4 |
+| $/1k tok | Modal **billing receipt**: `1000 × (billed_s × rate_s) / emitted_tokens` (cross-check `1000 × rate_s / decode_tok_s`) | steady-horizon `1000 × rate_s / TPS` (A11); range = relative T_pred envelope | outside [0.60×lo, 1.67×hi] | **P14** row → outside **$0.05-0.20**; **P15b** rows (b=8, 256 GiB) → ratio vs dense **≥ 0.95 kills** (registered band 0.49-0.93; **expensive dense reading**); **P15c** rows (b=1, 256 GiB) → ratio **< 0.85 kills** (registered band 1.08-2.29; expensive reading); the dense-price reading used must be recorded in the addendum |
+| device fills/token (2xT4 ref only) | `cold_loads` per decode token | P3b band 190-260 | outside 150-320 | **P3b** governs directly |
+| per-touch dispatch µs (from stage profile) | stage profile per-touch dispatch timing | P8b 300-420 (anchor path) | outside 250-450 | **P8c** (batched-kernel build): 50-150, kill > 250 |
+| limiter identity (from stage profile) | stage profile bucket shares | row's `limiter` column (storage / h2d / compute / dense) | measured limiter ≠ predicted limiter at the cell's B_SSD | **P16** (≤0.4 GiB/s: storage-limited at all host ≤ 512 GiB — 2xT4 ref probes this), **P17** (≥5 GiB/s at 256 GiB: limiter moves to H2D/compute and TPS ≥ 0.5× dense-path bound — L40S/RTX rows probe this; a ≥5 GiB/s cell still storage-limited at 256 GiB kills P17) |
+
+Grading: **PASS** = all four metrics in range · **KILLED** = any metric outside the effective (intersected) kill band · **WEAKENED** = in a range-edge/kill-edge gap · **UNTESTABLE** = missing prerequisite (§0) or ambiguous definition.
+
+---
+
+## 5. What each outcome will tell us (mapping to prediction IDs)
+
+| outcome observed on a Phase-6 run | ids scored | what it tells us |
+|---|---|---|
+| 1xL4, b=1, h64 decode within 1.05-2.22 (P1 kill 0.9-2.1) | **P1** | the storage-limited T_pred (eta_s 0.292 calibrated on T4) transfers to Modal NVMe at B_SSD 2.5 GiB/s. Outside 0.9-2.1 → P1 KILLED → either the anchor's eta_s is platform-specific or the limiter regime differs |
+| 2xL4, b=8, h256 decode within 13.5-78.3 (P1b kill 8-28) | **P1b** | the compute-bound steady regime at batch 8 with 2 GPUs (dispatch-cost dominated per assumption A2). Below 8 → the compute roofline is wrong or t_0 is worse than 420 µs |
+| 1xL40S, b=8, h256 $/1k within 0.0161-0.103 + TPS 8-28 | **P14** | the flagship cost claim ($0.07-0.13, kill $0.05-0.20). Outside → the serving-economics formula or the Modal price assumption is wrong |
+| host hit ≈ 51% at 16 GiB pooled (P2 kill 0.45-0.57) | **P2** | the finite-window LRU prior is right for short runs (and the +25pp steady-Che error claim is confirmed if the measured value sits far below steady-Che). MIN-replay gap of the same run scores **P2b** |
+| cold rec/tok inside [min(s,f), 2·max(s,f)] (anchor bracket [67.84, 323.92]) | **P3**, **P4** | the Che bracket is valid on Modal hardware; at anchor sizing additionally P3's 70-260. `cold_loads/token` 190-320 scores **P3b** |
+| stage profile: eta_s of the run 0.15-0.45 | **P5** | fill-hiding fraction transfers cross-platform (the T4-calibrated 0.292 held); kill 0.10-0.55 |
+| 2xT4 whole-generation TPS incl. prefill 0.062-0.13 | **P3c** | the prefill-inclusive storage bound ×1.25-2.0 slack story on the anchor |
+| b=8, h256 ratios 2xL4 0.70 / 1xL40S 0.74 / 1xRTX 0.93 vs 0.12892 | **P15b** (expensive dense reading) | dee beats dense residency by ≥ 25% at batch 8 — the core break-even claim. Any ratio ≥ 0.95 kills it. Report the cheap-reading ratio (vs 0.03581) alongside until P15 resolves the price |
+| b=1, h256 ratios 1.08 (1xL4) … 2.29 (2xT4) | **P15c** (expensive reading) | dee does NOT win at single-stream anywhere (cold traffic exposed). Any ratio < 0.85 kills it |
+| measured dense stack ≥ 200 tok/s at ≤ $0.13/1k (or > 400 tok/s at ≤ $0.26/1k) | **P15** | the conservative competitor assumption holds / is killed — and adjudicates the 3.57× price ambiguity (A9) |
+| per-touch dispatch 300-420 µs (anchor path) / 50-150 µs (batched build) | **P8b** / **P8c** | the cross-GPU t_0 carrying holds / a batched kernel exists (rows would move toward their hi edges — a WEAKENING, not a kill). > 250 µs on a batched build kills P8c |
+| limiter = storage on 2xT4 (0.33 GiB/s) at every host budget | **P16** | the storage-limited regime claim at ≤ 0.4 GiB/s |
+| limiter ∈ {h2d, compute} on 6.0-8.0 GiB/s cells at h256, TPS ≥ 0.5× dense-path bound | **P17** | the regime shift at ≥ 5 GiB/s; a ≥ 5 GiB/s cell still storage-limited at 256 GiB kills P17 |
+| **NOT scored by this matrix** | P2c (trace replay: 850-1000 repeating records), P6/P6b/P7/P8 (popularity fits — need fresh router windows), P9-P12 (prefetch — no prefetch surface in these configs), P13 (K=1 vs K=16 **concurrency** — b∈{1,8} is batching, not cross-request mixing) | each needs its own artifact (multi-request trace, MIN replay, hint A/B); DATA NEEDED per FALSIFICATION.md |
+
+---
+
+## 6. ADDENDUM — post-registration (append-only; frozen ranges above are never edited)
+
+**Status at freeze (2026-09-30): PENDING.** Checked at freeze time: `dee.cpp/theory/data/sim_*.json` — **ABSENT**; `dee.cpp/theory/data/solve_*.csv` — **ABSENT**. Component A's simulator (running in parallel) and Component B's solver had produced no outputs in this worktree at registration. Every row's sim column therefore reads **"pending sim"** (`source_tag = CLOSED-FORM-ONLY (sim pending at freeze)`), and there is nothing to reconcile yet.
+
+**Procedure when sim/solve outputs land (does not touch frozen ranges):**
+1. Re-run `python -m theory.run_all predecl` with `results_SIM` / `results_SOLVE` passed to `theory.predecl.run(...)` (accepted shapes documented in `theory/predecl.py`). Matching rows flip to `SIM-PREDICTED+CLOSED-FORM`; `predecl_meta.json → sim_reconciliation` records per-row `abs_disagreement` / `rel_disagreement`.
+2. Fill the table below with **both numbers** and the disagreement magnitude, timestamped. Where sim and closed form disagree, BOTH are reported — disagreement is data.
+
+### Addendum 1 — sim-vs-closed-form reconciliation (PENDING, 2026-09-30)
+
+| cell | model | b | host GiB | metric | closed-form nominal | sim | abs diff | rel diff | agreement |
+|---|---|---|---|---|---|---|---|---|---|
+| *(all 84 config cells)* | | | | | *(see §1)* | **pending sim** | — | — | PENDING (2026-09-30; `data/sim_*.json` absent at freeze) |
+
+*(later addenda append below, each with its own UTC timestamp and heading; section 0-5 stays byte-frozen)*
+
+### Addendum 2 — AWS EC2 campaign cells + a b>1 units defect (registered 2026-10-08, before any AWS GPU run)
+
+**Why.** The Phase-6 campaign moved from Modal to AWS EC2 (us-east-2). Two problems with the frozen rows above surfaced while porting the harness. Neither changes any frozen range. Both are recorded here, and the AWS cells get **new** rows.
+
+1. **The frozen decode-TPS and $/1k rows are mostly UNTESTABLE on AWS.** Their B_SSD values are Modal spec ASSUMPTIONs, and the §0 prerequisite 5 makes a run UNTESTABLE when its measured B_SSD falls outside 0.9–1.1× spec. AWS does not publish instance-store NVMe bandwidth. Host-hit % and cold rec/tok do not depend on B_SSD in the closed form, so they stay scorable against §1 where the provisioning matches.
+2. **The frozen VRAM provisioning is not physically realizable on L4/A10.** §0 assumes a 22 GiB/GPU expert cache. The DSv4-Flash dense backbone the runner keeps resident is **8.238 GiB** (1,564 tensors, 8,845,959,388 B; derived from the committed shard headers on `research/phase6-aws`), and an L4 has ~22 GiB usable. The AWS harness provisions the sealed-anchor budget instead: **3,584 MiB = 281 records** on L4/A10, and **28,672 MiB = 2,248 records** on L40S.
+3. **Units defect at b>1 (found 2026-10-08).** `roofline_point` returns `t_storage`, `t_h2d` and `cold_records_per_tok` **per batch step**: D(b) = Σᵢ[1−(1−πᵢ)ᵇ] distinct records for the b rows of one step. It returns `t_dense` and `t_compute` **per emitted token** (already divided by b), and `t_pred` sums the two. The **frozen b=8 decode-TPS rows are therefore neither aggregate nor per-stream throughput**, and the b=8 cold rec/tok is per step. Evidence: for an L4-class cell at host 16 GiB, the steady b=8 `cold_records_per_tok` = **482**, more than the **258** record touches (L·k) one token can make. That is only possible per step. The b=1 rows are unaffected (step = token). The frozen b=8 rows stay as registered and will be scored as registered. Expect their decode-TPS rows to read **low** against measured aggregate throughput, by up to ~b×, wherever storage/H2D dominates.
+
+**Registered AWS rows.** Machine-readable source of record: [`theory/predecl_aws.py`](theory/predecl_aws.py), giving [`data/predecl_aws_matrix.csv`](data/predecl_aws_matrix.csv) (560 rows) and [`data/predecl_aws_meta.json`](data/predecl_aws_meta.json). Regenerate with `python -m theory.predecl_aws` (deterministic, no RNG, no network).
+
+- **Cells** (DSv4-Flash only; no MiMo dense checkpoint or complete store exists on AWS at registration). Each instance is the smallest of its family with RAM − 12 GiB ≥ host budget, the same rule the harness enforces:
+
+  | cell | instance | GPU | $/h (on-demand, us-east-2, Price List 2026-10-08, ASSUMPTION) | VRAM expert budget | host GiB |
+  |---|---|---|---|---|---|
+  | aws-L4-g6.2xlarge | g6.2xlarge | L4 | 0.9776 | 3,584 MiB (281 rec) | 16 |
+  | aws-L4-g6.8xlarge | g6.8xlarge | L4 | 2.0144 | 3,584 MiB (281 rec) | 64 |
+  | aws-A10-g5.2xlarge | g5.2xlarge | A10G | 1.212 | 3,584 MiB (281 rec) | 16 |
+  | aws-A10-g5.8xlarge | g5.8xlarge | A10G | 2.448 | 3,584 MiB (281 rec) | 64 |
+  | aws-L40S-g6e.2xlarge | g6e.2xlarge | L40S | 2.24208 | 28,672 MiB (2,248 rec) | 16 |
+  | aws-L40S-g6e.4xlarge | g6e.4xlarge | L40S | 3.00424 | 28,672 MiB (2,248 rec) | 64 |
+  | aws-L40S-g6e.16xlarge | g6e.16xlarge | L40S | 7.57719 | 28,672 MiB (2,248 rec) | 256 |
+
+  256 GiB on L4/A10 is not provisionable: the largest g6/g5 has 256 GiB of RAM in total.
+- **Model.** The frozen closed form, unchanged, with three substitutions. (a) B_SSD = the run's **measured** value. (b) The VRAM budget above. (c) rate_s = instance $/h ÷ 3600, all-in. GPU B_h2d and F_peak come from the frozen Modal cell of the same GPU. eta_storage = 0.29170 (anchor-calibrated, as in `roofline.run`). **b=1 rows use `predecl._gpu_derivations` verbatim.** The pipeline's self-check reproduces all 72 frozen 1xL4/1xA10/1xL40S rows at **max relative error 0.0** before writing anything. **b=8 rows use the units-corrected step model** (`UNITS_CORRECTION`): step = b·(t_dense + t_compute) + (1−η_s)·t_storage,step + (1−η_h)·t_h2d,step. **decode_tps is AGGREGATE** = b / step, and cold rec/tok = cold_step / b. The corners and kill multipliers are the same as the frozen rules.
+- **Scoring rule (the registration).** The registered prediction for a run is `theory.predecl_aws.predict(cell, b, host, B_ssd)` evaluated at `B_ssd = summary.json measured_b_ssd_gib_s × 2³⁰`. That value comes from bench_runner's fio randread probe: 13,369,344 B blocks, O_DIRECT, libaio, iodepth 6, numjobs 3, which is the anchor's 3-lane QD6 definition. The function is frozen at this addendum's commit; the CSV is a human-readable sample of it at B_SSD ∈ {0.5 … 8} GB/s. The 0.9–1.1× B_SSD corner stays in as instrument noise. PASS / KILLED / WEAKENED / UNTESTABLE follow §0 and §4 unchanged.
+- **Run protocol.**
+  - **b=1:** a 16-token generation with the default anchor prompt. Decode TPS = decode tokens ÷ decode wall (the anchor's `decode_wall_s` convention). The horizon matches `finite_16tok`.
+  - **b=8:** one cohort of 8 prompts, ≥ 64 decode steps. The rows are **steady-state** predictions, so decode TPS is scored over the **last 32 decode steps** only. They are scorable only if the measured cold rec/tok over that same window lies inside the row's cold kill band. Otherwise the window has not reached the modeled regime, and the TPS and $/1k rows are **UNTESTABLE** (not killed).
+- **Sample at B_SSD = 2.0 GB/s** (nominal [range]):
+
+  | cell | b | host | decode tok/s | cold rec/tok | $/1k tok |
+  |---|---|---|---|---|---|
+  | aws-L4-g6.2xlarge | 1 | 16 | 0.912 [0.698, 1.433] | 185.0 [82, 370] | 0.160 |
+  | aws-L4-g6.2xlarge | 8 | 16 | 2.522 [1.951, 4.137] (aggregate) | 60.3 [60, 370] | 0.108 |
+  | aws-L4-g6.8xlarge | 1 | 64 | 1.088 [0.835, 1.745] | 147.8 [0, 296] | 0.113 |
+  | aws-L4-g6.8xlarge | 8 | 64 | 9.006 [7.586, 24.890] (aggregate) | 0.0 [0, 296] | 0.062 |
+  | aws-L40S-g6e.2xlarge | 1 | 16 | 1.171 [0.902, 1.883] | 149.1 [2, 298] | 0.085 |
+  | aws-L40S-g6e.2xlarge | 8 | 16 | 13.081 [11.748, 55.682] (aggregate) | 1.9 [2, 298] | 0.048 |
+
+- **Known weaknesses, stated in advance.**
+  - **(i)** At host ≥ 64 GiB (and on L40S at 16 GiB) the steady-state cold rate is ≈ 0. The sealed-trace empirical popularity puts **zero mass on the 9,412 records it never saw**, so those b=8 rows are dense/compute/H2D ceilings and are B_SSD-independent. Arbitrary prompts will touch unseen experts. Expect measured cold rec/tok above the steady nominal there; the scorability gate above exists for this reason.
+  - **(ii)** $/1k uses the steady-horizon TPS (the frozen economics convention). That is why it is B_SSD-independent at host ≥ 64 GiB.
+  - **(iii)** The finite_16tok horizon uses the b=1 batch schedule `[7]+[1]*15` at every b (inherited). The b=8 cold bracket's finite edge is therefore a single-stream quantity.
+  - **(iv)** Prices are on-demand. Spot runs are billed lower but scored at on-demand, an upper bound.
+
+### Addendum 3 — Modal cells at measured B_SSD (registered 2026-11-04, before any Phase-6 hardware run)
+
+**Why.** On 2026-11-04 the campaign moved back from AWS to Modal. No Phase-6 hardware run existed on either platform. The frozen section-1 rows are scored **as registered**: `aws/phase6/score.py` grades a Modal run against `data/predecl_matrix.csv`, with the section-0 B_SSD gate and the section-4 ID bands. Addendum 2 already showed two of their inputs fail on real hardware: an unmeasured B_SSD, which makes decode tok/s and $/1k UNTESTABLE outside 0.9–1.1× spec, and a VRAM cache that doesn't fit (22 GiB/GPU on L4/A10 next to the 8.238 GiB resident backbone). This addendum registers **new** Modal rows beside the frozen ones, the same way Addendum 2 did for AWS. No frozen range is edited.
+
+**Registered function.** [`theory/predecl_modal.py`](theory/predecl_modal.py) `predict(gpu, model, b, host, B_ssd)`. Evaluated at `B_ssd = summary.json measured_b_ssd_gib_s × 2³⁰` (the `modal_p6.py` fio randread probe, which uses Addendum 2's definition), it is the registered prediction. Sample grid: [`data/predecl_modal_matrix.csv`](data/predecl_modal_matrix.csv) (2,400 rows) and [`data/predecl_modal_meta.json`](data/predecl_modal_meta.json). Regenerate with `python -m theory.predecl_modal` (deterministic, no RNG, no network).
+
+- **Substitutions (only these three).** (a) B_SSD = the run's measured value. (b) The VRAM expert budget `modal_p6.py` provisions: 3,584 MiB per GPU on L4, 2xL4 and A10; 28,672 MiB on L40S; 61,440 MiB on RTX PRO 6000. (c) rate_s = the bench container at the frozen A7 schedule: n_gpu × GPU + 8 CPU cores + container RAM. The container is 96 GiB (L4, 2xL4, A10), 128 GiB (L40S) or 192 GiB (RTX) at host 16 and 64 GiB, and 288 GiB at host 256 via `bench_<GPU>_h256`. Modal bills the memory reservation (ASSUMPTION). All-in USD/h at host 16/64 → 256: L4 1.944 → 3.478, 2xL4 2.743 → 4.277, A10 2.246 → 3.781, L40S 3.351 → 4.630, RTX 4.943 → 5.710.
+- **Model.** b=1 uses `predecl._gpu_derivations` verbatim. MiMo-Flash = DSv4 × MIMO_TOUCH_RATIO, as frozen. The self-check feeds the frozen spec B_SSD, VRAM and rate back in and reproduces all **120** frozen b=1 GPU rows (5 GPUs × 2 models × 3 hosts × 4 metrics) at max relative error 1.6e-16 before anything is written. b=8 uses Addendum 2's `UNITS_CORRECTION` step model: decode tok/s is AGGREGATE, cold rec/tok is per emitted token, and the MiMo scaling is applied to its outputs.
+- **Scoring rule.** Same as Addendum 2. b=1 runs are a 16-token generation with the default anchor prompt. b=8 runs are one 8-prompt cohort (`aws/phase6/prompts_phase4_8.json`) with at least 64 decode steps and `--ignore-eos`. TPS and $/1k are scored on the last 32 steps, and only if that window's cold rec/tok lies inside the row's cold kill band. P2's 0.45–0.57 kill band is intersected in at host 16 GiB. $/1k uses the Modal billing receipt when one is recorded (`summary.json billed_usd`), otherwise `1000 × rate_s / TPS`. The run must use the registered VRAM budget and container size, otherwise the Addendum-3 row is UNTESTABLE. The frozen row is still scored either way.
+- **Sample at B_SSD = 2.0 GB/s, DSv4-Flash** (nominal [range]; $/1k nominal; predicted limiter):
+
+  | cell | b | host | decode tok/s | cold rec/tok | $/1k tok | limiter |
+  |---|---|---|---|---|---|---|
+  | modal-L4 | 1 | 16 | 0.912 [0.698, 1.433] | 185.0 [82, 370] | 0.318 | storage |
+  | modal-L4 | 1 | 64 | 1.088 [0.835, 1.745] | 147.8 [0, 296] | 0.109 | h2d |
+  | modal-L4 | 1 | 256 | 1.088 [0.835, 1.745] | 147.8 [0, 296] | 0.195 | h2d |
+  | modal-L4 | 8 | 16 | 2.522 [1.951, 4.137] | 60.3 [60, 370] | 0.214 | storage |
+  | modal-L4 | 8 | 64 | 9.006 [7.586, 24.890] | 0.0 [0, 296] | 0.060 | h2d |
+  | modal-L4 | 8 | 256 | 9.006 [7.586, 24.890] | 0.0 [0, 296] | 0.107 | h2d |
+  | modal-L40S | 1 | 16 | 1.171 [0.902, 1.883] | 149.1 [2, 298] | 0.127 | compute |
+  | modal-L40S | 1 | 64 | 1.180 [0.909, 1.900] | 147.8 [0, 296] | 0.120 | compute |
+  | modal-L40S | 1 | 256 | 1.180 [0.909, 1.900] | 147.8 [0, 296] | 0.166 | compute |
+  | modal-L40S | 8 | 16 | 13.081 [11.748, 55.682] | 1.9 [2, 298] | 0.071 | storage |
+  | modal-L40S | 8 | 64 | 14.778 [13.622, 85.048] | 0.0 [0, 296] | 0.063 | compute |
+  | modal-L40S | 8 | 256 | 14.778 [13.622, 85.048] | 0.0 [0, 296] | 0.087 | compute |
+  | modal-RTXPRO6000 | 1 | 16 | 1.193 [0.919, 1.923] | 147.8 [0, 296] | 0.173 | compute |
+  | modal-RTXPRO6000 | 1 | 64 | 1.193 [0.919, 1.923] | 147.8 [0, 296] | 0.173 | compute |
+  | modal-RTXPRO6000 | 1 | 256 | 1.193 [0.919, 1.923] | 147.8 [0, 296] | 0.199 | compute |
+  | modal-RTXPRO6000 | 8 | 16 | 15.296 [14.132, 102.024] | 0.0 [0, 296] | 0.090 | compute |
+  | modal-RTXPRO6000 | 8 | 64 | 15.296 [14.132, 102.024] | 0.0 [0, 296] | 0.090 | compute |
+  | modal-RTXPRO6000 | 8 | 256 | 15.296 [14.132, 102.024] | 0.0 [0, 296] | 0.104 | compute |
+
+- **Known weaknesses, stated in advance.** Addendum 2's (i)–(iii) carry over unchanged: steady cold ≈ 0 at host ≥ 64 GiB with the sealed popularity, $/1k on the steady horizon, and the finite edge of the b=8 cold bracket. There is also (iv): container RAM is billed at its reserved size, so a host-16 run pays for a 96–192 GiB container. (v) Whether Modal grants a 288 GiB container on every GPU type is unverified. If it doesn't, the host-256 rows are descoped, not re-registered. (vi) If the container refuses O_DIRECT, the probe falls back to buffered I/O and the scorecard flags it. Such a run is still scored, with the flag reported next to the grade.
+
+*(Phase-6 results will be appended as Addendum 4+, each dated, with evidence paths.)*
+
+### Addendum 4 — Phase-6 results, 1xL4 slice (appended 2026-11-10)
+
+**Evidence.** `p6m-l4-r5` at commit 311d9d0bf821: one 1xL4 container (96 GiB), four rows run in
+this order: b1-h64, b1-h16, b8-h64, b8-h16. torch 2.10.0+cu128 (the sealed build). The raw evidence
+is on the Modal volume `dee-p6-evidence` under `runs/p6m-l4-r5-*`. The scorecards from
+`aws/phase6/score.py` are committed at `runs/p6m-l4-r5-<tag>/scorecard.{md,json}`, with one
+`SCOREBOARD.jsonl` line per row. Billed: $1.58, read from the Modal dashboard. That figure is not
+in the evidence, because no `billed_usd` was recorded, so $/1k below uses the `1000 x rate_s / TPS`
+cross-check. `p6m-t4-r1` (1xT4, cc31cc3) ran out of memory at model load: about 16.2 GiB is needed
+before the expert cache and a T4 has 14.57 GiB. It produced no tokens and cost $0.28. Campaign
+spend to date is about $3.31 of $30.
+
+**Measured B_SSD.** 3.955 GiB/s (fio randread, QD6, O_DIRECT). That is 1.70x the L4 cell spec, so
+every frozen-row decode tok/s and $/1k is UNTESTABLE (section-0 gate, 0.9-1.1x). Addendum 3 is
+evaluated at this measured value.
+
+**Order caveat.** Rows 2-4 ran in a container that had already run earlier rows. Modal can't drop
+the page cache, so those rows may read warm. r5 predates the warm-cache warning that PR #15 added,
+so its scorecards don't carry the flag. b1-h16 decoding faster than b1-h64 (0.654 vs 0.522 tok/s)
+is consistent with this.
+
+**Decision on b=1 correctness off T4 (made 2026-11-10, after the data; not a pre-registration).**
+The L4 b=1 output does not match the sealed T4 answer, and nothing yet shows whether that comes
+from the GPU or from one-GPU mode: the 1xT4 check couldn't load, and a 2xT4 run can't separate the
+two causes. Nivin chose to treat the **L4 as its own reference**. On this cell, the b=1
+correctness gate is therefore:
+(i) every structural gate passes (finite, 43 layers, router, integrity); and
+(ii) the two host budgets on the same GPU produce bit-identical token ids, routed-expert journals
+and route-weight hashes.
+Both hold for r5. This check is weaker than the exact-token gate. It shows the L4 is deterministic
+and that host budget doesn't change routing. It does **not** show that one-GPU mode is bug-free,
+and every claim that rests on it is limited to that.
+
+**What differs from the T4 seal (measured).** The runner gate reads `REJECT_NUMERICAL`:
+`exact_16_token_ids` and `exact_decoded_text` are False, and every other non-hardware gate is True.
+The outputs differ from token 0 (T4 666, L4 95140). The first route divergence is at prefill step
+0, layer 6, with all 688 records compared; layers 0-5 are identical. At layer 6, row 0's 6th
+expert is 190 on the L4 and 216 on the T4. Row 3 selects the same six experts in a different rank
+order. The selection margin is **not** verified: the captured `router_top8_values/ids` do not hold
+every selected expert, so "near-tie" stays a hypothesis.
+*Hypothesis:* the L4's float rounding flips a close selection margin.
+
+**Grades.** "Add.3" is the Addendum-3 row at the measured B_SSD. The b=1 Add.3 rows use
+`theory.predecl_modal.predict("L4", "dsv4_flash", 1, host, 3.9552 GiB/s)`, and their $/1k is
+`1000 x 0.00053992 $/s / TPS`.
+
+| row | metric | measured | Add.3 nominal [range], kill | Add.3 grade | frozen grade | evidence |
+|---|---|---|---|---|---|---|
+| b=1 h64 | decode tok/s (15 decode tokens) | 0.522 | 1.820 [1.422, 3.209], kill <0.995 | **KILLED** | UNTESTABLE (B_SSD gate) | runs/p6m-l4-r5-b1-h64 |
+| b=1 h64 | $/1k | 1.034 | 0.109 [0.037, 0.129], kill >0.215 | **KILLED** | UNTESTABLE | same |
+| b=1 h16 | decode tok/s (15 decode tokens) | 0.654 | 1.581 [1.228, 2.700], kill <0.860 | **KILLED** | UNTESTABLE | runs/p6m-l4-r5-b1-h16 |
+| b=1 h16 | $/1k | 0.826 | 0.208 [0.107, 0.261], kill >0.435 | **KILLED** | UNTESTABLE | same |
+| b=8 h64 | decode tok/s, aggregate (last 32 steps) | 0.838 | 9.006 [7.586, 24.890], kill <5.310 | **KILLED** | UNTESTABLE | runs/p6m-l4-r5-b8-h64 |
+| b=8 h64 | $/1k | 0.644 | 0.060 [0.022, 0.071], kill >0.119 | **KILLED** | UNTESTABLE | same |
+| b=8 h64 | host hit | 0.835 (41,307/49,463) | 0.54 [0.47, 1.0] | PASS | PASS | same |
+| b=8 h64 | cold rec/tok | 31.86 | 0 [0, 295.5] | PASS | PASS | same |
+| b=8 h16 | host hit | **0.000 (0/49,463)** | 0.51 [0.44, 0.753], kill <0.45 (P2) | **KILLED** | **KILLED** | runs/p6m-l4-r5-b8-h16 |
+| b=8 h16 | decode tok/s, aggregate (last 32 steps) | 0.591 | 4.074 [3.214, 7.402], kill <2.250 | **KILLED** | UNTESTABLE | same |
+| b=8 h16 | $/1k | 0.914 | 0.133 [0.073, 0.168], kill >0.281 | **KILLED** | UNTESTABLE | same |
+| b=8 h16 | cold rec/tok | 193.2 | 60.3 [60.3, 370.0] | PASS | PASS | same |
+
+The b=8 steady-state gate is OPEN on both rows, so their TPS and $/1k grades stand. The b=1 host
+hit and cold rec/tok are **not graded here**. The committed b=1 scorecards hold no metrics,
+because `score.py` stops at the runner gate. They need a rescore from `result.json` under the gate
+above. *Open item:* add an explicit "own-reference" path to `score.py` and rescore both b=1 rows.
+P1 (decode tok/s at b=1, FALSIFICATION kill 0.9-2.1) reads below its kill line on both host
+budgets. With the 1.70x B_SSD it stays UNTESTABLE on the frozen row and KILLED on Add.3.
+
+**What the kills say.**
+- **b=8 at 16 GiB, host hit 0 (measured).** The host tier holds 1,285 experts (17,179,869,184 B /
+  13,369,344 B; `host_pack.entries` = 1,285). Decode steps request 915-1,644 distinct (layer,
+  expert) pairs, mean 1,521, and 62 of 64 decode steps exceed 1,285. Prefill requests 6,147. Over
+  the whole row `host_pack` logged 617 hits and 102,857 misses.
+  *Theory correction:* the host-hit term assumes the per-step working set fits in the host tier.
+  At b=8 on 16 GiB it doesn't, and LRU evicts each expert before its next use. The term needs a
+  capacity cliff at per-step set > capacity. That fix goes on `research/phase7-theory`.
+- **b=8 at 64 GiB, 0.838 tok/s (measured).** cuda0 stage profile over the 640 s row:
+  `mmap_to_pinned` CPU 262 s, `everything_else` 367 s, store read workers 187 s, GPU `h2d`
+  **5.2 s**, GPU compute about 1.0 s, layer wall 587 s. These buckets overlap, so they sum past
+  wall. The engine reads 1,522 MiB/s per read against fio's 3.96 GiB/s on the same disk. Decode
+  step time rose from 4.4 s to 11.2 s at a constant per-step request count. The predicted limiter
+  was `h2d`, but the profile doesn't show it. *Hypothesis:* the limit is host-side
+  (`mmap_to_pinned` / copy path), not the SSD and not PCIe. Unverified. P16/P17 were read by hand,
+  not scored.
+- **b=1, 0.52-0.65 tok/s (measured, on the own-reference gate).** Below Add.3's kill line at both
+  host budgets. The rising b=8 step time and the host-side profile point at the same path.
+  *Hypothesis:* that path is the common cause.
+
+**Harness changes these runs led to** (merged): PR #15 added gate names in scorecards, the
+warm-cache warning, both router score sets in the dump, and a verdict fix. PR #16 added the
+VRAM-fit check in preflight and bench, and lowered the L40S default cache.
+
+#### Addendum 4, follow-up: b=1 host hit and cold reads rescored (2026-11-10)
+
+Addendum 4 left these two metrics ungraded because `score.py` stopped at the runner gate. They are
+now scored with `score.py --own-reference` (new, opt-in, tested): it requires the two b=1 runs to
+share GPU, commit, budget and model, to differ in host GiB, and to have identical token ids and
+identical routed-expert and route-weight journals (run_id and chain hashes ignored). Then it waives
+only `exact_16_token_ids` and `exact_decoded_text`. Both runs pass that check, re-fetched with
+`modal volume get` on 2026-11-10 and byte-identical to the earlier copies. The card carries the
+OWN-REFERENCE warning. This is the weaker gate described in Addendum 4, so these grades inherit its
+limit: they say nothing about whether one-GPU mode is bug-free. No Modal container was started.
+
+| row | metric | measured | Add.3 nominal [range] | Add.3 grade | frozen grade | evidence |
+|---|---|---|---|---|---|---|
+| b=1 h64 | host hit (2,930/5,100 prompt-scoped) | 0.5745 | 0.54 [0.47, 1.0], kill <0.4 | PASS | PASS | runs/p6m-l4-r5-b1-h64 |
+| b=1 h64 | cold rec/tok | 135.6 | 147.75 [0, 295.5], kill >369.4 | PASS | PASS | same |
+| b=1 h16 | host hit (2,845/5,100 prompt-scoped) | 0.5578 | 0.51 [0.44, 0.753], kill <0.45 or >0.57 (P2) | PASS | PASS | runs/p6m-l4-r5-b1-h16 |
+| b=1 h16 | cold rec/tok | 140.9 | 185.0 [81.9, 370.0] | PASS | PASS | same |
+
+The h16 host hit sits 0.012 under the P2 upper kill edge (0.57). The b=1 window is one prefill plus
+15 decode steps from a cold start, and cold rec/tok is `storage_requests_per_generated_token`, so
+it includes the prefill reads. The decode tok/s and $/1k grades in Addendum 4 are unchanged. Updated
+scorecards and SCOREBOARD.jsonl lines 5-6 supersede lines 1-2 for these two runs.

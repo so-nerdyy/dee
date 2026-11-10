@@ -1,0 +1,25 @@
+{
+  "model": "XiaomiMiMo/MiMo-V2.6-Flash-RL",
+  "revision": "5711b268169967567844e1e560e8a3966da959b1",
+  "codec": "deepseek-fp4-e2m1-e8m0",
+  "codec_note": "Checkpoint save_format=mxfp4: packed e2m1 nibbles (U8) + ue8m0 scales (U8) per 32-element group — wire-identical to the existing DEE4 record layout; no codec change required.",
+  "experts_per_layer": 256,
+  "record_bytes": 13369344,
+  "n_buckets": 47,
+  "layer_start": 1,
+  "n_layers": 48,
+  "n_mtp_buckets": 0,
+  "projections": {"w1": "gate_proj", "w3": "up_proj", "w2": "down_proj"},
+  "kind_field": {"weight": "weight", "scale": "weight_scale"},
+  "tensor_pattern": "model.layers.{layer}.mlp.experts.{expert}.{proj}.{kind}",
+  "expert_name_re": "^model\\.layers\\.(\\d+)\\.mlp\\.experts\\.(\\d+)\\.((?:gate|up|down)_proj)\\.(weight|weight_scale)$",
+  "coverage_re": "\\.mlp\\.experts\\.",
+  "expected": {
+    "w1.weight": {"dtype": "U8", "shape": [2048, 2048], "nbytes": 4194304},
+    "w3.weight": {"dtype": "U8", "shape": [2048, 2048], "nbytes": 4194304},
+    "w2.weight": {"dtype": "U8", "shape": [4096, 1024], "nbytes": 4194304},
+    "w1.scale":  {"dtype": "U8", "shape": [2048, 128],  "nbytes": 262144},
+    "w3.scale":  {"dtype": "U8", "shape": [2048, 128],  "nbytes": 262144},
+    "w2.scale":  {"dtype": "U8", "shape": [4096, 64],   "nbytes": 262144}
+  }
+}

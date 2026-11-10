@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "result": "PASS",
+  "terminal_verdict": "ACCEPT_FIRST_LOGITS",
+  "stage": "v4",
+  "performance_comparable": false,
+  "evidence_dir": "dsv4-ds10-evidence-20260805T020506Z",
+  "identity": {
+    "repository_commit": "38b321b5e65a80c3e0d47937f4194475cee7a63e",
+    "stage": "v4",
+    "harness_sha256": "3b68d22747a30de95dbb290ef9c0051bc61936102aa6f2a97080c55a8e212a5f",
+    "module_count": 9
+  },
+  "manifest": {
+    "path": "ds10-artifact-manifest.json",
+    "sha256": "499c061fbab69fb4a98c566dddc850e0e2aa47ae310f9cb2a2c3a97733a6a1e8",
+    "artifact_count": 14
+  },
+  "archive": {
+    "path": "dsv4-ds10-evidence-20260805T020506Z.tar.gz",
+    "bytes": 67563,
+    "sha256": "61b9b6b947460db8489fbe38ec89f6b7a12f0dc72ccbe5fbbc6c1c12740f2e27",
+    "member_count": 16
+  },
+  "gates": {
+    "dual_t4": true,
+    "performance_not_comparable": true,
+    "verdict": true,
+    "layer_order": true,
+    "logits": true,
+    "runtime": true
+  },
+  "failed_gates": []
+}

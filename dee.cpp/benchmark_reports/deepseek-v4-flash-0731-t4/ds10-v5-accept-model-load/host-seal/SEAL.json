@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "result": "PASS",
+  "terminal_verdict": "ACCEPT_MODEL_LOAD",
+  "stage": "v1",
+  "performance_comparable": false,
+  "evidence_dir": "dsv4-ds10-evidence-20260805T004200Z",
+  "identity": {
+    "repository_commit": "a199c1392b95fa3752bcb4db7a5bcd8d1a9f075e",
+    "stage": "v1",
+    "harness_sha256": "a96e8e6f561f8e657d2ec7684bf919f1b9fe94180d6c1e1326f9e3e6962e9e13",
+    "module_count": 9
+  },
+  "manifest": {
+    "path": "ds10-artifact-manifest.json",
+    "sha256": "35b9cbcd279cd50d75f45980d960fd46dd0771ddb74c56ebffacafd18e4f6ee3",
+    "artifact_count": 14
+  },
+  "archive": {
+    "path": "dsv4-ds10-evidence-20260805T004200Z.tar.gz",
+    "bytes": 64557,
+    "sha256": "ab55c009d529ff8b92cab028cb82b430a83cdcb1adcc49e8be15a6644b59707e",
+    "member_count": 16
+  },
+  "gates": {
+    "dual_t4": true,
+    "performance_not_comparable": true,
+    "verdict": true,
+    "coverage": true,
+    "static_memory": true,
+    "model_load": true,
+    "state_count": true,
+    "actual_memory": true
+  },
+  "failed_gates": []
+}

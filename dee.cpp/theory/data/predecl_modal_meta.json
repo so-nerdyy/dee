@@ -1,0 +1,94 @@
+{
+  "registration_utc": "2026-11-04",
+  "self_check": {
+    "rows_checked": 120,
+    "max_rel_err": 1.5793896438471457e-16,
+    "pass": true
+  },
+  "cells": {
+    "modal-L4": {
+      "frozen_gpu_cell": "1xL4",
+      "vram_budget_mib": 3584,
+      "container_mib": {
+        "16": 98304,
+        "64": 98304,
+        "256": 294912
+      },
+      "rate_s": {
+        "16": 0.00053992,
+        "64": 0.00053992,
+        "256": 0.00096616
+      }
+    },
+    "modal-2xL4": {
+      "frozen_gpu_cell": "2xL4",
+      "vram_budget_mib": 3584,
+      "container_mib": {
+        "16": 98304,
+        "64": 98304,
+        "256": 294912
+      },
+      "rate_s": {
+        "16": 0.00076192,
+        "64": 0.00076192,
+        "256": 0.00118816
+      }
+    },
+    "modal-A10": {
+      "frozen_gpu_cell": "1xA10",
+      "vram_budget_mib": 3584,
+      "container_mib": {
+        "16": 98304,
+        "64": 98304,
+        "256": 294912
+      },
+      "rate_s": {
+        "16": 0.00062392,
+        "64": 0.00062392,
+        "256": 0.00105016
+      }
+    },
+    "modal-L40S": {
+      "frozen_gpu_cell": "1xL40S",
+      "vram_budget_mib": 28672,
+      "container_mib": {
+        "16": 131072,
+        "64": 131072,
+        "256": 294912
+      },
+      "rate_s": {
+        "16": 0.0009309599999999999,
+        "64": 0.0009309599999999999,
+        "256": 0.0012861599999999997
+      }
+    },
+    "modal-RTXPRO6000": {
+      "frozen_gpu_cell": "1xRTXPRO6000",
+      "vram_budget_mib": 61440,
+      "container_mib": {
+        "16": 196608,
+        "64": 196608,
+        "256": 294912
+      },
+      "rate_s": {
+        "16": 0.00137304,
+        "64": 0.00137304,
+        "256": 0.00158616
+      }
+    }
+  },
+  "bssd_grid_gbps": [
+    0.5,
+    1.0,
+    1.5,
+    2.0,
+    2.5,
+    3.0,
+    4.0,
+    5.0,
+    6.0,
+    8.0
+  ],
+  "scoring_rule": "evaluate theory.predecl_modal.predict(gpu, model, b, host, B_ssd) at B_ssd = summary.json measured_b_ssd_gib_s * 2^30; the CSV grid is a human-readable sample of that frozen function",
+  "rows": 2400
+}
