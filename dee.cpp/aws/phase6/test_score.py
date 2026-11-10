@@ -439,3 +439,61 @@ def test_addendum3_missing_deps_reported(tmp_path, frozen, monkeypatch):
     card = score.score_run(_write(tmp_path, _modal_summary(), {"result.json": _b1_result()}),
                            frozen=frozen)
     assert card["addendum3"]["verdict"] == "NOT SCORED"
+
+
+# --- b=1 own-reference gate (Addendum 4) -----------------------------------------
+
+def _reject_result(**over):
+    gates = {"exact_16_token_ids": False, "exact_decoded_text": False, "all_43_layers": True,
+             "required_performance_hardware": False}
+    return _b1_result(classification="REJECT_NUMERICAL", sealed_contract_gates=gates, **over)
+
+
+def _pair(tmp_path, journal_b=None, host_b=16.0, result_b=None):
+    j = [{"forward_step": 0, "layer": 0, "run_id": "A", "chain_sha256": "x",
+          "expert_ids_rank_order": [[1, 2]]}]
+    ja = "\n".join(json.dumps(r) for r in j) + "\n"
+    jb = ja if journal_b is None else journal_b
+    dirs = []
+    for name, host, journal, res in (("a", 64.0, ja, _reject_result()),
+                                     ("b", host_b, jb, result_b or _reject_result())):
+        d = _write(tmp_path / name, _modal_summary(run_id=name, host_gib_requested=host,
+                                                   host_gib_effective=host), {"result.json": res})
+        (d / "routed_experts.jsonl").write_text(journal)
+        (d / "route_weights.jsonl").write_text(journal)
+        dirs.append(d)
+    return dirs
+
+
+def test_own_reference_default_still_rejects(tmp_path, frozen):
+    a, _ = _pair(tmp_path)
+    card = score.score_run(a, frozen=frozen)
+    assert any("REJECT_NUMERICAL" in f for f in card["prerequisite_failures"])
+
+
+def test_own_reference_pair_waives_only_the_two_exact_gates(tmp_path, frozen):
+    a, b = _pair(tmp_path)
+    ea, eb = score.load_evidence(a), score.load_evidence(b)
+    assert score.verify_own_reference(ea, eb) == []
+    own = {"peer_run_id": "b", "waived_gates": sorted(score.OWN_REFERENCE_WAIVABLE)}
+    card = score.score_run(a, frozen=frozen, own_reference=own)
+    assert not any("correctness gate" in f for f in card["prerequisite_failures"])
+    assert any("OWN-REFERENCE" in w for w in card["warnings"])
+    # a different failed gate is NOT waived
+    bad = _reject_result()
+    bad["sealed_contract_gates"]["all_43_layers"] = False
+    (a / "result.json").write_text(json.dumps(bad))
+    card = score.score_run(a, frozen=frozen, own_reference=own)
+    assert any("all_43_layers" in f for f in card["prerequisite_failures"])
+
+
+@pytest.mark.parametrize("kw,needle", [
+    ({"host_b": 64.0}, "same host budget"),
+    ({"journal_b": '{"forward_step": 0, "layer": 0, "expert_ids_rank_order": [[1, 3]]}\n'},
+     "routed_experts.jsonl differs"),
+    ({"result_b": _reject_result(generated_token_ids=list(range(1, 17)))}, "token ids differ"),
+])
+def test_own_reference_pair_must_be_bit_identical(tmp_path, kw, needle):
+    a, b = _pair(tmp_path, **kw)
+    why = score.verify_own_reference(score.load_evidence(a), score.load_evidence(b))
+    assert any(needle in w for w in why), why

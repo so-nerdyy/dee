@@ -375,3 +375,118 @@ Grading: **PASS** = all four metrics in range · **KILLED** = any metric outside
 - **Known weaknesses, stated in advance.** Addendum 2's (i)–(iii) carry over unchanged: steady cold ≈ 0 at host ≥ 64 GiB with the sealed popularity, $/1k on the steady horizon, and the finite edge of the b=8 cold bracket. There is also (iv): container RAM is billed at its reserved size, so a host-16 run pays for a 96–192 GiB container. (v) Whether Modal grants a 288 GiB container on every GPU type is unverified. If it doesn't, the host-256 rows are descoped, not re-registered. (vi) If the container refuses O_DIRECT, the probe falls back to buffered I/O and the scorecard flags it. Such a run is still scored, with the flag reported next to the grade.
 
 *(Phase-6 results will be appended as Addendum 4+, each dated, with evidence paths.)*
+
+### Addendum 4 — Phase-6 results, 1xL4 slice (appended 2026-11-10)
+
+**Evidence.** `p6m-l4-r5` at commit 311d9d0bf821: one 1xL4 container (96 GiB), four rows run in
+this order: b1-h64, b1-h16, b8-h64, b8-h16. torch 2.10.0+cu128 (the sealed build). The raw evidence
+is on the Modal volume `dee-p6-evidence` under `runs/p6m-l4-r5-*`. The scorecards from
+`aws/phase6/score.py` are committed at `runs/p6m-l4-r5-<tag>/scorecard.{md,json}`, with one
+`SCOREBOARD.jsonl` line per row. Billed: $1.58, read from the Modal dashboard. That figure is not
+in the evidence, because no `billed_usd` was recorded, so $/1k below uses the `1000 x rate_s / TPS`
+cross-check. `p6m-t4-r1` (1xT4, cc31cc3) ran out of memory at model load: about 16.2 GiB is needed
+before the expert cache and a T4 has 14.57 GiB. It produced no tokens and cost $0.28. Campaign
+spend to date is about $3.31 of $30.
+
+**Measured B_SSD.** 3.955 GiB/s (fio randread, QD6, O_DIRECT). That is 1.70x the L4 cell spec, so
+every frozen-row decode tok/s and $/1k is UNTESTABLE (section-0 gate, 0.9-1.1x). Addendum 3 is
+evaluated at this measured value.
+
+**Order caveat.** Rows 2-4 ran in a container that had already run earlier rows. Modal can't drop
+the page cache, so those rows may read warm. r5 predates the warm-cache warning that PR #15 added,
+so its scorecards don't carry the flag. b1-h16 decoding faster than b1-h64 (0.654 vs 0.522 tok/s)
+is consistent with this.
+
+**Decision on b=1 correctness off T4 (made 2026-11-10, after the data; not a pre-registration).**
+The L4 b=1 output does not match the sealed T4 answer, and nothing yet shows whether that comes
+from the GPU or from one-GPU mode: the 1xT4 check couldn't load, and a 2xT4 run can't separate the
+two causes. Nivin chose to treat the **L4 as its own reference**. On this cell, the b=1
+correctness gate is therefore:
+(i) every structural gate passes (finite, 43 layers, router, integrity); and
+(ii) the two host budgets on the same GPU produce bit-identical token ids, routed-expert journals
+and route-weight hashes.
+Both hold for r5. This check is weaker than the exact-token gate. It shows the L4 is deterministic
+and that host budget doesn't change routing. It does **not** show that one-GPU mode is bug-free,
+and every claim that rests on it is limited to that.
+
+**What differs from the T4 seal (measured).** The runner gate reads `REJECT_NUMERICAL`:
+`exact_16_token_ids` and `exact_decoded_text` are False, and every other non-hardware gate is True.
+The outputs differ from token 0 (T4 666, L4 95140). The first route divergence is at prefill step
+0, layer 6, with all 688 records compared; layers 0-5 are identical. At layer 6, row 0's 6th
+expert is 190 on the L4 and 216 on the T4. Row 3 selects the same six experts in a different rank
+order. The selection margin is **not** verified: the captured `router_top8_values/ids` do not hold
+every selected expert, so "near-tie" stays a hypothesis.
+*Hypothesis:* the L4's float rounding flips a close selection margin.
+
+**Grades.** "Add.3" is the Addendum-3 row at the measured B_SSD. The b=1 Add.3 rows use
+`theory.predecl_modal.predict("L4", "dsv4_flash", 1, host, 3.9552 GiB/s)`, and their $/1k is
+`1000 x 0.00053992 $/s / TPS`.
+
+| row | metric | measured | Add.3 nominal [range], kill | Add.3 grade | frozen grade | evidence |
+|---|---|---|---|---|---|---|
+| b=1 h64 | decode tok/s (15 decode tokens) | 0.522 | 1.820 [1.422, 3.209], kill <0.995 | **KILLED** | UNTESTABLE (B_SSD gate) | runs/p6m-l4-r5-b1-h64 |
+| b=1 h64 | $/1k | 1.034 | 0.109 [0.037, 0.129], kill >0.215 | **KILLED** | UNTESTABLE | same |
+| b=1 h16 | decode tok/s (15 decode tokens) | 0.654 | 1.581 [1.228, 2.700], kill <0.860 | **KILLED** | UNTESTABLE | runs/p6m-l4-r5-b1-h16 |
+| b=1 h16 | $/1k | 0.826 | 0.208 [0.107, 0.261], kill >0.435 | **KILLED** | UNTESTABLE | same |
+| b=8 h64 | decode tok/s, aggregate (last 32 steps) | 0.838 | 9.006 [7.586, 24.890], kill <5.310 | **KILLED** | UNTESTABLE | runs/p6m-l4-r5-b8-h64 |
+| b=8 h64 | $/1k | 0.644 | 0.060 [0.022, 0.071], kill >0.119 | **KILLED** | UNTESTABLE | same |
+| b=8 h64 | host hit | 0.835 (41,307/49,463) | 0.54 [0.47, 1.0] | PASS | PASS | same |
+| b=8 h64 | cold rec/tok | 31.86 | 0 [0, 295.5] | PASS | PASS | same |
+| b=8 h16 | host hit | **0.000 (0/49,463)** | 0.51 [0.44, 0.753], kill <0.45 (P2) | **KILLED** | **KILLED** | runs/p6m-l4-r5-b8-h16 |
+| b=8 h16 | decode tok/s, aggregate (last 32 steps) | 0.591 | 4.074 [3.214, 7.402], kill <2.250 | **KILLED** | UNTESTABLE | same |
+| b=8 h16 | $/1k | 0.914 | 0.133 [0.073, 0.168], kill >0.281 | **KILLED** | UNTESTABLE | same |
+| b=8 h16 | cold rec/tok | 193.2 | 60.3 [60.3, 370.0] | PASS | PASS | same |
+
+The b=8 steady-state gate is OPEN on both rows, so their TPS and $/1k grades stand. The b=1 host
+hit and cold rec/tok are **not graded here**. The committed b=1 scorecards hold no metrics,
+because `score.py` stops at the runner gate. They need a rescore from `result.json` under the gate
+above. *Open item:* add an explicit "own-reference" path to `score.py` and rescore both b=1 rows.
+P1 (decode tok/s at b=1, FALSIFICATION kill 0.9-2.1) reads below its kill line on both host
+budgets. With the 1.70x B_SSD it stays UNTESTABLE on the frozen row and KILLED on Add.3.
+
+**What the kills say.**
+- **b=8 at 16 GiB, host hit 0 (measured).** The host tier holds 1,285 experts (17,179,869,184 B /
+  13,369,344 B; `host_pack.entries` = 1,285). Decode steps request 915-1,644 distinct (layer,
+  expert) pairs, mean 1,521, and 62 of 64 decode steps exceed 1,285. Prefill requests 6,147. Over
+  the whole row `host_pack` logged 617 hits and 102,857 misses.
+  *Theory correction:* the host-hit term assumes the per-step working set fits in the host tier.
+  At b=8 on 16 GiB it doesn't, and LRU evicts each expert before its next use. The term needs a
+  capacity cliff at per-step set > capacity. That fix goes on `research/phase7-theory`.
+- **b=8 at 64 GiB, 0.838 tok/s (measured).** cuda0 stage profile over the 640 s row:
+  `mmap_to_pinned` CPU 262 s, `everything_else` 367 s, store read workers 187 s, GPU `h2d`
+  **5.2 s**, GPU compute about 1.0 s, layer wall 587 s. These buckets overlap, so they sum past
+  wall. The engine reads 1,522 MiB/s per read against fio's 3.96 GiB/s on the same disk. Decode
+  step time rose from 4.4 s to 11.2 s at a constant per-step request count. The predicted limiter
+  was `h2d`, but the profile doesn't show it. *Hypothesis:* the limit is host-side
+  (`mmap_to_pinned` / copy path), not the SSD and not PCIe. Unverified. P16/P17 were read by hand,
+  not scored.
+- **b=1, 0.52-0.65 tok/s (measured, on the own-reference gate).** Below Add.3's kill line at both
+  host budgets. The rising b=8 step time and the host-side profile point at the same path.
+  *Hypothesis:* that path is the common cause.
+
+**Harness changes these runs led to** (merged): PR #15 added gate names in scorecards, the
+warm-cache warning, both router score sets in the dump, and a verdict fix. PR #16 added the
+VRAM-fit check in preflight and bench, and lowered the L40S default cache.
+
+#### Addendum 4, follow-up: b=1 host hit and cold reads rescored (2026-11-10)
+
+Addendum 4 left these two metrics ungraded because `score.py` stopped at the runner gate. They are
+now scored with `score.py --own-reference` (new, opt-in, tested): it requires the two b=1 runs to
+share GPU, commit, budget and model, to differ in host GiB, and to have identical token ids and
+identical routed-expert and route-weight journals (run_id and chain hashes ignored). Then it waives
+only `exact_16_token_ids` and `exact_decoded_text`. Both runs pass that check, re-fetched with
+`modal volume get` on 2026-11-10 and byte-identical to the earlier copies. The card carries the
+OWN-REFERENCE warning. This is the weaker gate described in Addendum 4, so these grades inherit its
+limit: they say nothing about whether one-GPU mode is bug-free. No Modal container was started.
+
+| row | metric | measured | Add.3 nominal [range] | Add.3 grade | frozen grade | evidence |
+|---|---|---|---|---|---|---|
+| b=1 h64 | host hit (2,930/5,100 prompt-scoped) | 0.5745 | 0.54 [0.47, 1.0], kill <0.4 | PASS | PASS | runs/p6m-l4-r5-b1-h64 |
+| b=1 h64 | cold rec/tok | 135.6 | 147.75 [0, 295.5], kill >369.4 | PASS | PASS | same |
+| b=1 h16 | host hit (2,845/5,100 prompt-scoped) | 0.5578 | 0.51 [0.44, 0.753], kill <0.45 or >0.57 (P2) | PASS | PASS | runs/p6m-l4-r5-b1-h16 |
+| b=1 h16 | cold rec/tok | 140.9 | 185.0 [81.9, 370.0] | PASS | PASS | same |
+
+The h16 host hit sits 0.012 under the P2 upper kill edge (0.57). The b=1 window is one prefill plus
+15 decode steps from a cold start, and cold rec/tok is `storage_requests_per_generated_token`, so
+it includes the prefill reads. The decode tok/s and $/1k grades in Addendum 4 are unchanged. Updated
+scorecards and SCOREBOARD.jsonl lines 5-6 supersede lines 1-2 for these two runs.
