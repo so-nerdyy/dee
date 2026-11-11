@@ -54,3 +54,10 @@ These come from the sealed popularity.
 because it is above both cliff estimates. A row at 16 GiB should read about 0 again. A row at
 18 GiB sits between the two estimates, so it would show which one is right. Any of these is a
 billed Modal run and needs Nivin's yes first.
+
+**Update 2026-11-11.** The 16.4 vs 19 GiB gap is closed in `theory/batch_cliff_replay.py`. The r5
+cohort is the Phase-4 eight-prompt workload, whose full route journals are in the repo. Rebuilt
+from them, the model's b=8 cliff moves to 18.6 GiB, and an exact LRU replay of the rebuilt stream
+reproduces both r5 b=8 rows (0.000 at 16 GiB, 0.823 vs 0.835 at 64 GiB) and puts the first hit at
+19.1 GiB. The replay also shows a plateau at 0.46 from 21 to 28 GiB that the independent-draw model
+puts at 0.30. Registered as Addendum 5 for run `p6m-l4-r6` (b=8 at 18, 24 and 32 GiB).

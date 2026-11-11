@@ -71,6 +71,31 @@ CFGS='[{"tag":"b1-h64","host_gib":64,"n_tokens":16},
 modal run --detach modal/phase6/modal_p6.py::bench_L4 --run-id p6m-l4-r5 --configs "$CFGS"
 ```
 
+## 1c. Next run: `p6m-l4-r6`, the b=8 host-hit cliff (Addendum 5, registered 2026-11-11)
+
+One 1xL4 container, three b=8 rows at host sizes with no frozen row. It tests where the b=8 cliff
+sits and what the host tier does above it (`theory/PREDICTIONS_PHASE6.md` Addendum 5). Pinned to `8cd96ab`, the `research/phase6-modal`
+head after PR #18; same cohort and VRAM budget as r5. Nivin's yes comes before launch, preflight
+included, for one launch with no retries.
+
+```
+CFGS='[{"tag":"b8-h32","host_gib":32,"n_tokens":65,"ignore_eos":true,"cohort":"0-7","prompts_file":"dee.cpp/aws/phase6/prompts_phase4_8.json"},
+       {"tag":"b8-h24","host_gib":24,"n_tokens":65,"ignore_eos":true,"cohort":"0-7","prompts_file":"dee.cpp/aws/phase6/prompts_phase4_8.json"},
+       {"tag":"b8-h18","host_gib":18,"n_tokens":65,"ignore_eos":true,"cohort":"0-7","prompts_file":"dee.cpp/aws/phase6/prompts_phase4_8.json"}]'
+PIN=8cd96abeadb4b161f20988ea1fadc34d51658a9b
+modal run modal/phase6/modal_p6.py::preflight --gpu L4 --configs "$CFGS" --pinned $PIN      # ~$0.10 CPU, BILLS
+modal run --detach modal/phase6/modal_p6.py::bench_L4 --run-id p6m-l4-r6 --configs "$CFGS" --pinned $PIN   # BILLS
+```
+
+- **Cost estimate (from r5's timings, an estimate, not a quote).** r5 billed $1.58 for about 49 min:
+  b8-h16 about 22 min (all misses), b8-h64 about 10 min, the two b=1 rows about 9 min, and about
+  8 min of build, staging and probe. Row time scales roughly with host misses, so h18 ≈ 22 min,
+  h24 ≈ 16 min, h32 ≈ 14 min, plus about 8 min overhead: about 60 min at $1.944/h ≈ **$1.95**, plus
+  preflight about $0.10. The 150-min container guard caps the worst case at about $4.90.
+- **Score (free):** `modal volume get dee-p6-evidence runs/p6m-l4-r6-* ...`, then
+  `python aws/phase6/score.py runs/p6m-l4-r6-b8-h* --write --ledger SCOREBOARD.jsonl`. The
+  `addendum5` block holds the grades; the frozen and Addendum-3 verdicts read `NO FROZEN ROW`.
+
 ## 2. Run order (original plan, superseded by 1b for cost)
 
 Cheapest first, so a harness bug costs a dollar, not ten. The first run is the frozen headline cell.

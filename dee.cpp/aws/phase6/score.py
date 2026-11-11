@@ -580,7 +580,9 @@ def score_modal_run(ev: Evidence, fm: FrozenMatrix, addendum=None) -> dict:
         fails.append(f"Modal GPU {s.get('gpu')!r} is not a frozen cell")
     if model is None:
         fails.append(f"model {s.get('model')!r} has no frozen rows")
-    if host is None or float(host) not in FROZEN_HOSTS:
+    add5_row = addendum5_row(s, ev.result)
+    frozen_host = host is not None and float(host) in FROZEN_HOSTS
+    if not frozen_host and add5_row is None:
         fails.append(f"host {host} GiB is not a frozen budget {list(FROZEN_HOSTS)}")
     fails += _common_checks(ev)
     if ev.own_reference and (ev.result or {}).get("classification") == "REJECT_NUMERICAL":
@@ -608,6 +610,14 @@ def score_modal_run(ev: Evidence, fm: FrozenMatrix, addendum=None) -> dict:
                      "verdict": UNTESTABLE, "metrics": {}})
         return card
     b = batch_of(ev.result)
+    if not frozen_host:
+        # Addendum 5 only: no frozen or Addendum-3 row exists at this host size.
+        m = measure(ev, 0.0)
+        card.update({"b": b, "window": m.window, "metrics": {}, "verdict": "NO FROZEN ROW",
+                     "addendum5": score_addendum5(ev, m, add5_row)})
+        warnings.append(f"host {host} GiB has no frozen or Addendum-3 row; graded on Addendum 5 "
+                        "only (host hit and cold rec/tok; decode tok/s and $/1k not registered)")
+        return card
     hostk = int(float(host))
     rate_s = fm.rate_s[(cell, hostk, b)]
     m = measure(ev, rate_s * 3600.0)
@@ -685,6 +695,67 @@ def score_modal_run(ev: Evidence, fm: FrozenMatrix, addendum=None) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Addendum 5 (registered 2026-11-11): b=8 host-hit cliff rows from the trace replay
+# ---------------------------------------------------------------------------
+
+ADD5_METRICS = ("host_hit_rate", "cold_records_per_tok")
+
+
+def load_addendum5(path: Path | None = None) -> dict:
+    """theory/data/predecl_add5.json (stdlib only; written by theory.batch_cliff_replay)."""
+    p = path or Path(__file__).resolve().parents[2] / "theory" / "data" / "predecl_add5.json"
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+
+
+def addendum5_row(summary: dict, result: dict | None, reg: dict | None = None) -> dict | None:
+    """The Addendum-5 row for this run's (gpu, model, b, host), or None."""
+    reg = load_addendum5() if reg is None else reg
+    host = summary.get("host_gib_requested")
+    if not reg or host is None or result is None:
+        return None
+    model = MODEL_KEYS.get(str(summary.get("model", "")))
+    b = batch_of(result)
+    for r in reg.get("rows", []):
+        if (r["gpu"] == summary.get("gpu") and r["model"] == model and r["b"] == b
+                and float(r["host_gib"]) == float(host)):
+            return {**r, "_reg": {k: v for k, v in reg.items() if k != "rows"}}
+    return None
+
+
+def score_addendum5(ev: Evidence, m: Measured, row: dict) -> dict:
+    """Grade host hit and cold rec/tok against PREDICTIONS_PHASE6.md Addendum 5."""
+    req = row["_reg"]["requires"]
+    s = ev.summary
+    fails = []
+    if int(s.get("budget_mib") or 0) != int(req["budget_mib"]):
+        fails.append(f"VRAM budget {s.get('budget_mib')} MiB != registered {req['budget_mib']} MiB")
+    steps = int(m.window.get("decode_steps") or 0)
+    if steps < int(req["min_decode_steps"]):
+        fails.append(f"{steps} decode steps < registered {req['min_decode_steps']}")
+    if m.window.get("source_reads") is None:
+        fails.append("no window counters (generated_checkpoint-c*.jsonl missing)")
+    out: dict = {"registry": f"theory/data/predecl_add5.json ({row['_reg']['addendum']}, "
+                             f"registered {row['_reg']['registered']})",
+                 "prerequisite_failures": fails}
+    if fails:
+        out.update({"verdict": UNTESTABLE, "metrics": {}})
+        return out
+    metrics = {}
+    for k in ADD5_METRICS:
+        r = row[k]
+        x = m.values[k]
+        metrics[k] = {"measured": x, "basis": m.notes.get(k), "nominal": r["nominal"],
+                      "lo": r["lo"], "hi": r["hi"], "kill_lo": r["kill_lo"],
+                      "kill_hi": r["kill_hi"],
+                      "grade": grade(x, r["nominal"], r["lo"], r["hi"], (r["kill_lo"], r["kill_hi"]))}
+    out.update({"metrics": metrics, "verdict": overall([v["grade"] for v in metrics.values()])})
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
 
@@ -754,6 +825,13 @@ def render_md(card: dict) -> str:
         if a3.get("predicted_limiter"):
             lines.append(f"Predicted limiter: `{a3['predicted_limiter']}`  ")
         lines.append("")
+    a5 = card.get("addendum5")
+    if a5:
+        lines += ["", f"## Addendum 5 (b=8 host-hit cliff replay): **{a5['verdict']}**", ""]
+        lines += [f"- {f}" for f in a5.get("prerequisite_failures") or []]
+        if a5.get("metrics"):
+            lines += _metric_table(a5["metrics"])
+        lines.append("")
     if card.get("predicted_limiter"):
         lines.append(f"Predicted limiter: `{card['predicted_limiter']}` (check against the stage profile)  ")
     lines += [f"ID tightening applied: {card['registered_id_tightening']}  ",
@@ -807,6 +885,7 @@ def main(argv: list[str] | None = None) -> int:
                 fh.write(json.dumps({k: card.get(k) for k in (
                     "run_id", "cell", "b", "host_gib", "measured_b_ssd_gib_s", "verdict",
                     "commit")} | {"addendum3_verdict": (card.get("addendum3") or {}).get("verdict"),
+                                  "addendum5_verdict": (card.get("addendum5") or {}).get("verdict"),
                                   "grades": {k: v["grade"] for k, v in card["metrics"].items()},
                                   "measured": {k: v["measured"] for k, v in card["metrics"].items()}},
                     default=float) + "\n")

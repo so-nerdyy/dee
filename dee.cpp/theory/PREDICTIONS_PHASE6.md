@@ -490,3 +490,89 @@ The h16 host hit sits 0.012 under the P2 upper kill edge (0.57). The b=1 window 
 15 decode steps from a cold start, and cold rec/tok is `storage_requests_per_generated_token`, so
 it includes the prefill reads. The decode tok/s and $/1k grades in Addendum 4 are unchanged. Updated
 scorecards and SCOREBOARD.jsonl lines 5-6 supersede lines 1-2 for these two runs.
+
+### Addendum 5 — b=8 host-hit cliff on 1xL4 (registered 2026-11-11, before run `p6m-l4-r6`)
+
+**Why.** Addendum 4 killed the b8-h16 host hit (0 of 49,463 against 0.51). PR #18 added a
+step-granular LRU cap (`theory/batch_cliff.py`, `CORRECTION_HOST_HIT_BATCH.md`) that explains the
+kill but places the b=8 cliff at 16.4 GiB from the sealed one-prompt popularity, while r5's
+per-step sets point to about 19 GiB. This addendum registers where the cliff sits, and what the
+host tier does above it, before any run at a host size between 16 and 64 GiB. No frozen range and
+no earlier addendum is edited.
+
+**Instrument.** [`theory/batch_cliff_replay.py`](theory/batch_cliff_replay.py). The r5 b=8 cohort
+(`aws/phase6/prompts_phase4_8.json`) is the same eight prompts as the Phase-4 2xT4 campaign (same
+sha256 for q0..q7; q7 repeats q0), whose 128-token route journals are committed under
+`benchmark_reports/deepseek-v4-flash-0731-t4/gpu2-phase4-cache-hierarchy/evidence/a1_asis/`. The
+module rebuilds the b=8 decode stream from them (per step, per layer in order, de-duplicated) and
+replays the host tier's LRU over it exactly. Outputs: `data/batch_cliff_replay_summary.json`,
+`data/batch_cliff_replay_grid.csv`, and the registry `data/predecl_add5.json`. Deterministic, no
+RNG, no network: `python -m theory.batch_cliff_replay`.
+
+**Check against r5 (in-sample: this is how the instrument earns its use, not a prediction).**
+
+| quantity | rebuilt stream / replay | r5 measured (Addendum 4) |
+|---|---|---|
+| decode step set, mean (min-max) | 1,521.8 (927-1,654) | 1,521 (915-1,644) |
+| prefill set | 5,831 | 6,147 |
+| window lookups (steps 33-64) | 50,711 | 49,463 |
+| host hit, b8-h16 (1,285 records) | 0.000 | 0.000 |
+| host hit, b8-h64 (5,140 records) | 0.823 | 0.835 |
+
+**Where the cliff sits (model vs replay).** The PR #18 model's cliff is one step's expected set,
+U_1(b). With the sealed popularity (2,364 records seen) it is 16.4 GiB. Rebuilt from all seven
+distinct cohort prompts (10,004 records seen, b = 7 distinct streams) it is **18.6 GiB**. The exact
+replay first reads a hit at **19.1 GiB** and reaches its plateau by 20.5 GiB (the largest window
+step set is 1,654 records = 20.6 GiB). So the 16.4 vs 19 GiB gap came from the sealed popularity,
+as PR #18 guessed. *Hypothesis:* rebuilding popularity from the real cohort closes it.
+
+Above the cliff the replay shows a **plateau at 0.460 from 21 to 28 GiB**: only reuse from the
+previous step survives (K = 1), and the next step up (K = 2) starts near 30 GiB. The PR #18 model
+with the rebuilt popularity has the same staircase but puts the plateau at 0.297, because it draws
+the eight rows independently and real consecutive steps share more experts than that.
+
+**Registered rows** (b=8, 1xL4, DSv4-Flash, the r5 cohort, 65 tokens, `--ignore-eos`, VRAM budget
+3,584 MiB, scored on `score.py`'s last-32-step window). Nominal is the replay at the row's capacity.
+The range is the replay over capacity x [0.97, 1.03] padded by 0.02. The kill band is the replay over
+x [0.95, 1.05] padded by 0.04. The ±3-5% stands in for L4 batched routing vs the T4 b=1 journals
+(window lookups differ by 2.5%).
+
+| host | records | host hit nominal [range], kill outside | cold rec/tok nominal [range], kill outside |
+|---|---|---|---|
+| 18 GiB | 1,445 | **0.000** [0.000, 0.020], >0.041 | 198.1 [178.3, 217.9], [158.4, 237.7] |
+| 24 GiB | 1,927 | **0.460** [0.440, 0.480], <0.420 or >0.500 | 106.9 [96.2, 117.6], [85.5, 128.3] |
+| 32 GiB | 2,570 | **0.578** [0.532, 0.602], <0.495 or >0.622 | 83.6 [74.6, 97.6], [66.3, 110.6] |
+
+**Competing values at the same rows** (stated so the run can separate them):
+
+| host | replay (registered) | Add.3 capacity-only curve | PR #18 cap, sealed popularity | PR #18 cap, rebuilt popularity |
+|---|---|---|---|---|
+| 18 GiB | 0.000 | 0.513 | 0.513 | 0.000 |
+| 24 GiB | 0.460 | 0.520 | 0.520 | 0.297 |
+| 32 GiB | 0.578 | 0.530 | 0.530 | 0.461 |
+
+**What each outcome says.**
+- 18 GiB reads about 0: the cliff is above 18 GiB. That kills the capacity-only curve and the
+  sealed-popularity cliff position. 18 GiB reads 0.45 or more: the cliff is below 18 GiB, the
+  replay is killed, and L4 batched routing differs from the T4 journals more than assumed.
+- 24 GiB inside [0.42, 0.50]: the one-step-reuse plateau holds. Above 0.50: the capacity-only
+  curve holds above the cliff, and the step-reuse picture is wrong. Below 0.38: consecutive steps
+  share no more experts than independent draws (the rebuilt-popularity model).
+- 32 GiB inside [0.495, 0.622]: second-step reuse arrives where the replay says. Near 0.46: the
+  plateau runs longer than the replay says. This row does not separate the replay from the
+  capacity-only curve (0.53 is inside both); it separates the replay from the independent-draw model.
+
+**Not registered.** Decode tok/s and $/1k at these sizes. Addendum 4's *hypothesis* that b=8 speed
+is limited on the host side (`mmap_to_pinned` / copy path) has no model yet, so these are reported
+and not graded. Rows run in one container, so later rows may read warm from the OS page cache
+(Addendum 4 order caveat). That can move timings but not the engine's host-tier hit counts.
+
+**Known weaknesses, stated in advance.** (i) The instrument and its inputs were built after r5,
+from the same eight prompts. The two r5 rows are a reproduction, not a test. The three rows above
+have never been measured. (ii) The VRAM tier (268 records) in front of the host tier is not
+modelled. (iii) The bands assume L4 routing stays within about 5% of the T4 journals' set sizes.
+Addendum 4 already shows one near-tie flip on the b=1 prompt.
+
+**Scoring.** `score.py` grades these rows from `data/predecl_add5.json` when a Modal b=8 run's host
+size has no frozen row (new `addendum5` block in the scorecard; tests in `test_score.py`). The
+frozen and Addendum-3 verdicts read `NO FROZEN ROW` for such runs.
