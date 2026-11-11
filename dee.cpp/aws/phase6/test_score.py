@@ -497,3 +497,57 @@ def test_own_reference_pair_must_be_bit_identical(tmp_path, kw, needle):
     a, b = _pair(tmp_path, **kw)
     why = score.verify_own_reference(score.load_evidence(a), score.load_evidence(b))
     assert any(needle in w for w in why), why
+
+
+# --- Addendum 5 (2026-11-11): b=8 host-hit cliff rows at non-frozen host sizes --------
+
+def _add5_run(tmp_path, host=24.0, hits=46, misses=54, reads=855, steps=64, b8=True):
+    s = _modal_summary(host_gib_requested=host, host_gib_effective=host)
+    res = _cohort(steps=steps) if b8 else _b1_result()
+    name = "result-c0.json" if b8 else "result.json"
+    return _write(tmp_path, s, {name: res},
+                  checkpoint=_checkpoint(steps=steps + 1, reads_per_step=reads,
+                                         hits_per_step=hits, misses_per_step=misses))
+
+
+def test_addendum5_registry_rows_and_bands():
+    reg = score.load_addendum5()
+    assert reg["registered"] == "2026-11-11"
+    rows = {r["host_gib"]: r for r in reg["rows"]}
+    assert sorted(rows) == [18, 24, 32]
+    for r in rows.values():
+        h = r["host_hit_rate"]
+        assert h["kill_lo"] <= h["lo"] <= h["nominal"] <= h["hi"] <= h["kill_hi"]
+    assert rows[18]["host_hit_rate"]["nominal"] == 0.0                  # below the cliff
+    # registered capacity-only nominal 0.52 at 24 GiB lies outside the replay's kill band
+    assert rows[24]["host_hit_rate"]["kill_hi"] < 0.52
+
+
+def test_addendum5_scores_a_non_frozen_host(tmp_path, frozen):
+    card = score.score_run(_add5_run(tmp_path), frozen=frozen)
+    assert card["prerequisite_failures"] == []
+    assert card["verdict"] == "NO FROZEN ROW" and card["metrics"] == {}
+    a5 = card["addendum5"]
+    assert a5["metrics"]["host_hit_rate"]["measured"] == pytest.approx(0.46)
+    assert a5["metrics"]["host_hit_rate"]["grade"] == "PASS"
+    assert a5["metrics"]["cold_records_per_tok"]["grade"] == "PASS"
+    assert a5["verdict"] == "PASS"
+    assert "Addendum 5" in score.render_md(card)
+    assert any("graded on Addendum 5 only" in w for w in card["warnings"])
+
+
+def test_addendum5_kills_the_registered_value(tmp_path, frozen):
+    card = score.score_run(_add5_run(tmp_path, hits=52, misses=48), frozen=frozen)
+    assert card["addendum5"]["metrics"]["host_hit_rate"]["grade"] == "KILLED"
+
+
+def test_addendum5_short_run_untestable(tmp_path, frozen):
+    card = score.score_run(_add5_run(tmp_path, steps=40), frozen=frozen)
+    assert card["verdict"] == "UNTESTABLE"
+    assert (card.get("addendum5") or {}).get("verdict", "UNTESTABLE") == "UNTESTABLE"
+
+
+def test_addendum5_has_no_b1_rows(tmp_path, frozen):
+    card = score.score_run(_add5_run(tmp_path, b8=False), frozen=frozen)
+    assert card["verdict"] == "UNTESTABLE"
+    assert any("not a frozen budget" in f for f in card["prerequisite_failures"])

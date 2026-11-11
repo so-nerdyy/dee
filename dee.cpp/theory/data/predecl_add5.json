@@ -1,0 +1,87 @@
+{
+  "addendum": "PREDICTIONS_PHASE6.md Addendum 5",
+  "graded_metrics": [
+    "host_hit_rate",
+    "cold_records_per_tok"
+  ],
+  "not_registered": [
+    "decode_tps",
+    "usd_per_1k_tok"
+  ],
+  "registered": "2026-11-11",
+  "requires": {
+    "b": 8,
+    "budget_mib": 3584,
+    "cohort": "0-7",
+    "gpu": "L4",
+    "min_decode_steps": 64,
+    "prompts_file": "dee.cpp/aws/phase6/prompts_phase4_8.json",
+    "window": "last 32 decode steps (score.py)"
+  },
+  "rows": [
+    {
+      "b": 8,
+      "capacity_records": 1445,
+      "cold_records_per_tok": {
+        "hi": 217.9,
+        "kill_hi": 237.71,
+        "kill_lo": 158.38,
+        "lo": 178.28,
+        "nominal": 198.09
+      },
+      "gpu": "L4",
+      "host_gib": 18,
+      "host_hit_rate": {
+        "hi": 0.02,
+        "kill_hi": 0.0406,
+        "kill_lo": 0.0,
+        "lo": 0.0,
+        "nominal": 0.0
+      },
+      "model": "dsv4_flash"
+    },
+    {
+      "b": 8,
+      "capacity_records": 1927,
+      "cold_records_per_tok": {
+        "hi": 117.58,
+        "kill_hi": 128.27,
+        "kill_lo": 85.51,
+        "lo": 96.2,
+        "nominal": 106.89
+      },
+      "gpu": "L4",
+      "host_gib": 24,
+      "host_hit_rate": {
+        "hi": 0.4804,
+        "kill_hi": 0.5004,
+        "kill_lo": 0.4204,
+        "lo": 0.4404,
+        "nominal": 0.4604
+      },
+      "model": "dsv4_flash"
+    },
+    {
+      "b": 8,
+      "capacity_records": 2570,
+      "cold_records_per_tok": {
+        "hi": 97.56,
+        "kill_hi": 110.64,
+        "kill_lo": 66.31,
+        "lo": 74.59,
+        "nominal": 83.61
+      },
+      "gpu": "L4",
+      "host_gib": 32,
+      "host_hit_rate": {
+        "hi": 0.6016,
+        "kill_hi": 0.6216,
+        "kill_lo": 0.4945,
+        "lo": 0.5323,
+        "nominal": 0.5779
+      },
+      "model": "dsv4_flash"
+    }
+  ],
+  "source": "theory.batch_cliff_replay (exact LRU replay of the rebuilt r5 b=8 stream)"
+}
