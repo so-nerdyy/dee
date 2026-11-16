@@ -20,6 +20,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+
+#include "dee/parallel_copy.h"
 #include <unordered_map>
 #include <vector>
 
@@ -204,6 +207,8 @@ public:
     void reset();
 
     size_t in_flight() const { return inflight_.size(); }
+    // Transfers retire/sync still walk (bounded by live work, not history).
+    size_t unsettled_count() const { return unsettled_.size(); }
 
     // Test/telemetry accessor: staging slots still owned by transfers whose
     // completion has NOT been observed. Under CUDA these are busy pinned ring
@@ -285,6 +290,19 @@ private:
 
     // mock backend state
     std::vector<Transfer>        inflight_;   // ordered submission queue
+    // Indices into inflight_ (ascending) of transfers that may still need
+    // retire/drain/sync work.  inflight_ is append-only between reset() calls
+    // (indices are handed out), so without this every retire pass walked the
+    // whole history: ~1,500 transfers/step at b=8 made the scan O(steps^2)
+    // (measured: 9 ms -> 1.3 s of bookkeeping per step by step 70).
+    std::vector<long> unsettled_;
+    // Pageable -> pinned gather lanes (CUDA path; created in cuda_init).
+    std::unique_ptr<ParallelCopier> copier_;
+    static bool settled(const Transfer& t) {
+        return t.abandoned ||
+               (t.done && t.event == nullptr && !t.active_counted &&
+                t.staging_slot == static_cast<size_t>(-1));
+    }
     // ExpertKey -> idx in inflight_.  Phase-4 (audit A10): the packed
     // (layer<<32)|expert key needs 64 bits — `long` is 32-bit under Windows
     // LLP64 and silently collided layers.  Use a fixed-width key throughout.
@@ -330,6 +348,7 @@ private:
     bool   cuda_submit(long idx);  // guarded real submit + event record
     bool   cuda_wait(long idx, HostWaitReason reason);  // guarded real event sync
     void   release_staging(Transfer& transfer);
+    void   retire_one(Transfer& transfer);
     bool   release_transfer(Transfer& transfer);
     // Fail-stop teardown for a transfer whose copy can never be trusted:
     // destroy the completion event, free the staging slot, drop the dst cache
