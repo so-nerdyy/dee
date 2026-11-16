@@ -1,4 +1,5 @@
 #include "dee/async_prefetcher.h"
+#include "dee/parallel_copy.h"
 #include "dee/trace_alloc.h"  // Milestone 3 v5 teardown-forensics sentinel
 
 #include <algorithm>
@@ -110,13 +111,24 @@ bool AsyncPrefetcher::release_transfer(Transfer& transfer) {
 // bounds OS event resources over long decodes (inflight_ itself stays
 // append-only; only the slot+event resources are reclaimed here).
 void AsyncPrefetcher::retire_completed() {
-    for (auto& transfer : inflight_) {
+    size_t keep = 0;
+    for (size_t u = 0; u < unsettled_.size(); ++u) {
+        const long index = unsettled_[u];
+        Transfer& transfer = inflight_[static_cast<size_t>(index)];
+        retire_one(transfer);
+        if (!settled(transfer)) unsettled_[keep++] = index;
+    }
+    unsettled_.resize(keep);
+}
+
+void AsyncPrefetcher::retire_one(Transfer& transfer) {
+    {
 #ifdef DEE_CUDA
         if (use_cuda_ && transfer.event) {
             const cudaError_t rc =
                 cudaEventQuery(static_cast<cudaEvent_t>(transfer.event));
             if (rc == cudaErrorNotReady) {
-                continue;  // H2D still queued: pinned source slot stays busy.
+                return;  // H2D still queued: pinned source slot stays busy.
             }
             if (rc != cudaSuccess) {
                 // Completion is unprovable (broken stream/context): abandon
@@ -128,7 +140,7 @@ void AsyncPrefetcher::retire_completed() {
                     static_cast<int>(rc), transfer.id);
                 ++stats_.stream_errors;
                 abandon_transfer(transfer);
-                continue;
+                return;
             }
             // Observed complete: the source slot may finally be recycled and
             // the event is no longer needed.  The dst cache pin is NOT touched
@@ -138,7 +150,7 @@ void AsyncPrefetcher::retire_completed() {
                 DEE_TA_EVENT_DESTROY(static_cast<cudaEvent_t>(transfer.event), "transfer"),
                 "cudaEventDestroy(retired prefetch)");
             transfer.event = nullptr;
-            continue;
+            return;
         }
 #endif
         // Mock path (and any event-less transfer): drain_until() runs the copy
@@ -530,6 +542,7 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
         transfer.generation = cache_.generation_of(layer, expert);
         inflight_.push_back(transfer);
         const long resident_index = static_cast<long>(inflight_.size() - 1);
+        unsettled_.push_back(resident_index);
         key_to_idx_[request_key] = static_cast<int>(resident_index);
         record_request(RequestKind::ResidentHit, token, logical_layer, layer,
                        expert, priority, -1, -1, cache_bytes_before,
@@ -605,6 +618,7 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
     transfer.generation = ensure_info.generation;
     inflight_.push_back(transfer);
     const long index = static_cast<long>(inflight_.size() - 1);
+    unsettled_.push_back(index);
     key_to_idx_[key_id(layer, expert)] = static_cast<int>(index);
 
     bool submit_ok = true;
@@ -637,8 +651,9 @@ long AsyncPrefetcher::prefetch_impl(int layer, int expert, const void* src,
 }
 
 void AsyncPrefetcher::drain_until(int index) {
-    for (int i = 0; i <= index && i < static_cast<int>(inflight_.size()); ++i) {
-        Transfer& t = inflight_[i];
+    for (const long i : unsettled_) {
+        if (i > index || i >= static_cast<long>(inflight_.size())) break;
+        Transfer& t = inflight_[static_cast<size_t>(i)];
         if (!t.done && !t.abandoned) {
             std::memcpy(t.dst, t.src, t.nbytes);
             t.done = true;
@@ -795,7 +810,8 @@ void AsyncPrefetcher::synchronize_all() {
             // then the sweep marks the transfers done and drops the consumer
             // cache pins (retire deliberately leaves those to wait()).
             retire_completed();
-            for (auto& transfer : inflight_) {
+            for (const long u : unsettled_) {
+                Transfer& transfer = inflight_[static_cast<size_t>(u)];
                 if (!transfer.done && !transfer.abandoned) {
                     transfer.done = true;
                     release_transfer(transfer);
@@ -815,7 +831,8 @@ void AsyncPrefetcher::synchronize_all() {
             // stream fails subsequent CUDA work closed anyway.
             ++stats_.stream_errors;
             size_t abandoned = 0;
-            for (auto& transfer : inflight_) {
+            for (const long u : unsettled_) {
+                Transfer& transfer = inflight_[static_cast<size_t>(u)];
                 if (transfer.abandoned) continue;
                 if (transfer.done && !transfer.event) continue;  // proven earlier
                 abandon_transfer(transfer);
@@ -845,6 +862,7 @@ void AsyncPrefetcher::reset() {
     }
 #endif
     inflight_.clear();
+    unsettled_.clear();
     key_to_idx_.clear();
     active_transfers_ = 0;
 }
@@ -855,6 +873,7 @@ bool AsyncPrefetcher::cuda_init() {
     if (!DEE_CUDA_CHECK_NAMED(DEE_TA_STREAM_CREATE_FLAGS(&stream, cudaStreamNonBlocking, "stream"),
                               "cudaStreamCreateWithFlags(prefetch)")) return false;
     stream_ = static_cast<void*>(stream);
+    copier_ = std::make_unique<ParallelCopier>(ParallelCopier::lanes_from_env());
     return true;
 #else
     std::fprintf(stderr, "AsyncPrefetcher: --cuda requested but DEE_CUDA=OFF\n");
@@ -896,13 +915,18 @@ bool AsyncPrefetcher::cuda_submit(long index) {
         // event live, slot still owned) are included — waiting on their event
         // is a valid way to prove completion.
         retire_completed();
-        for (long pending_index = 0; pending_index < static_cast<long>(inflight_.size()); ++pending_index) {
-            Transfer& pending = inflight_[pending_index];
+        // Settled transfers hold no slot, so the oldest slot holder is the
+        // first match in unsettled_.  Pick it before cuda_wait(), which runs
+        // retire_completed() and compacts unsettled_.
+        long oldest = -1;
+        for (const long pending_index : unsettled_) {
+            const Transfer& pending = inflight_[static_cast<size_t>(pending_index)];
             if (!pending.abandoned && pending.staging_slot < staging_slots_.size()) {
-                if (!cuda_wait(pending_index, HostWaitReason::StagingSlot)) return false;
+                oldest = pending_index;
                 break;
             }
         }
+        if (oldest >= 0 && !cuda_wait(oldest, HostWaitReason::StagingSlot)) return false;
         for (size_t attempt = 0; attempt < staging_slots_.size(); ++attempt) {
             const size_t slot = (next_staging_slot_ + attempt) % staging_slots_.size();
             if (!staging_slots_[slot].busy &&
@@ -938,14 +962,18 @@ bool AsyncPrefetcher::cuda_submit(long index) {
             // Gather the six non-contiguous mmap regions into the pinned slot
             // at their destination offsets in one pass (no heap intermediate).
             auto* dst = static_cast<uint8_t*>(slot.ptr);
+            CopyPiece pieces[6];
             for (int p = 0; p < 3; ++p) {
-                std::memcpy(dst + transfer.fp4_packed_offsets[p],
-                            transfer.fp4_region_src[p], transfer.fp4_region_nbytes[p]);
-                std::memcpy(dst + transfer.fp4_scale_offsets[p],
-                            transfer.fp4_region_src[3 + p], transfer.fp4_region_nbytes[3 + p]);
+                pieces[2 * p] = {dst + transfer.fp4_packed_offsets[p],
+                                 transfer.fp4_region_src[p], transfer.fp4_region_nbytes[p]};
+                pieces[2 * p + 1] = {dst + transfer.fp4_scale_offsets[p],
+                                     transfer.fp4_region_src[3 + p],
+                                     transfer.fp4_region_nbytes[3 + p]};
             }
+            copier_->run(pieces, 6);
         } else {
-            std::memcpy(slot.ptr, transfer.src, transfer.source_nbytes);
+            const CopyPiece piece{slot.ptr, transfer.src, transfer.source_nbytes};
+            copier_->run(&piece, 1);
         }
         h2d_source = slot.ptr;
         if (profiler_ && profiler_->enabled()) {

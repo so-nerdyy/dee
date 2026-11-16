@@ -4,12 +4,25 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <sstream>
 #include <unordered_set>
 
 namespace dee {
+
+namespace {
+// One stderr line per eviction is ~1,500 lines per b=8 decode step (a syscall
+// each under gVisor).  Off unless DEE_CACHE_TRACE=1; the abort line stays on.
+bool cache_trace_enabled() {
+    static const bool on = [] {
+        const char* v = std::getenv("DEE_CACHE_TRACE");
+        return v && v[0] == '1';
+    }();
+    return on;
+}
+}  // namespace
 
 // ---- Arena ----------------------------------------------------------------
 Arena::~Arena() {
@@ -144,7 +157,7 @@ void VramCacheManager::evict_until_free(size_t need) {
                 "launch or premature re-entry into the same forward path)";
             break; // nothing resident to evict
         }
-        std::fprintf(stderr,
+        if (cache_trace_enabled()) std::fprintf(stderr,
             "[dee-cache %s:%d] evict_until_free(need=%zuB) iter=%d EVICT "
             "layer=%d expert=%d size=%zuB score=%lld priority=%d "
             "last_used=%lld arena_free_before=%zuB\n",
