@@ -1565,6 +1565,10 @@ def build_native_engine(shard_paths: list[str], *,
         print("[build_native_engine] host_cache_mode=bypass: forcing "
               f"prefetch_hint_lanes {prefetch_hint_lanes} -> 0", flush=True)
         prefetch_hint_lanes = 0
+    if int(prefetch_hint_lanes) != 0 and int(source_read_lanes) <= 1:
+        raise ValueError(
+            "prefetch hints need source_read_lanes > 1 (hints are issued "
+            "from the multi-lane prepare path)")
     for _field, _value, _default in (
             ("host_eviction_policy", host_eviction_policy, "lru"),
             ("prefetch_hint_lanes", int(prefetch_hint_lanes), 0),

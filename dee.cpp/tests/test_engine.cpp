@@ -136,6 +136,7 @@ static bool run_policy(const char* eviction, const char* host_eviction,
     cfg.eviction_policy = eviction;
     cfg.host_eviction_policy = host_eviction;
     cfg.prefetch_hint_lanes = hint_lanes;
+    cfg.source_read_lanes = hint_lanes ? 2 : 1;   // hints need the multi-lane path
     cfg.prefetch_hint_source = hint_source;
     dee::Engine engine;
     if (!engine.init(cfg)) return false;
@@ -183,6 +184,13 @@ static void test_placement_policies_are_exact() {
     bad.host_eviction_policy = "belady";
     dee::Engine refused;
     CHECK(!refused.init(bad), "unknown host eviction policy is refused");
+    dee::EngineConfig lanes;
+    lanes.shard_path = "tests/data/ornith_moe256.safetensors";
+    lanes.oracle_path = "";
+    lanes.prefetch_hint_lanes = 2;               // source_read_lanes stays 1
+    dee::Engine refused_lanes;
+    CHECK(!refused_lanes.init(lanes),
+          "prefetch hints with one source read lane are refused");
 }
 
 int main() {

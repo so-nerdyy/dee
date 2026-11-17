@@ -4082,6 +4082,15 @@ bool Engine::init(const EngineConfig& cfg) {
         cfg_.source_read_queue_depth = 1;
         cfg_.prefetch_hint_lanes = 0;   // a one-record bounce buffer cannot hold hints
     }
+    if (cfg_.prefetch_hint_lanes != 0 && cfg_.source_read_lanes <= 1) {
+        // Hints are issued and expired from the bounded multi-lane prepare
+        // path; with one source lane that path is skipped, so the knob would
+        // be accepted and do nothing.  Refuse instead.
+        std::fprintf(stderr,
+            "[engine] prefetch_hint_lanes=%zu needs source_read_lanes > 1 (got %zu)\n",
+            cfg_.prefetch_hint_lanes, cfg_.source_read_lanes);
+        return false;
+    }
     cache_.set_eviction_policy(
         cfg_.eviction_policy == "rank_priority" ? EvictionPolicy::RankPriority
         : cfg_.eviction_policy == "next_use"    ? EvictionPolicy::NextUse
