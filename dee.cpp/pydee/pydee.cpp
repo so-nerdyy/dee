@@ -86,6 +86,11 @@ PYBIND11_MODULE(pydee_core, m) {
         .def_readwrite("host_pack_cache_bytes", &dee::EngineConfig::host_pack_cache_bytes)
         .def_readwrite("eviction_policy", &dee::EngineConfig::eviction_policy)
         .def_readwrite("host_cache_mode", &dee::EngineConfig::host_cache_mode)
+        .def_readwrite("host_eviction_policy", &dee::EngineConfig::host_eviction_policy)
+        .def_readwrite("prefetch_hint_lanes", &dee::EngineConfig::prefetch_hint_lanes)
+        .def_readwrite("prefetch_hint_source", &dee::EngineConfig::prefetch_hint_source)
+        .def_readwrite("prefetch_hint_depth", &dee::EngineConfig::prefetch_hint_depth)
+        .def_readwrite("prefetch_queue_order", &dee::EngineConfig::prefetch_queue_order)
         .def_readwrite("source_read_lanes", &dee::EngineConfig::source_read_lanes)
         .def_readwrite("source_read_queue_depth", &dee::EngineConfig::source_read_queue_depth)
         .def_readwrite("use_batched_experts", &dee::EngineConfig::use_batched_experts)
@@ -120,6 +125,11 @@ PYBIND11_MODULE(pydee_core, m) {
             result["host_pack_cache_bytes"] = cfg.host_pack_cache_bytes;
             result["eviction_policy"] = cfg.eviction_policy;
             result["host_cache_mode"] = cfg.host_cache_mode;
+            result["host_eviction_policy"] = cfg.host_eviction_policy;
+            result["prefetch_hint_lanes"] = cfg.prefetch_hint_lanes;
+            result["prefetch_hint_source"] = cfg.prefetch_hint_source;
+            result["prefetch_hint_depth"] = cfg.prefetch_hint_depth;
+            result["prefetch_queue_order"] = cfg.prefetch_queue_order;
             result["source_read_lanes"] = cfg.source_read_lanes;
             result["source_read_queue_depth"] = cfg.source_read_queue_depth;
             result["expert_store_path"] = cfg.expert_store_path;
@@ -155,8 +165,40 @@ PYBIND11_MODULE(pydee_core, m) {
             result["budget_rejections"] = hp.budget_rejections;
             result["scalar_fills"] = hp.scalar_fills;
             result["scalar_fill_ms"] = hp.scalar_fill_ms;
+            // Prefetch-hint accounting (all zero when hints are off).
+            // hits - hint_hits is what retention alone achieved.
+            result["hints_submitted"] = hp.hints_submitted;
+            result["hints_rejected"] = hp.hints_rejected;
+            result["hints_cancelled"] = hp.hints_cancelled;
+            result["hint_reads"] = hp.hint_reads;
+            result["hint_read_ms"] = hp.hint_read_ms;
+            result["hint_failures"] = hp.hint_failures;
+            result["hint_hits"] = hp.hint_hits;
+            result["hint_waits"] = hp.hint_waits;
+            result["hints_wasted"] = hp.hints_wasted;
+            result["hint_reserved_bytes"] = hp.hint_reserved_bytes;
             return result;
         })
+        .def("prefetch_hint", [](
+                dee::Engine& self, int layer,
+                py::array_t<int, py::array::c_style | py::array::forcecast> experts)
+                -> size_t {
+            auto buf = experts.request();
+            if (buf.size == 0) return 0;
+            return self.prefetch_hint(
+                layer, static_cast<const int*>(buf.ptr),
+                static_cast<size_t>(buf.size));
+        }, py::arg("layer"), py::arg("experts"),
+           R"pbdoc(
+                Lookahead prefetch hint: `experts` (any shape, int32) are the
+                experts the caller expects `layer` to route to at its next
+                call.  The engine only starts host reads for them early; the
+                real route passed to moe_forward_* is what executes, so a
+                wrong hint costs one wasted read and never changes a token.
+                Returns the number of hints queued (0 when hints are off).
+            )pbdoc")
+        .def("drain_prefetch_hints", &dee::Engine::drain_prefetch_hints,
+             "Cancel queued prefetch hints and wait for hint reads in flight.")
         .def("expert_store_stats", [](const dee::Engine& self) -> py::dict {
             const dee::ExpertStoreStats stats = self.expert_store_stats();
             py::dict result;

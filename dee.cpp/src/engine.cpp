@@ -305,6 +305,7 @@ bool Engine::moe_forward_experts(int layer, const float* h_in, float* experts_ou
 
         const int batch_size = std::max(
             1, static_cast<int>(cache_.budget_bytes() / cache_blob_bytes_));
+        begin_expert_layer(source_layer, experts.data(), experts.size());
         for (int first = 0; first < K; first += batch_size) {
             const int last = std::min(K, first + batch_size);
             prefetcher_.begin_batch();
@@ -580,6 +581,8 @@ bool Engine::moe_forward_batch(int layer, const float* h_in, int tokens,
             (host_input.size() + host_output.size()) * sizeof(float));
         const int cache_batch = std::max(
             1, static_cast<int>(cache_.budget_bytes() / cache_blob_bytes_));
+        begin_expert_layer(source_layer, active_experts.data(),
+                           active_experts.size());
         for (size_t first = 0; first < active_experts.size();
              first += static_cast<size_t>(cache_batch)) {
             const size_t last = std::min(
@@ -919,6 +922,8 @@ bool Engine::moe_forward_batch_device_impl(
         return false;
     };
 
+    begin_expert_layer(source_layer, active_experts.data(),
+                       active_experts.size());
     for (size_t first = 0; first < active_experts.size();
          first += static_cast<size_t>(cache_batch)) {
         const size_t last = std::min(
@@ -1833,6 +1838,7 @@ bool Engine::moe_forward_pointer_batched_device_impl(
         set_last_error("pointer-batched expert layer has no resolvable source layer");
         return false;
     }
+    begin_expert_layer(source_layer, h_expert_ids, selections);
     prefetcher_.begin_batch();
     if (!prepare_fp4_experts(
             source_layer, h_expert_ids, selections)) {
@@ -2328,12 +2334,19 @@ bool Engine::reset_store_stats() {
     // Zero every ExpertStore counter (lookups, reads, latency samples,
     // lock-free pread telemetry, materialize entry/exit counts).  The host
     // pack cache stays warm — inert on a null store.
+    // No hint lane may be reading while the plain counters are zeroed.
+    pack_cache_.drain_hints();
     if (expert_store_) expert_store_->reset_stats();
     return true;
 }
 
 bool Engine::clear_host_cache() {
     pack_cache_.clear();
+    // A cold start forgets the layer history too.
+    last_layer_sets_.clear();
+    layer_successor_.clear();
+    layer_active_.clear();
+    clock_layer_ = -1;
     // clear() drops pack entries without firing the eviction observer, so
     // invalidate the staged FP4 metadata directly: fp4_regions pointers into
     // released pack storage must never survive, and prepared_generation is
@@ -3250,7 +3263,124 @@ bool Engine::prepare_fp4_experts(
                 batch_wall_ms, summed_read_ms);
         }
     }
+    // This layer's demand reads are done: let the hint lanes start on the
+    // layers that run next while this one stages and computes.
+    if (!layer_hints_issued_) issue_layer_hints(source_layer);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Layer clock, next-use position, and prefetch hints.
+//
+// None of this can change a token: it only tells the two caches which layer
+// is running (so they can rank victims by next use) and starts host reads
+// early for records a later layer is expected to request.  The experts that
+// execute are always exactly the ones the caller's router passed in.
+// ---------------------------------------------------------------------------
+void Engine::begin_expert_layer(
+        int source_layer, const int* experts, size_t count) {
+    if (clock_layer_ >= 0) {
+        std::sort(layer_active_.begin(), layer_active_.end());
+        layer_active_.erase(
+            std::unique(layer_active_.begin(), layer_active_.end()),
+            layer_active_.end());
+        last_layer_sets_[clock_layer_] = layer_active_;
+        layer_successor_[clock_layer_] = source_layer;
+    }
+    layer_active_.assign(experts, experts + (experts ? count : 0));
+    clock_layer_ = source_layer;
+    ++layer_clock_;
+    layer_hints_issued_ = false;
+    cache_.begin_layer(source_layer);
+    pack_cache_.begin_layer(source_layer);
+}
+
+void Engine::issue_layer_hints(int source_layer) {
+    layer_hints_issued_ = true;
+    if (pack_cache_.hint_lanes() == 0) return;
+    // Hints whose layer has started are stale: whatever that layer needed
+    // has just been requested as demand.
+    pack_cache_.expire_hints(layer_clock_);
+    if (cfg_.prefetch_hint_source != "prev_step") return;
+    // A previous set far larger than this call's request list comes from a
+    // different phase (prefill vs decode); hinting it would be mostly waste.
+    const size_t phase_cap = 2 * layer_active_.size() + 16;
+    int layer = source_layer;
+    for (int ahead = 1; ahead <= std::max(1, cfg_.prefetch_hint_depth); ++ahead) {
+        auto successor = layer_successor_.find(layer);
+        if (successor == layer_successor_.end()) break;
+        layer = successor->second;
+        if (layer == source_layer) break;      // wrapped the whole cycle
+        auto previous = last_layer_sets_.find(layer);
+        if (previous == last_layer_sets_.end() ||
+            previous->second.size() > phase_cap) {
+            continue;
+        }
+        submit_host_hints(layer, previous->second.data(),
+                          previous->second.size(),
+                          layer_clock_ + static_cast<uint64_t>(ahead));
+    }
+}
+
+size_t Engine::submit_host_hints(
+        int source_layer, const int* experts, size_t count, uint64_t deadline) {
+    if (cfg_.transfer_dtype != WeightTransferDType::Fp4E2m1 ||
+        !expert_store_ || !experts || count == 0 ||
+        pack_cache_.hint_lanes() == 0) {
+        return 0;
+    }
+    std::vector<HostPackCache::HintRequest> requests;
+    requests.reserve(count);
+    ExpertStore* store = expert_store_.get();
+    for (size_t index = 0; index < count; ++index) {
+        const int expert = experts[index];
+        if (expert < 0 || expert >= cfg_.num_experts) continue;
+        const uint64_t key = staging_key(source_layer, expert);
+        if (pack_cache_.contains(key)) continue;
+        ExpertView view;
+        QuantizedExpert metadata;
+        if (!store->get(source_layer, expert, &view) ||
+            !configure_fp4_quantized(view, &metadata) ||
+            metadata.fp4_total_nbytes == 0) {
+            continue;
+        }
+        const bool resolvable =
+            (view.contiguous_data != nullptr &&
+             view.contiguous_nbytes == metadata.fp4_total_nbytes) ||
+            store->can_gather_materialize();
+        if (!resolvable) continue;
+        HostPackCache::HintRequest request;
+        request.key = key;
+        request.nbytes = metadata.fp4_total_nbytes;
+        request.deadline = deadline;
+        // Same materialize() as a demand fill, so the bytes are identical.
+        request.fill = [store, view](uint8_t* dst, size_t nbytes) {
+            return store->materialize(view, dst, nbytes);
+        };
+        requests.push_back(std::move(request));
+    }
+    if (requests.empty()) return 0;
+    return pack_cache_.submit_hints(requests.data(), requests.size());
+}
+
+size_t Engine::prefetch_hint(int layer, const int* experts, size_t count) {
+    if (!experts || count == 0 || pack_cache_.hint_lanes() == 0) return 0;
+    const int source_layer = avail_layer(layer);
+    if (source_layer < 0) return 0;
+    // Deadline = the layer clock at which `layer` is expected to run: follow
+    // the learned call order from the layer that ran last.
+    uint64_t hops = 1;
+    int cursor = clock_layer_;
+    for (int step = 1; step <= std::max(1, cfg_.num_layers); ++step) {
+        auto successor = layer_successor_.find(cursor);
+        if (successor == layer_successor_.end()) break;
+        cursor = successor->second;
+        if (cursor == source_layer) {
+            hops = static_cast<uint64_t>(step);
+            break;
+        }
+    }
+    return submit_host_hints(source_layer, experts, count, layer_clock_ + hops);
 }
 
 const Engine::QuantizedExpert* Engine::get_staging_fp4(int source_layer, int expert) {
@@ -3902,10 +4032,39 @@ bool Engine::init(const EngineConfig& cfg) {
     }
     // VRAM eviction policy + host-cache mode (§10-B0d). Unknown strings fail
     // init so a misconfigured Phase-4 run cannot silently change behavior.
-    if (cfg_.eviction_policy != "lru" && cfg_.eviction_policy != "rank_priority") {
+    if (cfg_.eviction_policy != "lru" && cfg_.eviction_policy != "rank_priority" &&
+        cfg_.eviction_policy != "next_use") {
         std::fprintf(stderr,
-            "[engine] invalid eviction_policy '%s' (expected 'lru' or 'rank_priority')\n",
+            "[engine] invalid eviction_policy '%s' (expected 'lru', 'rank_priority' or 'next_use')\n",
             cfg_.eviction_policy.c_str());
+        return false;
+    }
+    if (cfg_.host_eviction_policy != "lru" &&
+        cfg_.host_eviction_policy != "next_use") {
+        std::fprintf(stderr,
+            "[engine] invalid host_eviction_policy '%s' (expected 'lru' or 'next_use')\n",
+            cfg_.host_eviction_policy.c_str());
+        return false;
+    }
+    if (cfg_.prefetch_hint_source != "off" &&
+        cfg_.prefetch_hint_source != "prev_step") {
+        std::fprintf(stderr,
+            "[engine] invalid prefetch_hint_source '%s' (expected 'off' or 'prev_step')\n",
+            cfg_.prefetch_hint_source.c_str());
+        return false;
+    }
+    if (cfg_.prefetch_queue_order != "deadline" &&
+        cfg_.prefetch_queue_order != "fifo") {
+        std::fprintf(stderr,
+            "[engine] invalid prefetch_queue_order '%s' (expected 'deadline' or 'fifo')\n",
+            cfg_.prefetch_queue_order.c_str());
+        return false;
+    }
+    if (cfg_.prefetch_hint_lanes > HostPackCache::kMaxFillLanes ||
+        cfg_.prefetch_hint_depth < 1) {
+        std::fprintf(stderr,
+            "[engine] invalid prefetch hint lanes/depth: %zu/%d\n",
+            cfg_.prefetch_hint_lanes, cfg_.prefetch_hint_depth);
         return false;
     }
     if (cfg_.host_cache_mode != "lru" && cfg_.host_cache_mode != "bypass") {
@@ -3921,10 +4080,22 @@ bool Engine::init(const EngineConfig& cfg) {
         cfg_.host_pack_cache_bytes = 0;  // resolved below once record_bytes is known
         cfg_.source_read_lanes = 1;
         cfg_.source_read_queue_depth = 1;
+        cfg_.prefetch_hint_lanes = 0;   // a one-record bounce buffer cannot hold hints
     }
-    cache_.set_eviction_policy(cfg_.eviction_policy == "rank_priority"
-        ? EvictionPolicy::RankPriority
-        : EvictionPolicy::Recency);
+    cache_.set_eviction_policy(
+        cfg_.eviction_policy == "rank_priority" ? EvictionPolicy::RankPriority
+        : cfg_.eviction_policy == "next_use"    ? EvictionPolicy::NextUse
+                                                : EvictionPolicy::Recency);
+    // Both caches learn the layer cycle regardless of policy (cheap), so the
+    // policy strings alone decide whether next-use ranking is applied.
+    cache_.set_next_use_cycle(cfg_.num_layers);
+    pack_cache_.set_next_use_cycle(cfg_.num_layers);
+    pack_cache_.set_eviction_policy(
+        cfg_.host_eviction_policy == "next_use" ? HostEvictionPolicy::NextUse
+                                                : HostEvictionPolicy::Lru);
+    pack_cache_.set_hint_queue_order(
+        cfg_.prefetch_queue_order == "fifo" ? HintQueueOrder::Fifo
+                                            : HintQueueOrder::Deadline);
     // Expert dims are taken from the SHARD (so a mock inter=64 and the real
     // inter=256 are both handled). The Oracle's own MLP width (H=256) is a
     // separate, fixed quantity passed to oracle.load().
@@ -4174,6 +4345,25 @@ bool Engine::init(const EngineConfig& cfg) {
             it->second.prepared_generation = 0;
             it->second.host_resolution = HostResolution::Unknown;
         });
+    // Hint reads are source reads: account them exactly like demand reads so
+    // cold-read counts stay honest (a wasted hint still costs a read).
+    pack_cache_.set_hint_read_observer(
+        [this](uint64_t, std::size_t nbytes, double milliseconds, bool ok) {
+            if (!expert_store_) return;
+            if (!ok) {
+                expert_store_->record_source_read_failure();
+                return;
+            }
+            const bool gather = expert_store_->can_gather_materialize();
+            expert_store_->record_source_read(
+                nbytes, milliseconds, gather ? 6 : 1, !gather);
+        });
+    if (!pack_cache_.set_hint_lanes(cfg_.prefetch_hint_lanes)) {
+        std::fprintf(stderr,
+            "[engine] cannot initialize %zu prefetch hint lanes\n",
+            cfg_.prefetch_hint_lanes);
+        return false;
+    }
     if (!pack_cache_.set_fill_lanes(cfg_.source_read_lanes)) {
         std::fprintf(stderr,
             "[engine] cannot initialize %zu bounded source-read lanes\n",
@@ -4615,6 +4805,9 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
     if (profiler_.enabled()) profiler_.add_cpu(CpuStage::BatchConstruction, batch_begin);
     const bool bypass_cache = cfg_.scenario == BenchmarkScenario::ResidentBypass ||
                               cfg_.scenario == BenchmarkScenario::ComputeOnly;
+    if (!bypass_cache) {
+        begin_expert_layer(source_layer, experts.data(), experts.size());
+    }
     for (int first = 0; first < K; first += batch_size) {
         const int last = std::min(K, first + batch_size);
         if (!bypass_cache) {
@@ -4726,6 +4919,8 @@ bool Engine::forward_layer_cuda(int layer, const float* h_in, float* h_out) {
 }
 
 Engine::~Engine() {
+    // Hint lanes read through expert_store_; stop them before any teardown.
+    pack_cache_.set_hint_lanes(0);
     if (cfg_.use_cuda) {
         prefetcher_.synchronize_all();
         if (compute_stream_) {
@@ -4757,7 +4952,10 @@ Engine::~Engine() {
     }
 }
 #else
-Engine::~Engine() = default;
+Engine::~Engine() {
+    // Hint lanes read through expert_store_; stop them before any teardown.
+    pack_cache_.set_hint_lanes(0);
+}
 #endif
 
 size_t engine_abi_size() {

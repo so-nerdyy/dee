@@ -639,7 +639,74 @@ class DeepseekV4Model:
         model.provider = provider
         model.cache0 = cache0
         model.cache1 = cache1
+        if ffn_backend == "native":
+            lookahead = os.environ.get(
+                "NATIVE_PREFETCH_LOOKAHEAD", "off").strip().lower()
+            if lookahead not in ("off", "router"):
+                raise ValueError(
+                    f"NATIVE_PREFETCH_LOOKAHEAD must be 'off' or 'router', "
+                    f"got {lookahead!r}")
+            if lookahead == "router":
+                model.enable_prefetch_lookahead(width=int(os.environ.get(
+                    "NATIVE_PREFETCH_LOOKAHEAD_WIDTH", "0")))
         return model
+
+    def enable_prefetch_lookahead(self, width: int = 0) -> int:
+        """Attach router-ahead prefetch hints between consecutive native
+        layers that share an engine.  Returns the number of layer links.
+
+        Placement only: each layer still routes with its own real input and
+        only that route executes; a hint just starts host reads early.
+        """
+        layers = self.layers0 + self.layers1
+        links = 0
+        for current, following in zip(layers, layers[1:]):
+            here = getattr(current, "ffn_fn", None)
+            there = getattr(following, "ffn_fn", None)
+            if not (hasattr(here, "attach_lookahead") and
+                    hasattr(there, "attach_lookahead")):
+                continue
+            if here.engine is not there.engine:
+                continue
+            config = here.engine.runtime_config()
+            if int(config.get("prefetch_hint_lanes", 0)) <= 0:
+                raise RuntimeError(
+                    "router lookahead needs prefetch_hint_lanes > 0 "
+                    "(NATIVE_PREFETCH_HINT_LANES)")
+            here.attach_lookahead(there, width=width)
+            links += 1
+        print(f"[lookahead] router-ahead prefetch hints on {links} layer "
+              f"links (width={width or 'topk'})", flush=True)
+        return links
+
+    def prefetch_lookahead_stats(self) -> dict[str, Any]:
+        """Hint quality: recall = correct/actual, precision = correct/hinted
+        (both over the calls that were scored)."""
+        keys = ("calls", "hinted", "queued", "scored_calls", "actual",
+                "correct", "exact_calls", "ms")
+        totals: dict[str, Any] = {key: 0 for key in keys}
+        per_layer = {}
+        for layer in self.layers0 + self.layers1:
+            ffn = getattr(layer, "ffn_fn", None)
+            stats = getattr(ffn, "lookahead_stats", None)
+            if not stats:
+                continue
+            for key in keys:
+                totals[key] += stats.get(key, 0)
+            if stats.get("scored_calls", 0):
+                per_layer[str(getattr(ffn, "layer_id", -1))] = {
+                    "actual": int(stats["actual"]),
+                    "correct": int(stats["correct"]),
+                }
+        totals["enabled"] = bool(totals["calls"] or any(
+            getattr(getattr(layer, "ffn_fn", None), "lookahead_next", None)
+            is not None for layer in self.layers0 + self.layers1))
+        totals["recall"] = (totals["correct"] / totals["actual"]
+                            if totals["actual"] else None)
+        totals["precision"] = (totals["correct"] / totals["hinted"]
+                               if totals["hinted"] else None)
+        totals["per_target_layer"] = per_layer
+        return totals
 
     def cuda_stage_profile(self) -> dict[str, Any]:
         """Resolve profiling-only layer events after generation wall timing."""
@@ -1356,7 +1423,12 @@ def build_native_engine(shard_paths: list[str], *,
                         expert_store_path: str = "",
                         trace_requests: Optional[bool] = None,
                         eviction_policy: Optional[str] = None,
-                        host_cache_mode: Optional[str] = None) -> Any:
+                        host_cache_mode: Optional[str] = None,
+                        host_eviction_policy: Optional[str] = None,
+                        prefetch_hint_lanes: Optional[int] = None,
+                        prefetch_hint_source: Optional[str] = None,
+                        prefetch_hint_depth: Optional[int] = None,
+                        prefetch_queue_order: Optional[str] = None) -> Any:
     """Build one pydee.Engine (FP4 transfer, FP16 or packed-FP4 device cache)
     that streams routed experts for the full DeepSeek-V4-Flash-0731 model.
 
@@ -1374,10 +1446,24 @@ def build_native_engine(shard_paths: list[str], *,
     Phase-4 knobs (each falls back to its NATIVE_* env var when None):
       trace_requests -> cfg.trace_requests (per-request cache-event trace;
       lands in external_profile_json["trace"], needs profile_stages);
-      eviction_policy -> cfg.eviction_policy ("lru"|"rank_priority");
+      eviction_policy -> cfg.eviction_policy
+      ("lru"|"rank_priority"|"next_use");
       host_cache_mode -> cfg.host_cache_mode ("lru"|"bypass"; "bypass"
       additionally clamps host_pack_cache_bytes to one packed record and
       forces source_read_lanes=1 -- the bounce-buffer contract).
+    Placement knobs (NATIVE_HOST_EVICTION_POLICY, NATIVE_PREFETCH_HINT_LANES,
+    NATIVE_PREFETCH_HINT_SOURCE, NATIVE_PREFETCH_HINT_DEPTH,
+    NATIVE_PREFETCH_QUEUE_ORDER when None).  They change only where records
+    sit and when they are read, never which experts run:
+      host_eviction_policy -> "lru" (default) | "next_use";
+      prefetch_hint_lanes  -> background host-read lanes for hints (0 = off);
+      prefetch_hint_source -> "off" | "prev_step" (engine hints the experts
+      the next layer used on the previous decode step);
+      prefetch_hint_depth  -> layers ahead for "prev_step" (default 1);
+      prefetch_queue_order -> "deadline" (default) | "fifo".
+    A non-default value on a binary that lacks the binding is a hard error:
+    a silently ignored knob would make the A/B meaningless.
+
     The eviction_policy/host_cache_mode pydee fields are being added in
     parallel, so they are applied via hasattr-fallback with a loud log:
     this function stays correct under both old and new binaries.
@@ -1395,9 +1481,41 @@ def build_native_engine(shard_paths: list[str], *,
     if host_cache_mode is None:
         host_cache_mode = os.environ.get(
             "NATIVE_HOST_CACHE_MODE", "lru").strip().lower()
-    if eviction_policy not in ("lru", "rank_priority"):
+    if host_eviction_policy is None:
+        host_eviction_policy = os.environ.get(
+            "NATIVE_HOST_EVICTION_POLICY", "lru").strip().lower()
+    if prefetch_hint_lanes is None:
+        prefetch_hint_lanes = int(os.environ.get(
+            "NATIVE_PREFETCH_HINT_LANES", "0"))
+    if prefetch_hint_source is None:
+        prefetch_hint_source = os.environ.get(
+            "NATIVE_PREFETCH_HINT_SOURCE", "off").strip().lower()
+    if prefetch_hint_depth is None:
+        prefetch_hint_depth = int(os.environ.get(
+            "NATIVE_PREFETCH_HINT_DEPTH", "1"))
+    if prefetch_queue_order is None:
+        prefetch_queue_order = os.environ.get(
+            "NATIVE_PREFETCH_QUEUE_ORDER", "deadline").strip().lower()
+    if eviction_policy not in ("lru", "rank_priority", "next_use"):
         raise ValueError(
-            f"eviction_policy must be 'lru' or 'rank_priority', got {eviction_policy!r}")
+            f"eviction_policy must be 'lru', 'rank_priority' or 'next_use', "
+            f"got {eviction_policy!r}")
+    if host_eviction_policy not in ("lru", "next_use"):
+        raise ValueError(
+            f"host_eviction_policy must be 'lru' or 'next_use', "
+            f"got {host_eviction_policy!r}")
+    if not 0 <= int(prefetch_hint_lanes) <= 8:
+        raise ValueError("prefetch_hint_lanes must be in [0, 8]")
+    if prefetch_hint_source not in ("off", "prev_step"):
+        raise ValueError(
+            f"prefetch_hint_source must be 'off' or 'prev_step', "
+            f"got {prefetch_hint_source!r}")
+    if int(prefetch_hint_depth) < 1:
+        raise ValueError("prefetch_hint_depth must be >= 1")
+    if prefetch_queue_order not in ("deadline", "fifo"):
+        raise ValueError(
+            f"prefetch_queue_order must be 'deadline' or 'fifo', "
+            f"got {prefetch_queue_order!r}")
     if host_cache_mode not in ("lru", "bypass"):
         raise ValueError(
             f"host_cache_mode must be 'lru' or 'bypass', got {host_cache_mode!r}")
@@ -1443,4 +1561,30 @@ def build_native_engine(shard_paths: list[str], *,
                   f"{_field} binding; requested {_value!r} ignored "
                   f"(old pydee binary -- cache behavior falls back to the "
                   f"compiled-in default)", flush=True)
+    if host_cache_mode == "bypass" and int(prefetch_hint_lanes) != 0:
+        print("[build_native_engine] host_cache_mode=bypass: forcing "
+              f"prefetch_hint_lanes {prefetch_hint_lanes} -> 0", flush=True)
+        prefetch_hint_lanes = 0
+    for _field, _value, _default in (
+            ("host_eviction_policy", host_eviction_policy, "lru"),
+            ("prefetch_hint_lanes", int(prefetch_hint_lanes), 0),
+            ("prefetch_hint_source", prefetch_hint_source, "off"),
+            ("prefetch_hint_depth", int(prefetch_hint_depth), 1),
+            ("prefetch_queue_order", prefetch_queue_order, "deadline")):
+        if hasattr(cfg, _field):
+            setattr(cfg, _field, _value)
+        elif _value != _default:
+            raise RuntimeError(
+                f"EngineConfig lacks the {_field} binding but "
+                f"{_value!r} was requested; rebuild pydee")
+    if eviction_policy == "next_use" and not hasattr(cfg, "host_eviction_policy"):
+        raise RuntimeError(
+            "eviction_policy='next_use' needs a pydee build with next-use "
+            "eviction; rebuild pydee")
+    print(f"[build_native_engine] placement: eviction_policy={eviction_policy} "
+          f"host_eviction_policy={host_eviction_policy} "
+          f"prefetch_hint_lanes={int(prefetch_hint_lanes)} "
+          f"prefetch_hint_source={prefetch_hint_source} "
+          f"prefetch_hint_depth={int(prefetch_hint_depth)} "
+          f"prefetch_queue_order={prefetch_queue_order}", flush=True)
     return pydee.new_engine(cfg)

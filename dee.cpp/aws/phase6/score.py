@@ -290,6 +290,50 @@ def verify_own_reference(a: Evidence, b: Evidence) -> list[str]:
     return why
 
 
+def _token_rows(result: dict) -> list:
+    """Every token the run emitted: the single stream, or all cohort rows."""
+    rows = result.get("cohort_rows") or result.get("rows")
+    if isinstance(rows, list) and rows:
+        return [r.get("token_ids") or r.get("token_ids_sha256")
+                or r.get("actual_token_ids_sha256") for r in rows]
+    return [result.get("generated_token_ids")]
+
+
+def verify_placement_pair(base: Evidence, cand: Evidence) -> list[str]:
+    """Exactness gate for placement-only changes (eviction policy, prefetch hints).
+
+    ``base`` and ``cand`` are the same workload on the same GPU, commit, host and VRAM budget,
+    differing only in placement knobs.  Placement may move records between tiers but must not
+    change a single token or routed expert.  Returns the reasons the pair is NOT exact (empty
+    list = byte-identical tokens and route journals).
+    """
+    why: list[str] = []
+    sa, sb = base.summary, cand.summary
+    if base.result is None or cand.result is None:
+        return ["a run has no result.json"]
+    for k in ("gpu", "n_gpus", "commit", "budget_mib", "model", "host_gib_requested",
+              "n_tokens", "cohort"):
+        if sa.get(k) != sb.get(k):
+            why.append(f"runs differ in {k}: {sa.get(k)!r} vs {sb.get(k)!r}")
+    ta, tb = _token_rows(base.result), _token_rows(cand.result)
+    if not ta or any(t is None or not t for t in ta) or ta != tb:
+        why.append("generated tokens differ (or are missing)")
+    names = sorted({p.name for p in base.root.glob("routed_experts*.jsonl")}
+                   | {p.name for p in cand.root.glob("routed_experts*.jsonl")})
+    if not names:
+        why.append("no routed_experts journal in either run")
+    for name in names:
+        pa, pb = base.root / name, cand.root / name
+        if not (pa.is_file() and pb.is_file()):
+            why.append(f"{name} missing from one run")
+            continue
+        ra, rb = _jsonl(pa), _jsonl(pb)
+        strip = lambda rows: [{k: v for k, v in r.items() if k not in _JOURNAL_IGNORE} for r in rows]
+        if not ra or strip(ra) != strip(rb):
+            why.append(f"{name} differs between the runs (ignoring run_id and chain hashes)")
+    return why
+
+
 def _common_checks(ev: Evidence) -> list[str]:
     """Section-0 checks that do not depend on the platform's cell table."""
     s, r = ev.summary, ev.result or {}
@@ -771,7 +815,23 @@ def main(argv: list[str] | None = None) -> int:
                     help="b=1 own-reference gate (Addendum 4): needs exactly two evidence dirs, "
                          "same GPU, different host budgets, bit-identical tokens and route "
                          "journals; then waives only exact_16_token_ids/exact_decoded_text")
+    ap.add_argument("--placement-exact", action="store_true",
+                    help="exactness gate for placement-only changes: the first evidence dir is "
+                         "the baseline, every other one must have byte-identical tokens and "
+                         "route journals (same GPU, commit, host and VRAM budget); exits 1 "
+                         "otherwise and scores nothing")
     args = ap.parse_args(argv)
+    if args.placement_exact:
+        if len(args.evidence) < 2:
+            ap.error("--placement-exact needs a baseline and at least one candidate dir")
+        base = load_evidence(args.evidence[0])
+        bad = 0
+        for root in args.evidence[1:]:
+            why = verify_placement_pair(base, load_evidence(root))
+            bad += bool(why)
+            print(f"{root}: " + ("EXACT (tokens and route journals identical to baseline)"
+                                 if not why else "NOT EXACT: " + "; ".join(why)))
+        return 1 if bad else 0
     cache: dict = {}
     own: dict[Path, dict] = {}
     if args.own_reference:
