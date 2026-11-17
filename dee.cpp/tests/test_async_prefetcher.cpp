@@ -20,6 +20,7 @@
 #include "dee/vram_cache.h"
 #include "dee/async_prefetcher.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -358,6 +359,34 @@ int main() {
     std::string p4_err;
     check("p4 invariants clean at end", p4.validate_invariants(&p4_err));
     if (!p4_err.empty()) printf("    invariant: %s\n", p4_err.c_str());
+
+    // --- (P6) retire work is bounded by live transfers, not history. ---
+    // r5 b=8: ~1,500 transfers/step with no reset made every retire pass walk
+    // the whole append-only table (bookkeeping 9 ms -> 1.3 s/step by step 70).
+    {
+        dee::VramCacheManager p6_cache;
+        check("p6 init cache", p6_cache.init(64 * 32, host_backend()));
+        dee::AsyncPrefetcher p6(p6_cache);
+        check("p6 init mock", p6.init(false));
+        std::vector<char> blob(64, 5);
+        bool all_ok = true;
+        size_t worst_unsettled = 0;
+        for (int i = 0; i < 20000; ++i) {
+            const int layer = i % 43, expert = (i * 13) % 256;
+            all_ok &= p6.prefetch(layer, expert, blob.data(), blob.size()) >= 0;
+            all_ok &= p6.wait(layer, expert);
+            p6.mark_consumed(layer, expert);
+            worst_unsettled = std::max(worst_unsettled, p6.unsettled_count());
+        }
+        check("p6 20k prefetch/wait cycles succeed", all_ok);
+        check("p6 history grows (indices stay stable)", p6.in_flight() == 20000);
+        printf("    worst unsettled after a wait: %zu\n", worst_unsettled);
+        check("p6 unsettled stays bounded (<= 2)", worst_unsettled <= 2);
+        std::string p6_err;
+        check("p6 invariants clean", p6.validate_invariants(&p6_err));
+        p6.reset();
+        check("p6 reset clears unsettled", p6.unsettled_count() == 0);
+    }
 
     printf("=== %s ===\n", g_fail == 0 ? "ALL PASS" : "FAILURES");
     return g_fail == 0 ? 0 : 1;

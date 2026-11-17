@@ -71,12 +71,63 @@ CFGS='[{"tag":"b1-h64","host_gib":64,"n_tokens":16},
 modal run --detach modal/phase6/modal_p6.py::bench_L4 --run-id p6m-l4-r5 --configs "$CFGS"
 ```
 
-## 1c. Next run: `p6m-l4-r6`, the b=8 host-hit cliff (Addendum 5, registered 2026-11-11)
+## 1c. Placement knobs: next-use eviction and prefetch hints (Addendum 5)
+
+Three engine changes that only move records between tiers. They never choose, skip or replace an
+expert, so tokens and route journals must be byte-identical with any combination. Every knob
+defaults to the previous behavior.
+
+| config key | runner env | values | what it does |
+|---|---|---|---|
+| `eviction_policy` | `NATIVE_EVICTION_POLICY` | `lru`, `next_use` | VRAM tier: evict the expert whose predicted next use is furthest away |
+| `host_eviction_policy` | `NATIVE_HOST_EVICTION_POLICY` | `lru`, `next_use` | host tier, same rule |
+| `prefetch_hint_lanes` | `NATIVE_PREFETCH_HINT_LANES` | 0-8 | background host-read lanes for hints (0 = hints off) |
+| `prefetch_hint_source` | `NATIVE_PREFETCH_HINT_SOURCE` | `off`, `prev_step` | engine hints the experts the next layer used on the previous decode step |
+| `prefetch_hint_depth` | `NATIVE_PREFETCH_HINT_DEPTH` | 1-43 | layers ahead for `prev_step` |
+| `prefetch_queue_order` | `NATIVE_PREFETCH_QUEUE_ORDER` | `deadline`, `fifo` | hint queue: nearest layer first, or arrival order (A/B) |
+| `prefetch_lookahead` | `NATIVE_PREFETCH_LOOKAHEAD` | `off`, `router` | layer L+1's real router on layer L's input, as a hint only |
+| `prefetch_lookahead_width` | `NATIVE_PREFETCH_LOOKAHEAD_WIDTH` | 0-256 | candidates per row for `router` (0 = top-k) |
+
+Why: `theory/NEXT_USE_SIM.md` (free replay of committed route journals; it reproduces r5's 0%
+host hit at b=8 on 16 GiB and shows next-use removing it). Predictions for the run below are
+registered in `theory/PREDICTIONS_PHASE6.md` Addendum 5.
+
+**The one bundled run (BILLS, about $2.0; not launched).** One 1xL4 container, four b=8 rows at
+host 16 GiB, the r5 cell that was KILLED. The LRU row runs last, so it gets the warmest page cache
+and the comparison is conservative.
+
+```
+B8='"host_gib":16,"n_tokens":65,"ignore_eos":true,"cohort":"0-7","prompts_file":"dee.cpp/aws/phase6/prompts_phase4_8.json"'
+NU='"eviction_policy":"next_use","host_eviction_policy":"next_use"'
+CFGS="[{\"tag\":\"b8-h16-nu\",$B8,$NU},
+       {\"tag\":\"b8-h16-nu-prev\",$B8,$NU,\"prefetch_hint_lanes\":4,\"prefetch_hint_source\":\"prev_step\"},
+       {\"tag\":\"b8-h16-nu-router\",$B8,$NU,\"prefetch_hint_lanes\":4,\"prefetch_hint_source\":\"prev_step\",\"prefetch_lookahead\":\"router\"},
+       {\"tag\":\"b8-h16-lru\",$B8}]"
+modal run modal/phase6/modal_p6.py::preflight --gpu L4 --configs "$CFGS"        # ~$0.10, must print preflight_ok: true
+modal run --detach modal/phase6/modal_p6.py::bench_L4 --run-id p6m-l4-r6 --configs "$CFGS"
+```
+
+Score it (free). The exactness gate comes first: if it fails, nothing else is graded.
+
+```
+for t in nu nu-prev nu-router lru; do modal volume get dee-p6-evidence runs/p6m-l4-r6-b8-h16-$t runs/; done
+python aws/phase6/score.py --placement-exact runs/p6m-l4-r6-b8-h16-lru \
+    runs/p6m-l4-r6-b8-h16-nu runs/p6m-l4-r6-b8-h16-nu-prev runs/p6m-l4-r6-b8-h16-nu-router
+```
+
+Hint accounting is in `result.json` under `host_pack` (`hint_reads`, `hint_hits`, `hints_wasted`,
+`hints_cancelled`, `hint_waits`; `hits - hint_hits` is what retention alone achieved) and
+`prefetch_lookahead` (router hint recall and precision). Hint reads are counted as source reads,
+so cold rec/tok includes them.
+
+## 1d. Next run: `p6m-l4-r6`, the b=8 host-hit cliff (Addendum 6, registered 2026-11-11)
 
 One 1xL4 container, three b=8 rows at host sizes with no frozen row. It tests where the b=8 cliff
-sits and what the host tier does above it (`theory/PREDICTIONS_PHASE6.md` Addendum 5). Pinned to `8cd96ab`, the `research/phase6-modal`
+sits and what the host tier does above it (`theory/PREDICTIONS_PHASE6.md` Addendum 6). Pinned to `8cd96ab`, the `research/phase6-modal`
 head after PR #18; same cohort and VRAM budget as r5. Nivin's yes comes before launch, preflight
 included, for one launch with no retries.
+
+The pin stays at `8cd96ab` after PRs #20 and #21: its engine source (`src`, `include`, `scripts`) is identical to r5's `311d9d0`, and it predates next-use eviction and prefetch hints. The r6 rows set no placement keys, so the harness at the base head passes no `NATIVE_*` placement env and the container runs the same LRU engine r5 did.
 
 ```
 CFGS='[{"tag":"b8-h32","host_gib":32,"n_tokens":65,"ignore_eos":true,"cohort":"0-7","prompts_file":"dee.cpp/aws/phase6/prompts_phase4_8.json"},
@@ -94,7 +145,7 @@ modal run --detach modal/phase6/modal_p6.py::bench_L4 --run-id p6m-l4-r6 --confi
   preflight about $0.10. The 150-min container guard caps the worst case at about $4.90.
 - **Score (free):** `modal volume get dee-p6-evidence runs/p6m-l4-r6-* ...`, then
   `python aws/phase6/score.py runs/p6m-l4-r6-b8-h* --write --ledger SCOREBOARD.jsonl`. The
-  `addendum5` block holds the grades; the frozen and Addendum-3 verdicts read `NO FROZEN ROW`.
+  `addendum6` block holds the grades; the frozen and Addendum-3 verdicts read `NO FROZEN ROW`.
 
 ## 2. Run order (original plan, superseded by 1b for cost)
 

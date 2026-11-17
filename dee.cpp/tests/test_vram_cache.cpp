@@ -297,6 +297,62 @@ int main() {
     check("per-ensure pinned counting", skip_mgr.stats().pinned_blocks_skipped == 4);
     check("E4 evicted by E5 load", !skip_mgr.is_resident(0, 4));
 
+
+    // --- NextUse policy: cyclic sweep that needs more than the budget ---
+    // 3 layers x 2 experts, 4 blocks fit.  Recency evicts every block right
+    // before its layer comes round again; NextUse keeps part of the sweep.
+    auto run_cycle = [&](dee::EvictionPolicy policy, bool with_cycle) {
+        dee::VramCacheManager cyc;
+        cyc.init(BUDGET, host_backend());
+        cyc.set_debug_validation(true);
+        cyc.set_eviction_policy(policy);
+        if (with_cycle) cyc.set_next_use_cycle(3);
+        for (int sweep = 0; sweep < 12; ++sweep) {
+            for (int layer = 0; layer < 3; ++layer) {
+                cyc.begin_layer(layer);
+                for (int e = 0; e < 2; ++e) {
+                    if (!cyc.ensure(layer, e, BLK, 0)) return uint64_t(~0ull);
+                }
+            }
+        }
+        if (!cyc.validate_invariants()) return uint64_t(~0ull);
+        return cyc.stats().hits;
+    };
+    const uint64_t recency_hits = run_cycle(dee::EvictionPolicy::Recency, true);
+    const uint64_t next_use_hits = run_cycle(dee::EvictionPolicy::NextUse, true);
+    const uint64_t no_cycle_hits = run_cycle(dee::EvictionPolicy::NextUse, false);
+    printf("  cyclic sweep hits: recency %llu, next_use %llu of 72\n",
+           (unsigned long long)recency_hits, (unsigned long long)next_use_hits);
+    check("Recency never hits on an over-budget cyclic sweep", recency_hits == 0);
+    check("NextUse keeps at least a quarter of the sweep resident",
+          next_use_hits != ~0ull && next_use_hits >= 18);
+    check("NextUse without a layer cycle behaves like Recency",
+          no_cycle_hits == recency_hits);
+
+    // NextUse never evicts a pinned block and protects the running layer.
+    dee::VramCacheManager nu;
+    check("init next-use manager", nu.init(BLK * 2, host_backend()));
+    nu.set_eviction_policy(dee::EvictionPolicy::NextUse);
+    nu.set_next_use_cycle(4);
+    nu.begin_layer(0);
+    check("nu load L0E0", nu.ensure(0, 0, BLK, 0));
+    nu.begin_layer(1);
+    check("nu load L1E0", nu.ensure(1, 0, BLK, 0));
+    // Running layer 1: L0E0 is 3 calls away, L1E0 is running now.
+    check("nu load L1E1", nu.ensure(1, 1, BLK, 0));
+    check("furthest-next-use block evicted", !nu.is_resident(0, 0));
+    check("running layer's block kept", nu.is_resident(1, 0));
+    nu.begin_layer(2);
+    check("pin L1E0", nu.pin(1, 0));
+    // L1 blocks are now the furthest away; the pinned one must survive.
+    check("nu load L2E0", nu.ensure(2, 0, BLK, 0));
+    check("pinned block survives NextUse", nu.is_resident(1, 0));
+    check("unpinned furthest block evicted", !nu.is_resident(1, 1));
+    check("unpin L1E0", nu.unpin(1, 0));
+    check("next-use invariants valid", nu.validate_invariants());
+    nu.clear();
+    check("clear forgets next-use history", nu.next_use().tracked() == 0);
+
     // --- clear ---
     mgr.clear();
     check("clear empties cache", mgr.resident_count() == 0);

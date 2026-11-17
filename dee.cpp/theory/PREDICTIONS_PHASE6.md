@@ -491,7 +491,79 @@ The h16 host hit sits 0.012 under the P2 upper kill edge (0.57). The b=1 window 
 it includes the prefill reads. The decode tok/s and $/1k grades in Addendum 4 are unchanged. Updated
 scorecards and SCOREBOARD.jsonl lines 5-6 supersede lines 1-2 for these two runs.
 
-### Addendum 5 — b=8 host-hit cliff on 1xL4 (registered 2026-11-11, before run `p6m-l4-r6`)
+### Addendum 5 — next-use eviction and prefetch hints on the killed b=8 / 16 GiB cell (registered 2026-11-17, before any hardware run with these knobs)
+
+**Why.** Addendum 4 killed the L4 b=8 host-16 row: host hit 0/49,463, because one decode step asks
+for more records than the 16 GiB tier holds and LRU evicts each one just before its next use. The
+engine now has three placement changes aimed at that cell: next-use eviction on both tiers,
+prefetch hints (previous-step and router-ahead) and a deadline-ordered hint queue. They decide
+only where a record sits and when it is read. No frozen range above is edited. This addendum
+registers what one bundled run (`p6m-l4-r6`, runbook section 1c) must show. Nothing has been run
+on a GPU with these knobs.
+
+**Source of the numbers.** `theory/theory/policy_sim.py` replays the committed sealed route
+journals as a b=8 cohort (`theory/NEXT_USE_SIM.md`). With LRU it reproduces r5: host hit 0.000 at
+16 GiB (measured 0/49,463) and 0.824 at 64 GiB (measured 0.835). Its step set is 1,585 requests
+against 1,521 measured, because the journals are the T4 routes and the L4 routes differ from
+layer 6 on (Addendum 4). The bands below are widened for that. Tok/s comes from a two-parameter
+timing model fitted to r5's 0.59 tok/s, so its bands are wide and only the direction carries a kill.
+
+**Cell.** 1xL4, 96 GiB container, DSv4-Flash, b=8 (`prompts_phase4_8.json`, cohort 0-7,
+65 tokens, `--ignore-eos`), host 16 GiB, VRAM 3,584 MiB. Four rows in this order: `nu`, `nu-prev`,
+`nu-router`, `lru`. Metrics over the last 32 decode steps. The LRU row runs last and reads the
+warmest page cache, so any tok/s gain over it is understated, not overstated.
+
+**A0. Exactness (gate, not a band).** Every row's tokens and routed-expert journals are
+byte-identical to the `lru` row of the same container
+(`score.py --placement-exact`). One differing token or routed expert is a bug: every other line
+of this addendum is then void for that row, and the change does not ship.
+
+| id | row | metric | predicted nominal [range] | kill |
+|---|---|---|---|---|
+| A1 | lru | host hit | 0.000 [0, 0.02] | > 0.05 (r5 did not replicate) |
+| A2 | nu | host hit | 0.42 [0.33, 0.52] | < 0.25 |
+| A3 | nu | cold rec/tok (source reads per emitted token) | 115 [95, 140] | > 160 (r5 LRU: 193.2) |
+| A4 | nu | VRAM hit (resident hits / requests) | 0.12 [0.07, 0.18] | < 0.03 |
+| A5 | nu-prev | host hit, hint hits included | 0.87 [0.72, 0.93] | < 0.55 |
+| A6 | nu-prev | all source reads per token, hint reads included, relative to row nu | 1.00 [0.90, 1.20] | > 1.35 (hints add I/O instead of moving it) |
+| A7 | nu-prev | hint hits / hint reads | 0.77 [0.60, 0.92] | < 0.45 |
+| A8 | nu vs lru | decode tok/s ratio, aggregate | 1.27 [1.08, 1.50] | <= 1.00 |
+| A9 | nu-prev vs nu | decode tok/s ratio, aggregate | 1.24 [1.05, 1.45] | <= 1.00 |
+| A10 | nu-prev | decode tok/s, aggregate | 0.92 [0.70, 1.10] | none (model-derived; A9 carries the kill) |
+
+**Not predicted (reported only).** (a) Row `nu-router`: router-ahead hint recall and precision.
+The route journals hold no hidden states, so the next layer's router on the current layer's input
+can't be replayed offline. This row measures it. The only registered expectation is A0 and that
+its host hit is not below row `nu-prev` by more than 0.03. A synthetic sweep says a hint with
+recall 0.7 and precision 0.5 would be worth about as much as previous-step hints, and recall 0.9
+about 6% more tok/s. (b) Deadline versus FIFO queue order: the simulator finds no difference when
+hints look one layer ahead (0.92 versus 0.93 tok/s, inside its noise), because one-layer-ahead
+hints already arrive in deadline order. No row is spent on it. (c) Absolute $/1k.
+
+**What a result means.** A1 and A2 inside their ranges with A0 passing: the cliff diagnosis in
+Addendum 4 and `CORRECTION_HOST_HIT_BATCH.md` is right and next-use eviction removes it. A2 killed
+with A1 passing: the simulator's eviction model is wrong for the engine, and the theory branch has
+to explain why before anything else is built on it. A5 or A7 killed: decode routing repeats less
+from step to step on the L4 than on the sealed journals, and previous-step hints are not worth
+their reads. A8 killed with A2 passing: source reads are not what limits this cell, which would
+agree with the host-side `mmap_to_pinned` hypothesis in Addendum 4.
+
+**Known weaknesses, stated in advance.** (i) The journals are T4 routes. (ii) The timing model has
+two fitted constants and ignores CPU contention between hint lanes and the pinned-copy path.
+(iii) Rows share a container, so later rows read a warmer page cache; counts (A1-A7) do not depend
+on it, tok/s does. (iv) The hint reservation is capped at a quarter of the host budget and a hint
+may only displace a record expected later than itself; the simulator has neither limit, so A5 and
+A7 could come in low for that reason alone. (v) PR #20's host-path fixes have not been measured on
+a GPU either, and this run includes them, so the `lru` row may differ from r5's 0.59 tok/s.
+
+**Credits.** Next-use ("probabilistic Belady") eviction and the deadline-ordered queue follow
+SeqMoE (arXiv 2609.12978). Layer-ahead routing as a prefetch signal follows Pre-gated MoE and
+ProMoE; here it is a hint only and the real router's selection is always what executes. Belady's
+MIN (1966) is the offline bound the simulator reports.
+
+### Addendum 6 — b=8 host-hit cliff on 1xL4 (registered 2026-11-11, before run `p6m-l4-r6`)
+
+*Numbering.* Registered on 2026-11-11 in PR #19 as Addendum 5. PR #21 merged its own Addendum 5 into the base first, so this one was renumbered to 6 when the base was merged in on 2026-11-17. No number, band or row changed; `p6m-l4-r6` has still not run.
 
 **Why.** Addendum 4 killed the b8-h16 host hit (0 of 49,463 against 0.51). PR #18 added a
 step-granular LRU cap (`theory/batch_cliff.py`, `CORRECTION_HOST_HIT_BATCH.md`) that explains the
@@ -506,7 +578,7 @@ sha256 for q0..q7; q7 repeats q0), whose 128-token route journals are committed 
 `benchmark_reports/deepseek-v4-flash-0731-t4/gpu2-phase4-cache-hierarchy/evidence/a1_asis/`. The
 module rebuilds the b=8 decode stream from them (per step, per layer in order, de-duplicated) and
 replays the host tier's LRU over it exactly. Outputs: `data/batch_cliff_replay_summary.json`,
-`data/batch_cliff_replay_grid.csv`, and the registry `data/predecl_add5.json`. Deterministic, no
+`data/batch_cliff_replay_grid.csv`, and the registry `data/predecl_add6.json`. Deterministic, no
 RNG, no network: `python -m theory.batch_cliff_replay`.
 
 **Check against r5 (in-sample: this is how the instrument earns its use, not a prediction).**
@@ -573,6 +645,6 @@ have never been measured. (ii) The VRAM tier (268 records) in front of the host 
 modelled. (iii) The bands assume L4 routing stays within about 5% of the T4 journals' set sizes.
 Addendum 4 already shows one near-tie flip on the b=1 prompt.
 
-**Scoring.** `score.py` grades these rows from `data/predecl_add5.json` when a Modal b=8 run's host
-size has no frozen row (new `addendum5` block in the scorecard; tests in `test_score.py`). The
+**Scoring.** `score.py` grades these rows from `data/predecl_add6.json` when a Modal b=8 run's host
+size has no frozen row (new `addendum6` block in the scorecard; tests in `test_score.py`). The
 frozen and Addendum-3 verdicts read `NO FROZEN ROW` for such runs.

@@ -4,12 +4,25 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <sstream>
 #include <unordered_set>
 
 namespace dee {
+
+namespace {
+// One stderr line per eviction is ~1,500 lines per b=8 decode step (a syscall
+// each under gVisor).  Off unless DEE_CACHE_TRACE=1; the abort line stays on.
+bool cache_trace_enabled() {
+    static const bool on = [] {
+        const char* v = std::getenv("DEE_CACHE_TRACE");
+        return v && v[0] == '1';
+    }();
+    return on;
+}
+}  // namespace
 
 // ---- Arena ----------------------------------------------------------------
 Arena::~Arena() {
@@ -113,6 +126,8 @@ void VramCacheManager::evict_until_free(size_t need) {
         // find the resident block with the lowest eviction score
         ExpertBlock* victim = nullptr;
         int64_t worst = 0;
+        double worst_rank = 0.0;
+        const bool by_next_use = next_use_active();
         bool first = true;
         int pinned_skipped_this_iter = 0;
         for (auto& kv : blocks_) {
@@ -127,6 +142,17 @@ void VramCacheManager::evict_until_free(size_t need) {
                 continue;
             }
             int64_t s = eviction_score(b);
+            if (by_next_use) {
+                // NextUse: furthest expected next use goes first; equal
+                // ranks fall back to least-recently-used so the choice is
+                // deterministic and independent of hash-map iteration order.
+                const double rank = next_use_victim_rank(b);
+                if (first || rank > worst_rank ||
+                    (rank == worst_rank && s < worst)) {
+                    worst = s; worst_rank = rank; victim = &b; first = false;
+                }
+                continue;
+            }
             if (first || s < worst) { worst = s; victim = &b; first = false; }
         }
         pinned_skipped_total += pinned_skipped_this_iter;
@@ -144,7 +170,7 @@ void VramCacheManager::evict_until_free(size_t need) {
                 "launch or premature re-entry into the same forward path)";
             break; // nothing resident to evict
         }
-        std::fprintf(stderr,
+        if (cache_trace_enabled()) std::fprintf(stderr,
             "[dee-cache %s:%d] evict_until_free(need=%zuB) iter=%d EVICT "
             "layer=%d expert=%d size=%zuB score=%lld priority=%d "
             "last_used=%lld arena_free_before=%zuB\n",
@@ -210,6 +236,7 @@ bool VramCacheManager::ensure(int layer, int expert, size_t nbytes, int priority
         last_ensure_info_.resident_hit = true;
         b->last_used = ++tick_;
         b->priority  = priority;
+        next_use_.on_use(NextUseEstimator::make_key(layer, expert));
         ++stats_.hits;
         last_ensure_info_.generation = b->generation;
         last_ensure_info_.cache_bytes_after = arena_.used();
@@ -308,6 +335,7 @@ bool VramCacheManager::ensure(int layer, int expert, size_t nbytes, int priority
     nb.resident  = true;
     nb.generation = next_generation_++;
     blocks_[nb.key] = nb;
+    next_use_.on_use(NextUseEstimator::make_key(layer, expert));
     ++stats_.loads;
     last_ensure_info_.generation = nb.generation;
     last_ensure_info_.cache_bytes_after = arena_.used();
@@ -318,7 +346,10 @@ bool VramCacheManager::ensure(int layer, int expert, size_t nbytes, int priority
 
 void VramCacheManager::touch(int layer, int expert) {
     ExpertBlock* b = find_block(layer, expert);
-    if (b && b->resident) b->last_used = ++tick_;
+    if (b && b->resident) {
+        b->last_used = ++tick_;
+        next_use_.on_use(NextUseEstimator::make_key(layer, expert));
+    }
 }
 
 bool VramCacheManager::is_resident(int layer, int expert) const {
@@ -380,6 +411,7 @@ void VramCacheManager::clear() {
     }
     blocks_.clear();
     tick_ = 0;
+    next_use_.clear();
     if (debug_validation_) validate_or_record("clear");
     // reset stats? keep cumulative; caller decides.
 }

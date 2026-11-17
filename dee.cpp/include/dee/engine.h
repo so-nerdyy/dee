@@ -97,7 +97,29 @@ struct EngineConfig {
     // EvictionPolicy::Recency; "rank_priority" maps to
     // EvictionPolicy::RankPriority.  The default preserves the legacy
     // bit-exact rank-priority behavior; unknown strings fail init.
+    // "next_use" maps to EvictionPolicy::NextUse: evict the unpinned expert
+    // whose predicted next use is furthest away (dee/next_use.h).  Placement
+    // only; it never changes which experts run.
     std::string eviction_policy = "rank_priority";
+    // Host pack cache eviction: "lru" (the original behavior) or "next_use".
+    // Unknown strings fail init.
+    std::string host_eviction_policy = "lru";
+    // Prefetch hints (host tier only, FP4 + expert-store path).  A hint asks
+    // for a record to be read into host RAM before the model requests it, on
+    // `prefetch_hint_lanes` background lanes (0 = hints off).  Hints never
+    // decide routing: the router's own selection is always what executes,
+    // and a wrong hint only costs one wasted read.
+    //   prefetch_hint_source "off"       - only hints passed to
+    //                                      prefetch_hint() are queued;
+    //                        "prev_step" - at each layer call the engine also
+    //                                      hints the experts the NEXT layer(s)
+    //                                      used on the previous decode step.
+    //   prefetch_hint_depth  how many layer calls ahead "prev_step" hints.
+    //   prefetch_queue_order "deadline" (nearest layer first) or "fifo".
+    size_t      prefetch_hint_lanes = 0;
+    std::string prefetch_hint_source = "off";
+    int         prefetch_hint_depth = 1;
+    std::string prefetch_queue_order = "deadline";
     // Phase-4 (B0d): host pack cache mode.  "lru" is the bounded packed-source
     // LRU described above; "bypass" clamps the host cache budget to exactly
     // one store record and forces source_read_lanes = 1 so multi-lane fills
@@ -382,6 +404,18 @@ public:
     bool route_topk_batch(int layer, const float* h_in, int tokens,
                           float* router_logits, float* routing_weights,
                           int* experts);
+
+    // Lookahead prefetch hint from the caller.  `experts` are the experts the
+    // caller expects `layer` to route to at its next call (for example layer
+    // L+1's own router evaluated early on layer L's hidden state, the
+    // Pre-gated MoE idea, or exactly known hash-layer ids).  The engine only
+    // uses them to start host reads early; the real router output passed to
+    // the moe_forward_* call is what runs.  Returns how many hints were
+    // queued (0 when hints are off or everything is already resident).
+    size_t prefetch_hint(int layer, const int* experts, size_t count);
+    // Cancel queued hints and wait for hint reads in flight (profiling /
+    // reset boundaries).
+    void drain_prefetch_hints() { pack_cache_.drain_hints(); }
 
     int hidden_dim() const { return hidden_; }
     int inter_dim()  const { return inter_; }
@@ -700,6 +734,22 @@ private:
     };
     static bool fill_fp4_record(void* context, uint8_t* dst, size_t nbytes);
     uint64_t fp4_prepare_generation_ = 0;
+
+    // Layer clock for next-use eviction and prefetch deadlines.  One tick per
+    // MoE layer call of this engine; begin_expert_layer() is called once at
+    // the start of every call with that call's de-duplicated request list.
+    uint64_t layer_clock_ = 0;
+    int clock_layer_ = -1;                 // source layer of the call running
+    bool layer_hints_issued_ = false;
+    std::vector<int> layer_active_;        // experts of the call running
+    // Per layer: the experts its last call requested, and the layer this
+    // engine ran right after it (learned, so any layer split works).
+    std::unordered_map<int, std::vector<int>> last_layer_sets_;
+    std::unordered_map<int, int> layer_successor_;
+    void begin_expert_layer(int source_layer, const int* experts, size_t count);
+    void issue_layer_hints(int source_layer);
+    size_t submit_host_hints(int source_layer, const int* experts,
+                             size_t count, uint64_t deadline);
     bool prepack_quantized_sources();
     StageProfile external_profile_snapshot(double total_wall_ms);
 

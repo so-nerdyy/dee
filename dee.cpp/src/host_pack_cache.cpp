@@ -8,7 +8,10 @@
 
 namespace dee {
 
-HostPackCache::~HostPackCache() { stop_fill_workers(); }
+HostPackCache::~HostPackCache() {
+    stop_hint_workers();
+    stop_fill_workers();
+}
 
 void HostPackCache::stop_fill_workers() {
     {
@@ -119,9 +122,11 @@ const uint8_t* HostPackCache::get(
     uint64_t key, size_t nbytes,
     const std::function<bool(uint8_t* dst, size_t n)>& fill) {
     if (nbytes == 0 || !fill) return nullptr;
+    settle_hint_for_demand(key);
+    next_use_.on_use(key);
     auto found = map_.find(key);
     if (found != map_.end()) {
-        const Entry& resident = found->second.first;
+        Entry& resident = found->second.first;
         if (!resident.ready || resident.nbytes != nbytes) {
             // Fail closed: never serve an unready reservation or a same-key
             // entry whose payload size differs from this request.  Counted
@@ -135,6 +140,7 @@ const uint8_t* HostPackCache::get(
         lru_.push_front(key);
         found->second.second = lru_.begin();
         ++stats_.hits;
+        note_served(resident);
         return resident.bytes.data();
     }
 
@@ -144,16 +150,17 @@ const uint8_t* HostPackCache::get(
         ++stats_.budget_rejections;
         return nullptr;
     }
-    while (used_bytes_ + nbytes > budget_bytes_ && !lru_.empty()) {
-        const uint64_t victim_key = lru_.back();
-        lru_.pop_back();
-        auto victim = map_.find(victim_key);
-        if (victim == map_.end()) continue;
-        const size_t victim_nbytes = victim->second.first.nbytes;
-        used_bytes_ -= victim_nbytes;
-        map_.erase(victim);
-        ++stats_.evictions;
-        if (evict_observer_) evict_observer_(victim_key, victim_nbytes);
+    if (!make_room(nbytes, nullptr, 0)) {
+        // Only bytes reserved for prefetch hints can stand in the way of a
+        // record that fits the budget: publish/cancel them and retry.  A
+        // demand request always wins over a guess.
+        drain_hints();
+        if (!make_room(nbytes, nullptr, 0)) {
+            ++stats_.budget_rejections;
+            stats_.bytes = used_bytes_;
+            stats_.entries = map_.size();
+            return nullptr;
+        }
     }
     Entry entry;
     try {
@@ -169,10 +176,13 @@ const uint8_t* HostPackCache::get(
     entry.nbytes = nbytes;
     const auto fill_begin = std::chrono::steady_clock::now();
     bool fill_ok = false;
-    try {
-        fill_ok = fill(entry.bytes.data(), nbytes);
-    } catch (...) {
-        fill_ok = false;
+    {
+        DemandScope demand(*this);
+        try {
+            fill_ok = fill(entry.bytes.data(), nbytes);
+        } catch (...) {
+            fill_ok = false;
+        }
     }
     ++stats_.scalar_fills;
     stats_.scalar_fill_ms += std::chrono::duration<double, std::milli>(
@@ -210,7 +220,10 @@ const uint8_t* HostPackCache::get_if_present(uint64_t key, bool count_hit) {
     lru_.erase(found->second.second);
     lru_.push_front(key);
     found->second.second = lru_.begin();
-    if (count_hit) ++stats_.hits;
+    if (count_hit) {
+        ++stats_.hits;
+        note_served(found->second.first);
+    }
     return found->second.first.bytes.data();
 }
 
@@ -228,6 +241,12 @@ bool HostPackCache::get_batch(
         return false;
     }
     for (size_t index = 0; index < count; ++index) results[index] = {};
+    // A demand request never waits behind a hint that has not started, and
+    // never reads a record a hint lane is already reading: settle every
+    // requested key first so hit/miss below is decided from the map alone.
+    for (size_t index = 0; index < count; ++index) {
+        settle_hint_for_demand(requests[index].key);
+    }
     // Profiling-only phase clock (steady_clock reads only; no behavior change).
     const auto phase_t0 = std::chrono::steady_clock::now();
     const uint64_t evict_before_batch = stats_.evictions;
@@ -254,6 +273,7 @@ bool HostPackCache::get_batch(
             results[index].cache_hit = true;
             continue;
         }
+        next_use_.on_use(request.key);
         auto found = map_.find(request.key);
         if (found != map_.end() && found->second.first.ready) {
             if (found->second.first.nbytes != request.nbytes) {
@@ -265,6 +285,7 @@ bool HostPackCache::get_batch(
             lru_.push_front(request.key);
             found->second.second = lru_.begin();
             ++stats_.hits;
+            note_served(found->second.first);
             results[index].data = found->second.first.bytes.data();
             results[index].cache_hit = true;
             results[index].success = true;
@@ -282,35 +303,22 @@ bool HostPackCache::get_batch(
         ++stats_.misses;
     }
 
-    // Protect every key in the incoming batch while selecting LRU victims.
-    // This makes all reservations stable until their disjoint fills finish.
-    while (used_bytes_ > budget_bytes_ - additional_bytes) {
-        auto victim = lru_.end();
-        for (auto it = lru_.end(); it != lru_.begin();) {
-            --it;
-            if (!is_batch_key(*it, requests, count)) {
-                victim = it;
-                break;
-            }
-        }
-        if (victim == lru_.end()) {
-            // Every resident is a protected batch key; the request set
-            // cannot be admitted under the byte budget.  Refresh derived
+    // Protect every key in the incoming batch while selecting victims (by
+    // the active policy).  This makes all reservations stable until their
+    // disjoint fills finish.
+    if (!make_room(additional_bytes, requests, count)) {
+        // Bytes reserved for prefetch hints may be what blocks a batch that
+        // fits the budget: publish/cancel them and retry once.
+        drain_hints();
+        if (!make_room(additional_bytes, requests, count)) {
+            // Every remaining resident is a protected batch key; the request
+            // set cannot be admitted under the byte budget.  Refresh derived
             // stats for victims already removed above before bailing.
             ++stats_.budget_rejections;
             stats_.bytes = used_bytes_;
             stats_.entries = map_.size();
             return false;
         }
-        const uint64_t victim_key = *victim;
-        auto found = map_.find(victim_key);
-        lru_.erase(victim);
-        if (found == map_.end()) continue;
-        const size_t victim_nbytes = found->second.first.nbytes;
-        used_bytes_ -= victim_nbytes;
-        map_.erase(found);
-        ++stats_.evictions;
-        if (evict_observer_) evict_observer_(victim_key, victim_nbytes);
     }
 
     try {
@@ -397,6 +405,8 @@ bool HostPackCache::get_batch(
         });
     next_fill_index_.store(0, std::memory_order_relaxed);
     const auto wake_begin = std::chrono::steady_clock::now();
+    // Hint lanes take no new work while this batch is reading.
+    DemandScope demand(*this);
     if (!fill_workers_.empty() && unique_misses > 1) {
         {
             std::lock_guard<std::mutex> lock(fill_mutex_);
@@ -514,6 +524,10 @@ bool HostPackCache::get_batch(
 }
 
 void HostPackCache::clear() {
+    // No hint lane may still be writing when the cache is wiped; whatever
+    // they finished is published first and then dropped with everything else.
+    drain_hints();
+    next_use_.clear();
     map_.clear();
     lru_.clear();
     used_bytes_ = 0;
@@ -536,6 +550,430 @@ void HostPackCache::clear() {
     stats_.budget_rejections = 0;
     stats_.scalar_fills = 0;
     stats_.scalar_fill_ms = 0.0;
+    stats_.hints_submitted = 0;
+    stats_.hints_rejected = 0;
+    stats_.hints_cancelled = 0;
+    stats_.hint_reads = 0;
+    stats_.hint_read_ms = 0.0;
+    stats_.hint_failures = 0;
+    stats_.hint_hits = 0;
+    stats_.hint_waits = 0;
+    stats_.hints_wasted = 0;
+    stats_.hint_reserved_bytes = hint_reserved_bytes_;
+}
+
+// ---------------------------------------------------------------------------
+// Policy-aware eviction (caller thread only)
+// ---------------------------------------------------------------------------
+void HostPackCache::note_served(Entry& entry) {
+    if (!entry.hinted_unused) return;
+    entry.hinted_unused = false;
+    ++stats_.hint_hits;
+}
+
+void HostPackCache::evict_entry(uint64_t key) {
+    auto found = map_.find(key);
+    if (found == map_.end()) return;
+    const size_t nbytes = found->second.first.nbytes;
+    if (found->second.first.hinted_unused) ++stats_.hints_wasted;
+    used_bytes_ -= nbytes;
+    lru_.erase(found->second.second);
+    map_.erase(found);
+    ++stats_.evictions;
+    if (evict_observer_) evict_observer_(key, nbytes);
+}
+
+bool HostPackCache::make_room(
+        size_t need, const BatchRequest* protect, size_t protect_count) {
+    const auto fits = [&]() {
+        return need <= budget_bytes_ &&
+               used_bytes_ + hint_reserved_bytes_ <= budget_bytes_ - need;
+    };
+    if (fits()) return true;
+    if (next_use_active()) {
+        // Furthest expected next use leaves first.  One ranking pass serves
+        // every victim of this call: ranks only move when a record is used
+        // or the layer advances, and neither happens while evicting.
+        struct Candidate {
+            double rank;
+            uint64_t key;
+        };
+        std::vector<Candidate> candidates;
+        candidates.reserve(map_.size());
+        for (const auto& kv : map_) {
+            if (!kv.second.first.ready) continue;
+            if (protect && is_batch_key(kv.first, protect, protect_count)) {
+                continue;
+            }
+            candidates.push_back(
+                {next_use_.victim_rank(kv.first), kv.first});
+        }
+        // Equal ranks fall back to key order so the choice never depends on
+        // hash-map iteration order.
+        std::sort(candidates.begin(), candidates.end(),
+                  [](const Candidate& lhs, const Candidate& rhs) {
+                      if (lhs.rank != rhs.rank) return lhs.rank > rhs.rank;
+                      return lhs.key < rhs.key;
+                  });
+        for (const Candidate& candidate : candidates) {
+            if (fits()) break;
+            evict_entry(candidate.key);
+        }
+        return fits();
+    }
+    // LRU: walk from the least recently used end, skipping protected keys.
+    auto it = lru_.end();
+    while (!fits() && it != lru_.begin()) {
+        --it;
+        const uint64_t key = *it;
+        auto found = map_.find(key);
+        if (found == map_.end()) {
+            it = lru_.erase(it);
+            continue;
+        }
+        if (!found->second.first.ready ||
+            (protect && is_batch_key(key, protect, protect_count))) {
+            continue;
+        }
+        it = std::next(it);
+        evict_entry(key);
+    }
+    return fits();
+}
+
+// ---------------------------------------------------------------------------
+// Prefetch hints
+// ---------------------------------------------------------------------------
+HostPackCache::DemandScope::DemandScope(HostPackCache& cache) : cache_(cache) {
+    std::lock_guard<std::mutex> lock(cache_.hint_mutex_);
+    ++cache_.hint_demand_active_;
+}
+
+HostPackCache::DemandScope::~DemandScope() {
+    {
+        std::lock_guard<std::mutex> lock(cache_.hint_mutex_);
+        --cache_.hint_demand_active_;
+    }
+    cache_.hint_work_cv_.notify_all();
+}
+
+size_t HostPackCache::hint_reserve_cap() const {
+    if (hint_reserve_limit_ == 0) return budget_bytes_ / 4;
+    return std::min(hint_reserve_limit_, budget_bytes_);
+}
+
+void HostPackCache::set_hint_queue_order(HintQueueOrder order) {
+    std::lock_guard<std::mutex> lock(hint_mutex_);
+    hint_order_ = order;
+}
+
+size_t HostPackCache::pending_hints() const {
+    std::lock_guard<std::mutex> lock(hint_mutex_);
+    return hint_jobs_.size();
+}
+
+void HostPackCache::hint_worker_loop() {
+    std::unique_lock<std::mutex> lock(hint_mutex_);
+    for (;;) {
+        hint_work_cv_.wait(lock, [&] {
+            return hint_stop_ ||
+                   (!hint_queue_.empty() && hint_demand_active_ == 0);
+        });
+        if (hint_stop_) return;
+        // Nearest deadline first (ties: arrival order); Fifo ignores deadlines.
+        size_t best = 0;
+        for (size_t index = 1; index < hint_queue_.size(); ++index) {
+            const HintJob& candidate = *hint_queue_[index];
+            const HintJob& current = *hint_queue_[best];
+            const bool sooner =
+                hint_order_ == HintQueueOrder::Deadline &&
+                candidate.deadline != current.deadline
+                    ? candidate.deadline < current.deadline
+                    : candidate.seq < current.seq;
+            if (sooner) best = index;
+        }
+        HintJobPtr job = hint_queue_[best];
+        hint_queue_[best] = hint_queue_.back();
+        hint_queue_.pop_back();
+        job->state = HintJob::State::Running;
+        lock.unlock();
+
+        bool ok = false;
+        const auto begin = std::chrono::steady_clock::now();
+        try {
+            job->bytes.resize(job->nbytes);
+            ok = job->fill && job->fill(job->bytes.data(), job->nbytes);
+        } catch (...) {
+            ok = false;
+        }
+        const double milliseconds =
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - begin).count();
+
+        lock.lock();
+        job->milliseconds = milliseconds;
+        job->fill = nullptr;
+        if (!ok) std::vector<uint8_t>().swap(job->bytes);
+        job->state = ok ? HintJob::State::Done : HintJob::State::Failed;
+        hint_finished_.push_back(job);
+        hint_done_cv_.notify_all();
+    }
+}
+
+void HostPackCache::stop_hint_workers() {
+    {
+        std::lock_guard<std::mutex> lock(hint_mutex_);
+        hint_stop_ = true;
+    }
+    hint_work_cv_.notify_all();
+    for (auto& worker : hint_workers_) {
+        if (worker.joinable()) worker.join();
+    }
+    hint_workers_.clear();
+    std::lock_guard<std::mutex> lock(hint_mutex_);
+    hint_stop_ = false;
+    // Whatever was queued or finished but unpublished is dropped: nothing a
+    // hint read is ever visible unless absorb_hints() published it.
+    stats_.hints_cancelled += hint_jobs_.size();
+    hint_jobs_.clear();
+    hint_queue_.clear();
+    hint_finished_.clear();
+    hint_reserved_bytes_ = 0;
+    stats_.hint_reserved_bytes = 0;
+}
+
+bool HostPackCache::set_hint_lanes(size_t lanes) {
+    if (lanes > kMaxFillLanes) return false;
+    if (lanes == hint_workers_.size()) return true;
+    stop_hint_workers();
+    try {
+        hint_workers_.reserve(lanes);
+        for (size_t lane = 0; lane < lanes; ++lane) {
+            hint_workers_.emplace_back(&HostPackCache::hint_worker_loop, this);
+        }
+    } catch (...) {
+        stop_hint_workers();
+        return false;
+    }
+    return true;
+}
+
+void HostPackCache::cancel_queued_hint_locked(const HintJobPtr& job) {
+    for (size_t index = 0; index < hint_queue_.size(); ++index) {
+        if (hint_queue_[index] != job) continue;
+        hint_queue_[index] = hint_queue_.back();
+        hint_queue_.pop_back();
+        break;
+    }
+    hint_jobs_.erase(job->key);
+}
+
+size_t HostPackCache::submit_hints(HintRequest* requests, size_t count) {
+    if (!requests || count == 0) return 0;
+    absorb_hints();
+    size_t accepted = 0;
+    for (size_t index = 0; index < count; ++index) {
+        HintRequest& request = requests[index];
+        bool ok = !hint_workers_.empty() && request.fill &&
+                  request.nbytes != 0 && request.nbytes <= budget_bytes_ &&
+                  map_.find(request.key) == map_.end() &&
+                  request.nbytes <= hint_reserve_cap() &&
+                  hint_reserved_bytes_ <= hint_reserve_cap() - request.nbytes;
+        if (ok) {
+            std::lock_guard<std::mutex> lock(hint_mutex_);
+            ok = hint_jobs_.find(request.key) == hint_jobs_.end();
+        }
+        if (ok && used_bytes_ + hint_reserved_bytes_ >
+                      budget_bytes_ - request.nbytes) {
+            if (next_use_active()) {
+                // A guess may only displace a record that is expected to be
+                // needed LATER than the hinted one.
+                const double hint_rank =
+                    next_use_.expected_next_use(request.key);
+                double worst = -1.0;
+                uint64_t victim = 0;
+                bool have = false;
+                for (const auto& kv : map_) {
+                    if (!kv.second.first.ready) continue;
+                    const double rank = next_use_.victim_rank(kv.first);
+                    if (!have || rank > worst ||
+                        (rank == worst && kv.first < victim)) {
+                        worst = rank;
+                        victim = kv.first;
+                        have = true;
+                    }
+                }
+                ok = have && worst > hint_rank &&
+                     map_.find(victim)->second.first.nbytes >= request.nbytes;
+                if (ok) evict_entry(victim);
+                ok = ok && used_bytes_ + hint_reserved_bytes_ <=
+                               budget_bytes_ - request.nbytes;
+            } else {
+                // LRU: a guess may not push out a record of the layer that
+                // is running now (it may be prepared but not staged yet).
+                ok = !(next_use_.enabled() && !lru_.empty() &&
+                       next_use_.victim_rank(lru_.back()) < 0.0) &&
+                     make_room(request.nbytes, nullptr, 0);
+            }
+        }
+        if (!ok) {
+            ++stats_.hints_rejected;
+            continue;
+        }
+        auto job = std::make_shared<HintJob>();
+        job->key = request.key;
+        job->nbytes = request.nbytes;
+        job->fill = std::move(request.fill);
+        job->deadline = request.deadline;
+        hint_reserved_bytes_ += request.nbytes;
+        {
+            std::lock_guard<std::mutex> lock(hint_mutex_);
+            job->seq = ++hint_seq_;
+            hint_jobs_[job->key] = job;
+            hint_queue_.push_back(job);
+        }
+        ++stats_.hints_submitted;
+        ++accepted;
+    }
+    if (accepted != 0) hint_work_cv_.notify_all();
+    stats_.bytes = used_bytes_;
+    stats_.entries = map_.size();
+    stats_.hint_reserved_bytes = hint_reserved_bytes_;
+    return accepted;
+}
+
+size_t HostPackCache::expire_hints(uint64_t now) {
+    if (hint_reserved_bytes_ == 0) return 0;
+    size_t cancelled = 0;
+    size_t released = 0;
+    {
+        std::lock_guard<std::mutex> lock(hint_mutex_);
+        for (size_t index = 0; index < hint_queue_.size();) {
+            const HintJobPtr job = hint_queue_[index];
+            if (job->deadline > now) {
+                ++index;
+                continue;
+            }
+            hint_queue_[index] = hint_queue_.back();
+            hint_queue_.pop_back();
+            hint_jobs_.erase(job->key);
+            released += job->nbytes;
+            ++cancelled;
+        }
+    }
+    hint_reserved_bytes_ -= released;
+    stats_.hints_cancelled += cancelled;
+    stats_.hint_reserved_bytes = hint_reserved_bytes_;
+    return cancelled;
+}
+
+size_t HostPackCache::absorb_hints() {
+    if (hint_reserved_bytes_ == 0) return 0;
+    std::vector<HintJobPtr> finished;
+    {
+        std::lock_guard<std::mutex> lock(hint_mutex_);
+        if (hint_finished_.empty()) return 0;
+        finished.swap(hint_finished_);
+        for (const HintJobPtr& job : finished) hint_jobs_.erase(job->key);
+    }
+    size_t published = 0;
+    for (const HintJobPtr& job : finished) {
+        hint_reserved_bytes_ -= job->nbytes;
+        const bool ok = job->state == HintJob::State::Done;
+        if (hint_read_observer_) {
+            hint_read_observer_(job->key, job->nbytes, job->milliseconds, ok);
+        }
+        if (!ok) {
+            // Fail closed: a failed hint publishes nothing; a later demand
+            // request reads the record through the normal path.
+            ++stats_.hint_failures;
+            continue;
+        }
+        ++stats_.hint_reads;
+        stats_.hint_read_ms += job->milliseconds;
+        if (map_.find(job->key) != map_.end() ||
+            job->nbytes > budget_bytes_ ||
+            used_bytes_ + hint_reserved_bytes_ > budget_bytes_ - job->nbytes) {
+            ++stats_.hints_wasted;
+            continue;
+        }
+        Entry entry;
+        entry.bytes = std::move(job->bytes);
+        entry.nbytes = job->nbytes;
+        entry.ready = true;
+        entry.hinted_unused = true;
+        lru_.push_front(job->key);
+        auto inserted = map_.emplace(
+            job->key, std::make_pair(std::move(entry), lru_.begin()));
+        if (!inserted.second) {
+            lru_.pop_front();
+            ++stats_.hints_wasted;
+            continue;
+        }
+        used_bytes_ += job->nbytes;
+        ++published;
+    }
+    stats_.bytes = used_bytes_;
+    stats_.entries = map_.size();
+    stats_.hint_reserved_bytes = hint_reserved_bytes_;
+    return published;
+}
+
+void HostPackCache::settle_hint_for_demand(uint64_t key) {
+    if (hint_reserved_bytes_ == 0) return;   // no hint outstanding at all
+    bool cancelled = false;
+    size_t released = 0;
+    {
+        std::unique_lock<std::mutex> lock(hint_mutex_);
+        auto found = hint_jobs_.find(key);
+        if (found != hint_jobs_.end()) {
+            HintJobPtr job = found->second;
+            if (job->state == HintJob::State::Queued) {
+                // Not started: the demand path reads it now, on its own lanes.
+                cancel_queued_hint_locked(job);
+                cancelled = true;
+                released = job->nbytes;
+            } else if (job->state == HintJob::State::Running) {
+                // Already being read: wait for that read instead of issuing
+                // a second one for the same record.
+                ++stats_.hint_waits;
+                hint_done_cv_.wait(lock, [&] {
+                    return job->state != HintJob::State::Running;
+                });
+            }
+        }
+    }
+    if (cancelled) {
+        hint_reserved_bytes_ -= released;
+        ++stats_.hints_cancelled;
+        stats_.hint_reserved_bytes = hint_reserved_bytes_;
+    }
+    absorb_hints();
+}
+
+void HostPackCache::drain_hints() {
+    if (hint_reserved_bytes_ == 0) return;
+    size_t cancelled = 0;
+    size_t released = 0;
+    {
+        std::unique_lock<std::mutex> lock(hint_mutex_);
+        for (const HintJobPtr& job : hint_queue_) {
+            hint_jobs_.erase(job->key);
+            released += job->nbytes;
+            ++cancelled;
+        }
+        hint_queue_.clear();
+        hint_done_cv_.wait(lock, [&] {
+            for (const auto& kv : hint_jobs_) {
+                if (kv.second->state == HintJob::State::Running) return false;
+            }
+            return true;
+        });
+    }
+    hint_reserved_bytes_ -= released;
+    stats_.hints_cancelled += cancelled;
+    stats_.hint_reserved_bytes = hint_reserved_bytes_;
+    absorb_hints();
 }
 
 }  // namespace dee

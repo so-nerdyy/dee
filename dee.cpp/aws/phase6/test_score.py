@@ -499,9 +499,46 @@ def test_own_reference_pair_must_be_bit_identical(tmp_path, kw, needle):
     assert any(needle in w for w in why), why
 
 
-# --- Addendum 5 (2026-11-11): b=8 host-hit cliff rows at non-frozen host sizes --------
+# --- placement exactness gate (next-use eviction / prefetch hints) -------------------
 
-def _add5_run(tmp_path, host=24.0, hits=46, misses=54, reads=855, steps=64, b8=True):
+def _cohort_result(shas):
+    return _b1_result(rows=[{"prompt_index": i, "token_ids_sha256": s, "n_tokens": 65}
+                            for i, s in enumerate(shas)])
+
+
+def test_placement_pair_exact_when_tokens_and_journals_match(tmp_path):
+    a, b = _pair(tmp_path, host_b=64.0)
+    assert score.verify_placement_pair(score.load_evidence(a), score.load_evidence(b)) == []
+    assert score.main(["--placement-exact", str(a), str(b)]) == 0
+
+
+@pytest.mark.parametrize("kw,needle", [
+    ({"host_b": 16.0}, "differ in host_gib_requested"),
+    ({"host_b": 64.0,
+      "journal_b": '{"forward_step": 0, "layer": 0, "expert_ids_rank_order": [[1, 3]]}\n'},
+     "routed_experts.jsonl differs"),
+    ({"host_b": 64.0, "result_b": _reject_result(generated_token_ids=list(range(1, 17)))},
+     "tokens differ"),
+    ({"host_b": 64.0, "result_b": _cohort_result(["x", "y"])}, "tokens differ"),
+])
+def test_placement_pair_rejects_any_difference(tmp_path, kw, needle):
+    a, b = _pair(tmp_path, **kw)
+    why = score.verify_placement_pair(score.load_evidence(a), score.load_evidence(b))
+    assert any(needle in w for w in why), why
+    assert score.main(["--placement-exact", str(a), str(b)]) == 1
+
+
+def test_placement_pair_compares_every_cohort_row(tmp_path):
+    a, b = _pair(tmp_path, host_b=64.0, result_b=_cohort_result(["x", "y"]))
+    (a / "result.json").write_text(json.dumps(_cohort_result(["x", "y"])))
+    assert score.verify_placement_pair(score.load_evidence(a), score.load_evidence(b)) == []
+    (b / "result.json").write_text(json.dumps(_cohort_result(["x", "z"])))
+    why = score.verify_placement_pair(score.load_evidence(a), score.load_evidence(b))
+    assert any("tokens differ" in w for w in why)
+
+# --- Addendum 6 (2026-11-11): b=8 host-hit cliff rows at non-frozen host sizes --------
+
+def _add6_run(tmp_path, host=24.0, hits=46, misses=54, reads=855, steps=64, b8=True):
     s = _modal_summary(host_gib_requested=host, host_gib_effective=host)
     res = _cohort(steps=steps) if b8 else _b1_result()
     name = "result-c0.json" if b8 else "result.json"
@@ -510,8 +547,8 @@ def _add5_run(tmp_path, host=24.0, hits=46, misses=54, reads=855, steps=64, b8=T
                                          hits_per_step=hits, misses_per_step=misses))
 
 
-def test_addendum5_registry_rows_and_bands():
-    reg = score.load_addendum5()
+def test_addendum6_registry_rows_and_bands():
+    reg = score.load_addendum6()
     assert reg["registered"] == "2026-11-11"
     rows = {r["host_gib"]: r for r in reg["rows"]}
     assert sorted(rows) == [18, 24, 32]
@@ -523,31 +560,31 @@ def test_addendum5_registry_rows_and_bands():
     assert rows[24]["host_hit_rate"]["kill_hi"] < 0.52
 
 
-def test_addendum5_scores_a_non_frozen_host(tmp_path, frozen):
-    card = score.score_run(_add5_run(tmp_path), frozen=frozen)
+def test_addendum6_scores_a_non_frozen_host(tmp_path, frozen):
+    card = score.score_run(_add6_run(tmp_path), frozen=frozen)
     assert card["prerequisite_failures"] == []
     assert card["verdict"] == "NO FROZEN ROW" and card["metrics"] == {}
-    a5 = card["addendum5"]
+    a5 = card["addendum6"]
     assert a5["metrics"]["host_hit_rate"]["measured"] == pytest.approx(0.46)
     assert a5["metrics"]["host_hit_rate"]["grade"] == "PASS"
     assert a5["metrics"]["cold_records_per_tok"]["grade"] == "PASS"
     assert a5["verdict"] == "PASS"
-    assert "Addendum 5" in score.render_md(card)
-    assert any("graded on Addendum 5 only" in w for w in card["warnings"])
+    assert "Addendum 6" in score.render_md(card)
+    assert any("graded on Addendum 6 only" in w for w in card["warnings"])
 
 
-def test_addendum5_kills_the_registered_value(tmp_path, frozen):
-    card = score.score_run(_add5_run(tmp_path, hits=52, misses=48), frozen=frozen)
-    assert card["addendum5"]["metrics"]["host_hit_rate"]["grade"] == "KILLED"
+def test_addendum6_kills_the_registered_value(tmp_path, frozen):
+    card = score.score_run(_add6_run(tmp_path, hits=52, misses=48), frozen=frozen)
+    assert card["addendum6"]["metrics"]["host_hit_rate"]["grade"] == "KILLED"
 
 
-def test_addendum5_short_run_untestable(tmp_path, frozen):
-    card = score.score_run(_add5_run(tmp_path, steps=40), frozen=frozen)
+def test_addendum6_short_run_untestable(tmp_path, frozen):
+    card = score.score_run(_add6_run(tmp_path, steps=40), frozen=frozen)
     assert card["verdict"] == "UNTESTABLE"
-    assert (card.get("addendum5") or {}).get("verdict", "UNTESTABLE") == "UNTESTABLE"
+    assert (card.get("addendum6") or {}).get("verdict", "UNTESTABLE") == "UNTESTABLE"
 
 
-def test_addendum5_has_no_b1_rows(tmp_path, frozen):
-    card = score.score_run(_add5_run(tmp_path, b8=False), frozen=frozen)
+def test_addendum6_has_no_b1_rows(tmp_path, frozen):
+    card = score.score_run(_add6_run(tmp_path, b8=False), frozen=frozen)
     assert card["verdict"] == "UNTESTABLE"
     assert any("not a frozen budget" in f for f in card["prerequisite_failures"])

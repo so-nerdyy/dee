@@ -1,5 +1,5 @@
 {
-  "addendum": "PREDICTIONS_PHASE6.md Addendum 5",
+  "addendum": "PREDICTIONS_PHASE6.md Addendum 6",
   "graded_metrics": [
     "host_hit_rate",
     "cold_records_per_tok"

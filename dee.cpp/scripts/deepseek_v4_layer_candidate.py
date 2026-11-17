@@ -83,6 +83,13 @@ class DeepseekV4CacheFfn:
     def _profile_ffn_finish(self, *, rows: int) -> None:
         del rows
 
+    # Called with this layer's FFN input right before its experts run.  The
+    # native subclass uses it to issue lookahead prefetch hints; it must not
+    # (and cannot) change what this layer computes.
+    def _before_experts(self, xf: torch.Tensor,
+                        input_ids: torch.Tensor) -> None:
+        del xf, input_ids
+
     def __call__(self, x: torch.Tensor, input_ids: torch.Tensor,
                  capture: Optional[dict[str, Any]]) -> torch.Tensor:
         cfg = self.cfg
@@ -122,6 +129,7 @@ class DeepseekV4CacheFfn:
         else:
             self.last_route = {}
         self._profile_ffn_mark()
+        self._before_experts(xf, input_ids)
         moe_out, shared_out = self._run_experts(xf, ids, weights)
         if capture is not None:
             # Same labels/units as the reference _ffn_fp32_direct: moe_out is
@@ -301,6 +309,69 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
         self._active_profile_boundary = 1
         self._profile_start_pos = -1
         self._profile_rows: list[dict[str, Any]] = []
+        # Lookahead prefetch (off unless a next layer is attached).  While
+        # this layer's experts load and run, the NEXT layer's own router is
+        # evaluated on this layer's FFN input and its top candidates are
+        # handed to the engine as prefetch hints (the Pre-gated MoE idea,
+        # used here as a hint only).  The next layer still routes with its
+        # real input when its turn comes, and only that route executes.
+        self.lookahead_next: Optional["DeepseekV4NativeFfn"] = None
+        self.lookahead_width = 0
+        self._lookahead_pending: Optional[set[int]] = None
+        self.lookahead_stats = {"calls": 0, "hinted": 0, "queued": 0,
+                                "scored_calls": 0, "actual": 0, "correct": 0,
+                                "exact_calls": 0, "ms": 0.0}
+
+    def attach_lookahead(self, next_ffn: Optional["DeepseekV4NativeFfn"],
+                         width: int = 0) -> None:
+        """Hint ``next_ffn``'s experts from this layer (None turns it off).
+
+        ``width`` is the number of candidates per token row (0 = the next
+        layer's top-k).  Both layers must be served by the same engine.
+        """
+        if next_ffn is not None and next_ffn.engine is not self.engine:
+            raise ValueError("lookahead needs both layers on one engine")
+        self.lookahead_next = next_ffn
+        self.lookahead_width = int(width)
+
+    @torch.no_grad()
+    def _before_experts(self, xf: torch.Tensor,
+                        input_ids: torch.Tensor) -> None:
+        nxt = self.lookahead_next
+        if nxt is None:
+            return
+        t0 = time.perf_counter()
+        if nxt.tid2eid is not None:
+            # Hash-routed layer: its route is a table lookup on the token
+            # ids, which are already known, so the hint is exact.
+            candidates = nxt.tid2eid[input_ids.flatten()]
+            self.lookahead_stats["exact_calls"] += 1
+        else:
+            scores = torch.nn.functional.softplus(
+                xf @ nxt.gate_w.float().transpose(0, 1)).sqrt()
+            if nxt.gate_b is not None:
+                scores = scores + nxt.gate_b
+            width = max(1, min(self.lookahead_width or nxt.cfg.topk,
+                               scores.shape[-1]))
+            candidates = scores.topk(width, dim=-1)[1]
+        hinted = torch.unique(candidates).to(torch.int32).cpu().numpy()
+        queued = int(self.engine.prefetch_hint(nxt.layer_id, hinted))
+        nxt._lookahead_pending = set(int(e) for e in hinted)
+        self.lookahead_stats["calls"] += 1
+        self.lookahead_stats["hinted"] += int(hinted.size)
+        self.lookahead_stats["queued"] += queued
+        self.lookahead_stats["ms"] += (time.perf_counter() - t0) * 1000.0
+
+    def _score_lookahead(self, ids_host: Any) -> None:
+        """Diagnostic only: how good was the hint issued for this layer?"""
+        pending = self._lookahead_pending
+        if pending is None:
+            return
+        self._lookahead_pending = None
+        actual = set(int(e) for e in np.unique(ids_host))
+        self.lookahead_stats["scored_calls"] += 1
+        self.lookahead_stats["actual"] += len(actual)
+        self.lookahead_stats["correct"] += len(actual & pending)
 
     _PROFILE_PHASES = (
         "router",
@@ -480,6 +551,7 @@ class DeepseekV4NativeFfn(DeepseekV4CacheFfn):
             hp["route_d2h_host_wait_ms"] = (
                 hp["wait_end_t"] - hp["wait_start_t"]) * 1000.0
         ids_host = ids_host_tensor.numpy()
+        self._score_lookahead(ids_host)
         self.stats["route_id_d2h_copies"] += 1
         self.stats["route_id_d2h_bytes"] += int(ids_host_tensor.numel() * 4)
         # The NumPy object is only a zero-copy view of the compact route IDs;

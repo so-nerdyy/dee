@@ -290,6 +290,50 @@ def verify_own_reference(a: Evidence, b: Evidence) -> list[str]:
     return why
 
 
+def _token_rows(result: dict) -> list:
+    """Every token the run emitted: the single stream, or all cohort rows."""
+    rows = result.get("cohort_rows") or result.get("rows")
+    if isinstance(rows, list) and rows:
+        return [r.get("token_ids") or r.get("token_ids_sha256")
+                or r.get("actual_token_ids_sha256") for r in rows]
+    return [result.get("generated_token_ids")]
+
+
+def verify_placement_pair(base: Evidence, cand: Evidence) -> list[str]:
+    """Exactness gate for placement-only changes (eviction policy, prefetch hints).
+
+    ``base`` and ``cand`` are the same workload on the same GPU, commit, host and VRAM budget,
+    differing only in placement knobs.  Placement may move records between tiers but must not
+    change a single token or routed expert.  Returns the reasons the pair is NOT exact (empty
+    list = byte-identical tokens and route journals).
+    """
+    why: list[str] = []
+    sa, sb = base.summary, cand.summary
+    if base.result is None or cand.result is None:
+        return ["a run has no result.json"]
+    for k in ("gpu", "n_gpus", "commit", "budget_mib", "model", "host_gib_requested",
+              "n_tokens", "cohort"):
+        if sa.get(k) != sb.get(k):
+            why.append(f"runs differ in {k}: {sa.get(k)!r} vs {sb.get(k)!r}")
+    ta, tb = _token_rows(base.result), _token_rows(cand.result)
+    if not ta or any(t is None or not t for t in ta) or ta != tb:
+        why.append("generated tokens differ (or are missing)")
+    names = sorted({p.name for p in base.root.glob("routed_experts*.jsonl")}
+                   | {p.name for p in cand.root.glob("routed_experts*.jsonl")})
+    if not names:
+        why.append("no routed_experts journal in either run")
+    for name in names:
+        pa, pb = base.root / name, cand.root / name
+        if not (pa.is_file() and pb.is_file()):
+            why.append(f"{name} missing from one run")
+            continue
+        ra, rb = _jsonl(pa), _jsonl(pb)
+        strip = lambda rows: [{k: v for k, v in r.items() if k not in _JOURNAL_IGNORE} for r in rows]
+        if not ra or strip(ra) != strip(rb):
+            why.append(f"{name} differs between the runs (ignoring run_id and chain hashes)")
+    return why
+
+
 def _common_checks(ev: Evidence) -> list[str]:
     """Section-0 checks that do not depend on the platform's cell table."""
     s, r = ev.summary, ev.result or {}
@@ -580,9 +624,9 @@ def score_modal_run(ev: Evidence, fm: FrozenMatrix, addendum=None) -> dict:
         fails.append(f"Modal GPU {s.get('gpu')!r} is not a frozen cell")
     if model is None:
         fails.append(f"model {s.get('model')!r} has no frozen rows")
-    add5_row = addendum5_row(s, ev.result)
+    add6_row = addendum6_row(s, ev.result)
     frozen_host = host is not None and float(host) in FROZEN_HOSTS
-    if not frozen_host and add5_row is None:
+    if not frozen_host and add6_row is None:
         fails.append(f"host {host} GiB is not a frozen budget {list(FROZEN_HOSTS)}")
     fails += _common_checks(ev)
     if ev.own_reference and (ev.result or {}).get("classification") == "REJECT_NUMERICAL":
@@ -611,11 +655,11 @@ def score_modal_run(ev: Evidence, fm: FrozenMatrix, addendum=None) -> dict:
         return card
     b = batch_of(ev.result)
     if not frozen_host:
-        # Addendum 5 only: no frozen or Addendum-3 row exists at this host size.
+        # Addendum 6 only: no frozen or Addendum-3 row exists at this host size.
         m = measure(ev, 0.0)
         card.update({"b": b, "window": m.window, "metrics": {}, "verdict": "NO FROZEN ROW",
-                     "addendum5": score_addendum5(ev, m, add5_row)})
-        warnings.append(f"host {host} GiB has no frozen or Addendum-3 row; graded on Addendum 5 "
+                     "addendum6": score_addendum6(ev, m, add6_row)})
+        warnings.append(f"host {host} GiB has no frozen or Addendum-3 row; graded on Addendum 6 "
                         "only (host hit and cold rec/tok; decode tok/s and $/1k not registered)")
         return card
     hostk = int(float(host))
@@ -695,24 +739,24 @@ def score_modal_run(ev: Evidence, fm: FrozenMatrix, addendum=None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Addendum 5 (registered 2026-11-11): b=8 host-hit cliff rows from the trace replay
+# Addendum 6 (registered 2026-11-11): b=8 host-hit cliff rows from the trace replay
 # ---------------------------------------------------------------------------
 
-ADD5_METRICS = ("host_hit_rate", "cold_records_per_tok")
+ADD6_METRICS = ("host_hit_rate", "cold_records_per_tok")
 
 
-def load_addendum5(path: Path | None = None) -> dict:
-    """theory/data/predecl_add5.json (stdlib only; written by theory.batch_cliff_replay)."""
-    p = path or Path(__file__).resolve().parents[2] / "theory" / "data" / "predecl_add5.json"
+def load_addendum6(path: Path | None = None) -> dict:
+    """theory/data/predecl_add6.json (stdlib only; written by theory.batch_cliff_replay)."""
+    p = path or Path(__file__).resolve().parents[2] / "theory" / "data" / "predecl_add6.json"
     try:
         return json.loads(p.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
 
 
-def addendum5_row(summary: dict, result: dict | None, reg: dict | None = None) -> dict | None:
+def addendum6_row(summary: dict, result: dict | None, reg: dict | None = None) -> dict | None:
     """The Addendum-5 row for this run's (gpu, model, b, host), or None."""
-    reg = load_addendum5() if reg is None else reg
+    reg = load_addendum6() if reg is None else reg
     host = summary.get("host_gib_requested")
     if not reg or host is None or result is None:
         return None
@@ -725,8 +769,8 @@ def addendum5_row(summary: dict, result: dict | None, reg: dict | None = None) -
     return None
 
 
-def score_addendum5(ev: Evidence, m: Measured, row: dict) -> dict:
-    """Grade host hit and cold rec/tok against PREDICTIONS_PHASE6.md Addendum 5."""
+def score_addendum6(ev: Evidence, m: Measured, row: dict) -> dict:
+    """Grade host hit and cold rec/tok against PREDICTIONS_PHASE6.md Addendum 6."""
     req = row["_reg"]["requires"]
     s = ev.summary
     fails = []
@@ -737,14 +781,14 @@ def score_addendum5(ev: Evidence, m: Measured, row: dict) -> dict:
         fails.append(f"{steps} decode steps < registered {req['min_decode_steps']}")
     if m.window.get("source_reads") is None:
         fails.append("no window counters (generated_checkpoint-c*.jsonl missing)")
-    out: dict = {"registry": f"theory/data/predecl_add5.json ({row['_reg']['addendum']}, "
+    out: dict = {"registry": f"theory/data/predecl_add6.json ({row['_reg']['addendum']}, "
                              f"registered {row['_reg']['registered']})",
                  "prerequisite_failures": fails}
     if fails:
         out.update({"verdict": UNTESTABLE, "metrics": {}})
         return out
     metrics = {}
-    for k in ADD5_METRICS:
+    for k in ADD6_METRICS:
         r = row[k]
         x = m.values[k]
         metrics[k] = {"measured": x, "basis": m.notes.get(k), "nominal": r["nominal"],
@@ -825,9 +869,9 @@ def render_md(card: dict) -> str:
         if a3.get("predicted_limiter"):
             lines.append(f"Predicted limiter: `{a3['predicted_limiter']}`  ")
         lines.append("")
-    a5 = card.get("addendum5")
+    a5 = card.get("addendum6")
     if a5:
-        lines += ["", f"## Addendum 5 (b=8 host-hit cliff replay): **{a5['verdict']}**", ""]
+        lines += ["", f"## Addendum 6 (b=8 host-hit cliff replay): **{a5['verdict']}**", ""]
         lines += [f"- {f}" for f in a5.get("prerequisite_failures") or []]
         if a5.get("metrics"):
             lines += _metric_table(a5["metrics"])
@@ -849,7 +893,23 @@ def main(argv: list[str] | None = None) -> int:
                     help="b=1 own-reference gate (Addendum 4): needs exactly two evidence dirs, "
                          "same GPU, different host budgets, bit-identical tokens and route "
                          "journals; then waives only exact_16_token_ids/exact_decoded_text")
+    ap.add_argument("--placement-exact", action="store_true",
+                    help="exactness gate for placement-only changes: the first evidence dir is "
+                         "the baseline, every other one must have byte-identical tokens and "
+                         "route journals (same GPU, commit, host and VRAM budget); exits 1 "
+                         "otherwise and scores nothing")
     args = ap.parse_args(argv)
+    if args.placement_exact:
+        if len(args.evidence) < 2:
+            ap.error("--placement-exact needs a baseline and at least one candidate dir")
+        base = load_evidence(args.evidence[0])
+        bad = 0
+        for root in args.evidence[1:]:
+            why = verify_placement_pair(base, load_evidence(root))
+            bad += bool(why)
+            print(f"{root}: " + ("EXACT (tokens and route journals identical to baseline)"
+                                 if not why else "NOT EXACT: " + "; ".join(why)))
+        return 1 if bad else 0
     cache: dict = {}
     own: dict[Path, dict] = {}
     if args.own_reference:
@@ -885,7 +945,7 @@ def main(argv: list[str] | None = None) -> int:
                 fh.write(json.dumps({k: card.get(k) for k in (
                     "run_id", "cell", "b", "host_gib", "measured_b_ssd_gib_s", "verdict",
                     "commit")} | {"addendum3_verdict": (card.get("addendum3") or {}).get("verdict"),
-                                  "addendum5_verdict": (card.get("addendum5") or {}).get("verdict"),
+                                  "addendum6_verdict": (card.get("addendum6") or {}).get("verdict"),
                                   "grades": {k: v["grade"] for k, v in card["metrics"].items()},
                                   "measured": {k: v["measured"] for k, v in card["metrics"].items()}},
                     default=float) + "\n")
