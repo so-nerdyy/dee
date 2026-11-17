@@ -497,3 +497,41 @@ def test_own_reference_pair_must_be_bit_identical(tmp_path, kw, needle):
     a, b = _pair(tmp_path, **kw)
     why = score.verify_own_reference(score.load_evidence(a), score.load_evidence(b))
     assert any(needle in w for w in why), why
+
+
+# --- placement exactness gate (next-use eviction / prefetch hints) -------------------
+
+def _cohort_result(shas):
+    return _b1_result(rows=[{"prompt_index": i, "token_ids_sha256": s, "n_tokens": 65}
+                            for i, s in enumerate(shas)])
+
+
+def test_placement_pair_exact_when_tokens_and_journals_match(tmp_path):
+    a, b = _pair(tmp_path, host_b=64.0)
+    assert score.verify_placement_pair(score.load_evidence(a), score.load_evidence(b)) == []
+    assert score.main(["--placement-exact", str(a), str(b)]) == 0
+
+
+@pytest.mark.parametrize("kw,needle", [
+    ({"host_b": 16.0}, "differ in host_gib_requested"),
+    ({"host_b": 64.0,
+      "journal_b": '{"forward_step": 0, "layer": 0, "expert_ids_rank_order": [[1, 3]]}\n'},
+     "routed_experts.jsonl differs"),
+    ({"host_b": 64.0, "result_b": _reject_result(generated_token_ids=list(range(1, 17)))},
+     "tokens differ"),
+    ({"host_b": 64.0, "result_b": _cohort_result(["x", "y"])}, "tokens differ"),
+])
+def test_placement_pair_rejects_any_difference(tmp_path, kw, needle):
+    a, b = _pair(tmp_path, **kw)
+    why = score.verify_placement_pair(score.load_evidence(a), score.load_evidence(b))
+    assert any(needle in w for w in why), why
+    assert score.main(["--placement-exact", str(a), str(b)]) == 1
+
+
+def test_placement_pair_compares_every_cohort_row(tmp_path):
+    a, b = _pair(tmp_path, host_b=64.0, result_b=_cohort_result(["x", "y"]))
+    (a / "result.json").write_text(json.dumps(_cohort_result(["x", "y"])))
+    assert score.verify_placement_pair(score.load_evidence(a), score.load_evidence(b)) == []
+    (b / "result.json").write_text(json.dumps(_cohort_result(["x", "z"])))
+    why = score.verify_placement_pair(score.load_evidence(a), score.load_evidence(b))
+    assert any("tokens differ" in w for w in why)

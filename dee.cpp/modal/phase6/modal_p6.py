@@ -540,6 +540,10 @@ def _bench_impl(
                     "DEE_BUILD_DIR": str(build),
                     "NATIVE_CUDA_ARCHS": cuda_archs,
                 })
+                # per-config placement knobs (validated in _parse_configs);
+                # absent keys keep the campaign baseline set just above
+                env.update(_placement_env(cfg))
+                summary["placement"] = _placement_env(cfg)
                 if (summary.get("store_seal") or {}).get("verified"):
                     # every segment was sha256-checked while staging (same seal
                     # the engine would recompute); skip the ~17 min re-hash
@@ -708,8 +712,44 @@ def _bench_impl(
 CONFIG_TIMEOUT_B1_S = 20 * 60
 CONFIG_TIMEOUT_B8_S = 45 * 60
 FUNCTION_TIMEOUT_S = 150 * 60
+# Placement knobs a config may set (next-use eviction + prefetch hints).
+# Each maps to one NATIVE_* env var of the runner; the allowed values are
+# listed so a typo fails here, before anything bills.  They change where
+# records sit and when they are read, never which experts run, so tokens and
+# route journals must match the baseline row exactly.
+PLACEMENT_KEYS = {
+    "eviction_policy": ("NATIVE_EVICTION_POLICY", {"lru", "next_use"}),
+    "host_eviction_policy": ("NATIVE_HOST_EVICTION_POLICY", {"lru", "next_use"}),
+    "prefetch_hint_lanes": ("NATIVE_PREFETCH_HINT_LANES", range(0, 9)),
+    "prefetch_hint_source": ("NATIVE_PREFETCH_HINT_SOURCE", {"off", "prev_step"}),
+    "prefetch_hint_depth": ("NATIVE_PREFETCH_HINT_DEPTH", range(1, 44)),
+    "prefetch_queue_order": ("NATIVE_PREFETCH_QUEUE_ORDER", {"deadline", "fifo"}),
+    "prefetch_lookahead": ("NATIVE_PREFETCH_LOOKAHEAD", {"off", "router"}),
+    "prefetch_lookahead_width": ("NATIVE_PREFETCH_LOOKAHEAD_WIDTH", range(0, 257)),
+}
 CONFIG_KEYS = {"tag", "host_gib", "n_tokens", "ignore_eos", "cohort",
-               "prompts_file", "prompt"}
+               "prompts_file", "prompt"} | set(PLACEMENT_KEYS)
+
+
+def _placement_env(cfg) -> dict:
+    """NATIVE_* env for one config's placement knobs (fail-closed)."""
+    env = {}
+    for key, (name, allowed) in PLACEMENT_KEYS.items():
+        if not cfg or key not in cfg:
+            continue
+        value = cfg[key]
+        if isinstance(allowed, range):
+            if isinstance(value, bool) or not isinstance(value, int) or value not in allowed:
+                raise ValueError(f"config {cfg.get('tag')}: {key}={value!r} not in "
+                                 f"[{allowed.start}, {allowed.stop - 1}]")
+        elif value not in allowed:
+            raise ValueError(f"config {cfg.get('tag')}: {key}={value!r} not in {sorted(allowed)}")
+        env[name] = str(value)
+    wants_hints = (env.get("NATIVE_PREFETCH_HINT_SOURCE", "off") != "off"
+                   or env.get("NATIVE_PREFETCH_LOOKAHEAD", "off") != "off")
+    if wants_hints and int(env.get("NATIVE_PREFETCH_HINT_LANES", "0")) == 0:
+        raise ValueError(f"config {cfg.get('tag')}: prefetch hints need prefetch_hint_lanes > 0")
+    return env
 
 
 @app.function(
@@ -801,6 +841,16 @@ def preflight(gpu: str = "L4", model: str = "dsv4-flash", configs: str = "",
         missing = [k for k in need if k not in txt]
         if missing:
             raise RuntimeError(f"runner at this commit lacks {missing}")
+        # placement knobs need the engine, binding and runner of this commit:
+        # an older checkout would silently run the LRU baseline under a new tag
+        if any(set(c or {}) & set(PLACEMENT_KEYS)
+               for c in _parse_configs(configs, _host, mem / 1024.0)):
+            binding = (dee / "pydee" / "pydee.cpp").read_text()
+            lacks = [k for k, t in (("placement_knobs", txt), ("prefetch_hint", binding),
+                                    ("host_eviction_policy", binding)) if k not in t]
+            if lacks:
+                raise RuntimeError(f"configs set placement knobs but this commit lacks {lacks}")
+            return "ok (placement knobs supported)"
         return "ok"
     step("runner_source", runner_src)
 
@@ -886,6 +936,7 @@ def _parse_configs(configs: str, host_gib: float, ram_gib: float) -> list:
             raise ValueError(f"config {c['tag']}: b=8 scoring needs n_tokens >= 65")
         if c.get("cohort") and not c.get("ignore_eos"):
             raise ValueError(f"config {c['tag']}: b=8 scoring needs ignore_eos")
+        _placement_env(c)
     return cfgs
 
 

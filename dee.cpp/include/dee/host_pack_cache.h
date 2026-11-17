@@ -17,6 +17,35 @@
 // is only touched from get_staging_fp4 / stage paths, all on the same thread.
 // The returned buffer pointer stays valid until the next call that evicts this
 // key (LRU never evicts the just-inserted/just-touched entry).
+//
+// Eviction policy (set_eviction_policy):
+//   Lru     - the original behavior: the least recently used record leaves.
+//   NextUse - the record whose predicted next use is furthest away leaves
+//             (dee/next_use.h).  Decode sweeps the layers in a cycle, so
+//             once one decode step needs more records than the budget holds,
+//             LRU evicts every record just before its next use (measured:
+//             0 hits in 49,463 lookups at b=8 on 16 GiB).  NextUse needs
+//             set_next_use_cycle() and begin_layer() from the engine; until
+//             the cycle is set it behaves exactly like Lru.
+//
+// Prefetch hints (submit_hints): a hint asks for a record to be read into
+// host RAM BEFORE the model asks for it, on background hint lanes, so the
+// read overlaps staging and compute instead of blocking them.  A hint is a
+// guess about placement and nothing else:
+//   - a hinted record is produced by the same fill as a demand read, so its
+//     bytes are identical; a failed hint publishes nothing;
+//   - a demand request never waits behind a hint that has not started (the
+//     queued hint is cancelled and the demand path reads the record itself),
+//     and hint lanes stop taking new work while a demand batch is reading;
+//   - queued hints are served nearest deadline first (or strict arrival
+//     order with HintQueueOrder::Fifo, kept for A/B) and are dropped once
+//     their deadline has passed (expire_hints);
+//   - finished hint reads are published on the caller thread only
+//     (absorb_hints, also run at the top of get/get_batch), so every map and
+//     LRU mutation stays single-threaded exactly as before;
+//   - bytes reserved for hints that are queued or being read count against
+//     the same byte budget as resident records.
+// The deadline-ordered queue follows SeqMoE (arXiv 2609.12978).
 
 #pragma once
 
@@ -28,13 +57,19 @@
 #include <condition_variable>
 #include <functional>
 #include <list>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "dee/next_use.h"
+
 namespace dee {
+
+enum class HostEvictionPolicy { Lru, NextUse };
+enum class HintQueueOrder { Deadline, Fifo };
 
 class HostPackCache {
 public:
@@ -81,6 +116,33 @@ public:
         uint64_t budget_rejections = 0;
         uint64_t scalar_fills = 0;
         double scalar_fill_ms = 0.0;
+        // Prefetch-hint accounting (all zero when no hint is ever submitted).
+        // hints_submitted: hints accepted into the queue.
+        // hints_rejected: hints refused at submit (already resident, already
+        //   queued, no fill, or no room under the budget / hint cap).
+        // hints_cancelled: queued hints dropped before their read started
+        //   (deadline passed, a demand request took the record over, clear).
+        // hint_reads / hint_read_ms: hint reads that completed and were
+        //   published, and their summed read time.
+        // hint_failures: hint reads whose fill failed (nothing published).
+        // hint_hits: demand lookups served by a record a hint brought in and
+        //   nothing had touched yet.  These are also counted in `hits`, so
+        //   hits - hint_hits is what retention alone achieved.
+        // hint_waits: demand lookups that waited for a hint read in flight.
+        // hints_wasted: hint records evicted without ever being used, or
+        //   read but not publishable (the record arrived another way).
+        // hint_reserved_bytes: bytes currently reserved for queued, running
+        //   or finished-but-unpublished hints (inside the byte budget).
+        uint64_t hints_submitted = 0;
+        uint64_t hints_rejected = 0;
+        uint64_t hints_cancelled = 0;
+        uint64_t hint_reads = 0;
+        double hint_read_ms = 0.0;
+        uint64_t hint_failures = 0;
+        uint64_t hint_hits = 0;
+        uint64_t hint_waits = 0;
+        uint64_t hints_wasted = 0;
+        size_t hint_reserved_bytes = 0;
     };
 
     using BatchFill = bool (*)(void* context, uint8_t* dst, size_t nbytes);
@@ -173,6 +235,60 @@ public:
         return map_.find(key) != map_.end();
     }
 
+    // ---- eviction policy -------------------------------------------------
+    void set_eviction_policy(HostEvictionPolicy policy) { policy_ = policy; }
+    HostEvictionPolicy eviction_policy() const { return policy_; }
+    // NextUse support: keys must be NextUseEstimator::make_key(layer, expert)
+    // (the engine's staging key).  `cycle_layers` is the number of MoE layers
+    // one decode step sweeps; begin_layer(layer) names the layer running now.
+    void set_next_use_cycle(int cycle_layers, double alpha = 0.2,
+                            double p0 = 0.1) {
+        next_use_.configure(cycle_layers, alpha, p0);
+    }
+    void begin_layer(int layer) { next_use_.begin_layer(layer); }
+    const NextUseEstimator& next_use() const { return next_use_; }
+
+    // ---- prefetch hints --------------------------------------------------
+    using HintFill = std::function<bool(uint8_t* dst, size_t nbytes)>;
+    struct HintRequest {
+        uint64_t key = 0;
+        size_t nbytes = 0;
+        HintFill fill;            // must copy exactly nbytes; owns its context
+        uint64_t deadline = 0;    // smaller = needed sooner (engine layer clock)
+    };
+    // Start `lanes` background hint lanes (0 stops them and drops every
+    // pending hint).  Hints are refused while there are no lanes.
+    bool set_hint_lanes(size_t lanes);
+    size_t hint_lanes() const { return hint_workers_.size(); }
+    void set_hint_queue_order(HintQueueOrder order);
+    HintQueueOrder hint_queue_order() const { return hint_order_; }
+    // Upper bound on bytes reserved for hints that are not yet published
+    // (0 = a quarter of the byte budget).
+    void set_hint_reserve_limit(size_t bytes) { hint_reserve_limit_ = bytes; }
+    // Queue hints.  Each accepted hint reserves its bytes under the budget
+    // (evicting by the active policy if needed).  Returns how many were
+    // accepted; the rest are counted in hints_rejected.  `requests` fills are
+    // moved from.
+    size_t submit_hints(HintRequest* requests, size_t count);
+    // Drop queued hints whose deadline is <= `now`: their layer has started
+    // and whatever it needed has already been requested as demand.
+    size_t expire_hints(uint64_t now);
+    // Publish hint reads that have finished.  Returns how many records were
+    // published.  Runs automatically at the top of get() and get_batch().
+    size_t absorb_hints();
+    // Cancel queued hints, wait for the ones being read, publish them.
+    // After this no hint lane is touching the source.
+    void drain_hints();
+    size_t pending_hints() const;
+    // Called on the caller thread for every hint read that finished
+    // (key, nbytes, read milliseconds, success) so the owner can account the
+    // source read exactly like a demand read.
+    void set_hint_read_observer(
+        std::function<void(uint64_t key, std::size_t nbytes,
+                           double milliseconds, bool success)> cb) {
+        hint_read_observer_ = std::move(cb);
+    }
+
     void clear();
     const Stats& stats() const { return stats_; }
     // Optional fill-path profiler (default nullptr = no observation).
@@ -202,6 +318,8 @@ private:
         std::vector<uint8_t> bytes;
         size_t nbytes = 0;
         bool ready = true;
+        // Brought in by a prefetch hint and not requested by the model yet.
+        bool hinted_unused = false;
     };
     // map: key -> (payload, LRU position). lru_ front = most recently used.
     using LruIter = typename std::list<uint64_t>::iterator;
@@ -239,6 +357,62 @@ private:
     void run_fill_lane();
     bool is_batch_key(uint64_t key, const BatchRequest* requests,
                       size_t count) const;
+
+    // ---- eviction (policy-aware; caller thread only) ----------------------
+    HostEvictionPolicy policy_ = HostEvictionPolicy::Lru;
+    NextUseEstimator next_use_;
+    bool next_use_active() const {
+        return policy_ == HostEvictionPolicy::NextUse && next_use_.enabled();
+    }
+    // Evict unprotected ready residents (keys in `protect` are never chosen)
+    // until `need` more bytes fit beside the resident and hint-reserved
+    // bytes.  Returns false when that cannot be reached.
+    bool make_room(size_t need, const BatchRequest* protect,
+                   size_t protect_count);
+    void evict_entry(uint64_t key);
+    void note_served(Entry& entry);
+
+    // ---- prefetch hints ----------------------------------------------------
+    struct HintJob {
+        enum class State { Queued, Running, Done, Failed };
+        uint64_t key = 0;
+        size_t nbytes = 0;
+        HintFill fill;
+        uint64_t deadline = 0;
+        uint64_t seq = 0;
+        State state = State::Queued;
+        std::vector<uint8_t> bytes;
+        double milliseconds = 0.0;
+    };
+    using HintJobPtr = std::shared_ptr<HintJob>;
+    mutable std::mutex hint_mutex_;
+    std::condition_variable hint_work_cv_;   // lanes: work or demand finished
+    std::condition_variable hint_done_cv_;   // caller: a read finished
+    std::unordered_map<uint64_t, HintJobPtr> hint_jobs_;   // not yet published
+    std::vector<HintJobPtr> hint_queue_;                   // state == Queued
+    std::vector<HintJobPtr> hint_finished_;                // Done / Failed
+    std::vector<std::thread> hint_workers_;
+    bool hint_stop_ = false;
+    size_t hint_demand_active_ = 0;
+    uint64_t hint_seq_ = 0;
+    HintQueueOrder hint_order_ = HintQueueOrder::Deadline;
+    size_t hint_reserve_limit_ = 0;
+    size_t hint_reserved_bytes_ = 0;         // caller thread only
+    std::function<void(uint64_t, std::size_t, double, bool)> hint_read_observer_;
+
+    void hint_worker_loop();
+    void stop_hint_workers();
+    size_t hint_reserve_cap() const;
+    // Make sure no hint for `key` is queued (cancel) or running (wait), so
+    // the demand path can decide hit/miss from the map alone.
+    void settle_hint_for_demand(uint64_t key);
+    void cancel_queued_hint_locked(const HintJobPtr& job);
+    // RAII: hint lanes take no new work while a demand fill is reading.
+    struct DemandScope {
+        explicit DemandScope(HostPackCache& cache);
+        ~DemandScope();
+        HostPackCache& cache_;
+    };
 };
 
 }  // namespace dee

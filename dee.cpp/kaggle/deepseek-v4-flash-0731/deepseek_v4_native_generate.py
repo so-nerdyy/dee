@@ -146,7 +146,8 @@ DIAGNOSTICS = os.environ.get("NATIVE_DIAGNOSTICS", "0") == "1"
 # Requires profile_stages; if NATIVE_PROFILE is not "1" the runner
 # auto-enables it with a loud log (see main()).
 TRACE_REQUESTS = os.environ.get("NATIVE_TRACE_REQUESTS", "0") == "1"
-# EVICTION_POLICY -> EngineConfig.eviction_policy ("lru"|"rank_priority").
+# EVICTION_POLICY -> EngineConfig.eviction_policy
+# ("lru"|"rank_priority"|"next_use").
 # The pydee binding is being added by a parallel workstream;
 # build_native_engine applies it via hasattr-fallback so this harness is
 # correct under both old and new binaries.  "rank_priority" is the legacy
@@ -160,6 +161,59 @@ EVICTION_POLICY = os.environ.get(
 # holds even when the engine binding is absent.
 HOST_CACHE_MODE = os.environ.get(
     "NATIVE_HOST_CACHE_MODE", "lru").strip().lower()
+# Placement knobs (next-use eviction + prefetch hints).  They only change
+# where records sit and when they are read; tokens and route journals must
+# be identical with any combination.  build_native_engine and the model
+# builder read the same env vars; this harness only validates and records
+# them.  Defaults reproduce the pre-existing behavior exactly.
+def placement_knobs() -> dict:
+    knobs = {
+        "host_eviction_policy": os.environ.get(
+            "NATIVE_HOST_EVICTION_POLICY", "lru").strip().lower(),
+        "prefetch_hint_lanes": int(os.environ.get(
+            "NATIVE_PREFETCH_HINT_LANES", "0")),
+        "prefetch_hint_source": os.environ.get(
+            "NATIVE_PREFETCH_HINT_SOURCE", "off").strip().lower(),
+        "prefetch_hint_depth": int(os.environ.get(
+            "NATIVE_PREFETCH_HINT_DEPTH", "1")),
+        "prefetch_queue_order": os.environ.get(
+            "NATIVE_PREFETCH_QUEUE_ORDER", "deadline").strip().lower(),
+        "prefetch_lookahead": os.environ.get(
+            "NATIVE_PREFETCH_LOOKAHEAD", "off").strip().lower(),
+        "prefetch_lookahead_width": int(os.environ.get(
+            "NATIVE_PREFETCH_LOOKAHEAD_WIDTH", "0")),
+    }
+    if knobs["host_eviction_policy"] not in {"lru", "next_use"}:
+        raise ValueError(
+            f"unsupported host_eviction_policy: {knobs['host_eviction_policy']!r}")
+    if not 0 <= knobs["prefetch_hint_lanes"] <= 8:
+        raise ValueError("prefetch_hint_lanes must be in [0, 8]")
+    if knobs["prefetch_hint_source"] not in {"off", "prev_step"}:
+        raise ValueError(
+            f"unsupported prefetch_hint_source: {knobs['prefetch_hint_source']!r}")
+    if knobs["prefetch_hint_depth"] < 1:
+        raise ValueError("prefetch_hint_depth must be >= 1")
+    if knobs["prefetch_queue_order"] not in {"deadline", "fifo"}:
+        raise ValueError(
+            f"unsupported prefetch_queue_order: {knobs['prefetch_queue_order']!r}")
+    if knobs["prefetch_lookahead"] not in {"off", "router"}:
+        raise ValueError(
+            f"unsupported prefetch_lookahead: {knobs['prefetch_lookahead']!r}")
+    if knobs["prefetch_lookahead_width"] < 0:
+        raise ValueError("prefetch_lookahead_width must be >= 0")
+    wants_hints = (knobs["prefetch_hint_source"] != "off"
+                   or knobs["prefetch_lookahead"] != "off")
+    if wants_hints and knobs["prefetch_hint_lanes"] == 0:
+        raise ValueError(
+            "prefetch hints requested but NATIVE_PREFETCH_HINT_LANES is 0")
+    return knobs
+
+
+def lookahead_stats(model) -> dict:
+    fn = getattr(model, "prefetch_lookahead_stats", None)
+    return fn() if fn is not None else {"enabled": False}
+
+
 # ARM_ID: run-metadata only.  NEVER folded into RUN_ID: run_id is inside
 # the route-journal canonical hash payload, so it must stay constant
 # across arms for journals to hash-compare.
@@ -321,12 +375,13 @@ def apply_run_config() -> None:
         raise ValueError("source_read_lanes must be in [1, 8]")
     if not 1 <= SOURCE_READ_QUEUE_DEPTH <= 256:
         raise ValueError("source_read_queue_depth must be in [1, 256]")
-    if EVICTION_POLICY not in {"lru", "rank_priority"}:
+    if EVICTION_POLICY not in {"lru", "rank_priority", "next_use"}:
         raise ValueError(f"unsupported eviction_policy: {EVICTION_POLICY!r}")
     if HOST_CACHE_MODE not in {"lru", "bypass"}:
         raise ValueError(f"unsupported host_cache_mode: {HOST_CACHE_MODE!r}")
     if CACHE_RESET not in {"warm", "cold"}:
         raise ValueError(f"unsupported cache_reset: {CACHE_RESET!r}")
+    log(f"[config] placement: {json.dumps(placement_knobs(), sort_keys=True)}")
     log(
         "[config] run_config.json: "
         f"run_id={RUN_ID} arm_id={ARM_ID or 'none'} "
@@ -1197,6 +1252,7 @@ def main() -> int:
             os.environ.get("NATIVE_LRU_TOTAL_CAP_GIB", "17.0")),
         "eviction_policy": EVICTION_POLICY,
         "host_cache_mode": HOST_CACHE_MODE,
+        "placement": placement_knobs(),
         "cache_reset": CACHE_RESET,
         "trace_requests": TRACE_REQUESTS,
         "ignore_eos": IGNORE_EOS,
@@ -1645,6 +1701,7 @@ def main() -> int:
         ("expert_store", EXPERT_STORE_BACKEND),
         ("eviction_policy", EVICTION_POLICY),
         ("host_cache_mode", HOST_CACHE_MODE),
+        *sorted(placement_knobs().items()),
         ("cache_reset", CACHE_RESET),
         ("trace_requests", TRACE_REQUESTS),
         ("ignore_eos", IGNORE_EOS),
@@ -2330,6 +2387,8 @@ def main() -> int:
             "dee4_trace_validation": dee4_trace_validation,
             "eviction_policy": EVICTION_POLICY,
             "host_cache_mode": HOST_CACHE_MODE,
+            "placement": placement_knobs(),
+            "prefetch_lookahead": lookahead_stats(model),
             "cache_reset": CACHE_RESET,
             "trace_requests": TRACE_REQUESTS,
             "ignore_eos": IGNORE_EOS,
@@ -3114,6 +3173,8 @@ def main() -> int:
             "cohort_counters": res.counters,
             "eviction_policy": EVICTION_POLICY,
             "host_cache_mode": HOST_CACHE_MODE,
+            "placement": placement_knobs(),
+            "prefetch_lookahead": lookahead_stats(model),
             "cache_reset": CACHE_RESET,
             "ignore_eos": IGNORE_EOS,
         }

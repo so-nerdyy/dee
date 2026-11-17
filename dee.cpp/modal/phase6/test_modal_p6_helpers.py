@@ -92,3 +92,35 @@ def test_vram_fit_allows_the_cells_that_ran_or_fit(gpu):
 def test_vram_fit_refuses_an_oversized_budget_override():
     with pytest.raises(RuntimeError):
         m._vram_fit("L40S", "dsv4-flash", budget_mib=28672)
+
+
+def test_placement_knobs_map_to_runner_env():
+    cfg = {"tag": "b8-h16-nu", "host_gib": 16, "n_tokens": 65, "ignore_eos": True,
+           "cohort": "0-7", "prompts_file": "p.json",
+           "eviction_policy": "next_use", "host_eviction_policy": "next_use",
+           "prefetch_hint_lanes": 2, "prefetch_hint_source": "prev_step",
+           "prefetch_lookahead": "router"}
+    assert m._parse_configs(json.dumps([cfg]), 17.0, 96.0)[0]["tag"] == "b8-h16-nu"
+    assert m._placement_env(cfg) == {
+        "NATIVE_EVICTION_POLICY": "next_use",
+        "NATIVE_HOST_EVICTION_POLICY": "next_use",
+        "NATIVE_PREFETCH_HINT_LANES": "2",
+        "NATIVE_PREFETCH_HINT_SOURCE": "prev_step",
+        "NATIVE_PREFETCH_LOOKAHEAD": "router",
+    }
+    assert m._placement_env(None) == {}
+    assert m._placement_env({"tag": "plain"}) == {}
+
+
+@pytest.mark.parametrize("bad", [
+    {"eviction_policy": "belady"},
+    {"host_eviction_policy": "rank_priority"},
+    {"prefetch_hint_lanes": 9},
+    {"prefetch_hint_lanes": "2"},
+    {"prefetch_hint_source": "prev_step"},                 # hints with no lanes
+    {"prefetch_lookahead": "router", "prefetch_hint_lanes": 0},
+    {"prefetch_queue_order": "lifo", "prefetch_hint_lanes": 1},
+])
+def test_placement_knobs_fail_closed(bad):
+    with pytest.raises(ValueError):
+        m._parse_configs(json.dumps([{"tag": "x", **bad}]), 17.0, 96.0)

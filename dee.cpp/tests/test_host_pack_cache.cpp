@@ -10,6 +10,9 @@
 #include <cstdint>
 #include <atomic>
 #include <chrono>
+#include <cmath>
+#include <condition_variable>
+#include <mutex>
 #include <cstdio>
 #include <cstring>
 #include <functional>
@@ -564,6 +567,412 @@ void test_peek_bytes_is_non_perturbing() {
           "peek left LRU order untouched (1 still evicted first)");
 }
 
+// ---------------------------------------------------------------------------
+// Next-use eviction and prefetch hints.
+// ---------------------------------------------------------------------------
+
+uint64_t lkey(int layer, int expert) {
+    return dee::NextUseEstimator::make_key(layer, expert);
+}
+
+void test_next_use_estimator_model() {
+    dee::NextUseEstimator est;
+    check(!est.enabled() && est.expected_next_use(lkey(1, 1)) == 0.0,
+          "unconfigured estimator is inert");
+    est.configure(4, 0.5, 0.25);
+    est.begin_layer(0);
+    est.on_use(lkey(0, 7));
+    const double once = est.probability(lkey(0, 7));
+    est.on_use(lkey(0, 7));
+    check(est.probability(lkey(0, 7)) == once,
+          "on_use is idempotent within one layer visit");
+    check(once == 0.25 * 0.5 + 0.5, "first use = p0 decayed once plus alpha");
+    check(est.distance(lkey(0, 7)) == 0 && est.distance(lkey(1, 0)) == 1 &&
+          est.distance(lkey(3, 0)) == 3, "distance follows the layer cycle");
+    est.begin_layer(1);
+    check(est.distance(lkey(0, 7)) == 3, "passed layer is a full cycle away");
+    check(est.probability(lkey(0, 7)) == once,
+          "no decay before the layer is visited again");
+    // Never-seen expert of the NEXT layer vs a used one of a far layer.
+    check(est.expected_next_use(lkey(2, 9)) >
+              est.expected_next_use(lkey(0, 7)),
+          "an unseen expert ranks behind a recently used one");
+    // Skip key (0,7) for two visits of layer 0: p decays by (1-alpha)^2.
+    for (int visit = 0; visit < 2; ++visit) {
+        est.begin_layer(0);
+        est.begin_layer(1);
+    }
+    check(std::abs(est.probability(lkey(0, 7)) - once * 0.25) < 1e-12,
+          "each missed visit decays the reuse estimate");
+    est.clear();
+    check(est.tracked() == 0 && est.probability(lkey(0, 7)) == 0.25,
+          "clear forgets history");
+}
+
+// The Phase 6 r5 failure in miniature: a cyclic sweep that needs more
+// records than fit.  LRU evicts every record right before its next use.
+uint64_t run_cycle(dee::HostEvictionPolicy policy, uint64_t* lookups) {
+    const size_t kBytes = 64;
+    dee::HostPackCache cache;
+    cache.set_budget(kBytes * 4);            // 4 of the 6 records fit
+    cache.set_eviction_policy(policy);
+    cache.set_next_use_cycle(3);
+    for (int sweep = 0; sweep < 12; ++sweep) {
+        for (int layer = 0; layer < 3; ++layer) {
+            cache.begin_layer(layer);
+            for (int expert = 0; expert < 2; ++expert) {
+                const uint64_t key = lkey(layer, expert);
+                const uint8_t* data = cache.get(
+                    key, kBytes, [&](uint8_t* dst, size_t n) {
+                        pattern_fill(dst, n, key);
+                    });
+                check(data && matches_pattern(data, kBytes, key),
+                      "cyclic sweep returns the right bytes");
+            }
+        }
+    }
+    *lookups = cache.stats().hits + cache.stats().misses;
+    return cache.stats().hits;
+}
+
+void test_next_use_fixes_cyclic_thrash() {
+    uint64_t lru_lookups = 0, next_lookups = 0;
+    const uint64_t lru_hits = run_cycle(dee::HostEvictionPolicy::Lru, &lru_lookups);
+    const uint64_t next_hits =
+        run_cycle(dee::HostEvictionPolicy::NextUse, &next_lookups);
+    check(lru_lookups == 72 && next_lookups == 72, "both policies see 72 lookups");
+    check(lru_hits == 0, "LRU never hits on an over-budget cyclic sweep");
+    check(next_hits * 4 >= next_lookups,
+          "NextUse keeps at least a quarter of the sweep resident");
+    std::printf("cyclic sweep: lru %llu/72 hits, next_use %llu/72 hits\n",
+                static_cast<unsigned long long>(lru_hits),
+                static_cast<unsigned long long>(next_hits));
+}
+
+void test_next_use_without_cycle_is_lru() {
+    dee::HostPackCache cache;
+    cache.set_budget(256 * 2);
+    cache.set_eviction_policy(dee::HostEvictionPolicy::NextUse);  // no cycle
+    for (uint64_t key = 1; key <= 3; ++key) {
+        cache.get(key, 256, [&](uint8_t* dst, size_t n) {
+            pattern_fill(dst, n, key);
+        });
+    }
+    check(!cache.contains(1) && cache.contains(2) && cache.contains(3),
+          "NextUse with no layer cycle evicts exactly like LRU");
+}
+
+// A gate a hint fill can block on, so tests control what is queued/running.
+struct Gate {
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool open = false;
+    std::atomic<int> entered{0};
+    void wait() {
+        entered.fetch_add(1);
+        std::unique_lock<std::mutex> lock(mutex);
+        cv.wait(lock, [&] { return open; });
+    }
+    void release() {
+        { std::lock_guard<std::mutex> lock(mutex); open = true; }
+        cv.notify_all();
+    }
+    void wait_entered(int count) {
+        while (entered.load() < count) std::this_thread::yield();
+    }
+};
+
+// Let every accepted hint finish and be published.  (drain_hints() is the
+// other thing: it CANCELS whatever has not started.)
+void settle_hints(dee::HostPackCache& cache) {
+    while (cache.pending_hints() != 0) {
+        cache.absorb_hints();
+        std::this_thread::yield();
+    }
+}
+
+dee::HostPackCache::HintRequest make_hint(
+        uint64_t key, size_t nbytes, uint64_t deadline,
+        std::atomic<int>* fills = nullptr, Gate* gate = nullptr,
+        bool fail = false, std::vector<uint64_t>* order = nullptr,
+        std::mutex* order_mutex = nullptr) {
+    dee::HostPackCache::HintRequest request;
+    request.key = key;
+    request.nbytes = nbytes;
+    request.deadline = deadline;
+    request.fill = [=](uint8_t* dst, size_t n) {
+        if (order) {
+            std::lock_guard<std::mutex> lock(*order_mutex);
+            order->push_back(key);
+        }
+        if (gate) gate->wait();
+        if (fills) fills->fetch_add(1);
+        if (fail) return false;
+        pattern_fill(dst, n, key);
+        return true;
+    };
+    return request;
+}
+
+void test_hint_brings_record_in_before_demand() {
+    dee::HostPackCache cache;
+    cache.set_budget(256 * 8);
+    std::vector<uint64_t> observed;
+    cache.set_hint_read_observer(
+        [&](uint64_t key, std::size_t, double, bool ok) {
+            if (ok) observed.push_back(key);
+        });
+    auto refused = make_hint(5, 256, 1);
+    check(cache.submit_hints(&refused, 1) == 0 &&
+          cache.stats().hints_rejected == 1,
+          "hints are refused while there are no hint lanes");
+    check(cache.set_hint_lanes(2) && cache.hint_lanes() == 2, "hint lanes start");
+    std::atomic<int> hint_fills{0};
+    dee::HostPackCache::HintRequest hints[2] = {
+        make_hint(5, 256, 1, &hint_fills), make_hint(6, 256, 1, &hint_fills)};
+    check(cache.submit_hints(hints, 2) == 2, "two hints accepted");
+    check(cache.stats().hint_reserved_bytes == 512 || cache.pending_hints() <= 2,
+          "accepted hints reserve their bytes");
+    settle_hints(cache);
+    check(hint_fills.load() == 2 && cache.contains(5) && cache.contains(6),
+          "finished hints are published");
+    check(cache.stats().hint_reads == 2 && cache.stats().hint_reserved_bytes == 0 &&
+          observed.size() == 2, "hint reads are counted and observed");
+    check(cache.stats().hits == 0 && cache.stats().misses == 0,
+          "a hint is not a lookup");
+    int demand_fills = 0;
+    const uint8_t* data = cache.get(5, 256, [&](uint8_t* dst, size_t n) {
+        ++demand_fills;
+        pattern_fill(dst, n, 5);
+    });
+    check(data && matches_pattern(data, 256, 5) && demand_fills == 0,
+          "demand is served the hinted bytes without a second read");
+    check(cache.stats().hits == 1 && cache.stats().hint_hits == 1,
+          "the hit is attributed to the hint");
+    cache.get(5, 256, [&](uint8_t* dst, size_t n) { pattern_fill(dst, n, 5); });
+    check(cache.stats().hits == 2 && cache.stats().hint_hits == 1,
+          "only the first use of a hinted record counts as a hint hit");
+    auto duplicate = make_hint(6, 256, 1);
+    check(cache.submit_hints(&duplicate, 1) == 0,
+          "a hint for a resident record is refused");
+    for (uint64_t key = 20; key < 28; ++key) {
+        cache.get(key, 256, [&](uint8_t* dst, size_t n) {
+            pattern_fill(dst, n, key); });
+    }
+    check(!cache.contains(6) && cache.stats().hints_wasted == 1,
+          "a hinted record evicted unused is counted as wasted");
+    cache.clear();
+    check(cache.stats().hints_wasted == 0 && cache.stats().hint_reads == 0,
+          "clear resets the hint counters with the rest");
+}
+
+void test_failed_hint_publishes_nothing() {
+    dee::HostPackCache cache;
+    cache.set_budget(256 * 4);
+    cache.set_hint_lanes(1);
+    auto hint = make_hint(9, 256, 1, nullptr, nullptr, /*fail=*/true);
+    check(cache.submit_hints(&hint, 1) == 1, "failing hint accepted");
+    settle_hints(cache);
+    check(!cache.contains(9) && cache.stats().hint_failures == 1 &&
+          cache.stats().hint_reads == 0 && cache.stats().hint_reserved_bytes == 0,
+          "a failed hint publishes nothing and releases its reservation");
+    int demand_fills = 0;
+    const uint8_t* data = cache.get(9, 256, [&](uint8_t* dst, size_t n) {
+        ++demand_fills;
+        pattern_fill(dst, n, 9);
+    });
+    check(data && demand_fills == 1 && matches_pattern(data, 256, 9) &&
+          cache.stats().misses == 1,
+          "demand reads the record itself after a failed hint");
+}
+
+void test_demand_never_waits_behind_a_queued_hint() {
+    dee::HostPackCache cache;
+    cache.set_budget(256 * 8);
+    cache.set_hint_reserve_limit(256 * 8);
+    cache.set_hint_lanes(1);
+    Gate gate;
+    std::atomic<int> hint_fills{0};
+    dee::HostPackCache::HintRequest hints[2] = {
+        make_hint(1, 256, 5, &hint_fills, &gate),
+        make_hint(2, 256, 6, &hint_fills)};
+    check(cache.submit_hints(hints, 2) == 2, "blocked + queued hint accepted");
+    gate.wait_entered(1);                       // hint 1 is being read
+    // Key 2 is queued behind it: demand takes the record over at once.
+    int demand_fills = 0;
+    const uint8_t* two = cache.get(2, 256, [&](uint8_t* dst, size_t n) {
+        ++demand_fills;
+        pattern_fill(dst, n, 2);
+    });
+    check(two && demand_fills == 1 && cache.stats().hints_cancelled == 1 &&
+          cache.stats().misses == 1,
+          "a queued hint is cancelled and demand reads the record itself");
+    // Key 1 is mid-read: demand waits for that read instead of duplicating it.
+    std::thread releaser([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        gate.release();
+    });
+    const uint8_t* one = cache.get(1, 256, [&](uint8_t* dst, size_t n) {
+        ++demand_fills;
+        pattern_fill(dst, n, 1);
+    });
+    releaser.join();
+    check(one && matches_pattern(one, 256, 1) && demand_fills == 1 &&
+          cache.stats().hint_waits == 1 && cache.stats().hint_hits == 1,
+          "demand waits for a hint read in flight and reuses its bytes");
+    cache.drain_hints();
+    check(hint_fills.load() == 1, "the cancelled hint never ran");
+}
+
+std::vector<uint64_t> run_hint_order(dee::HintQueueOrder order_mode) {
+    dee::HostPackCache cache;
+    cache.set_budget(256 * 16);
+    cache.set_hint_reserve_limit(256 * 16);
+    cache.set_hint_queue_order(order_mode);
+    cache.set_hint_lanes(1);
+    Gate gate;
+    std::vector<uint64_t> order;
+    std::mutex order_mutex;
+    auto first = make_hint(100, 256, 1, nullptr, &gate, false, &order, &order_mutex);
+    cache.submit_hints(&first, 1);
+    gate.wait_entered(1);                      // the lane is busy with 100
+    dee::HostPackCache::HintRequest rest[3] = {
+        make_hint(11, 256, 9, nullptr, nullptr, false, &order, &order_mutex),
+        make_hint(12, 256, 3, nullptr, nullptr, false, &order, &order_mutex),
+        make_hint(13, 256, 5, nullptr, nullptr, false, &order, &order_mutex)};
+    cache.submit_hints(rest, 3);
+    gate.release();
+    settle_hints(cache);
+    return order;
+}
+
+void test_hint_queue_order() {
+    const std::vector<uint64_t> deadline =
+        run_hint_order(dee::HintQueueOrder::Deadline);
+    const std::vector<uint64_t> fifo = run_hint_order(dee::HintQueueOrder::Fifo);
+    check(deadline == std::vector<uint64_t>({100, 12, 13, 11}),
+          "deadline order serves the nearest layer first");
+    check(fifo == std::vector<uint64_t>({100, 11, 12, 13}),
+          "fifo order serves hints in arrival order");
+}
+
+void test_hint_expiry_and_budget() {
+    dee::HostPackCache cache;
+    cache.set_budget(256 * 4);                 // default hint cap = 1 record
+    cache.set_hint_lanes(1);
+    Gate gate;
+    auto blocked = make_hint(1, 256, 2, nullptr, &gate);
+    check(cache.submit_hints(&blocked, 1) == 1, "first hint fits the hint cap");
+    gate.wait_entered(1);
+    auto over = make_hint(2, 256, 3);
+    check(cache.submit_hints(&over, 1) == 0 && cache.stats().hints_rejected == 1,
+          "hints beyond the reserve cap are refused");
+    cache.set_hint_reserve_limit(256 * 3);
+    dee::HostPackCache::HintRequest queued[2] = {
+        make_hint(2, 256, 3), make_hint(3, 256, 7)};
+    check(cache.submit_hints(queued, 2) == 2, "raised cap admits two more");
+    check(cache.stats().hint_reserved_bytes == 256 * 3,
+          "reserved bytes cover running and queued hints");
+    // Demand for other records must leave the reservation intact: only one
+    // more record fits beside three reserved ones.
+    for (uint64_t key = 50; key < 53; ++key) {
+        check(cache.get(key, 256, [&](uint8_t* dst, size_t n) {
+                  pattern_fill(dst, n, key); }) != nullptr,
+              "demand still fits beside the hint reservation");
+        check(cache.stats().bytes + cache.stats().hint_reserved_bytes <= 256 * 4,
+              "resident plus reserved bytes never exceed the budget");
+    }
+    check(cache.expire_hints(3) == 1 && cache.stats().hints_cancelled == 1 &&
+          cache.stats().hint_reserved_bytes == 256 * 2,
+          "expire drops queued hints whose layer has started");
+    gate.release();
+    cache.drain_hints();
+    check(cache.stats().hint_reserved_bytes == 0 && cache.pending_hints() == 0,
+          "drain leaves no reservation behind");
+    check(cache.stats().bytes <= 256 * 4, "budget holds after publication");
+    check(cache.set_hint_lanes(0) && cache.hint_lanes() == 0, "hint lanes stop");
+}
+
+void test_running_layer_is_the_last_victim() {
+    dee::HostPackCache cache;
+    cache.set_budget(256 * 3);
+    cache.set_eviction_policy(dee::HostEvictionPolicy::NextUse);
+    cache.set_next_use_cycle(4);
+    const auto demand = [&](uint64_t key) {
+        return cache.get(key, 256, [&](uint8_t* dst, size_t n) {
+            pattern_fill(dst, n, key); });
+    };
+    // (2,0) becomes a well-established record: used on five visits.
+    for (int visit = 0; visit < 5; ++visit) {
+        cache.begin_layer(2);
+        demand(lkey(2, 0));
+    }
+    cache.begin_layer(1);
+    demand(lkey(1, 0));                         // first-ever use: low estimate
+    demand(lkey(1, 1));
+    const double running = cache.next_use().expected_next_use(lkey(1, 0));
+    const double other = cache.next_use().expected_next_use(lkey(2, 0));
+    check(running > other,
+          "setup: the running layer's record has the larger expected next use");
+    demand(lkey(1, 2));                         // needs one eviction
+    check(cache.contains(lkey(1, 0)) && cache.contains(lkey(1, 1)) &&
+          !cache.contains(lkey(2, 0)),
+          "records of the running layer are evicted last");
+    // LRU + hints: a guess may not evict the running layer either.
+    dee::HostPackCache lru;
+    lru.set_budget(256 * 2);
+    lru.set_hint_reserve_limit(256 * 2);
+    lru.set_next_use_cycle(4);                  // layer clock on, policy LRU
+    lru.set_hint_lanes(1);
+    lru.begin_layer(1);
+    for (int expert = 0; expert < 2; ++expert) {
+        const uint64_t key = lkey(1, expert);
+        lru.get(key, 256, [&](uint8_t* dst, size_t n) { pattern_fill(dst, n, key); });
+    }
+    auto guess = make_hint(lkey(2, 0), 256, 2);
+    check(lru.submit_hints(&guess, 1) == 0 && lru.contains(lkey(1, 0)),
+          "under LRU a hint cannot evict the running layer");
+    lru.begin_layer(2);
+    auto later = make_hint(lkey(3, 0), 256, 3);
+    check(lru.submit_hints(&later, 1) == 1 && !lru.contains(lkey(1, 0)),
+          "under LRU a hint evicts the oldest record of a finished layer");
+    lru.drain_hints();
+}
+
+void test_hint_under_next_use_only_displaces_later_records() {
+    dee::HostPackCache cache;
+    cache.set_budget(256 * 2);
+    cache.set_hint_reserve_limit(256 * 2);
+    cache.set_eviction_policy(dee::HostEvictionPolicy::NextUse);
+    cache.set_next_use_cycle(4);
+    cache.set_hint_lanes(1);
+    const auto demand = [&](uint64_t key) {
+        return cache.get(key, 256, [&](uint8_t* dst, size_t n) {
+            pattern_fill(dst, n, key); });
+    };
+    cache.begin_layer(3);
+    demand(lkey(3, 0));                         // gives (3,0) a use history
+    cache.begin_layer(1);
+    demand(lkey(1, 0));
+    demand(lkey(1, 1));                         // evicts (3,0): furthest away
+    check(!cache.contains(lkey(3, 0)) && cache.stats().evictions == 1,
+          "setup: the far record left, the running layer's stayed");
+    // Residents belong to the layer running now (needed soonest): a guess
+    // may not push them out.
+    auto guess = make_hint(lkey(2, 0), 256, 2);
+    check(cache.submit_hints(&guess, 1) == 0 &&
+          cache.contains(lkey(1, 0)) && cache.contains(lkey(1, 1)),
+          "a hint cannot displace a record needed sooner");
+    // One layer on, layer 1 is three calls away and (3,0) only one.
+    cache.begin_layer(2);
+    auto later = make_hint(lkey(3, 0), 256, 3);
+    check(cache.submit_hints(&later, 1) == 1,
+          "a hint may displace a record needed later");
+    settle_hints(cache);
+    check(cache.contains(lkey(3, 0)) && cache.stats().evictions == 2,
+          "exactly one later-needed record made room for the hint");
+}
+
 }  // namespace
 
 int main() {
@@ -582,6 +991,16 @@ int main() {
     test_evict_observer_reports_victims();
     test_scalar_fill_instrumentation();
     test_batch_allprotected_stats_coherence();
+    test_next_use_estimator_model();
+    test_next_use_fixes_cyclic_thrash();
+    test_next_use_without_cycle_is_lru();
+    test_hint_brings_record_in_before_demand();
+    test_failed_hint_publishes_nothing();
+    test_demand_never_waits_behind_a_queued_hint();
+    test_hint_queue_order();
+    test_hint_expiry_and_budget();
+    test_running_layer_is_the_last_victim();
+    test_hint_under_next_use_only_displaces_later_records();
     if (g_failures == 0) {
         std::printf("ALL PASS\n");
         return 0;

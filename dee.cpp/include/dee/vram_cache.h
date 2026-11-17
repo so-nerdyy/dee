@@ -13,6 +13,7 @@
 
 #pragma once
 
+#include "dee/next_use.h"
 #include "dee/profiling.h"
 
 #include <cstddef>
@@ -44,7 +45,15 @@ struct ExpertKeyHash {
 //                  worth ~2^20 recency ticks (~4000 tokens).
 //   Recency      — pure LRU by last_used; the priority term is ignored for
 //                  eviction but still stored on the block for telemetry.
-enum class EvictionPolicy { RankPriority, Recency };
+//   NextUse      — evict the unpinned block whose predicted next use is
+//                  furthest away (dee/next_use.h).  Decode sweeps the layers
+//                  in a cycle, so LRU's victim is the block needed soonest;
+//                  this policy ranks by cyclic layer distance plus a per-
+//                  expert reuse estimate instead.  Requires
+//                  set_next_use_cycle() and begin_layer() from the engine;
+//                  until the cycle is configured it behaves exactly like
+//                  Recency.  Placement only: never changes what is computed.
+enum class EvictionPolicy { RankPriority, Recency, NextUse };
 
 // One block evicted during a single ensure() eviction pass. EnsureInfo
 // carries ALL victims in eviction order (multi-victim evictions used to
@@ -210,6 +219,17 @@ public:
     void set_eviction_policy(EvictionPolicy p) { eviction_policy_ = p; }
     EvictionPolicy eviction_policy() const { return eviction_policy_; }
 
+    // NextUse support.  `cycle_layers` is the number of MoE layers one decode
+    // step sweeps; begin_layer(layer) tells the cache which layer is running
+    // now.  Both are no-ops for the other policies' victim choice (the
+    // estimator still learns, so the policy can be switched mid-run).
+    void set_next_use_cycle(int cycle_layers, double alpha = 0.2,
+                            double p0 = 0.1) {
+        next_use_.configure(cycle_layers, alpha, p0);
+    }
+    void begin_layer(int layer) { next_use_.begin_layer(layer); }
+    const NextUseEstimator& next_use() const { return next_use_; }
+
     // Milestone 3 forensic: capture the most recent ensure/evict failure
     // context so the engine can surface it to Python instead of collapsing
     // to a single "cannot allocate" line.  Cleared by ensure() on entry;
@@ -229,6 +249,7 @@ private:
     std::string last_error_message_;
     bool debug_validation_ = false;
     EvictionPolicy eviction_policy_ = EvictionPolicy::RankPriority;
+    NextUseEstimator next_use_;
 
     ExpertBlock* find_block(int layer, int expert);
     const ExpertBlock* find_block(int layer, int expert) const;
@@ -241,10 +262,21 @@ private:
     // Lower score => evict first. Under RankPriority higher last_used OR
     // higher priority RAISES the score (both keep an expert resident longer).
     // Under Recency the priority term is ignored — strict LRU by last_used.
+    // Under NextUse the integer score is the Recency one (used for
+    // diagnostics and as the tie-break); the victim itself is chosen by
+    // next_use_victim_rank().
     static constexpr int64_t PRIORITY_WEIGHT = 1 << 20;
     int64_t eviction_score(const ExpertBlock& b) const {
-        if (eviction_policy_ == EvictionPolicy::Recency) return b.last_used;
+        if (eviction_policy_ != EvictionPolicy::RankPriority) return b.last_used;
         return b.last_used + (int64_t)b.priority * PRIORITY_WEIGHT;
+    }
+    bool next_use_active() const {
+        return eviction_policy_ == EvictionPolicy::NextUse && next_use_.enabled();
+    }
+    // Larger => evict first (expected layer calls until the block's next use).
+    double next_use_victim_rank(const ExpertBlock& b) const {
+        return next_use_.victim_rank(
+            NextUseEstimator::make_key(b.key.layer, b.key.expert));
     }
 };
 
