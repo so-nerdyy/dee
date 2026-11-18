@@ -1,6 +1,6 @@
 {
   "run_id": "p6m-l4-r6-b8-h16-nu",
-  "evidence_dir": "runs\\p6m-l4-r6-b8-h16-nu",
+  "evidence_dir": "runs/p6m-l4-r6-b8-h16-nu",
   "platform": "modal",
   "cell": "1xL4",
   "model": "dsv4_flash",
