@@ -589,9 +589,10 @@ runner verdict was `ACCEPT_CORRECTNESS`. Fixed in `modal_p6.parse_verdict`.
 | A10 | nu-prev | decode tok/s | 1.419 | 0.92 [0.70, 1.10] | WEAKENED (above) |
 
 Note on A4: the first grader run divided by resident hits plus cold loads and left in-flight
-hits out of the request count; the grader now includes them. The window's 6,202 resident hits and
-43,261 cold loads sum to all 49,463 lookups, so in-flight hits were at most a handful and A4
-stands. Re-run `addendum5.py` to confirm the exact figure.
+hits out of the request count; the grader now includes them. The in-flight count for this window
+was not reported, so 0.125 is an upper bound until `addendum5.py` is re-run. A4 leaves its range
+only if in-flight hits exceed about 39,000 in the window (and is killed only above about 157,000),
+against 49,463 other requests.
 
 Reported only: `nu-router` hint recall 0.773 and precision 0.771 (layers 1-2 exact, hash routed;
 the rest 0.6-0.85). Its host hit is 0.543, 0.040 above `nu-prev`, so the registered expectation
