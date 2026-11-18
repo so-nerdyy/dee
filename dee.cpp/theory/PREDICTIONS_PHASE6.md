@@ -560,3 +560,67 @@ a GPU either, and this run includes them, so the `lru` row may differ from r5's 
 SeqMoE (arXiv 2609.12978). Layer-ahead routing as a prefetch signal follows Pre-gated MoE and
 ProMoE; here it is a hint only and the real router's selection is always what executes. Belady's
 MIN (1966) is the offline bound the simulator reports.
+
+### Addendum 6 — results of run `p6m-l4-r6` against Addendum 5 (appended 2026-11-18)
+
+**Run.** 1xL4, commit 8e77d2e, app ap-AIWQfxITVZR66cVuNVHmqb, 2026-11-18 01:2x–02:18 UTC, exit 0,
+3,002 s container wall, about $0.67 billed (the estimate was about $2). Four b=8 host-16 rows in the
+registered order `nu`, `nu-prev`, `nu-router`, `lru`. Measured B_SSD 6.70 GiB/s. Each row printed
+the placement knobs it was asked for. Graded with `aws/phase6/addendum5.py` (A0-A10) over the last
+32 decode steps (steps 32-64), and with `score.py` against the original matrix (scorecards in
+`runs/p6m-l4-r6-b8-h16-*`, ledger lines in `SCOREBOARD.jsonl`). The run summary printed verdict
+`UNKNOWN` for every row: the harness parser did not recognise the cohort verdict line. Every row's
+runner verdict was `ACCEPT_CORRECTNESS`. Fixed in `modal_p6.parse_verdict`.
+
+**A0 exactness: PASS.** All four rows have byte-identical tokens and routed-expert journals
+(`score.py --placement-exact`, both with `lru` and with `nu` as baseline). Every band below counts.
+
+| id | row | metric | measured | predicted [range] | grade |
+|---|---|---|---|---|---|
+| A1 | lru | host hit | 0.000 (0/49,463) | 0.000 [0, 0.02] | PASS |
+| A2 | nu | host hit | 0.439 | 0.42 [0.33, 0.52] | PASS |
+| A3 | nu | cold rec/tok | 108.4 | 115 [95, 140] | PASS |
+| A4 | nu | VRAM hit | 0.125 | 0.12 [0.07, 0.18] | PASS |
+| A5 | nu-prev | host hit, hint hits included | 0.503 | 0.87 [0.72, 0.93] | **KILLED** (< 0.55) |
+| A6 | nu-prev | source reads vs nu | 1.266 | 1.00 [0.90, 1.20] | WEAKENED |
+| A7 | nu-prev | hint hits / hint reads | 0.311 | 0.77 [0.60, 0.92] | **KILLED** (< 0.45) |
+| A8 | nu vs lru | decode tok/s ratio | 1.300 | 1.27 [1.08, 1.50] | PASS |
+| A9 | nu-prev vs nu | decode tok/s ratio | 1.053 | 1.24 [1.05, 1.45] | PASS (at the edge) |
+| A10 | nu-prev | decode tok/s | 1.419 | 0.92 [0.70, 1.10] | WEAKENED (above) |
+
+Reported only: `nu-router` hint recall 0.773 and precision 0.771 (layers 1-2 exact, hash routed;
+the rest 0.6-0.85). Its host hit is 0.543, 0.040 above `nu-prev`, so the registered expectation
+holds. Decode tok/s: lru 1.037, nu 1.348, nu-prev 1.419, nu-router 1.269.
+
+**What it means.**
+
+1. *Next-use eviction does what the simulator said.* A1-A4 and A8 all pass, with A2, A3 and A4
+   within 5% of nominal. The 0% host-hit cliff of Addendum 4 is gone, cold reads fall 44% and
+   tok/s rises 1.30x. The lru row reproduces r5's window exactly (193.2 rec/tok), so the baseline
+   is stable across runs. The cliff diagnosis is confirmed.
+2. *Prefetch hints fail for a reason inside the engine, not in routing.* The router hints are
+   accurate (precision 0.77), and previous-step hints were predicted at 0.77 hit/read, yet only
+   31% (prev) and 37% (router) of the hint reads were ever used. In the window `nu-prev` rejected
+   9,421 hints and wasted 7,273 of 10,551 hint reads; `nu-router` rejected 30,699 and wasted 9,165
+   of 14,472. Retention-only host hit (hits minus hint hits) is 0.437 and 0.436, the same as `nu`.
+   The cause is in `HostPackCache::submit_hints` and the eviction order. A hinted record is ranked
+   by its own reuse history (`expected_next_use`). A record worth hinting is usually one that was
+   not used recently, so its `p` is low and its expected next use is far away. It therefore (a)
+   cannot displace anything, so the hint is rejected, and (b) when it is admitted, it is the first
+   victim, so it is evicted before its layer runs. That is weakness (iv) of Addendum 5. The
+   simulator ranked hinted records by the hint's target layer, which is why it predicted 0.87.
+   Hints still add reads (A6) and give back a little (A9 +5%, router -6%), consistent with reads
+   being only part of the step time.
+3. *Everything is faster than r5.* lru went from 0.59 (r5) to 1.04 tok/s with the same reads per
+   token, so most of the gain comes from PR #20's host-path changes (weakness (v)), not from
+   placement. This is also why A10 is above its range: the timing model was fitted to r5.
+4. Every row is still KILLED against Addendum 3 (predicted 4.2-10.4 tok/s at b=8). That verdict
+   from Addendum 4 stands.
+
+**Caveat.** The rows share one container, and gVisor does not drop the page cache, so later rows
+read a warmer cache. lru ran last and was still the slowest. Counts (A1-A7) do not depend on it.
+
+**Next (free, no run needed first).** Rank a hinted record by its hint target (expected next use =
+distance to the target layer) until its layer runs, in both admission and eviction. Then make the
+simulator apply the engine's admission rule and reservation cap, so it reproduces A5 = 0.50 and
+A7 = 0.31 before any new prediction is registered.
