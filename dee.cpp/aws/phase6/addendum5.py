@@ -93,7 +93,9 @@ def row_metrics(ev: score.Evidence) -> dict:
     out["host_hit"] = w["host_hits"] / hm if hm else None
     out["host_hit_retention_only"] = ((w["host_hits"] - w["host_hint_hits"]) / hm) if hm else None
     out["cold_rec_per_tok"] = w["source_reads"] / (b * score.B8_WINDOW_STEPS)
-    req = w["vram_cache_hits"] + w["vram_cache_loads"]
+    # requests = resident hits + in-flight hits + cold loads (engine invariant);
+    # cache_hits == resident_hits and cache_loads == cold_loads.
+    req = w["vram_resident_hits"] + w["vram_inflight_hits"] + w["vram_cache_loads"]
     out["vram_hit"] = w["vram_resident_hits"] / req if req else None
     out["hint_hit_per_read"] = (w["host_hint_hits"] / w["host_hint_reads"]
                                 if w["host_hint_reads"] else None)
@@ -149,9 +151,9 @@ def grade_all(evs: dict[str, score.Evidence]) -> dict:
         router_check["grade"] = (score.PASS if router_check["host_hit_minus_nu_prev"] >= -0.03
                                  else "MISSED")
     gate = "PASS" if not void else "FAIL: " + ", ".join(sorted(void))
+    scorable = [b["grade"] for b in bands.values() if not b["grade"].startswith("VOID")]
     return {"A0": {"gate": gate, "reasons": a0}, "bands": bands,
-            "overall": score.overall([b["grade"] for b in bands.values()
-                                      if not b["grade"].startswith("VOID")]),
+            "overall": score.overall(scorable) if scorable else "VOID (A0 failed)",
             "nu_router": router_check, "rows": rows}
 
 

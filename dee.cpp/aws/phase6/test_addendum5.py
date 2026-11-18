@@ -101,6 +101,28 @@ def test_a0_failure_voids_that_row(tmp_path):
     assert addendum5.main([str(d) for d in dirs]) == 1
 
 
+def test_vram_hit_counts_inflight_hits_as_requests(tmp_path):
+    dirs = _four(tmp_path)
+    nu = next(d for d in dirs if d.name.endswith("-nu"))
+    lines = (nu / "generated_checkpoint-c0.jsonl").read_text().splitlines()
+    recs = [json.loads(ln) for ln in lines]
+    for r in recs:
+        r["engine_stats"]["cuda0"]["inflight_hits"] = 20 * r["step"]
+    (nu / "generated_checkpoint-c0.jsonl").write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+    evs = {addendum5.role_of(d): addendum5.score.load_evidence(d) for d in dirs}
+    card = addendum5.grade_all(evs)
+    assert card["bands"]["A4"]["measured"] == pytest.approx(12 / (12 + 20 + 88))
+
+
+def test_every_row_void_is_not_a_pass(tmp_path):
+    dirs = _four(tmp_path, nu={"tokens": ("X", "b")}, **{"nu-prev": {"tokens": ("X", "b")}})
+    evs = {addendum5.role_of(d): addendum5.score.load_evidence(d) for d in dirs}
+    evs["lru"].result = None
+    card = addendum5.grade_all(evs)
+    assert all(b["grade"].startswith("VOID") for b in card["bands"].values())
+    assert card["overall"].startswith("VOID")
+
+
 def test_role_comes_from_the_run_id_suffix():
     assert addendum5.role_of(Path("runs/p6m-l4-r6-b8-h16-nu")) == "nu"
     assert addendum5.role_of(Path("runs/p6m-l4-r6-b8-h16-nu-prev")) == "nu-prev"

@@ -580,13 +580,18 @@ runner verdict was `ACCEPT_CORRECTNESS`. Fixed in `modal_p6.parse_verdict`.
 | A1 | lru | host hit | 0.000 (0/49,463) | 0.000 [0, 0.02] | PASS |
 | A2 | nu | host hit | 0.439 | 0.42 [0.33, 0.52] | PASS |
 | A3 | nu | cold rec/tok | 108.4 | 115 [95, 140] | PASS |
-| A4 | nu | VRAM hit | 0.125 | 0.12 [0.07, 0.18] | PASS |
+| A4 | nu | VRAM hit | 0.125 (see note) | 0.12 [0.07, 0.18] | PASS |
 | A5 | nu-prev | host hit, hint hits included | 0.503 | 0.87 [0.72, 0.93] | **KILLED** (< 0.55) |
 | A6 | nu-prev | source reads vs nu | 1.266 | 1.00 [0.90, 1.20] | WEAKENED |
 | A7 | nu-prev | hint hits / hint reads | 0.311 | 0.77 [0.60, 0.92] | **KILLED** (< 0.45) |
 | A8 | nu vs lru | decode tok/s ratio | 1.300 | 1.27 [1.08, 1.50] | PASS |
 | A9 | nu-prev vs nu | decode tok/s ratio | 1.053 | 1.24 [1.05, 1.45] | PASS (at the edge) |
 | A10 | nu-prev | decode tok/s | 1.419 | 0.92 [0.70, 1.10] | WEAKENED (above) |
+
+Note on A4: the first grader run divided by resident hits plus cold loads and left in-flight
+hits out of the request count; the grader now includes them. The window's 6,202 resident hits and
+43,261 cold loads sum to all 49,463 lookups, so in-flight hits were at most a handful and A4
+stands. Re-run `addendum5.py` to confirm the exact figure.
 
 Reported only: `nu-router` hint recall 0.773 and precision 0.771 (layers 1-2 exact, hash routed;
 the rest 0.6-0.85). Its host hit is 0.543, 0.040 above `nu-prev`, so the registered expectation
