@@ -3,6 +3,15 @@
 2026-11-17. No GPU was used for anything in this file. Predictions for the hardware run are in
 `PREDICTIONS_PHASE6.md` Addendum 5.
 
+> **Correction, 2026-11-18 (after run `p6m-l4-r6`).** The hint rows in the timed table below are
+> wrong. The replay kept a finished hint read available forever, so a demand many steps later
+> still counted as a hint hit after the record had left the host tier. It also admitted every
+> hint, with no reservation cap and no rank test. Both are fixed: `simulate_timed` now follows
+> `HostPackCache::submit_hints` and `absorb_hints`, and `hint_rank` chooses how a hinted record
+> is ranked. With the fix, previous-step hints give host hit 0.522 at 16 GiB, not 0.869, which
+> matches r6's measured 0.503. The eviction tables (no hints) are unaffected; r6 confirmed them.
+> The corrected hint results are in `PREDICTIONS_PHASE6.md` Addendum 6.
+
 ## The problem
 
 Phase 6 run `p6m-l4-r5` measured a host-tier hit rate of 0/49,463 at b=8 with a 16 GiB host tier

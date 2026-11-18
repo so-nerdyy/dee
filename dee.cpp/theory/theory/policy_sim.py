@@ -202,6 +202,9 @@ class NextUse(Policy):
         self.last_visit: Dict[Key, int] = {}
         self.tick = 0
         self.last_tick: Dict[Key, int] = {}
+        # hinted records not used yet, ranked as if certain to be used at their layer
+        # (hint_rank='target'); empty unless the timed replay fills it
+        self.boost: Set[Key] = set()
 
     def begin_layer(self, step: int, layer: int, call_index: int) -> None:
         super().begin_layer(step, layer, call_index)
@@ -243,6 +246,13 @@ class NextUse(Policy):
         if not self.use_probability:
             # break ties toward the least recently used
             return d - 1e-9 * self.last_tick.get(key, 0)
+        if key in self.boost:
+            return float(d)
+        return d + self.n * (1.0 / self.probability(key) - 1.0)
+
+    def expected(self, key: Key) -> float:
+        """E[next use] without the running-layer rule (C++: expected_next_use)."""
+        d = (key[0] - self.cur) % self.n
         return d + self.n * (1.0 / self.probability(key) - 1.0)
 
 
@@ -292,6 +302,7 @@ class Tier:
         self.policy = policy
         self.resident: Set[Key] = set()
         self.evictions = 0
+        self.on_evict = None          # optional callback(key)
 
     def __contains__(self, key: Key) -> bool:
         return key in self.resident
@@ -303,10 +314,15 @@ class Tier:
             return True
         chosen = self.policy.victims(self.resident, protected, over)
         for victim in chosen:
-            self.resident.discard(victim)
-            self.policy.forget(victim)
-            self.evictions += 1
+            self.evict(victim)
         return len(chosen) == over
+
+    def evict(self, key: Key) -> None:
+        self.resident.discard(key)
+        self.policy.forget(key)
+        self.evictions += 1
+        if self.on_evict is not None:
+            self.on_evict(key)
 
     def insert(self, key: Key) -> None:
         self.resident.add(key)
@@ -325,6 +341,11 @@ class StepCounts:
     source_reads: int = 0
     vram_hits: int = 0
     vram_loads: int = 0
+    hint_offered: int = 0     # hint candidates not already host-resident or queued
+    hint_rejected: int = 0    # refused by the admission rule or the reservation cap
+    hint_reads: int = 0       # hint reads that ran (also counted in source_reads)
+    hint_hits: int = 0        # demand lookups served by a hinted record (also host hits)
+    hint_wasted: int = 0      # hinted records evicted or discarded before any use
 
 
 @dataclass
@@ -338,7 +359,8 @@ class SimResult:
                 if s.step >= from_step and (to_step is None or s.step <= to_step)]
         tot = {f: sum(getattr(s, f) for s in rows)
                for f in ("lookups", "host_lookups", "host_hits", "source_reads",
-                         "vram_hits", "vram_loads")}
+                         "vram_hits", "vram_loads", "hint_offered", "hint_rejected",
+                         "hint_reads", "hint_hits", "hint_wasted")}
         n = max(1, len(rows))
         return {
             **tot,
@@ -348,6 +370,7 @@ class SimResult:
             "source_reads_per_step": tot["source_reads"] / n,
             "vram_loads_per_step": tot["vram_loads"] / n,
             "lookups_per_step": tot["lookups"] / n,
+            "hint_hit_per_read": tot["hint_hits"] / tot["hint_reads"] if tot["hint_reads"] else 0.0,
         }
 
 
@@ -537,7 +560,8 @@ def simulate_timed(calls: Sequence[LayerCall], *, host_records: int, vram_record
                    vram_bypass: bool = False, lookahead: Optional[str] = None,
                    recall: float = 1.0, precision: float = 1.0, queue: str = "deadline",
                    depth: int = 1, n_experts: int = 256, seed: int = 0,
-                   policy_kw: Optional[dict] = None) -> TimedResult:
+                   policy_kw: Optional[dict] = None, hint_rank: str = "engine",
+                   hint_cap_fraction: float = 0.25) -> TimedResult:
     """Replay with a clock.  ``lookahead``: None | 'synthetic' | 'prev_step'.
 
     While layer L stages and computes, the read pool keeps working on hints for layer L+1:
@@ -546,7 +570,23 @@ def simulate_timed(calls: Sequence[LayerCall], *, host_records: int, vram_record
     uses the experts layer L+1 used on the previous step (computable from the journal alone).
     ``depth`` hints that many layer calls ahead.  Hints that are still queued when their layer
     starts are dropped under queue='deadline'; under 'fifo' they stay in line.
+
+    Hints follow ``HostPackCache::submit_hints`` / ``absorb_hints``:
+
+      * a hint reserves one record of host budget until it is published; reservations are
+        capped at ``hint_cap_fraction`` of the tier, and demand evictions count them;
+      * when the tier is full, a hint may displace only the worst resident, and only if that
+        record ranks above the hinted one.  ``hint_rank='engine'`` ranks the hinted record by
+        its own expected next use (what r6 ran); ``'target'`` ranks it by the distance to the
+        layer it was hinted for, and keeps that rank in eviction until it is used;
+        ``'free'`` admits every hint (no rank test);
+      * a finished hint is published into the host tier at the end of the layer call that
+        issued it; a demand for a hint still being read waits for it;
+      * a hinted record evicted (or discarded) before any use is wasted.  Only a hinted record
+        that is still resident when it is asked for counts as a hint hit.
     """
+    if hint_rank not in ("engine", "target", "free"):
+        raise ValueError(hint_rank)
     n_layers = n_layers_of(calls)
     kw = policy_kw or {}
 
@@ -560,44 +600,108 @@ def simulate_timed(calls: Sequence[LayerCall], *, host_records: int, vram_record
     step_start: Dict[int, float] = {}
     step_end: Dict[int, float] = {}
     prev_sets: Dict[int, Tuple[Key, ...]] = {}
-    hinted: Set[Key] = set()
+    pending: Set[Key] = set()          # accepted hints not published yet (reserve budget)
+    unused: Set[Key] = set()           # published hinted records not asked for yet
+    cap = max(0, int(host_records * hint_cap_fraction))
+    nu_host = host.policy if isinstance(host.policy, NextUse) and host.policy.use_probability \
+        else None
     out = TimedResult(SimResult([]), {})
     now = 0.0
+    sc: Optional[StepCounts] = None
+
+    def set_reserved() -> None:
+        host.capacity = host_records - len(pending)
+
+    def drop_unused(key: Key) -> None:
+        unused.discard(key)
+        if nu_host is not None:
+            nu_host.boost.discard(key)
+
+    def on_host_evict(key: Key) -> None:
+        if key in unused:
+            drop_unused(key)
+            sc.hint_wasted += 1
+
+    host.on_evict = on_host_evict
+
+    def publish(key: Key) -> None:
+        """A hint read finished: it lands in the host tier (C++: absorb_hints)."""
+        pending.discard(key)
+        set_reserved()
+        pool.take(key)
+        sc.hint_reads += 1
+        sc.source_reads += 1
+        if key in host or len(host.resident) >= host.capacity:
+            sc.hint_wasted += 1
+            return
+        host.insert(key)
+        unused.add(key)
+        if nu_host is not None and hint_rank == "target":
+            nu_host.boost.add(key)
+            nu_host._dirty.add(key)
+        if isinstance(host.policy, Lru):
+            host.policy.on_use(key)
+
+    def admit(key: Key, protected: Set[Key]) -> bool:
+        if len(pending) + 1 > cap:
+            return False
+        if len(host.resident) + len(pending) + 1 <= host_records:
+            return True
+        if nu_host is None or hint_rank == "free":
+            # LRU path: make_room, but never at the expense of the running layer
+            return _make_room_for_hint(protected)
+        worst = nu_host.victims(host.resident, set(), 1)
+        if not worst:
+            return False
+        hint_value = nu_host.expected(key) if hint_rank == "engine" \
+            else float((key[0] - nu_host.cur) % nu_host.n)
+        if nu_host.rank(worst[0]) <= hint_value:
+            return False
+        host.evict(worst[0])
+        return True
+
+    def _make_room_for_hint(protected: Set[Key]) -> bool:
+        host.capacity = host_records - len(pending) - 1
+        ok = host.make_room(0, protected)
+        set_reserved()
+        return ok
+
     for index, call in enumerate(calls):
         sc = steps.setdefault(call.step, StepCounts(call.step))
         step_start.setdefault(call.step, now)
         host.policy.begin_layer(call.step, call.layer, index)
         vram.policy.begin_layer(call.step, call.layer, index)
         keys = call.keys
+        key_set = set(keys)
         sc.lookups += len(keys)
 
-        # hints for this layer that never started: drop (deadline) or leave in line (fifo)
-        if queue == "deadline":
-            for k in [k for k in hinted if k[0] == call.layer and k not in pool.done_at]:
-                if k not in keys:
-                    pool.cancel(k)
-        hinted = {k for k in hinted if k[0] != call.layer}
+        # hints for this layer that never started: cancelled (deadline queue) or, when this
+        # layer asks for them, read on demand instead (C++: settle_hint_for_demand)
+        for k in [k for k in pending if k[0] == call.layer and k not in pool.done_at]:
+            if queue == "deadline" or k in key_set:
+                pool.cancel(k)
+                pending.discard(k)
+        set_reserved()
 
         wanted = [k for k in keys if not (vram_bypass and k in vram)]
         protected = set(wanted)
         sc.host_lookups += len(wanted)
         demand: List[Key] = []
+        waits: List[float] = []
         for k in wanted:
             host.policy.on_use(k)
+            if k in pending and k in pool.done_at:
+                # a hint read for this record is running or done: wait for it, no new read
+                waits.append(pool.done_at[k])
+                publish(k)
             if k in host:
                 sc.host_hits += 1
-            elif k in pool.done_at and pool.done_at[k] <= now:
-                # a hint read finished early: it is host-resident by now
-                out.hint_reads_used += 1
-                sc.host_hits += 1
-                host.make_room(1, protected)
-                host.insert(k)
-                pool.take(k)
+                if k in unused:
+                    sc.hint_hits += 1
+                    drop_unused(k)
+                    host.policy._dirty.add(k)
             else:
-                if k in pool.done_at:
-                    out.hint_reads_used += 1          # in flight: wait for it, no new read
-                else:
-                    sc.source_reads += 1
+                sc.source_reads += 1
                 pool.submit(k, deadline=now)
                 demand.append(k)
 
@@ -615,15 +719,21 @@ def simulate_timed(calls: Sequence[LayerCall], *, host_records: int, vram_record
                 else:
                     raise ValueError(lookahead)
                 for k in guess:
-                    if k in host or k in pool.done_at or k in pool.entry \
+                    if k in host or k in pending or k in pool.entry or k in demand \
                             or (vram_bypass and k in vram):
                         continue
+                    sc.hint_offered += 1
+                    if not admit(k, protected):
+                        sc.hint_rejected += 1
+                        continue
+                    pending.add(k)
+                    set_reserved()
                     # after every demand read of this call, nearer layers first
                     pool.submit(k, deadline=now + ahead)
-                    hinted.add(k)
                     out.hint_reads += 1
 
         t_ready = pool.wait_for(demand, now) if demand else now
+        t_ready = max([t_ready] + waits)
         out.demand_wait_ms += t_ready - now
         for k in demand:
             host.make_room(1, protected)
@@ -644,14 +754,9 @@ def simulate_timed(calls: Sequence[LayerCall], *, host_records: int, vram_record
         sc.vram_loads += loads
         t_end = t_ready + loads * time_model.stage_ms + time_model.layer_ms
         pool.run_until(t_end, t_ready)
-        # hint reads that finished become host-resident without a wait (they are one layer
-        # ahead, so next_use ranks them as the soonest-needed records)
-        for k in [k for k in hinted if k in pool.done_at and pool.done_at[k] <= t_end]:
-            if k not in host:
-                host.make_room(1, set(keys))
-                host.insert(k)
-                if isinstance(host.policy, Lru):
-                    host.policy.on_use(k)
+        # hint reads that finished by the end of this call are published now
+        for k in [k for k in pending if k in pool.done_at and pool.done_at[k] <= t_end]:
+            publish(k)
         prev_sets[call.layer] = tuple(keys)
         now = t_end
         step_end[call.step] = now
@@ -660,7 +765,8 @@ def simulate_timed(calls: Sequence[LayerCall], *, host_records: int, vram_record
                            {"host_records": host_records, "vram_records": vram_records,
                             "host_policy": host_policy, "vram_policy": vram_policy,
                             "vram_bypass": vram_bypass, "lookahead": lookahead,
-                            "recall": recall, "precision": precision, "queue": queue})
+                            "recall": recall, "precision": precision, "queue": queue,
+                            "hint_rank": hint_rank, "hint_cap_fraction": hint_cap_fraction})
     out.step_ms = {s: step_end[s] - step_start[s] for s in step_start}
     out.reads_started = pool.reads
     return out

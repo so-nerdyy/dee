@@ -604,20 +604,20 @@ holds. Decode tok/s: lru 1.037, nu 1.348, nu-prev 1.419, nu-router 1.269.
    within 5% of nominal. The 0% host-hit cliff of Addendum 4 is gone, cold reads fall 44% and
    tok/s rises 1.30x. The lru row reproduces r5's window exactly (193.2 rec/tok), so the baseline
    is stable across runs. The cliff diagnosis is confirmed.
-2. *Prefetch hints fail for a reason inside the engine, not in routing.* The router hints are
-   accurate (precision 0.77), and previous-step hints were predicted at 0.77 hit/read, yet only
-   31% (prev) and 37% (router) of the hint reads were ever used. In the window `nu-prev` rejected
-   9,421 hints and wasted 7,273 of 10,551 hint reads; `nu-router` rejected 30,699 and wasted 9,165
-   of 14,472. Retention-only host hit (hits minus hint hits) is 0.437 and 0.436, the same as `nu`.
-   The cause is in `HostPackCache::submit_hints` and the eviction order. A hinted record is ranked
-   by its own reuse history (`expected_next_use`). A record worth hinting is usually one that was
-   not used recently, so its `p` is low and its expected next use is far away. It therefore (a)
-   cannot displace anything, so the hint is rejected, and (b) when it is admitted, it is the first
-   victim, so it is evicted before its layer runs. That is weakness (iv) of Addendum 5. The
-   simulator held finished hint reads in a separate, unbounded pool until their layer ran and
-   never rejected or evicted one, which is why it predicted 0.87.
-   Hints still add reads (A6) and give back a little (A9 +5%, router -6%), consistent with reads
-   being only part of the step time.
+2. *Prefetch hints: the prediction was wrong because the simulator was wrong.* Only 31% (prev)
+   and 37% (router) of hint reads were ever used. In the window `nu-prev` rejected 9,421 hints and
+   wasted 7,273 of 10,551 hint reads; `nu-router` rejected 30,699 and wasted 9,165 of 14,472.
+   Retention-only host hit (hits minus hint hits) is 0.437 and 0.436, the same as `nu`. The
+   simulator behind A5 and A7 had two faults. (a) A finished hint read stayed available forever,
+   so a demand many steps later still counted as a hint hit even after the record had left the
+   host tier. (b) It admitted every hint, with no reservation cap and no rank test. With both
+   fixed so the replay follows `HostPackCache::submit_hints` and `absorb_hints`
+   (`hint_rank='engine'`), the simulator gives host hit 0.522 and hint hits per read 0.28 for this
+   row, against 0.503 and 0.311 measured (`test_reproduces_the_r6_prev_step_hint_row`). The
+   engine did what it was built to do. What fails is the hint: the previous-step experts that are
+   not already resident are mostly ones that do not recur.
+   Hints still add reads (A6) and give back a little (A9 +5%, router -6%). Note that the
+   `nu-router` row ran router hints *and* previous-step hints, so its 0.37 mixes both sources.
 3. *Everything is faster than r5.* lru went from 0.59 (r5) to 1.04 tok/s with the same reads per
    token, so most of the gain comes from PR #20's host-path changes (weakness (v)), not from
    placement. This is also why A10 is above its range: the timing model was fitted to r5.
@@ -627,7 +627,21 @@ holds. Decode tok/s: lru 1.037, nu 1.348, nu-prev 1.419, nu-router 1.269.
 **Caveat.** The rows share one container, and gVisor does not drop the page cache, so later rows
 read a warmer cache. lru ran last and was still the slowest. Counts (A1-A7) do not depend on it.
 
-**Next (free, no run needed first).** Rank a hinted record by its hint target (expected next use =
-distance to the target layer) until its layer runs, in both admission and eviction. Then make the
-simulator apply the engine's admission rule and reservation cap, so it reproduces A5 = 0.50 and
-A7 = 0.31 before any new prediction is registered.
+**Next (simulated, corrected replay, b=8 host 16 GiB, steps 33-64; tok/s is the r5-fitted model,
+which reads low on r6's faster host path).** Ranking a hinted record by the distance to its target
+layer until it is used (`hint_rank='target'`), instead of by its own reuse history:
+
+| hint source | rank | host hit | reads/step | hint hits/read | tok/s (model) |
+|---|---|---|---|---|---|
+| none (`nu`) | | 0.418 | 923 | | 0.74 |
+| prev_step | engine (r6) | 0.522 | 1,388 | 0.28 | 0.77 |
+| prev_step | target | 0.572 | 2,261 | 0.57 | 0.79 |
+| synthetic, recall 0.77 / precision 0.77 | engine | 0.607 | 968 | 0.88 | 0.81 |
+| synthetic, recall 0.77 / precision 0.77 | target | 0.780 | 1,815 | 0.84 | 0.88 |
+| perfect | target | 1.000 | 934 | 1.00 | 1.02 |
+
+Previous-step hints are not worth keeping under either rank: the target rank buys 5 points of host
+hit for 2.4x the reads. Router-quality hints (r6 measured 0.77/0.77) with the target rank are
+the only variant the corrected replay favours: host hit 0.78, but about twice the source reads of
+`nu`. r6 showed that cutting reads 44% gave 1.30x, so doubling them may cost more than this model
+says. Nothing is registered for it yet.
