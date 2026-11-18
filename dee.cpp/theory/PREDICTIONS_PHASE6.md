@@ -608,7 +608,8 @@ holds. Decode tok/s: lru 1.037, nu 1.348, nu-prev 1.419, nu-router 1.269.
    not used recently, so its `p` is low and its expected next use is far away. It therefore (a)
    cannot displace anything, so the hint is rejected, and (b) when it is admitted, it is the first
    victim, so it is evicted before its layer runs. That is weakness (iv) of Addendum 5. The
-   simulator ranked hinted records by the hint's target layer, which is why it predicted 0.87.
+   simulator held finished hint reads in a separate, unbounded pool until their layer ran and
+   never rejected or evicted one, which is why it predicted 0.87.
    Hints still add reads (A6) and give back a little (A9 +5%, router -6%), consistent with reads
    being only part of the step time.
 3. *Everything is faster than r5.* lru went from 0.59 (r5) to 1.04 tok/s with the same reads per
