@@ -60,4 +60,4 @@ cohort is the Phase-4 eight-prompt workload, whose full route journals are in th
 from them, the model's b=8 cliff moves to 18.6 GiB, and an exact LRU replay of the rebuilt stream
 reproduces both r5 b=8 rows (0.000 at 16 GiB, 0.823 vs 0.835 at 64 GiB) and puts the first hit at
 19.1 GiB. The replay also shows a plateau at 0.46 from 21 to 28 GiB that the independent-draw model
-puts at 0.30. Registered as Addendum 6 for run `p6m-l4-r6` (b=8 at 18, 24 and 32 GiB).
+puts at 0.30. Registered as Addendum 7 for run `p6m-l4-r7` (b=8 at 18, 24 and 32 GiB).

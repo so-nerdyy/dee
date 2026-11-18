@@ -111,3 +111,48 @@ def test_reproduces_the_r5_host_tier_measurements():
                          host_policy="next_use", vram_policy="next_use").window(33, 64)
     assert next16["host_hit_rate"] > 0.35
     assert next16["source_reads_per_step"] < 0.65 * lru16["source_reads_per_step"]
+
+
+def test_hint_hits_need_the_record_still_resident():
+    # Every step uses a fresh expert per layer, so prev_step hints are always wrong. Before the
+    # r6 correction a finished hint stayed "available" forever and later demand counted as a
+    # hint hit; now a hint only hits if the hinted record is resident when it is asked for.
+    calls = [ps.LayerCall(step, layer, tuple(range(4 * step, 4 * step + 4)))
+             for step in range(1, 40) for layer in range(4)]
+    tm = ps.TimeModel(read_ms=1.0, lanes=2, stage_ms=0.0, layer_ms=10.0)
+    r = ps.simulate_timed(calls, host_records=8, vram_records=1, time_model=tm,
+                          host_policy="next_use", vram_policy="next_use", lookahead="prev_step",
+                          hint_rank="free")
+    w = r.counts.window(3)
+    assert w["hint_reads"] > 0
+    assert w["hint_hits"] == 0
+    assert w["host_hits"] == 0
+    assert w["hint_wasted"] > 0
+
+
+def test_target_rank_admits_hints_the_engine_rank_rejects():
+    calls = _cycle(n_layers=6, per_layer=4, steps=12)
+    tm = ps.TimeModel(read_ms=1.0, lanes=2, stage_ms=0.0, layer_ms=10.0)
+    kw = dict(host_records=8, vram_records=4, time_model=tm, host_policy="next_use",
+              vram_policy="next_use", lookahead="synthetic", recall=1.0, precision=1.0)
+    engine = ps.simulate_timed(calls, hint_rank="engine", **kw).counts.window(4)
+    target = ps.simulate_timed(calls, hint_rank="target", **kw).counts.window(4)
+    assert target["hint_rejected"] <= engine["hint_rejected"]
+    assert target["host_hit_rate"] >= engine["host_hit_rate"]
+    # a perfect hint is never wasted under the target rank
+    assert target["hint_wasted"] == 0
+
+
+@pytest.mark.skipif(not (JOURNALS / "routed_experts-q0.jsonl").is_file(),
+                    reason="committed route journals not present")
+def test_reproduces_the_r6_prev_step_hint_row():
+    # p6m-l4-r6 row nu-prev measured host hit 0.503 and hint hits/read 0.311 (Addendum 6).
+    journals = [ps.load_journal(JOURNALS / f"routed_experts-q{q}.jsonl") for q in range(8)]
+    calls = [c for c in ps.merge_cohort(journals) if c.step <= 64]
+    tm = ps.TimeModel(read_ms=12.3, lanes=4, stage_ms=5.0, layer_ms=20.0)
+    r = ps.simulate_timed(calls, host_records=1285, vram_records=281, time_model=tm,
+                          host_policy="next_use", vram_policy="next_use",
+                          lookahead="prev_step", hint_rank="engine")
+    w = r.counts.window(33, 64)
+    assert w["host_hit_rate"] == pytest.approx(0.503, abs=0.05)
+    assert w["hint_hit_per_read"] == pytest.approx(0.311, abs=0.06)

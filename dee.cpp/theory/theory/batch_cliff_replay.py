@@ -169,14 +169,14 @@ def edge_gib(steps, record_bytes: int, lo_gib: float = 14.0, hi_gib: float = 40.
 # ---------------------------------------------------------------------------
 SWEEP_GIB = (16, 17, 18, 18.5, 19, 19.5, 20, 20.5, 21, 22, 24, 26, 28, 30, 32, 40, 48, 64)
 
-# Addendum 6 (registered 2026-11-11, before run p6m-l4-r6): the rows the next run scores.
-ADD6_HOSTS = (18, 24, 32)
-ADD6_REGISTERED = "2026-11-11"
+# Addendum 7 (registered 2026-11-11, before run p6m-l4-r7): the rows the next run scores.
+ADD7_HOSTS = (18, 24, 32)
+ADD7_REGISTERED = "2026-11-11"
 HIT_PAD, HIT_KILL_PAD = 0.02, 0.04     # absolute pad on the +-3% / +-5% capacity bands
 COLD_PAD, COLD_KILL_PAD = 0.10, 0.20   # relative pad (r5 h64 cold read 9% under the replay)
 
 
-def add6_rows(steps, record_bytes: int, hosts: Sequence[float] = ADD6_HOSTS) -> List[Dict]:
+def add7_rows(steps, record_bytes: int, hosts: Sequence[float] = ADD7_HOSTS) -> List[Dict]:
     """Registered host-hit and cold rec/tok rows for b=8 on 1xL4 at each host size.
 
     nominal = exact replay at the host's capacity. range = the replay over capacity x [0.97, 1.03]
@@ -274,22 +274,22 @@ def run(write: bool = True) -> Dict[str, object]:
         "records_seen_rebuilt": int(np.count_nonzero(pi_all)),
         "records_seen_sealed": int(np.count_nonzero(pi_sealed)),
     }
-    add6 = {
-        "addendum": "PREDICTIONS_PHASE6.md Addendum 6", "registered": ADD6_REGISTERED,
+    add7 = {
+        "addendum": "PREDICTIONS_PHASE6.md Addendum 7", "registered": ADD7_REGISTERED,
         "source": "theory.batch_cliff_replay (exact LRU replay of the rebuilt r5 b=8 stream)",
         "requires": {"gpu": "L4", "b": 8, "min_decode_steps": 64, "cohort": "0-7",
                      "prompts_file": "dee.cpp/aws/phase6/prompts_phase4_8.json",
                      "budget_mib": 3584, "window": "last 32 decode steps (score.py)"},
         "graded_metrics": ["host_hit_rate", "cold_records_per_tok"],
         "not_registered": ["decode_tps", "usd_per_1k_tok"],
-        "rows": add6_rows(steps, rec),
+        "rows": add7_rows(steps, rec),
     }
-    summary["addendum6"] = add6
+    summary["addendum7"] = add7
     if write:
         from .util import write_csv, write_json
         write_csv("batch_cliff_replay_grid.csv", table)
         write_json("batch_cliff_replay_summary.json", summary)
-        write_json("predecl_add6.json", add6)
+        write_json("predecl_add7.json", add7)
     summary["grid"] = table
     return summary
 

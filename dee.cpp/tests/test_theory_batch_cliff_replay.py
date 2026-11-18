@@ -45,8 +45,8 @@ def test_q7_repeats_q0_so_seven_streams_suffice(steps):
     assert r.stream(r.load_cohort()[:7]) == steps
 
 
-def test_add6_rows_order(steps):
-    rows = {x["host_gib"]: x for x in r.add6_rows(steps, REC)}
+def test_add7_rows_order(steps):
+    rows = {x["host_gib"]: x for x in r.add7_rows(steps, REC)}
     assert rows[18]["host_hit_rate"]["nominal"] == 0.0
     assert rows[24]["host_hit_rate"]["nominal"] == pytest.approx(0.4604, abs=1e-4)
     assert rows[32]["host_hit_rate"]["nominal"] > rows[24]["host_hit_rate"]["nominal"]
