@@ -26,6 +26,8 @@ Usage
 
 from __future__ import annotations
 
+import re
+
 import modal
 
 # --- Pinned source -----------------------------------------------------------
@@ -639,12 +641,7 @@ def _bench_impl(
                 summary.update({"exit_code": code, "wall_s": wall_s,
                                 "est_gpu_cost_usd": cost_sofar(),
                                 "log_tail": tail[-50:]})
-                verdict = "UNKNOWN"
-                for ln in tail:
-                    # runner prints "[hh:mm:ss] === VERDICT: <cls>; ... ==="
-                    if "VERDICT:" in ln:
-                        verdict = ln.split("VERDICT:", 1)[1].strip(" =")
-                summary["verdict"] = verdict
+                summary["verdict"] = parse_verdict(tail)
                 knobs = br.host_pack_effective_bytes(all_lines)
                 summary["host_pack_effective_bytes"] = knobs
                 honored = br.host_budget_honored(knobs, host_gib, n_gpus)
@@ -729,6 +726,30 @@ PLACEMENT_KEYS = {
 }
 CONFIG_KEYS = {"tag", "host_gib", "n_tokens", "ignore_eos", "cohort",
                "prompts_file", "prompt"} | set(PLACEMENT_KEYS)
+
+
+_VERDICT_RE = re.compile(r"=== VERDICT(?: cohort (\d+))?: (.*?)(?: ===)?\s*$")
+
+
+def parse_verdict(lines) -> str:
+    """The runner's verdict from its log.
+
+    Single-prompt runs print "=== VERDICT: <cls>; performance_eligible=... ===".
+    Cohort runs print one "=== VERDICT cohort <i>: <cls> ===" per cohort; those
+    are joined as "cohort <i>: <cls>" so no cohort's verdict is lost.
+    """
+    single, cohorts = None, {}
+    for ln in lines:
+        m = _VERDICT_RE.search(ln)
+        if not m:
+            continue
+        if m.group(1) is None:
+            single = m.group(2).strip(" =")
+        else:
+            cohorts[int(m.group(1))] = m.group(2).strip(" =")
+    if cohorts:
+        return "; ".join(f"cohort {i}: {v}" for i, v in sorted(cohorts.items()))
+    return single or "UNKNOWN"
 
 
 def _placement_env(cfg) -> dict:
