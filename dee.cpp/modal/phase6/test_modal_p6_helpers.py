@@ -124,3 +124,14 @@ def test_placement_knobs_map_to_runner_env():
 def test_placement_knobs_fail_closed(bad):
     with pytest.raises(ValueError):
         m._parse_configs(json.dumps([{"tag": "x", **bad}]), 17.0, 96.0)
+
+
+def test_parse_verdict_single_prompt_and_cohort():
+    single = ["[01:02:03] === VERDICT: ACCEPT_CORRECTNESS; performance_eligible=True ==="]
+    assert m.parse_verdict(single) == "ACCEPT_CORRECTNESS; performance_eligible=True"
+    # r6 logged this shape and the old parser reported UNKNOWN for every row
+    cohort = ["[02:00:00] === VERDICT cohort 0: ACCEPT_CORRECTNESS ==="]
+    assert m.parse_verdict(cohort) == "cohort 0: ACCEPT_CORRECTNESS"
+    two = ["=== VERDICT cohort 1: REJECT_NUMERICAL ===", "x", "=== VERDICT cohort 0: ACCEPT_CORRECTNESS ==="]
+    assert m.parse_verdict(two) == "cohort 0: ACCEPT_CORRECTNESS; cohort 1: REJECT_NUMERICAL"
+    assert m.parse_verdict(["no verdict here"]) == "UNKNOWN"

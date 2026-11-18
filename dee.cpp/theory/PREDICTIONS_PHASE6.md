@@ -560,3 +560,88 @@ a GPU either, and this run includes them, so the `lru` row may differ from r5's 
 SeqMoE (arXiv 2609.12978). Layer-ahead routing as a prefetch signal follows Pre-gated MoE and
 ProMoE; here it is a hint only and the real router's selection is always what executes. Belady's
 MIN (1966) is the offline bound the simulator reports.
+
+### Addendum 6 — results of run `p6m-l4-r6` against Addendum 5 (appended 2026-11-18)
+
+**Run.** 1xL4, commit 8e77d2e, app ap-AIWQfxITVZR66cVuNVHmqb, 2026-11-18 01:2x–02:18 UTC, exit 0,
+3,002 s container wall, about $0.67 billed (the estimate was about $2). Four b=8 host-16 rows in the
+registered order `nu`, `nu-prev`, `nu-router`, `lru`. Measured B_SSD 6.70 GiB/s. Each row printed
+the placement knobs it was asked for. Graded with `aws/phase6/addendum5.py` (A0-A10) over the last
+32 decode steps (steps 32-64), and with `score.py` against the original matrix (scorecards in
+`runs/p6m-l4-r6-b8-h16-*`, ledger lines in `SCOREBOARD.jsonl`). The run summary printed verdict
+`UNKNOWN` for every row: the harness parser did not recognise the cohort verdict line. Every row's
+runner verdict was `ACCEPT_CORRECTNESS`. Fixed in `modal_p6.parse_verdict`.
+
+**A0 exactness: PASS.** All four rows have byte-identical tokens and routed-expert journals
+(`score.py --placement-exact`, both with `lru` and with `nu` as baseline). Every band below counts.
+
+| id | row | metric | measured | predicted [range] | grade |
+|---|---|---|---|---|---|
+| A1 | lru | host hit | 0.000 (0/49,463) | 0.000 [0, 0.02] | PASS |
+| A2 | nu | host hit | 0.439 | 0.42 [0.33, 0.52] | PASS |
+| A3 | nu | cold rec/tok | 108.4 | 115 [95, 140] | PASS |
+| A4 | nu | VRAM hit | 0.125 (see note) | 0.12 [0.07, 0.18] | PASS |
+| A5 | nu-prev | host hit, hint hits included | 0.503 | 0.87 [0.72, 0.93] | **KILLED** (< 0.55) |
+| A6 | nu-prev | source reads vs nu | 1.266 | 1.00 [0.90, 1.20] | WEAKENED |
+| A7 | nu-prev | hint hits / hint reads | 0.311 | 0.77 [0.60, 0.92] | **KILLED** (< 0.45) |
+| A8 | nu vs lru | decode tok/s ratio | 1.300 | 1.27 [1.08, 1.50] | PASS |
+| A9 | nu-prev vs nu | decode tok/s ratio | 1.053 | 1.24 [1.05, 1.45] | PASS (at the edge) |
+| A10 | nu-prev | decode tok/s | 1.419 | 0.92 [0.70, 1.10] | WEAKENED (above) |
+
+Note on A4: the first grader run divided by resident hits plus cold loads and left in-flight
+hits out of the request count; the grader now includes them. The in-flight count for this window
+was not reported, so 0.125 is an upper bound until `addendum5.py` is re-run. A4 leaves its range
+only if in-flight hits exceed about 39,000 in the window (and is killed only above about 157,000),
+against 49,463 other requests.
+
+Reported only: `nu-router` hint recall 0.773 and precision 0.771 (layers 1-2 exact, hash routed;
+the rest 0.6-0.85). Its host hit is 0.543, 0.040 above `nu-prev`, so the registered expectation
+holds. Decode tok/s: lru 1.037, nu 1.348, nu-prev 1.419, nu-router 1.269.
+
+**What it means.**
+
+1. *Next-use eviction does what the simulator said.* A1-A4 and A8 all pass, with A2, A3 and A4
+   within 5% of nominal. The 0% host-hit cliff of Addendum 4 is gone, cold reads fall 44% and
+   tok/s rises 1.30x. The lru row reproduces r5's window exactly (193.2 rec/tok), so the baseline
+   is stable across runs. The cliff diagnosis is confirmed.
+2. *Prefetch hints: the prediction was wrong because the simulator was wrong.* Only 31% (prev)
+   and 37% (router) of hint reads were ever used. In the window `nu-prev` rejected 9,421 hints and
+   wasted 7,273 of 10,551 hint reads; `nu-router` rejected 30,699 and wasted 9,165 of 14,472.
+   Retention-only host hit (hits minus hint hits) is 0.437 and 0.436, the same as `nu`. The
+   simulator behind A5 and A7 had two faults. (a) A finished hint read stayed available forever,
+   so a demand many steps later still counted as a hint hit even after the record had left the
+   host tier. (b) It admitted every hint, with no reservation cap and no rank test. With both
+   fixed so the replay follows `HostPackCache::submit_hints` and `absorb_hints`
+   (`hint_rank='engine'`), the simulator gives host hit 0.522 and hint hits per read 0.28 for this
+   row, against 0.503 and 0.311 measured (`test_reproduces_the_r6_prev_step_hint_row`). The
+   engine did what it was built to do. What fails is the hint: the previous-step experts that are
+   not already resident are mostly ones that do not recur.
+   Hints still add reads (A6) and give back a little (A9 +5%, router -6%). Note that the
+   `nu-router` row ran router hints *and* previous-step hints, so its 0.37 mixes both sources.
+3. *Everything is faster than r5.* lru went from 0.59 (r5) to 1.04 tok/s with the same reads per
+   token, so most of the gain comes from PR #20's host-path changes (weakness (v)), not from
+   placement. This is also why A10 is above its range: the timing model was fitted to r5.
+4. Every row is still KILLED against Addendum 3 (predicted 4.2-10.4 tok/s at b=8). That verdict
+   from Addendum 4 stands.
+
+**Caveat.** The rows share one container, and gVisor does not drop the page cache, so later rows
+read a warmer cache. lru ran last and was still the slowest. Counts (A1-A7) do not depend on it.
+
+**Next (simulated, corrected replay, b=8 host 16 GiB, steps 33-64; tok/s is the r5-fitted model,
+which reads low on r6's faster host path).** Ranking a hinted record by the distance to its target
+layer until it is used (`hint_rank='target'`), instead of by its own reuse history:
+
+| hint source | rank | host hit | reads/step | hint hits/read | tok/s (model) |
+|---|---|---|---|---|---|
+| none (`nu`) | | 0.418 | 923 | | 0.74 |
+| prev_step | engine (r6) | 0.522 | 1,388 | 0.28 | 0.77 |
+| prev_step | target | 0.572 | 2,261 | 0.57 | 0.79 |
+| synthetic, recall 0.77 / precision 0.77 | engine | 0.607 | 968 | 0.88 | 0.81 |
+| synthetic, recall 0.77 / precision 0.77 | target | 0.780 | 1,815 | 0.84 | 0.88 |
+| perfect | target | 1.000 | 934 | 1.00 | 1.02 |
+
+Previous-step hints are not worth keeping under either rank: the target rank buys 5 points of host
+hit for 2.4x the reads. Router-quality hints (r6 measured 0.77/0.77) with the target rank are
+the only variant the corrected replay favours: host hit 0.78, but about twice the source reads of
+`nu`. r6 showed that cutting reads 44% gave 1.30x, so doubling them may cost more than this model
+says. Nothing is registered for it yet.
