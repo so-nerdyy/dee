@@ -5,9 +5,12 @@ host-RAM sizes, so we can fit a TPS model ("given GPU X and Y GiB of RAM, expect
 real numbers instead of guesses. Every row uses next-use eviction on both tiers (Addendum 6). Prefetch
 hints stay off (killed in r6, Nivin's decision 2026-11-18).
 
-Needs first: the harness-fix PR from the "Fix known DEE harness bugs" thread merged into
-`research/phase6-modal`. This plan uses its `--max-usd` cap, its all-in cost estimate, and its
-per-row decoded text for cohort rows.
+Built on `research/phase6-modal` at 3249b69 (PR #25): `--max-usd` per-container cap, all-in
+`est_cost_all_in_usd`, decoded text per cohort row. This plan's own files (the ask-DEE prompts) must
+be merged into `research/phase6-modal` before launch, because containers clone the branch head.
+
+Budget basis: Nivin's ~$26 left, read from the Modal dashboard. Costs below are all-in list
+price (GPU + CPU + reserved RAM), which is the upper estimate; r6 was ~$1.62 on this basis.
 
 ## What each container runs
 
@@ -45,7 +48,7 @@ these are upper estimates.
 | | **total** | | 22 | | **~10.80** | 15.50 |
 
 Worst case if every container hits its cap and its last row runs to the 45 min row timeout: ~$20.
-Expected leftover: ~$14 of the ~$25 remaining, kept for MiMo, a chat session, and re-runs.
+Expected leftover: ~$15 of the ~$26 remaining, kept for MiMo, a chat session, and re-runs.
 
 Not in r7: host-256 rows (288 GiB containers, ~$3 each, availability unverified), T4 (DSv4 does not
 fit), Addendum 7 LRU cliff rows (PR #19; LRU is no longer the policy we ship).
