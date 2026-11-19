@@ -641,7 +641,9 @@ def _bench_impl(
                 summary.update({"exit_code": code, "wall_s": wall_s,
                                 "est_gpu_cost_usd": cost_sofar(),
                                 "log_tail": tail[-50:]})
-                summary["verdict"] = parse_verdict(tail)
+                # Parse the whole log, not the 80-line tail: a cohort verdict
+                # printed early would otherwise be dropped and show as UNKNOWN.
+                summary["verdict"] = parse_verdict(all_lines)
                 knobs = br.host_pack_effective_bytes(all_lines)
                 summary["host_pack_effective_bytes"] = knobs
                 honored = br.host_budget_honored(knobs, host_gib, n_gpus)
