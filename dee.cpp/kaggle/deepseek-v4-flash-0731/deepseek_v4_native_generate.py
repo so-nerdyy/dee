@@ -2790,6 +2790,14 @@ def main() -> int:
             f"{performance_eligible} ===")
         return {"prompt_index": qi, "classification": classification, "result": result}
 
+    def _safe_decode(token_ids) -> str:
+        # Evidence only: a decode failure is recorded, never raised, so it
+        # cannot turn a finished cohort into an ERROR row.
+        try:
+            return tokenizer.decode([int(t) for t in token_ids])
+        except Exception as _dexc:  # noqa: BLE001
+            return f"<decode failed: {_dexc!r}>"
+
     def _run_cohort(group: list[int], ci: int):
         """Lockstep K-cohort generation (Phase-5 / dee-serve v0).
 
@@ -3384,6 +3392,7 @@ def main() -> int:
                 "actual_token_ids_sha256": p5drv.token_ids_sha(
                     r.token_ids),
                 "n_tokens": len(r.token_ids),
+                "decoded_text": _safe_decode(r.token_ids),
             } for r in res.rows],
             "sealed_contract_gates": gates,
             "expert_store": result.get("expert_store", {}),
@@ -3392,6 +3401,9 @@ def main() -> int:
                 for name in _artifact_names
             },
         }
+        for _r in res.rows:
+            log(f"[decoded] cohort {ci} row {_r.row} prompt {_r.prompt_index}: "
+                + json.dumps(_safe_decode(_r.token_ids))[:2000])
         write_evidence(f"integrity{suffix}.json", integrity_payload)
         (WORK / f"native-generate-result{suffix}.json").write_text(
             json.dumps({"cohort_id": ci, "k": k,

@@ -135,3 +135,17 @@ def test_parse_verdict_single_prompt_and_cohort():
     two = ["=== VERDICT cohort 1: REJECT_NUMERICAL ===", "x", "=== VERDICT cohort 0: ACCEPT_CORRECTNESS ==="]
     assert m.parse_verdict(two) == "cohort 0: ACCEPT_CORRECTNESS; cohort 1: REJECT_NUMERICAL"
     assert m.parse_verdict(["no verdict here"]) == "UNKNOWN"
+
+
+def test_allin_price_matches_r6_list_price():
+    # r6: 3,002 s wall on L4 (96 GiB reserved) was $0.67 GPU-only; all-in is ~$1.62.
+    gpu = m.GPU_PRICE_PER_S["L4"]
+    per_s = m.allin_price_per_s(gpu, 98304 / 1024.0)
+    assert 3002 * per_s == pytest.approx(1.62, abs=0.01)
+    assert per_s > 2 * gpu
+
+
+def test_bench_impl_takes_max_usd_cap():
+    import inspect
+    assert inspect.signature(m._bench_impl).parameters["max_usd"].default == m.DEFAULT_MAX_USD
+    assert 0 < m.DEFAULT_MAX_USD <= 30
