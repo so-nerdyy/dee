@@ -1,0 +1,150 @@
+{
+  "run_id": "p6m-r7-l4-b1-h16-nu",
+  "evidence_dir": "runs\\p6m-r7-l4-b1-h16-nu",
+  "platform": "modal",
+  "cell": "1xL4",
+  "model": "dsv4_flash",
+  "gpu": "L4",
+  "host_gib": 16.0,
+  "host_basis": "TOTAL",
+  "spot": false,
+  "commit": "7fc878ac50a74c1216a208007986e7887d6ded25",
+  "measured_b_ssd_gib_s": 4.5225,
+  "est_cost_usd": 0.299,
+  "result_file": "result.json",
+  "prerequisite_failures": [],
+  "warnings": [
+    "OWN-REFERENCE gate (Addendum 4): exact_16_token_ids/exact_decoded_text vs the sealed T4 answer were waived because this run is bit-identical to p6m-r7-l4-b1-h64-nu at another host budget. Weaker than the exact gate; it does not show one-GPU mode is bug-free.",
+    "no billing receipt (add summary.json 'billed_usd' from the Modal dashboard); $/1k scored on the 1000 x rate_s / TPS cross-check",
+    "VRAM expert budget 3584 MiB vs the frozen row's 22528 MiB per GPU",
+    "row 2 of a multi-config container: earlier rows warmed the page cache (not droppable under gVisor); timings read fast"
+  ],
+  "registry": "theory/data/predecl_matrix.csv (frozen 2026-09-30)",
+  "own_reference": {
+    "peer_run_id": "p6m-r7-l4-b1-h64-nu",
+    "checks": [
+      "same gpu/commit/budget/model",
+      "different host_gib",
+      "identical generated_token_ids",
+      "identical routed_experts and route_weights (ex run_id/chain)"
+    ],
+    "waived_gates": [
+      "exact_16_token_ids",
+      "exact_decoded_text"
+    ]
+  },
+  "registered_id_tightening": "row prediction_ids per section 4 (P1, P1b, P2, P14, P15b/P15c vs the EXPENSIVE dense reading 0.12892 $/1k)",
+  "not_applied": "P5/P8b/P16/P17 (need a stage-profile bucket analysis; read the profile by hand), P2b (needs a MIN replay of the route journal)",
+  "b": 1,
+  "window": {
+    "decode_only_cold_records_per_tok": 74.8936170212766
+  },
+  "rate_s": 0.00041116000000000004,
+  "b_ssd_vs_spec": 1.942398959616,
+  "dense_ratio": {
+    "expensive": 4.163530888060603,
+    "cheap": 14.989176266092512
+  },
+  "metrics": {
+    "decode_tps": {
+      "measured": 0.766,
+      "basis": "decode tokens / decode wall; UNTESTABLE: measured B_SSD is 1.94x the cell spec (registered band 0.9-1.1x)",
+      "nominal": 1.2953554574355746,
+      "lo": 1.0023596497062335,
+      "hi": 2.1141914334215595,
+      "kill_lo": 0.7016517547943634,
+      "kill_hi": 3.02329374979283,
+      "ids": [],
+      "grade": "UNTESTABLE"
+    },
+    "host_hit_rate": {
+      "measured": 0.6443545971847858,
+      "basis": "pooled_dedup, prompt-scoped (8606/13356)",
+      "nominal": 0.51,
+      "lo": 0.44,
+      "hi": 0.7531020871528816,
+      "kill_lo": 0.45,
+      "kill_hi": 0.57,
+      "ids": [
+        "P2",
+        "P2b"
+      ],
+      "grade": "KILLED"
+    },
+    "cold_records_per_tok": {
+      "measured": 98.95833333333333,
+      "basis": "storage_requests_per_generated_token",
+      "nominal": 156.10126617164872,
+      "lo": 15.7494271622892,
+      "hi": 312.20253234329743,
+      "kill_lo": 11.8120703717169,
+      "kill_hi": 390.2531654291218,
+      "ids": [
+        "P3",
+        "P4"
+      ],
+      "grade": "PASS"
+    },
+    "usd_per_1k_tok": {
+      "measured": 0.5367624020887729,
+      "basis": "1000 x (1.4801760000000002 USD/h / 3600) / decode tok/s; UNTESTABLE: measured B_SSD is 1.94x the cell spec (registered band 0.9-1.1x)",
+      "nominal": 0.08535956540711948,
+      "lo": 0.032034886727091594,
+      "hi": 0.09975770396342624,
+      "kill_lo": 0.019220932036254957,
+      "kill_hi": 0.16659536561892183,
+      "ids": [],
+      "grade": "UNTESTABLE"
+    }
+  },
+  "verdict": "KILLED",
+  "addendum3": {
+    "registry": "theory.predecl_modal (Addendum 3)",
+    "prerequisite_failures": [],
+    "metrics": {
+      "decode_tps": {
+        "measured": 0.766,
+        "basis": "decode tokens / decode wall",
+        "nominal": 1.7218429727129794,
+        "lo": 1.3419815855530157,
+        "hi": 2.995912698405945,
+        "kill_lo": 0.9393871098871109,
+        "kill_hi": 4.284155158720502,
+        "grade": "KILLED"
+      },
+      "host_hit_rate": {
+        "measured": 0.6443545971847858,
+        "basis": "pooled_dedup, prompt-scoped (8606/13356)",
+        "nominal": 0.51,
+        "lo": 0.44,
+        "hi": 0.7531020871528816,
+        "kill_lo": 0.45,
+        "kill_hi": 0.57,
+        "grade": "KILLED"
+      },
+      "cold_records_per_tok": {
+        "measured": 98.95833333333333,
+        "basis": "storage_requests_per_generated_token",
+        "nominal": 185.0226148199165,
+        "lo": 81.8951264114965,
+        "hi": 370.045229639833,
+        "kill_lo": 61.42134480862238,
+        "kill_hi": 462.55653704979125,
+        "grade": "PASS"
+      },
+      "usd_per_1k_tok": {
+        "measured": 0.7048563968668408,
+        "basis": "1000 x registered rate 0.00053992 $/s / decode tok/s",
+        "nominal": 0.1953515762783392,
+        "lo": 0.09775768962408103,
+        "hi": 0.24399488095162175,
+        "kill_lo": 0.05865461377444862,
+        "kill_hi": 0.4074714511892083,
+        "grade": "KILLED"
+      }
+    },
+    "predicted_limiter": "storage",
+    "rate_s": 0.00053992,
+    "verdict": "KILLED"
+  }
+}
