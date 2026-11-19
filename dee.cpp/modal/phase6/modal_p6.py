@@ -95,6 +95,18 @@ GPU_PRICE_PER_S = {
     "L40S": 0.000542, "RTXPRO6000": 0.000842,
     "T4": 0.000164, "2xT4": 2 * 0.000164,
 }
+# All-in $/s = GPU + CPU_CORES * CPU price + container RAM * RAM price. The GPU-only
+# figure undercounts (r6: $0.67 GPU-only vs ~$1.62 all-in list price on L4).
+CPU_CORES = 8
+CPU_PRICE_PER_CORE_S = 0.0000131
+RAM_PRICE_PER_GIB_S = 0.00000222
+# Per-launch spend cap in all-in USD; override with --max-usd on the CLI.
+DEFAULT_MAX_USD = 2.5
+
+
+def allin_price_per_s(gpu_price: float, mem_gib: float) -> float:
+    """All-in $/s for one container: GPU + CPU cores + reserved RAM."""
+    return gpu_price + CPU_CORES * CPU_PRICE_PER_CORE_S + mem_gib * RAM_PRICE_PER_GIB_S
 # RAM $0.00000222/GiB/s, CPU $0.0000131/core/s -> container overhead matters;
 # RAM is sized per spec so host-tier sweeps stay inside the container.
 
@@ -264,6 +276,7 @@ def _bench_impl(
     container_mib: int = 0,       # 0 -> GPU_SPECS memory; bench_*_h256 pass HOST_256_MIB
     configs: str = "",            # JSON list of per-config overrides (CONFIG_KEYS); one
                                   # container runs them in order, each -> runs/<run_id>-<tag>
+    max_usd: float = DEFAULT_MAX_USD,
 ) -> dict:
         import concurrent.futures
         import json
@@ -278,6 +291,7 @@ def _bench_impl(
         gpu_spec, cuda_archs, dfl_budget_mib, _mem, dfl_host_gib = \
             GPU_SPECS[gpu_name]
         gpu_price = GPU_PRICE_PER_S[gpu_name]
+        allin_price = allin_price_per_s(gpu_price, (container_mib or _mem) / 1024.0)
         n_gpus = int(gpu_spec.split(":")[1]) if ":" in gpu_spec else 1
         spec = MODELS[model]
         budget_mib = budget_mib or dfl_budget_mib
@@ -315,6 +329,9 @@ def _bench_impl(
 
         def cost_sofar() -> float:
             return round((time.monotonic() - t_start) * gpu_price, 3)
+
+        def cost_allin_sofar() -> float:
+            return round((time.monotonic() - t_start) * allin_price, 3)
 
         try:
             # ---- 0. environment -------------------------------------------------
@@ -482,7 +499,23 @@ def _bench_impl(
             base_summary = dict(summary)
             base_run_id, base_ev = run_id, run_ev
             outcomes: list = []
+            last_row_cost = 0.0
             for cfg_index, cfg in enumerate(cfg_list):
+              # Per-launch cap: before a config starts, its cost is estimated
+              # as the previous row's. Past the cap, the rest are SKIPPED_BUDGET.
+              if cfg is not None and cost_allin_sofar() + last_row_cost > max_usd:
+                  skip_id = f"{base_run_id}-{cfg['tag']}"
+                  skip_ev = ev_root / "runs" / skip_id
+                  skip_ev.mkdir(parents=True, exist_ok=True)
+                  skipped = dict(base_summary, run_id=skip_id, cohort=None,
+                                 verdict="SKIPPED_BUDGET", max_usd=max_usd,
+                                 est_cost_all_in_usd=cost_allin_sofar())
+                  (skip_ev / "summary.json").write_text(json.dumps(skipped, indent=2))
+                  log(f"[budget] skip {skip_id}: spent ${cost_allin_sofar()} + "
+                      f"last row ${last_row_cost} > cap ${max_usd}")
+                  vol_evid.commit()
+                  outcomes.append({"run_id": skip_id, "verdict": "SKIPPED_BUDGET"})
+                  continue
               t_cfg = time.monotonic()
               try:
                 if cfg is not None:
@@ -640,6 +673,8 @@ def _bench_impl(
                 log(f"[run] exit={code} wall={wall_s}s est_cost=${cost_sofar()}")
                 summary.update({"exit_code": code, "wall_s": wall_s,
                                 "est_gpu_cost_usd": cost_sofar(),
+                                "est_cost_all_in_usd": cost_allin_sofar(),
+                                "allin_price_s": allin_price,
                                 "log_tail": tail[-50:]})
                 # Parse the whole log, not the 80-line tail: a cohort verdict
                 # printed early would otherwise be dropped and show as UNKNOWN.
@@ -680,6 +715,7 @@ def _bench_impl(
                 log(f"[fatal:{cfg['tag']}] {exc!r}")
                 (run_ev / "summary.json").write_text(json.dumps(summary, indent=2))
               finally:
+                last_row_cost = round((time.monotonic() - t_cfg) * allin_price, 3)
                 vol_evid.commit()
               outcomes.append({"run_id": run_id, "verdict": summary.get("verdict")})
             if cfg_list[0] is None:
@@ -689,6 +725,7 @@ def _bench_impl(
             return {"run_id": base_run_id, "configs": outcomes}
         except Exception as exc:  # noqa: BLE001
             summary["verdict"] = f"{type(exc).__name__}: {exc}"
+            summary["est_cost_all_in_usd"] = cost_allin_sofar()
             log(f"[fatal] {exc!r}")
             # Build steps run with capture_output=True; keep what they printed,
             # or a failed build is undiagnosable (run p6m-l4-h64-b1, 2026-11-04).
@@ -1089,10 +1126,10 @@ def bench_L4(model: str = "dsv4-flash", n_tokens: int = 64,
              pinned: str = "", run_id: str = "",
              ignore_eos: bool = False,
              cohort: str = "", prompts_file: str = "",
-             ssd_probe: bool = True, configs: str = "") -> dict:
+             ssd_probe: bool = True, configs: str = "", max_usd: float = DEFAULT_MAX_USD) -> dict:
     return _bench_impl("L4", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
-                       ignore_eos, cohort, prompts_file, ssd_probe, 0, configs)
+                       ignore_eos, cohort, prompts_file, ssd_probe, 0, configs, max_usd)
 
 
 @_bench_dec("2xL4")
@@ -1102,10 +1139,10 @@ def bench_2xL4(model: str = "dsv4-flash", n_tokens: int = 64,
                pinned: str = "", run_id: str = "",
              ignore_eos: bool = False,
              cohort: str = "", prompts_file: str = "",
-             ssd_probe: bool = True, configs: str = "") -> dict:
+             ssd_probe: bool = True, configs: str = "", max_usd: float = DEFAULT_MAX_USD) -> dict:
     return _bench_impl("2xL4", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
-                       ignore_eos, cohort, prompts_file, ssd_probe, 0, configs)
+                       ignore_eos, cohort, prompts_file, ssd_probe, 0, configs, max_usd)
 
 
 @_bench_dec("T4")
@@ -1115,10 +1152,10 @@ def bench_T4(model: str = "dsv4-flash", n_tokens: int = 64,
                pinned: str = "", run_id: str = "",
              ignore_eos: bool = False,
              cohort: str = "", prompts_file: str = "",
-             ssd_probe: bool = True, configs: str = "") -> dict:
+             ssd_probe: bool = True, configs: str = "", max_usd: float = DEFAULT_MAX_USD) -> dict:
     return _bench_impl("T4", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
-                       ignore_eos, cohort, prompts_file, ssd_probe, 0, configs)
+                       ignore_eos, cohort, prompts_file, ssd_probe, 0, configs, max_usd)
 
 
 @_bench_dec("2xT4")
@@ -1128,10 +1165,10 @@ def bench_2xT4(model: str = "dsv4-flash", n_tokens: int = 64,
                pinned: str = "", run_id: str = "",
              ignore_eos: bool = False,
              cohort: str = "", prompts_file: str = "",
-             ssd_probe: bool = True, configs: str = "") -> dict:
+             ssd_probe: bool = True, configs: str = "", max_usd: float = DEFAULT_MAX_USD) -> dict:
     return _bench_impl("2xT4", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
-                       ignore_eos, cohort, prompts_file, ssd_probe, 0, configs)
+                       ignore_eos, cohort, prompts_file, ssd_probe, 0, configs, max_usd)
 
 
 @_bench_dec("A10")
@@ -1141,10 +1178,10 @@ def bench_A10(model: str = "dsv4-flash", n_tokens: int = 64,
               pinned: str = "", run_id: str = "",
              ignore_eos: bool = False,
              cohort: str = "", prompts_file: str = "",
-             ssd_probe: bool = True, configs: str = "") -> dict:
+             ssd_probe: bool = True, configs: str = "", max_usd: float = DEFAULT_MAX_USD) -> dict:
     return _bench_impl("A10", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
-                       ignore_eos, cohort, prompts_file, ssd_probe, 0, configs)
+                       ignore_eos, cohort, prompts_file, ssd_probe, 0, configs, max_usd)
 
 
 @_bench_dec("L40S")
@@ -1154,10 +1191,10 @@ def bench_L40S(model: str = "dsv4-flash", n_tokens: int = 64,
                pinned: str = "", run_id: str = "",
              ignore_eos: bool = False,
              cohort: str = "", prompts_file: str = "",
-             ssd_probe: bool = True, configs: str = "") -> dict:
+             ssd_probe: bool = True, configs: str = "", max_usd: float = DEFAULT_MAX_USD) -> dict:
     return _bench_impl("L40S", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
-                       ignore_eos, cohort, prompts_file, ssd_probe, 0, configs)
+                       ignore_eos, cohort, prompts_file, ssd_probe, 0, configs, max_usd)
 
 
 @_bench_dec("RTXPRO6000")
@@ -1167,10 +1204,10 @@ def bench_RTXPRO6000(model: str = "dsv4-flash", n_tokens: int = 64,
                      local_store: bool = True, pinned: str = "",
                      run_id: str = "", ignore_eos: bool = False,
                      cohort: str = "", prompts_file: str = "",
-                     ssd_probe: bool = True, configs: str = "") -> dict:
+                     ssd_probe: bool = True, configs: str = "", max_usd: float = DEFAULT_MAX_USD) -> dict:
     return _bench_impl("RTXPRO6000", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
-                       ignore_eos, cohort, prompts_file, ssd_probe, 0, configs)
+                       ignore_eos, cohort, prompts_file, ssd_probe, 0, configs, max_usd)
 
 
 @_bench_dec("L4", HOST_256_MIB)
@@ -1179,11 +1216,11 @@ def bench_L4_h256(model: str = "dsv4-flash", n_tokens: int = 64,
                    cache_reset: str = "cold", local_store: bool = True,
                    pinned: str = "", run_id: str = "", ignore_eos: bool = False,
                    cohort: str = "", prompts_file: str = "",
-                   ssd_probe: bool = True, configs: str = "") -> dict:
+                   ssd_probe: bool = True, configs: str = "", max_usd: float = DEFAULT_MAX_USD) -> dict:
     return _bench_impl("L4", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
                        ignore_eos, cohort, prompts_file, ssd_probe, HOST_256_MIB,
-                       configs)
+                       configs, max_usd)
 
 
 @_bench_dec("2xL4", HOST_256_MIB)
@@ -1192,11 +1229,11 @@ def bench_2xL4_h256(model: str = "dsv4-flash", n_tokens: int = 64,
                    cache_reset: str = "cold", local_store: bool = True,
                    pinned: str = "", run_id: str = "", ignore_eos: bool = False,
                    cohort: str = "", prompts_file: str = "",
-                   ssd_probe: bool = True, configs: str = "") -> dict:
+                   ssd_probe: bool = True, configs: str = "", max_usd: float = DEFAULT_MAX_USD) -> dict:
     return _bench_impl("2xL4", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
                        ignore_eos, cohort, prompts_file, ssd_probe, HOST_256_MIB,
-                       configs)
+                       configs, max_usd)
 
 
 @_bench_dec("A10", HOST_256_MIB)
@@ -1205,11 +1242,11 @@ def bench_A10_h256(model: str = "dsv4-flash", n_tokens: int = 64,
                    cache_reset: str = "cold", local_store: bool = True,
                    pinned: str = "", run_id: str = "", ignore_eos: bool = False,
                    cohort: str = "", prompts_file: str = "",
-                   ssd_probe: bool = True, configs: str = "") -> dict:
+                   ssd_probe: bool = True, configs: str = "", max_usd: float = DEFAULT_MAX_USD) -> dict:
     return _bench_impl("A10", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
                        ignore_eos, cohort, prompts_file, ssd_probe, HOST_256_MIB,
-                       configs)
+                       configs, max_usd)
 
 
 @_bench_dec("L40S", HOST_256_MIB)
@@ -1218,11 +1255,11 @@ def bench_L40S_h256(model: str = "dsv4-flash", n_tokens: int = 64,
                    cache_reset: str = "cold", local_store: bool = True,
                    pinned: str = "", run_id: str = "", ignore_eos: bool = False,
                    cohort: str = "", prompts_file: str = "",
-                   ssd_probe: bool = True, configs: str = "") -> dict:
+                   ssd_probe: bool = True, configs: str = "", max_usd: float = DEFAULT_MAX_USD) -> dict:
     return _bench_impl("L40S", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
                        ignore_eos, cohort, prompts_file, ssd_probe, HOST_256_MIB,
-                       configs)
+                       configs, max_usd)
 
 
 @_bench_dec("RTXPRO6000", HOST_256_MIB)
@@ -1231,11 +1268,11 @@ def bench_RTXPRO6000_h256(model: str = "dsv4-flash", n_tokens: int = 64,
                    cache_reset: str = "cold", local_store: bool = True,
                    pinned: str = "", run_id: str = "", ignore_eos: bool = False,
                    cohort: str = "", prompts_file: str = "",
-                   ssd_probe: bool = True, configs: str = "") -> dict:
+                   ssd_probe: bool = True, configs: str = "", max_usd: float = DEFAULT_MAX_USD) -> dict:
     return _bench_impl("RTXPRO6000", model, n_tokens, prompt, host_gib,
                        budget_mib, cache_reset, local_store, pinned, run_id,
                        ignore_eos, cohort, prompts_file, ssd_probe, HOST_256_MIB,
-                       configs)
+                       configs, max_usd)
 
 
 @app.local_entrypoint()
