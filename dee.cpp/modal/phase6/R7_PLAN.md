@@ -44,14 +44,17 @@ these are upper estimates.
 | 2 | 2xL4 | 2.74 | 4 | 38 | 1.74 | 2.60 |
 | 2 | 1xL40S | 3.35 | 4 | 38 | 2.12 | 3.20 |
 | 3 | RTX PRO 6000 | 4.94 | 4 | 38 | 3.13 | 4.70 |
+| 3 | 2xT4 (b=1 rows only) | 2.33 | 2 | 22 | 0.85 | 1.50 |
 | | preflights (CPU) | | 5 | | 0.50 | |
-| | **total** | | 22 | | **~10.80** | 15.50 |
+| | preflight 2xT4 | | 1 | | 0.10 | |
+| | **total** | | 24 | | **~11.75** | 17.00 |
 
 Worst case if every container hits its cap and its last row runs to the 45 min row timeout: ~$20.
-Expected leftover: ~$15 of the ~$26 remaining, kept for MiMo, a chat session, and re-runs.
+Expected leftover: ~$14 of the ~$26 remaining, kept for MiMo, a chat session, and re-runs.
 
-Not in r7: host-256 rows (288 GiB containers, ~$3 each, availability unverified), T4 (DSv4 does not
-fit), Addendum 7 LRU cliff rows (PR #19; LRU is no longer the policy we ship).
+Not in r7: host-256 rows (288 GiB containers, ~$3 each, availability unverified), single T4 (DSv4 does not
+fit; 2xT4 fits at ~8.8 GiB per GPU but runs b=1 only, since b=8 at the Kaggle 0.21 tok/s anchor
+would likely hit the 45 min row timeout), Addendum 7 LRU cliff rows (PR #19; LRU is no longer the policy we ship).
 
 ## Kill rules (decided before the run)
 
@@ -95,6 +98,9 @@ modal run --detach modal/phase6/modal_p6.py::bench_L40S --run-id p6m-r7-l40s --m
 # order 3
 modal run modal/phase6/modal_p6.py::preflight --gpu RTXPRO6000 --configs "$CFGS"
 modal run --detach modal/phase6/modal_p6.py::bench_RTXPRO6000 --run-id p6m-r7-rtx --max-usd 4.7 --configs "$CFGS"
+T4CFGS="[{\"tag\":\"b1-h16-nu\",\"host_gib\":16,$B1,$NU},{\"tag\":\"b1-h64-nu\",\"host_gib\":64,$B1,$NU}]"
+modal run modal/phase6/modal_p6.py::preflight --gpu 2xT4 --configs "$T4CFGS"
+modal run --detach modal/phase6/modal_p6.py::bench_2xT4 --run-id p6m-r7-2xt4 --max-usd 1.5 --configs "$T4CFGS"
 ```
 
 ## The TPS model the data feeds
