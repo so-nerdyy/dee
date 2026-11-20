@@ -65,3 +65,11 @@ between containers. A useful estimate for a new GPU therefore needs one cheap me
   measured: 0.41-2.22 tok/s.
 - Page-cache warmth depends on row order (gVisor ignores DONTNEED), so `c_read` mixes disk and RAM
   reads.
+
+## Raw evidence
+
+Only scorecards, small summaries, and `runs/r7_environment.json` are in git. The full per-row
+`result-c0.json`, journals, and logs (about 3.5 GB) are on the Modal volume `dee-p6-evidence`
+under `runs/p6m-r7-*`. Fetch a row with
+`modal volume get dee-p6-evidence runs/p6m-r7-<gpu>-<tag> runs/` and re-score it with
+`aws/phase6/score.py`.
