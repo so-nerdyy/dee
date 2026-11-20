@@ -1,0 +1,7 @@
+{
+  "format": "dee4-v4-segmented",
+  "metadata_path": "/tmp/dee4-full/metadata.json",
+  "n_segments": 46,
+  "universe_sha256": "2081ada5e37e0d7ccbafd9e81b00813b17a9a228f1ee3fd2917f2a27ef637cf6",
+  "verify_segment_hashes": true
+}

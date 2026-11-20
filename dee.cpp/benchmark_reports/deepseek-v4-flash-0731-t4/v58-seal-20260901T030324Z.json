@@ -1,0 +1,174 @@
+{
+  "schema_version": 1,
+  "id": "v58-seal-p2.3-dee4-trace-fillpool-lane4-profile",
+  "run_id": "p2.3-dee4-trace-fillpool-lane4-profile-v58",
+  "sealed_at_utc": "2026-09-01T03:03:24Z",
+  "classification": "ACCEPT_CORRECTNESS",
+  "acceptance_scope": "accepted exact live DEE4 trace-serving generation with lane4 fill-pool source-read scheduling on one profiled 2x Tesla T4 run",
+  "performance_eligible": true,
+  "performance_acceptance": false,
+  "performance_acceptance_reason": "This is not ACCEPT_PERFORMANCE: a single profiled run lacks a matched profile-overhead control and independent replication; timings are retained without a speedup claim.",
+  "evidence_dir": "dee.cpp/benchmark_reports/deepseek-v4-flash-0731-t4/v58-evidence-20260901T025855Z/",
+  "repository": "https://github.com/so-nerdyy/dee.git",
+  "branch": "freebuff/deepseek-v4-flash-0731-t4",
+  "identity": {
+    "pinned_commit": "011a30341a397ea4af6939b519acc4d05e36c754",
+    "model_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb"
+  },
+  "hardware": {
+    "requested": "2x Tesla T4",
+    "observed": "2x Tesla T4",
+    "compute_capability": [7.5, 7.5],
+    "performance_hardware_eligible": true
+  },
+  "configuration": {
+    "cache_dtype": "fp4",
+    "cache_representation": "packed FP4 bytes resident; compute-time FP16 scratch decode",
+    "expert_store_backend": "dee4_trace",
+    "expert_store_path": "/tmp/dsv4-dee4-v3-trace/metadata.json",
+    "n_tokens": 16,
+    "profile_stages": true,
+    "vram_cache_gib_per_gpu": 3.5,
+    "host_pack_runtime_cap_gib_total": 17.0,
+    "source_read_queue_depth": 8,
+    "source_read_lanes": 4
+  },
+  "correctness": {
+    "expected_token_ids": [666, 95140, 96807, 343, 4470, 20, 1127, 3298, 22, 22604, 515, 411, 3947, 85349, 14, 6341],
+    "actual_token_ids": [666, 95140, 96807, 343, 4470, 20, 1127, 3298, 22, 22604, 515, 411, 3947, 85349, 14, 6341],
+    "decoded_text": "**Alan Turing (1912\u20131954)** was an English mathematician, computer",
+    "actual_token_ids_sha256": "4e4ffae391ca0b3ff72acd84f5ba2afb2b138a4af6fd6eb59128a3635ff87698",
+    "actual_decoded_text_sha256": "7fc87fbf71af7f5f3510bc2fd01a9342a866f9b4daa8382b52fd21e5a1e160e9",
+    "tokens_match": "16/16 exact",
+    "result_equals_native_result": true,
+    "layers_executed": 43,
+    "finite_outputs": true
+  },
+  "gates": {
+    "exact_16_token_ids": true,
+    "exact_decoded_text_with_u2013": true,
+    "all_43_layers": true,
+    "finite_outputs_observed": true,
+    "numpy_bridge_calls_zero": true,
+    "full_hidden_d2h_zero": true,
+    "raw_expert_output_d2h_zero": true,
+    "official_router_authoritative": true,
+    "no_cpu_expert_fallback": true,
+    "effective_cuda_execution": true,
+    "effective_cache_dtype": true,
+    "effective_expert_store": true,
+    "dee4_contiguous_reads": true,
+    "dee4_integrity_identity": true,
+    "dee4_trace_metadata_linkage": true,
+    "route_journal_complete": true,
+    "required_performance_hardware": true,
+    "all_non_hardware_gates_pass": true
+  },
+  "bridge_counters": {
+    "numpy_bridge_calls": 0,
+    "full_hidden_d2h_copies": 0,
+    "raw_expert_output_d2h_copies": 0,
+    "hidden_h2d_copies": 0,
+    "route_id_d2h_copies": 688,
+    "route_id_d2h_bytes": 22704,
+    "native_calls": 688
+  },
+  "live_dee4_trace_verification": {
+    "backend": "dee4_trace",
+    "created_this_run": true,
+    "format": "dee4-v3-trace",
+    "data_sha256": "c83462ba50d2154a241cabf7d2b8d084e46f2eaa54416a96c90770ca7172d6e8",
+    "record_bytes": 13369344,
+    "records": 2364,
+    "total_bytes": 31605129216,
+    "metadata_record_indices": "0..2363 contiguous",
+    "integrity_records_complete": true,
+    "lookup_failures": {"cuda0": 0, "cuda1": 0},
+    "engine_fallbacks": {"cuda0": 0, "cuda1": 0},
+    "prefetch_fallbacks": {"cuda0": 0, "cuda1": 0},
+    "contiguous_source_reads": {"cuda0": 1390, "cuda1": 1091},
+    "source_reads": {"cuda0": 1390, "cuda1": 1091},
+    "v50_trace_linkage": {
+      "trace_journal_sha256": "665aac3e8db570237c6dc6acaf08dc39f2af890e8a04e400ce7154f1a858dae1",
+      "trace_final_chain_sha256": "086f8ca83b6a3c467cdf950096141fa9bc3e55a285d7d1fed8a0ad9913e3eb3d",
+      "selection_sha256": "7f41f8d0351491ce9d4b11b5317257c3dfb3ec282666fcac7cd711aa9bcd99bf"
+    }
+  },
+  "route_journal_verification": {
+    "artifact": "routed_experts.jsonl",
+    "file_bytes": 334290,
+    "file_sha256": "437884a0f36a40159f210322429c58b737f48f8afbde1b32dd07ff721d8bc5a8",
+    "record_count": 688,
+    "record_indices": "0..687 contiguous",
+    "steps": "0..15",
+    "layers_per_step": "0..42 exactly once for every step",
+    "row_shape": "step 0: 7 prefill rows; steps 1..15: 1 decode row per layer",
+    "topk": 6,
+    "genesis_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "final_chain_sha256": "68bbe9326def39ee93b7ab361792aea194fe8384c386d79e0f1edbe735342718",
+    "independent_recompute": "all 688 canonical payload SHA-256 values, predecessor links, canonical ordering, step/layer/token_rows/topk/indices, checkpoints, and final chain were independently recomputed and verified",
+    "v50_route_arrays": {"rows": 688, "expert_ids_rank_order_identical": true}
+  },
+  "fill_pool_source_read_telemetry": {
+    "queue_depth": 8,
+    "lanes": 4,
+    "cuda0": {"source_read_batches": 388, "concurrent_source_read_batches": 294, "source_read_batch_wall_ms": 54555.57278, "source_read_overlap_ms": 127083.444898, "source_read_overlap_percent": 69.96488300188749},
+    "cuda1": {"source_read_batches": 326, "concurrent_source_read_batches": 223, "source_read_batch_wall_ms": 43009.299776, "source_read_overlap_ms": 101813.807729, "source_read_overlap_percent": 70.30223289045772}
+  },
+  "profile_verification": {
+    "profile_stages_enabled": true,
+    "engine_layer_calls": {"cuda0": 352, "cuda1": 336, "total": 688},
+    "model_cuda_profile_layers": "0..42",
+    "model_cuda_profile_calls_per_layer": 16,
+    "finite": true
+  },
+  "measured_runtime": {
+    "build_seconds": 81.78,
+    "total_wall_seconds": 166.89,
+    "prefill_seconds": 93.0568,
+    "decode_wall_seconds": 72.979,
+    "decode_tokens": 15,
+    "decode_tokens_per_second": 0.206,
+    "median_inter_token_ms": 4581.3,
+    "p95_inter_token_ms": 6967.2,
+    "storage_bytes_total": 33169342464,
+    "h2d_bytes_total": 59413364736,
+    "peak_vram_gib": {"cuda0": 7.131, "cuda1": 8.747}
+  },
+  "historical_validator_schema_mismatch": {
+    "observed": true,
+    "description": "Freshly pulled dee4-metadata.json uses the compact metadata schema (layer, expert, record_index) and omits the legacy record_offset field expected by the historical validator. This is explicitly retained as a validator-schema mismatch, not a failed integrity check.",
+    "independent_checks_passed": ["2,364 metadata record_index values are contiguous 0..2363", "2,364 dee4-integrity.jsonl records carry record_offset=index*13369344, record_bytes, and per-record SHA-256", "DEE4 trace validation reports success, contiguous indices, complete integrity records, and the v50 trace/selection linkage", "repack report is successful with 2,364 experts and matching data SHA-256"]
+  },
+  "raw_bundle_verification": {
+    "source_dir": "dee.cpp/tmp/v58-live-20260901T025855Z/",
+    "copy_verification": "18 files and 12,289,953 bytes; every relative path, byte count, and SHA-256 matches source; source remains preserved",
+    "integrity_embedded_hashes_recomputed": true,
+    "result_equals_native_result": true
+  },
+  "caveats": [
+    "This is ACCEPT_CORRECTNESS, not ACCEPT_PERFORMANCE.",
+    "A single profiled run cannot establish performance acceptance; no speedup claim is made.",
+    "Historical validator schema mismatch: freshly pulled metadata omits legacy record_offset; independent metadata/integrity/trace/repack checks pass."
+  ],
+  "raw_file_hashes": {
+    "dee-cpp-dsv4-native-generate.log": {"bytes": 2041847, "sha256": "2691c282e99091c0f2aeaf033ce477f54691b325222406b70e20e4bed3dc6d5c"},
+    "dee4-import-validation.json": {"bytes": 31565, "sha256": "75b5773f326038675f40c1c63b02b6f57c7ec640e358ae3f852cc8506ac82593"},
+    "dee4-integrity.jsonl": {"bytes": 1712656, "sha256": "55129bc080555d57caff1d89899de0e3cd85a8f5cfa57668b1b4ce6b1545fea4"},
+    "dee4-metadata.json": {"bytes": 188948, "sha256": "04c84e2d797b753a6ce9a3d926c763aee227bb29a9c5bb2366542401df84a1fb"},
+    "dee4-repack_report.json": {"bytes": 4683, "sha256": "a87200cf56488486355ff3108238060814073a6e54bbc8858b4d66d9f22fe644"},
+    "dee4-trace-validation.json": {"bytes": 892, "sha256": "063ed2d0a97a226207d87fbd6ed92ade39a84f86947ecf15e0d7795bc7631718"},
+    "environment.json": {"bytes": 1228, "sha256": "edff3584570f03fde3b17653b4b74d686c80d6d57b33fda48b89a3b2e7b681d2"},
+    "generated_checkpoint.jsonl": {"bytes": 110408, "sha256": "97e063aec52b764e47ca1a052c2a49bc227177af6f3d1a21e65a2635e4ebbc33"},
+    "integrity.json": {"bytes": 5833, "sha256": "e3e717974a237e0aba7d8b0acefe78ce17584af5c9922172228c53980977f037"},
+    "memory.json": {"bytes": 905, "sha256": "fa634cabe9724bb314fbef41eacb414bd35f12f58d34d9879cf700094dc4f2a1"},
+    "model.safetensors.index.json": {"bytes": 5602871, "sha256": "98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b"},
+    "native-generate-result.json": {"bytes": 618421, "sha256": "670393852b0d2acc738fd5bbdda1d4b024073f96f8dc5eb486f84227f93d668f"},
+    "p2.2-dee4-evidence.json": {"bytes": 1813, "sha256": "a3e713e7189c9a734392218c4b4ac6f790197ebef321e11ed4549aee5b59d917"},
+    "profile.json": {"bytes": 611794, "sha256": "64a8c6aeddc21f7680a1e513285494c5e773b946059c123e87267dd239b6dc4c"},
+    "progress.log": {"bytes": 402683, "sha256": "2110c5aa1ce93c2cd8a1e1a45ab6fc3de2dd873f4270a7f39e7e3541dae03fc1"},
+    "result.json": {"bytes": 618421, "sha256": "670393852b0d2acc738fd5bbdda1d4b024073f96f8dc5eb486f84227f93d668f"},
+    "routed_experts.jsonl": {"bytes": 334290, "sha256": "437884a0f36a40159f210322429c58b737f48f8afbde1b32dd07ff721d8bc5a8"},
+    "run_config.json": {"bytes": 695, "sha256": "cbe652f7af3e909d318162593f8202eecd39baae89e785da219b015b4892dea6"}
+  }
+}

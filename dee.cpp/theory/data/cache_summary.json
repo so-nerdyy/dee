@@ -1,0 +1,113 @@
+{
+  "irm_delta_at_knee": {
+    "budget_gib": 16,
+    "che_finite_hit": 0.4753910176102525,
+    "che_finite_vs_shuffled_pp": -0.21535989812360157,
+    "che_steady_hit": 0.727303371776488,
+    "che_steady_vs_shuffled_pp": 24.975875518499947,
+    "real_lru_hit": 0.50813885075505,
+    "shuffled_lru_hit": 0.4775446165914885,
+    "temporal_correlation_gain_pp": 3.059423416356155
+  },
+  "landmarks": {
+    "finite_window_hit_ceiling": -0.0968817415179447,
+    "frac_knee_records_measured": {
+      "lru_at_50pct_of_max": {
+        "measured_gib": 6,
+        "measured_records": 481
+      },
+      "lru_at_80pct_of_max": {
+        "measured_gib": 10,
+        "measured_records": 803
+      },
+      "lru_at_95pct_of_max": {
+        "measured_gib": 20,
+        "measured_records": 1606
+      }
+    },
+    "lru_hit_max": 0.5363796822906453,
+    "measured_knee_gib": 16.0,
+    "measured_lru_minus_min_pp": 2.8,
+    "measured_reaches_min_gib": 32.0,
+    "measured_repeat_records": 935,
+    "recomputed_knee_gib": 16.0,
+    "recomputed_lru_minus_min_pp_at_knee": -2.82408315355952,
+    "recomputed_reaches_min_gib": 24.0,
+    "recomputed_repeat_records": 935,
+    "unique_records": 2364
+  },
+  "store_knees": [
+    {
+      "cap_at_H50_gib": 11.2060546875,
+      "cap_at_H50_records": 900,
+      "cap_at_H80_gib": 18.963134765625,
+      "cap_at_H80_records": 1523,
+      "cap_at_H95_gib": 30.617431640625,
+      "cap_at_H95_records": 2459,
+      "degenerate_to_geometric": true,
+      "geometric_decay_per_rank_pct": 0.14635848219304012,
+      "label": "DeepSeek-V4-Flash-0731",
+      "popularity_source": "sealed_dsv4_measured",
+      "q": 361325586348.19293,
+      "record_bytes": 13369344,
+      "s": 528830643.9543178,
+      "store": "dsv4_flash",
+      "universe_gib": 146.625,
+      "universe_records": 11776
+    },
+    {
+      "cap_at_H50_gib": 11.691650390625,
+      "cap_at_H50_records": 939,
+      "cap_at_H80_gib": 19.79736328125,
+      "cap_at_H80_records": 1590,
+      "cap_at_H95_gib": 31.94970703125,
+      "cap_at_H95_records": 2566,
+      "degenerate_to_geometric": true,
+      "geometric_decay_per_rank_pct": 0.14635848219304012,
+      "label": "XiaomiMiMo/MiMo-V2.6-Flash-RL",
+      "popularity_source": "sealed_dsv4_transfer",
+      "q": 361325586348.19293,
+      "record_bytes": 13369344,
+      "s": 528830643.9543178,
+      "store": "mimo_v2_flash",
+      "universe_gib": 153.0,
+      "universe_records": 12288
+    },
+    {
+      "cap_at_H50_gib": 16.323486328125,
+      "cap_at_H50_records": 874,
+      "cap_at_H80_gib": 38.3807373046875,
+      "cap_at_H80_records": 2055,
+      "cap_at_H95_gib": 51.6785888671875,
+      "cap_at_H95_records": 2767,
+      "degenerate_to_geometric": true,
+      "geometric_decay_per_rank_pct": 0.14635848219304012,
+      "label": "XiaomiMiMo/MiMo-V2.6-Pro-RL",
+      "popularity_source": "sealed_dsv4_transfer",
+      "q": 361325586348.19293,
+      "record_bytes": 20054016,
+      "s": 528830643.9543178,
+      "store": "mimo_v2_pro",
+      "universe_gib": 502.03125,
+      "universe_records": 26880
+    },
+    {
+      "cap_at_H50_gib": 83.3203125,
+      "cap_at_H50_records": 790,
+      "cap_at_H80_gib": 169.06640625,
+      "cap_at_H80_records": 1603,
+      "cap_at_H95_gib": 276.328125,
+      "cap_at_H95_records": 2620,
+      "degenerate_to_geometric": true,
+      "geometric_decay_per_rank_pct": 0.14635848219304012,
+      "label": "MiniMaxAI/MiniMax-M3",
+      "popularity_source": "sealed_dsv4_transfer",
+      "q": 361325586348.19293,
+      "record_bytes": 113246208,
+      "s": 528830643.9543178,
+      "store": "minimax_m3",
+      "universe_gib": 810.0,
+      "universe_records": 7680
+    }
+  ]
+}

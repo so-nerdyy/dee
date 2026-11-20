@@ -1,0 +1,32 @@
+{
+  "id": "nivind/dee-cpp-deepseek-v4-flash-0731-ds5-trace",
+  "title": "dee-cpp-deepseek-v4-flash-0731-ds5-trace",
+  "code_file": "ds5_trace_runtime.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "enable_network": true,
+  "accelerator": "NvidiaTeslaT4",
+  "machine_shape": "NvidiaTeslaT4",
+  "machine_spec": {
+    "accelerator": "NvidiaTeslaT4",
+    "gpu_count": 1,
+    "is_shared_vm": false,
+    "container_size": "medium"
+  },
+  "dataset_sources": [],
+  "keywords": [
+    "dee.cpp",
+    "deepseek-v4-flash-0731",
+    "ds5",
+    "reference-trace",
+    "official-model",
+    "tilelang",
+    "convert",
+    "fp4",
+    "fp8",
+    "t4"
+  ]
+}

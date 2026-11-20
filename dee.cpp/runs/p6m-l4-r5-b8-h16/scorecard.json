@@ -1,0 +1,142 @@
+{
+  "run_id": "p6m-l4-r5-b8-h16",
+  "evidence_dir": "runs/p6m-l4-r5-b8-h16",
+  "platform": "modal",
+  "cell": "1xL4",
+  "model": "dsv4_flash",
+  "gpu": "L4",
+  "host_gib": 16.0,
+  "host_basis": "TOTAL",
+  "spot": false,
+  "commit": "311d9d0bf821c08f35d2a6fb94640a533c9d41b9",
+  "measured_b_ssd_gib_s": 3.9552,
+  "est_cost_usd": 0.544,
+  "result_file": "result-c0.json",
+  "prerequisite_failures": [],
+  "warnings": [
+    "no billing receipt (add summary.json 'billed_usd' from the Modal dashboard); $/1k scored on the 1000 x rate_s / TPS cross-check",
+    "VRAM expert budget 3584 MiB vs the frozen row's 22528 MiB per GPU",
+    "frozen b=8 rows carry the units defect (Addendum 2 item 3): scored as registered against AGGREGATE last-32-step TPS; expect them to read low"
+  ],
+  "registry": "theory/data/predecl_matrix.csv (frozen 2026-09-30)",
+  "registered_id_tightening": "row prediction_ids per section 4 (P1, P1b, P2, P14, P15b/P15c vs the EXPENSIVE dense reading 0.12892 $/1k)",
+  "not_applied": "P5/P8b/P16/P17 (need a stage-profile bucket analysis; read the profile by hand), P2b (needs a MIN replay of the route journal)",
+  "b": 8,
+  "window": {
+    "decode_steps": 64,
+    "from_step": 32,
+    "to_step": 64,
+    "source_reads": 49463.0,
+    "host_hits": 0.0,
+    "host_misses": 49463.0
+  },
+  "rate_s": 0.00041116000000000004,
+  "b_ssd_vs_spec": 1.69874546491392,
+  "dense_ratio": {
+    "expensive": 5.399821485441553,
+    "cheap": 19.439960511117704
+  },
+  "metrics": {
+    "decode_tps": {
+      "measured": 0.5906240917135855,
+      "basis": "aggregate, last 32 of 64 decode steps; UNTESTABLE: measured B_SSD is 1.70x the cell spec (registered band 0.9-1.1x)",
+      "nominal": 1.6185152894418646,
+      "lo": 1.2340681673786305,
+      "hi": 2.5371589900261524,
+      "kill_lo": 0.8638477171650413,
+      "kill_hi": 3.628137355737398,
+      "ids": [],
+      "grade": "UNTESTABLE"
+    },
+    "host_hit_rate": {
+      "measured": 0.0,
+      "basis": "pooled_dedup over the window (0/49463)",
+      "nominal": 0.51,
+      "lo": 0.44,
+      "hi": 0.7531020871528816,
+      "kill_lo": 0.45,
+      "kill_hi": 0.57,
+      "ids": [
+        "P2",
+        "P2b"
+      ],
+      "grade": "KILLED"
+    },
+    "cold_records_per_tok": {
+      "measured": 193.21484375,
+      "basis": "window source reads / (8 x 32)",
+      "nominal": 156.10126617164872,
+      "lo": 124.012402171574,
+      "hi": 312.20253234329743,
+      "kill_lo": 93.0093016286805,
+      "kill_hi": 390.2531654291218,
+      "ids": [
+        "P3",
+        "P4"
+      ],
+      "grade": "PASS"
+    },
+    "usd_per_1k_tok": {
+      "measured": 0.696144985903125,
+      "basis": "1000 x (1.4801760000000002 USD/h / 3600) / decode tok/s; UNTESTABLE: measured B_SSD is 1.70x the cell spec (registered band 0.9-1.1x)",
+      "nominal": 0.2540352894298491,
+      "lo": 0.16205527584842522,
+      "hi": 0.3331744638332042,
+      "kill_lo": 0.09723316550905513,
+      "kill_hi": 0.556401354601451,
+      "ids": [],
+      "grade": "UNTESTABLE"
+    }
+  },
+  "verdict": "KILLED",
+  "addendum3": {
+    "registry": "theory.predecl_modal (Addendum 3)",
+    "prerequisite_failures": [],
+    "b8_steady_gate": "OPEN",
+    "metrics": {
+      "decode_tps": {
+        "measured": 0.5906240917135855,
+        "basis": "aggregate, last 32 of 64 decode steps",
+        "nominal": 4.074109102660864,
+        "lo": 3.2141944981403796,
+        "hi": 7.4019051252370165,
+        "kill_lo": 2.2499361486982656,
+        "kill_hi": 10.584724329088933,
+        "grade": "KILLED"
+      },
+      "host_hit_rate": {
+        "measured": 0.0,
+        "basis": "pooled_dedup over the window (0/49463)",
+        "nominal": 0.51,
+        "lo": 0.44,
+        "hi": 0.7531020871528816,
+        "kill_lo": 0.45,
+        "kill_hi": 0.57,
+        "grade": "KILLED"
+      },
+      "cold_records_per_tok": {
+        "measured": 193.21484375,
+        "basis": "window source reads / (8 x 32)",
+        "nominal": 60.30615832953687,
+        "lo": 60.30615832953687,
+        "hi": 370.045229639833,
+        "kill_lo": 45.22961874715266,
+        "kill_hi": 462.55653704979125,
+        "grade": "PASS"
+      },
+      "usd_per_1k_tok": {
+        "measured": 0.9141516703687501,
+        "basis": "1000 x registered rate 0.00053992 $/s / decode tok/s",
+        "nominal": 0.13252467874445728,
+        "lo": 0.07294338293517526,
+        "hi": 0.16797987810394763,
+        "kill_lo": 0.043766029761105156,
+        "kill_hi": 0.2805263964335925,
+        "grade": "KILLED"
+      }
+    },
+    "predicted_limiter": "storage",
+    "rate_s": 0.00053992,
+    "verdict": "KILLED"
+  }
+}

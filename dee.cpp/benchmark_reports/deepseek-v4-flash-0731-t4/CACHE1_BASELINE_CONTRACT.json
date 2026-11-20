@@ -1,0 +1,69 @@
+{
+  "campaign": "CACHE1",
+  "milestone": "CACHE1.0_BASELINE_CONTRACT",
+  "frozen_from": "DS10 ACCEPT_DUAL_T4_DECODE evidence 92df73e (sealed)",
+  "immutable_reference": {
+    "evidence": "benchmark_reports/deepseek-v4-flash-0731-t4/ds10-v12-accept-dual-t4-decode/evidence/ds10-evidence.json",
+    "verdict": "ACCEPT_DUAL_T4_DECODE",
+    "repository_commit": "a0e8f65ecfcaaab3e4c8f43eb5516612278a1833",
+    "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+    "model_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+    "canonical_prompt": "<|begin_of_sentence|>Who is Alan Turing?<|Assistant|>",
+    "n_layers": 43,
+    "topk": 6,
+    "n_routed": 256,
+    "n_shared": 1
+  },
+  "cache_configuration_as_measured": {
+    "budget_bytes_per_gpu": 2147483648,
+    "budget_gib_per_gpu": 2.0,
+    "eviction_policy": "LRU (score = last_use + eviction_priority * 2^20), all priorities 0",
+    "shared_expert_pinning": "NONE (pin/unpin API exists but is never called)",
+    "provider_raw_experts_per_layer": 0,
+    "provider_host_lru": "DISABLED - every cache miss refetches HTTP",
+    "h2d_staging": "FP16 payload, side stream + per-expert CUDA event",
+    "expert_payload_fp16_bytes": 50331648
+  },
+  "measured_trace": {
+    "source": "token_trace in sealed evidence (16 tokens, 43 layers)",
+    "tokens": 16,
+    "total_expert_accesses_with_shared": 6364,
+    "unique_layer_expert_pairs": 2365,
+    "consecutive_token_reuse_pct": 37.5,
+    "popularity_top5pct_share_pct": 23.6
+  },
+  "measured_cache_performance": {
+    "cache0": {
+      "requests": 5934, "hits": 0, "loads": 5934, "evictions": 5892,
+      "h2d_bytes": 298667999232, "wait_ms": 29991.7, "resident_entries": 42
+    },
+    "cache1": {
+      "requests": 5644, "hits": 0, "loads": 5644, "evictions": 5602,
+      "h2d_bytes": 284071821312, "wait_ms": 28729.0, "resident_entries": 42
+    },
+    "provider": { "fetch_count": 10202, "raw_hits": 0, "raw_misses": 10202,
+                  "raw_experts_per_layer": 0 },
+    "hit_rate_pct": 0.0,
+    "http_fetch_count_cold_plus_warm": 10202,
+    "h2d_bytes_total": 582739820544
+  },
+  "build_and_handoff": {
+    "primary_build_seconds": 485.65,
+    "alternate_budget_build_seconds": 428.71,
+    "handoff_method": "explicit_pinned_host_staging",
+    "peer_to_peer_available": true,
+    "handoff_d2h_bytes_per_token": 229376,
+    "handoff_h2d_bytes_per_token": 229376
+  },
+  "correctness_baseline": {
+    "cold_warm_equal": true,
+    "deterministic_rerun": true,
+    "cache_capacity_variation_equal": true,
+    "tokens": [666, 95140, 96807, 343, 4470, 20, 1127, 3298, 22, 22604, 515, 411, 3947, 85349, 14, 6341]
+  },
+  "notes": [
+    "Measured hit rate is 0% despite 37.5% consecutive-token reuse: the 2 GiB/GPU budget holds only 42 experts while the 16-token working set is 2365 unique pairs; prefill churn evicts everything before decode reuse occurs.",
+    "The provider host LRU (raw_experts_per_layer) was deliberately disabled in DS10; re-enabling is the cheapest measurable lever.",
+    "This contract is frozen; CACHE1 adds new versioned run directories and never edits DS10 evidence."
+  ]
+}

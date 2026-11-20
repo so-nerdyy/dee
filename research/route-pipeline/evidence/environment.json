@@ -1,0 +1,11 @@
+{
+  "environment": {
+    "nvidia_smi": false,
+    "gpus": [],
+    "cuda": false,
+    "torch": "2.7.1+cu118",
+    "sm75_only": false,
+    "live_dual_t4": false
+  },
+  "reason": "nvidia-smi absent; torch.cuda unavailable"
+}

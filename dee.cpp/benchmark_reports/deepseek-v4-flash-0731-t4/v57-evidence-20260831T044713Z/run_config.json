@@ -1,0 +1,20 @@
+{
+  "recorded_at_utc": "2026-08-31T04:27:30Z",
+  "run_id": "p2.3-dee4-trace-fillpool-lane4-v57",
+  "cache_dtype": "fp4",
+  "expert_store": "dee4_trace",
+  "dee4_trace_path": "/tmp/dsv4-dee4-v3-trace/metadata.json",
+  "dee4_validate_samples": 12,
+  "profile_stages": false,
+  "n_tokens": 16,
+  "cache_budget_bytes_per_gpu": 3758096384,
+  "cache_budget_gib_per_gpu": 3.5,
+  "host_pack_requested_bytes": [
+    13819057274,
+    13819057274
+  ],
+  "host_pack_runtime_cap_gib_total": 17.0,
+  "force_tmp": false,
+  "source_path": "/tmp/dsv4-native-src/dee.cpp/kaggle/deepseek-v4-flash-0731/run_config.json",
+  "source_sha256": "df92b5e548c997e7c82abcd6e859887cd91a65d881e568231bd3bb4202df3a7c"
+}

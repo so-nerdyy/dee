@@ -1,0 +1,13 @@
+{
+  "branch": "freebuff/deepseek-v4-flash-0731-t4",
+  "harness_sha256": "d8c97005282e07b3c8a1be9ae4577b4579365a42de8a97536e7ea0fb811df9a7",
+  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "performance_comparable": false,
+  "reference_sha256": "9c28375b17898a6908d61ca3a769f4ba2eab4104e4049439cfa76784eaa86ef5",
+  "repository": "https://github.com/so-nerdyy/dee.git",
+  "repository_commit": "cc8910e8518f80947ab0fff711dc56e8a00279b1",
+  "revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+  "run_id": "20260731T000000Z-dsv4-ds7-expert-smoke",
+  "schema_version": 1,
+  "shard": "model-00008-of-00048.safetensors"
+}

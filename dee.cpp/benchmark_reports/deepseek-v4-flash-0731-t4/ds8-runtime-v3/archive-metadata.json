@@ -1,0 +1,8 @@
+{
+  "archive": "/kaggle/working/dsv4-ds8-evidence-20260731T080000Z-dsv4-ds8-expert-runtime.tar.gz",
+  "archive_sha256": "69b8f712b12a46ec90c7cafe083bdbfd8de284684b541f97c941035d8671867f",
+  "excluded_from_archive": [
+    "archive-metadata.json"
+  ],
+  "manifest_sha256": "80ae02df3a0b3371ca5b52927a7eeeb32ee20428392b95c3695ffe33f19e37c1"
+}

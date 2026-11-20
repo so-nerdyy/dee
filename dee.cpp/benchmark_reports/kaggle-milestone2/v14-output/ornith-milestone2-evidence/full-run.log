@@ -1,0 +1,7 @@
+MACHINE={"cuda_runtime": "12.8", "gpu_count": 2, "gpus": [{"index": 0, "name": "Tesla T4", "total_memory": 15636037632}, {"index": 1, "name": "Tesla T4", "total_memory": 15636037632}], "platform": "Linux-6.12.90+-x86_64-with-glibc2.35", "python": "3.12.13 (main, Mar  4 2026, 09:23:07) [GCC 11.4.0]", "pytorch": "2.10.0+cu128", "transformers": "5.14.1"}
+[transformers] The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d
+GENERATION={"prompt": "Hello", "tokens": [11, 271, 40, 1044], "text": ",\n\nI am", "passed": true}
+GENERATION={"prompt": "2+2=", "tokens": [19, 271, 248068, 198], "text": "4\n\n<think>\n", "passed": true}
+GENERATION={"prompt": "Paris", "tokens": [11, 279, 4170, 314], "text": ", the City of", "passed": true}
+REPORT=/kaggle/working/ornith-milestone2-evidence/ornith-milestone2-report.json
+RESULT=PASS

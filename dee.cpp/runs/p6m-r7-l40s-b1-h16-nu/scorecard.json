@@ -1,0 +1,110 @@
+{
+  "run_id": "p6m-r7-l40s-b1-h16-nu",
+  "evidence_dir": "runs\\p6m-r7-l40s-b1-h16-nu",
+  "platform": "modal",
+  "cell": "1xL40S",
+  "model": "dsv4_flash",
+  "gpu": "L40S",
+  "host_gib": 16.0,
+  "host_basis": "TOTAL",
+  "spot": false,
+  "commit": "7fc878ac50a74c1216a208007986e7887d6ded25",
+  "measured_b_ssd_gib_s": 89.3308,
+  "est_cost_usd": 0.181,
+  "result_file": "result.json",
+  "prerequisite_failures": [],
+  "warnings": [
+    "OWN-REFERENCE gate (Addendum 4): exact_16_token_ids/exact_decoded_text vs the sealed T4 answer were waived because this run is bit-identical to p6m-r7-l40s-b1-h64-nu at another host budget. Weaker than the exact gate; it does not show one-GPU mode is bug-free.",
+    "no billing receipt (add summary.json 'billed_usd' from the Modal dashboard); $/1k scored on the 1000 x rate_s / TPS cross-check",
+    "VRAM expert budget 26624 MiB vs the frozen row's 49152 MiB per GPU",
+    "measured B_SSD 89.3308 GiB/s is above any plausible NVMe; treat it as page cache, not disk"
+  ],
+  "registry": "theory/data/predecl_matrix.csv (frozen 2026-09-30)",
+  "own_reference": {
+    "peer_run_id": "p6m-r7-l40s-b1-h64-nu",
+    "checks": [
+      "same gpu/commit/budget/model",
+      "different host_gib",
+      "identical generated_token_ids",
+      "identical routed_experts and route_weights (ex run_id/chain)"
+    ],
+    "waived_gates": [
+      "exact_16_token_ids",
+      "exact_decoded_text"
+    ]
+  },
+  "registered_id_tightening": "row prediction_ids per section 4 (P1, P1b, P2, P14, P15b/P15c vs the EXPENSIVE dense reading 0.12892 $/1k)",
+  "not_applied": "P5/P8b/P16/P17 (need a stage-profile bucket analysis; read the profile by hand), P2b (needs a MIN replay of the route journal)",
+  "b": 1,
+  "window": {
+    "decode_only_cold_records_per_tok": 75.29787234042553
+  },
+  "rate_s": 0.00089368,
+  "b_ssd_vs_spec": 15.986369355229867,
+  "dense_ratio": {
+    "expensive": 4.4665276316168265,
+    "cheap": 16.079998387825782
+  },
+  "metrics": {
+    "decode_tps": {
+      "measured": 1.552,
+      "basis": "decode tokens / decode wall; UNTESTABLE: measured B_SSD is 15.99x the cell spec (registered band 0.9-1.1x)",
+      "nominal": 2.626081087169019,
+      "lo": 2.0964816515362443,
+      "hi": 5.081266349899476,
+      "kill_lo": 1.467537156075371,
+      "kill_hi": 7.26621088035625,
+      "ids": [],
+      "grade": "UNTESTABLE"
+    },
+    "host_hit_rate": {
+      "measured": 0.6429801572444778,
+      "basis": "pooled_dedup, prompt-scoped (8587/13355)",
+      "nominal": 0.51,
+      "lo": 0.44,
+      "hi": 0.7531020871528816,
+      "kill_lo": 0.45,
+      "kill_hi": 0.57,
+      "ids": [
+        "P2",
+        "P2b"
+      ],
+      "grade": "KILLED"
+    },
+    "cold_records_per_tok": {
+      "measured": 99.33333333333333,
+      "basis": "storage_requests_per_generated_token",
+      "nominal": 147.75,
+      "lo": 0.0,
+      "hi": 295.5,
+      "kill_lo": 0.0,
+      "kill_hi": 369.375,
+      "ids": [
+        "P3",
+        "P4"
+      ],
+      "grade": "PASS"
+    },
+    "usd_per_1k_tok": {
+      "measured": 0.5758247422680413,
+      "basis": "1000 x (3.217248 USD/h / 3600) / decode tok/s; UNTESTABLE: measured B_SSD is 15.99x the cell spec (registered band 0.9-1.1x)",
+      "nominal": 0.11426222443700527,
+      "lo": 0.018131314307686483,
+      "hi": 0.1235793796796269,
+      "kill_lo": 0.010878788584611889,
+      "kill_hi": 0.20637756406497693,
+      "ids": [],
+      "grade": "UNTESTABLE"
+    }
+  },
+  "verdict": "KILLED",
+  "addendum3": {
+    "registry": "theory.predecl_modal (Addendum 3)",
+    "prerequisite_failures": [
+      "VRAM budget 26624 MiB != registered 28672 MiB",
+      "measured B_SSD 89.3308 GiB/s flagged implausible for NVMe (page cache / virtualized FS); Addendum 3 is evaluated AT B_SSD"
+    ],
+    "verdict": "UNTESTABLE",
+    "metrics": {}
+  }
+}

@@ -1,0 +1,10 @@
+[
+ "<｜begin▁of▁sentence｜>In three sentences, what is a mixture-of-experts language model?<｜Assistant｜>",
+ "<｜begin▁of▁sentence｜>Explain to a high school student why running a model that is bigger than your GPU memory is hard.<｜Assistant｜>",
+ "<｜begin▁of▁sentence｜>Write a short Lua function that reverses a table in place, with a one-line comment.<｜Assistant｜>",
+ "<｜begin▁of▁sentence｜>Write a Python function that checks whether a string is a palindrome, ignoring spaces and case.<｜Assistant｜>",
+ "<｜begin▁of▁sentence｜>Give me three tips for writing a strong college application essay about a research project.<｜Assistant｜>",
+ "<｜begin▁of▁sentence｜>What is the difference between an SSD, RAM, and GPU memory, in one paragraph?<｜Assistant｜>",
+ "<｜begin▁of▁sentence｜>Tell me a two-sentence story about a robot that learns to cache its memories.<｜Assistant｜>",
+ "<｜begin▁of▁sentence｜>What is 17 times 23? Show the steps.<｜Assistant｜>"
+]

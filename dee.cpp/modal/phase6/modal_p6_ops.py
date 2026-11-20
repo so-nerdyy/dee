@@ -1,0 +1,237 @@
+"""Phase 6 — Modal CPU ops: checkpoint staging + DEE4 store builds.
+
+Split from modal_p6.py: GPU functions require a payment method on the
+workspace; this CPU-only app runs without one.  Both apps share the same
+volumes and MODELS registry.
+
+  stage_ckpt   snapshot_download HF checkpoint -> dee-models volume
+  build_store  clone pinned commit -> p3 manifest -> segmented build via
+               RemoteRangeSource (HF byte-range reads; the checkpoint is
+               never downloaded for repack) -> dee-stores volume.
+               Resume-safe: build.journal.jsonl + *.partial survive restarts.
+  store_status p3 build-journal summary for a store dir
+
+Usage
+  modal run modal/phase6/modal_p6_ops.py::stage_ckpt --model dsv4-flash
+  modal run --detach modal/phase6/modal_p6_ops.py::build_store --model dsv4-flash
+  modal run modal/phase6/modal_p6_ops.py::store_status --model dsv4-flash
+"""
+
+from __future__ import annotations
+
+import modal
+
+REPOSITORY = "https://github.com/so-nerdyy/dee.git"
+BRANCH = "research/phase6-modal"
+PINNED_COMMIT = ""  # empty = branch head; set for sealed runs
+
+VOL_MODELS = "/vol/models"
+VOL_STORES = "/vol/stores"
+
+vol_models = modal.Volume.from_name("dee-models", create_if_missing=True)
+vol_stores = modal.Volume.from_name("dee-stores", create_if_missing=True)
+
+MODELS = {
+    "dsv4-flash": {
+        "hf_repo": "deepseek-ai/DeepSeek-V4-Flash-0731",
+        "hf_rev": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+        "ckpt_dir": "DeepSeek-V4-Flash-0731",
+        "store_dir": "dsv4-flash",
+        "headers": "dee.cpp/benchmark_reports/deepseek-v4-flash-0731-t4/"
+                   "shard-headers",
+    },
+    # mxfp4 expert records are wire-identical to the DSv4 FP4 codec
+    # (packed e2m1 + ue8m0/32) — same 13,369,344 B record, no new codec.
+    "mimo-flash": {
+        "hf_repo": "XiaomiMiMo/MiMo-V2.6-Flash-RL",
+        "hf_rev": "5711b268169967567844e1e560e8a3966da959b1",
+        "ckpt_dir": "MiMo-V2.6-Flash-RL",
+        "store_dir": "mimo-flash",
+        "spec": "dee.cpp/tools/phase3/specs/mimo_v2_flash.json",
+        "headers_remote": True,   # no committed headers — range-fetch them
+    },
+    # Same mimo_v2 family as Flash — one adapter unlocks the ~1T giant.
+    "mimo-pro": {
+        "hf_repo": "XiaomiMiMo/MiMo-V2.6-Pro-RL",
+        "hf_rev": "main",   # pin a sha before the Pro build
+        "ckpt_dir": "MiMo-V2.6-Pro-RL",
+        "store_dir": "mimo-pro",
+        "spec": "dee.cpp/tools/phase3/specs/mimo_v2_pro.json",
+        "headers_remote": True,
+    },
+}
+
+image_cpu = (
+    modal.Image.debian_slim(python_version="3.11")
+    .apt_install("git")
+    .pip_install("huggingface_hub", "hf_transfer", "requests")
+    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
+)
+
+app = modal.App("dee-p6-ops")
+
+
+def _clone() -> str:
+    commit = PINNED_COMMIT
+    lines = [
+        "set -e",
+        f"git clone --branch {BRANCH} --single-branch "
+        f"{REPOSITORY} /tmp/dsv4-native-src",
+    ]
+    if commit:
+        lines.append(f"cd /tmp/dsv4-native-src && git checkout --quiet {commit}")
+    lines.append("cd /tmp/dsv4-native-src && git rev-parse HEAD")
+    return " && ".join(lines)
+
+
+@app.function(
+    image=image_cpu,
+    cpu=4,
+    memory=16384,
+    timeout=8 * 3600,
+    volumes={VOL_MODELS: vol_models},
+)
+def stage_ckpt(model: str) -> dict:
+    import os
+    import time
+    from pathlib import Path
+
+    from huggingface_hub import snapshot_download
+
+    spec = MODELS[model]
+    dest = os.path.join(VOL_MODELS, spec["ckpt_dir"])
+    os.makedirs(dest, exist_ok=True)
+    t0 = time.monotonic()
+    snap = snapshot_download(
+        repo_id=spec["hf_repo"],
+        revision=spec["hf_rev"],
+        local_dir=dest,
+        allow_patterns=["*.safetensors", "*.json", "*.py", "*.txt",
+                        "*.model", "tokenizer*"],
+        max_workers=8,
+    )
+    vol_models.commit()
+    files = [p for p in Path(snap).rglob("*") if p.is_file()]
+    gb = sum(p.stat().st_size for p in files) / (1 << 30)
+    return {"model": model, "snap": snap, "files": len(files),
+            "gib": round(gb, 1), "wall_s": round(time.monotonic() - t0, 1)}
+
+
+@app.function(
+    image=image_cpu,
+    cpu=8,
+    memory=32768,
+    timeout=12 * 3600,
+    volumes={VOL_STORES: vol_stores},
+)
+def build_store(model: str, prefetch: int = 8, buckets: int = 0) -> dict:
+    import os
+    import subprocess
+    import time
+
+    spec = MODELS[model]
+    src = "/tmp/dsv4-native-src"
+    t0 = time.monotonic()
+    subprocess.run(_clone(), shell=True, check=True)
+
+    build_dir = os.path.join(VOL_STORES, spec["store_dir"])
+    os.makedirs(build_dir, exist_ok=True)
+    cmd = [
+        "python", "dee.cpp/tools/phase3/p3_kaggle_job.py", "build",
+        "--build-dir", build_dir,
+        "--source", "remote",
+        "--prefetch", str(prefetch),
+        "--publisher", "none",
+    ]
+    if spec.get("spec"):
+        # Spec-driven manifest: fetch shard headers over HTTP ranges into
+        # the build dir, build manifest+records, then hand the job the
+        # explicit paths (the manifest carries repo+revision itself).
+        headers_dir = os.path.join(build_dir, "headers")
+        spec_path = spec["spec"]
+        subprocess.run(
+            ["python", "dee.cpp/tools/phase3/fetch_headers.py",
+             "--repo", spec["hf_repo"], "--revision", spec["hf_rev"],
+             "--out-dir", headers_dir],
+            cwd=src, check=True)
+        manifest_path = os.path.join(build_dir, "p3_manifest.json")
+        manifest_code = (
+            "import sys, json; "
+            "sys.path.insert(0, 'dee.cpp/tools/phase3'); "
+            "import p3_manifest, p3_manifest_spec; "
+            f"sp = p3_manifest_spec.load_spec('{spec_path}'); "
+            f"m = p3_manifest_spec.build_manifest_spec(sp, '{headers_dir}'); "
+            f"p3_manifest.write_manifest(m, '{build_dir}'); "
+            "print('spec manifest:', json.dumps({k: m[k] for k in "
+            "('n_buckets','total_experts','record_bytes','store_gib',"
+            "'universe_sha256')}))")
+        subprocess.run(["python", "-c", manifest_code],
+                       cwd=src, check=True)
+        cmd += ["--manifest", manifest_path,
+                "--records", os.path.join(build_dir, "p3_records.jsonl")]
+    else:
+        cmd += ["--headers", os.path.join(src, spec["headers"])]
+    if buckets:
+        cmd += ["--buckets", str(buckets)]
+    # Stream the job's stdout live (modal app logs show it) while keeping a
+    # tail for the return value — a silent capture hid the v1 failure.
+    proc = subprocess.Popen(cmd, cwd=src, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, bufsize=1)
+
+    # Bounded periodic volume commit: build.journal/integrity/*.partial on
+    # the volume survive a mid-build kill -> the next run resumes.  Timeout
+    # guard per CACHE1c (an unbounded commit must never kill the worker).
+    import concurrent.futures
+    import threading
+    _stop = threading.Event()
+    _pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    def _hb_commit() -> None:
+        while not _stop.wait(300):
+            try:
+                _pool.submit(vol_stores.commit).result(timeout=90)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[hb] volume commit skipped: {exc!r}", flush=True)
+
+    threading.Thread(target=_hb_commit, daemon=True).start()
+
+    tail: list[str] = []
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        print(line, end="", flush=True)
+        tail.append(line)
+        if len(tail) > 400:
+            tail.pop(0)
+    rc = proc.wait()
+    _stop.set()
+    vol_stores.commit()
+    return {"model": model, "rc": rc, "tail": "".join(tail[-80:]),
+            "wall_s": round(time.monotonic() - t0, 1)}
+
+
+@app.function(
+    image=image_cpu,
+    cpu=2,
+    memory=8192,
+    timeout=3600,
+    volumes={VOL_STORES: vol_stores},
+)
+def store_status(model: str) -> str:
+    import subprocess
+
+    spec = MODELS[model]
+    src = "/tmp/dsv4-native-src"
+    subprocess.run(_clone(), shell=True, check=True)
+    r = subprocess.run(
+        ["python", "dee.cpp/tools/phase3/p3_kaggle_job.py", "status",
+         "--build-dir", f"{VOL_STORES}/{spec['store_dir']}"],
+        cwd=src, capture_output=True, text=True)
+    out = r.stdout + r.stderr
+    print(out, flush=True)   # modal run does not print return values
+    return out
+
+
+@app.local_entrypoint()
+def main() -> None:
+    print("dee-p6-ops functions: stage_ckpt, build_store, store_status")
+    print("Models:", ", ".join(MODELS))

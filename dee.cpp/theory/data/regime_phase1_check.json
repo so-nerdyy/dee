@@ -1,0 +1,12 @@
+{
+  "fraction_storage_limited": 1.0,
+  "limiter_counts": {
+    "storage": 30
+  },
+  "measured_bandwidth_gib_s": [
+    0.29,
+    0.37
+  ],
+  "phase1_verdict": "research/route-pipeline/STORAGE_VERDICT.md: 'storage-bandwidth constrained, 0.29-0.37 GiB/s, feed-side verdict' (Phase 1 closed)",
+  "verdict": "CONSISTENT"
+}

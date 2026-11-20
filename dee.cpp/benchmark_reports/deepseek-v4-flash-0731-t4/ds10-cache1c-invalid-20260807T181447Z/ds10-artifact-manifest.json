@@ -1,0 +1,88 @@
+{
+ "schema_version": 1,
+ "run_id": "20260807T181447Z",
+ "stage": "cache1",
+ "verdict": "INVALID_EXPERIMENT",
+ "result": "FAIL",
+ "performance_comparable": false,
+ "repository_commit": "710e82d26b5d2c5c15bfba6c8ce0ee64c626944b",
+ "required_paths": [
+  "ds10-verdict.json",
+  "ds10-evidence.json",
+  "deepseek_v4_model_runtime.py",
+  "harness-identity-ds10.json",
+  "DS10_FULL_MODEL_CONTRACT.json"
+ ],
+ "artifacts": [
+  {
+   "path": "DS10_FULL_MODEL_CONTRACT.json",
+   "bytes": 11244,
+   "sha256": "ee1874d1ea4d521c3d793dc84e1f508cecc7c7a4e024530a6048857ecfcc6ab2"
+  },
+  {
+   "path": "deepseek_v4_model_runtime.py",
+   "bytes": 46599,
+   "sha256": "412b38f20f56e6d7ab78d542dd927d35ab4b2a2cdb9e3af66250f30b4833c0bc"
+  },
+  {
+   "path": "deepseek_v4_module_cache.py",
+   "bytes": 17204,
+   "sha256": "c4d16b0cef031f1bbf8ed0c2a989e7a60394bc7f740973a85ed9a24e7271f0df"
+  },
+  {
+   "path": "deepseek_v4_module_encoding.py",
+   "bytes": 9540,
+   "sha256": "a87a5fe64d3650d9b4dd752f48020f9c095b0e8b7aaee8da31e92c4a373a18b8"
+  },
+  {
+   "path": "deepseek_v4_module_expert_reference.py",
+   "bytes": 8175,
+   "sha256": "9c28375b17898a6908d61ca3a769f4ba2eab4104e4049439cfa76784eaa86ef5"
+  },
+  {
+   "path": "deepseek_v4_module_layer_candidate.py",
+   "bytes": 12343,
+   "sha256": "457194dd8d018b471fdaa9cc73e07b4a8a88ce73d3bc7470457b645ecdbf6e5d"
+  },
+  {
+   "path": "deepseek_v4_module_layer_common.py",
+   "bytes": 17261,
+   "sha256": "9c318f77e4e4cb31eab7d3c46efc82c1de98eb170f5fe43612317170c63ccc94"
+  },
+  {
+   "path": "deepseek_v4_module_layer_reference.py",
+   "bytes": 37741,
+   "sha256": "311aa69e4f3cfc4bcc8dd824483afe6550ad9319f2f5b7638b18b51b419976e0"
+  },
+  {
+   "path": "deepseek_v4_module_model.py",
+   "bytes": 47148,
+   "sha256": "34f4648362d64da5b7cf396757592d72258b948d6d119481bc9c00fa99fa06bf"
+  },
+  {
+   "path": "deepseek_v4_module_moe_reference.py",
+   "bytes": 11137,
+   "sha256": "76db84137e806a527752c51d3484086544e246113527996f554ca97620b103dd"
+  },
+  {
+   "path": "deepseek_v4_module_support.py",
+   "bytes": 30422,
+   "sha256": "db12c12551b7a8da76f676225a4fbf07a73eb24875756b7e83b110cb9be29d6f"
+  },
+  {
+   "path": "ds10-evidence.json",
+   "bytes": 1546,
+   "sha256": "b83427ce483a4c9baa27e0ba313ec96f1c4ce965b2ec1b6253f37ac0f9150685"
+  },
+  {
+   "path": "ds10-verdict.json",
+   "bytes": 150,
+   "sha256": "f0f7a051fff24259664bd2a88085cad5e38c438bd22c3920a940c932971c331c"
+  },
+  {
+   "path": "harness-identity-ds10.json",
+   "bytes": 1284,
+   "sha256": "87427c62e671d70d6f2bf2800438c5103819ca8b2cc1b23eae2fac9cb4744f19"
+  }
+ ]
+}

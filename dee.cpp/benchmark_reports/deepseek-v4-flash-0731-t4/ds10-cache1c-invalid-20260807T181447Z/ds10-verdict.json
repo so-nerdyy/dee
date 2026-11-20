@@ -1,0 +1,7 @@
+{
+ "verdict": "INVALID_EXPERIMENT",
+ "stage": "cache1",
+ "performance_comparable": false,
+ "first_failing_gate": null,
+ "run_id": "20260807T181447Z"
+}

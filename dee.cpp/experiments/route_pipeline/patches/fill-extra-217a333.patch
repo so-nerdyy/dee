@@ -1,0 +1,719 @@
+diff --git a/dee.cpp/CMakeLists.txt b/dee.cpp/CMakeLists.txt
+index aa2ec9e..9bb89cb 100644
+--- a/dee.cpp/CMakeLists.txt
++++ b/dee.cpp/CMakeLists.txt
+@@ -11,6 +11,7 @@ option(DEE_CUDA "Enable the CUDA runtime and kernels" OFF)
+ option(DEE_BUILD_TESTS "Build unit tests" ON)
+ option(DEE_BUILD_GGML "Build the vendored ggml reference backend" OFF)
+ option(DEE_CUDA_VALIDATE "Synchronize CUDA launches close to their call site" OFF)
++option(DEE_BUILD_FILL_REPLAY "Build the fill-path replay/rider tool (host-only)" OFF)
+ 
+ if(DEE_CUDA)
+     enable_language(CUDA)
+@@ -79,6 +80,14 @@ endif()
+ add_executable(dee_cli main.cpp)
+ target_link_libraries(dee_cli PRIVATE dee_core)
+ 
++# Fill-path replay/rider (research/route-pipeline): replays production
++# expert-record access through the real store/cache objects. Host-only by
++# construction (no CUDA sources); default OFF so sealed builds are unaffected.
++if(DEE_BUILD_FILL_REPLAY)
++    add_executable(fill_replay tools/fill_replay.cpp)
++    target_link_libraries(fill_replay PRIVATE dee_core)
++endif()
++
+ if(DEE_BUILD_TESTS)
+     enable_testing()
+     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+diff --git a/dee.cpp/include/dee/expert_store.h b/dee.cpp/include/dee/expert_store.h
+index 4aa256a..ece7470 100644
+--- a/dee.cpp/include/dee/expert_store.h
++++ b/dee.cpp/include/dee/expert_store.h
+@@ -9,6 +9,8 @@
+ #include "dee/weight_mmap.h"
+ 
+ #include <array>
++#include <atomic>
++#include <chrono>
+ #include <cstddef>
+ #include <cstdint>
+ #include <memory>
+@@ -67,6 +69,14 @@ struct ExpertStoreStats {
+     double source_read_batch_wall_ms = 0.0;
+     double source_read_overlap_ms = 0.0;
+     double source_read_overlap_percent = 0.0;
++    // Fill-path read-service decomposition (dee4 pread path; profiling-only,
++    // accumulated via lock-free atomics from worker threads, zero when unused).
++    double pread_service_ms = 0.0;      // time inside pread() syscalls
++    uint64_t pread_calls = 0;           // pread() invocations
++    uint64_t pread_short_reads = 0;     // calls returning < requested
++    uint64_t pread_bytes = 0;           // bytes delivered by pread
++    uint64_t mincore_probed_bytes = 0;  // page-cache residency probed
++    uint64_t mincore_resident_bytes = 0;// probed bytes already resident
+ };
+ 
+ class ExpertStore {
+@@ -101,6 +111,21 @@ public:
+ 
+ protected:
+     void record_lookup(bool success);
++    // Lock-free read-service accounting for worker threads (profiling-only).
++    // Safe to call from materialize() on any thread; never affects reads.
++    void note_pread_service(uint64_t service_ns, uint64_t bytes,
++                            uint64_t short_reads, uint64_t probed_bytes,
++                            uint64_t resident_bytes) const;
++    struct ReadTelemetry {
++        uint64_t service_ns = 0;
++        uint64_t calls = 0;
++        uint64_t short_reads = 0;
++        uint64_t bytes = 0;
++        uint64_t probed_bytes = 0;
++        uint64_t resident_bytes = 0;
++    };
++    // Snapshot (and optionally reset) the worker-thread telemetry.
++    ReadTelemetry read_telemetry(bool reset = false) const;
+ 
+ private:
+     uint64_t lookups_ = 0;
+@@ -117,6 +142,13 @@ private:
+     uint64_t max_source_read_lanes_ = 0;
+     double source_read_batch_wall_ms_ = 0.0;
+     double source_read_overlap_ms_ = 0.0;
++    // Worker-thread read-service telemetry (mutable atomics; profiling-only).
++    mutable std::atomic<uint64_t> pread_service_ns_{0};
++    mutable std::atomic<uint64_t> pread_calls_{0};
++    mutable std::atomic<uint64_t> pread_short_reads_{0};
++    mutable std::atomic<uint64_t> pread_bytes_{0};
++    mutable std::atomic<uint64_t> mincore_probed_bytes_{0};
++    mutable std::atomic<uint64_t> mincore_resident_bytes_{0};
+ };
+ 
+ class SafetensorsExpertStore final : public ExpertStore {
+diff --git a/dee.cpp/include/dee/host_pack_cache.h b/dee.cpp/include/dee/host_pack_cache.h
+index 3fddea4..e638538 100644
+--- a/dee.cpp/include/dee/host_pack_cache.h
++++ b/dee.cpp/include/dee/host_pack_cache.h
+@@ -23,6 +23,7 @@
+ #pragma once
+ 
+ #include <array>
++#include <chrono>
+ #include <cstddef>
+ #include <cstdint>
+ #include <atomic>
+@@ -79,6 +80,9 @@ public:
+         bool fill_executed = false;
+         bool success = false;
+         double fill_milliseconds = 0.0;
++        // Worker-observed start offset from the batch submit instant, for
++        // occupancy timelines (0 when unmeasured/single-lane inline).
++        double fill_start_offset_ms = 0.0;
+     };
+ 
+     HostPackCache() = default;
+@@ -134,6 +138,18 @@ public:
+ 
+     void clear();
+     const Stats& stats() const { return stats_; }
++    // Optional fill-path profiler (default nullptr = no observation).
++    // Profiling-only: never changes fill behavior, ordering, or results.
++    void set_fill_profiler(class StageProfiler* profiler) {
++        fill_profiler_ = profiler;
++    }
++    // Optional per-batch attribution context (token/layer/device, default
++    // -1 = unattributed). Profiling-only.
++    void set_fill_context(int token, int layer, int device) {
++        fill_ctx_token_ = token;
++        fill_ctx_layer_ = layer;
++        fill_ctx_device_ = device;
++    }
+ 
+ private:
+     struct Entry {
+@@ -164,6 +180,13 @@ private:
+     std::array<size_t, kMaxBatchRequests> active_fill_order_{};
+     size_t active_fill_count_ = 0;
+     std::atomic<size_t> next_fill_index_{0};
++    // Batch submit instant for per-request start offsets (steady clock).
++    std::chrono::steady_clock::time_point active_batch_begin_{};
++    uint64_t fill_batch_id_ = 0;
++    class StageProfiler* fill_profiler_ = nullptr;
++    int fill_ctx_token_ = -1;
++    int fill_ctx_layer_ = -1;
++    int fill_ctx_device_ = -1;
+ 
+     void stop_fill_workers();
+     void fill_worker_loop();
+diff --git a/dee.cpp/src/expert_store.cpp b/dee.cpp/src/expert_store.cpp
+index 02e488e..37cf458 100644
+--- a/dee.cpp/src/expert_store.cpp
++++ b/dee.cpp/src/expert_store.cpp
+@@ -4,6 +4,7 @@
+ #include <algorithm>
+ #include <cerrno>
+ #include <cctype>
++#include <chrono>
+ #include <cmath>
+ #include <cstring>
+ #include <cstdio>
+@@ -12,6 +13,7 @@
+ #include <iterator>
+ #include <limits>
+ #include <sstream>
++#include <vector>
+ 
+ #ifdef _WIN32
+ #ifndef NOMINMAX
+@@ -135,6 +137,37 @@ void ExpertStore::record_source_read_batch(
+     source_read_overlap_ms_ += std::max(0.0, summed_ms - wall_ms);
+ }
+ 
++void ExpertStore::note_pread_service(uint64_t service_ns, uint64_t bytes,
++                                      uint64_t short_reads,
++                                      uint64_t probed_bytes,
++                                      uint64_t resident_bytes) const {
++    pread_service_ns_.fetch_add(service_ns, std::memory_order_relaxed);
++    pread_calls_.fetch_add(1, std::memory_order_relaxed);
++    pread_short_reads_.fetch_add(short_reads, std::memory_order_relaxed);
++    pread_bytes_.fetch_add(bytes, std::memory_order_relaxed);
++    mincore_probed_bytes_.fetch_add(probed_bytes, std::memory_order_relaxed);
++    mincore_resident_bytes_.fetch_add(resident_bytes, std::memory_order_relaxed);
++}
++
++ExpertStore::ReadTelemetry ExpertStore::read_telemetry(bool reset) const {
++    ReadTelemetry out;
++    out.service_ns = pread_service_ns_.load(std::memory_order_relaxed);
++    out.calls = pread_calls_.load(std::memory_order_relaxed);
++    out.short_reads = pread_short_reads_.load(std::memory_order_relaxed);
++    out.bytes = pread_bytes_.load(std::memory_order_relaxed);
++    out.probed_bytes = mincore_probed_bytes_.load(std::memory_order_relaxed);
++    out.resident_bytes = mincore_resident_bytes_.load(std::memory_order_relaxed);
++    if (reset) {
++        pread_service_ns_.store(0, std::memory_order_relaxed);
++        pread_calls_.store(0, std::memory_order_relaxed);
++        pread_short_reads_.store(0, std::memory_order_relaxed);
++        pread_bytes_.store(0, std::memory_order_relaxed);
++        mincore_probed_bytes_.store(0, std::memory_order_relaxed);
++        mincore_resident_bytes_.store(0, std::memory_order_relaxed);
++    }
++    return out;
++}
++
+ ExpertStoreStats ExpertStore::stats() const {
+     ExpertStoreStats result;
+     result.backend = backend_name();
+@@ -153,6 +186,14 @@ ExpertStoreStats ExpertStore::stats() const {
+     result.max_source_read_lanes = max_source_read_lanes_;
+     result.source_read_batch_wall_ms = source_read_batch_wall_ms_;
+     result.source_read_overlap_ms = source_read_overlap_ms_;
++    result.pread_service_ms =
++        static_cast<double>(pread_service_ns_.load(std::memory_order_relaxed)) / 1e6;
++    result.pread_calls = pread_calls_.load(std::memory_order_relaxed);
++    result.pread_short_reads = pread_short_reads_.load(std::memory_order_relaxed);
++    result.pread_bytes = pread_bytes_.load(std::memory_order_relaxed);
++    result.mincore_probed_bytes = mincore_probed_bytes_.load(std::memory_order_relaxed);
++    result.mincore_resident_bytes =
++        mincore_resident_bytes_.load(std::memory_order_relaxed);
+     if (read_milliseconds_ > 0.0) {
+         result.source_read_overlap_percent =
+             std::min(100.0, 100.0 * source_read_overlap_ms_ /
+@@ -560,7 +601,27 @@ bool Dee4ExpertStore::materialize(const ExpertView& view, uint8_t* dst,
+             std::numeric_limits<off_t>::max())) {
+         return false;
+     }
++    // Profiling-only page-cache residency probe (mincore): two cheap syscalls
++    // per 12.75 MiB record (~microseconds vs ~90 ms reads). Never affects IO.
++    uint64_t probed_bytes = 0;
++    uint64_t resident_bytes = 0;
++#ifdef __linux__
++    {
++        const size_t kPage = 4096;
++        const size_t pages = (nbytes + kPage - 1) / kPage;
++        std::vector<unsigned char> vec(pages, 0);
++        if (::mincore(base_ + offset, nbytes, vec.data()) == 0) {
++            probed_bytes = nbytes;
++            size_t resident_pages = 0;
++            for (size_t i = 0; i < pages; ++i) resident_pages += (vec[i] & 1u);
++            resident_bytes = resident_pages * kPage;
++            if (resident_bytes > nbytes) resident_bytes = nbytes;
++        }
++    }
++#endif
++    const auto read_begin = std::chrono::steady_clock::now();
+     size_t copied = 0;
++    uint64_t short_reads = 0;
+     while (copied < nbytes) {
+         const size_t remaining = nbytes - copied;
+         if (offset + copied > static_cast<size_t>(
+@@ -572,8 +633,14 @@ bool Dee4ExpertStore::materialize(const ExpertView& view, uint8_t* dst,
+             static_cast<off_t>(offset + copied));
+         if (count < 0 && errno == EINTR) continue;
+         if (count <= 0) return false;
++        if (static_cast<size_t>(count) < remaining) ++short_reads;
+         copied += static_cast<size_t>(count);
+     }
++    const uint64_t service_ns = static_cast<uint64_t>(
++        std::chrono::duration<double, std::nano>(
++            std::chrono::steady_clock::now() - read_begin).count());
++    note_pread_service(service_ns, copied, short_reads, probed_bytes,
++                       resident_bytes);
+     return true;
+ #endif
+ }
+diff --git a/dee.cpp/src/host_pack_cache.cpp b/dee.cpp/src/host_pack_cache.cpp
+index f5abc1a..d85bf81 100644
+--- a/dee.cpp/src/host_pack_cache.cpp
++++ b/dee.cpp/src/host_pack_cache.cpp
+@@ -1,4 +1,5 @@
+ #include "dee/host_pack_cache.h"
++#include "dee/profiling.h"
+ 
+ #include <algorithm>
+ #include <chrono>
+@@ -61,6 +62,11 @@ void HostPackCache::run_fill_lane() {
+         const BatchRequest& request = active_requests_[index];
+         BatchResult& result = active_results_[index];
+         const auto begin = std::chrono::steady_clock::now();
++        // Profiling-only start offset for occupancy timelines (clock read
++        // only; the fill itself is untouched).
++        result.fill_start_offset_ms =
++            std::chrono::duration<double, std::milli>(
++                begin - active_batch_begin_).count();
+         bool success = false;
+         try {
+             success = request.fill && result.data &&
+@@ -218,6 +224,9 @@ bool HostPackCache::get_batch(
+         return false;
+     }
+     for (size_t index = 0; index < count; ++index) results[index] = {};
++    // Profiling-only phase clock (steady_clock reads only; no behavior change).
++    const auto phase_t0 = std::chrono::steady_clock::now();
++    const uint64_t evict_before_batch = stats_.evictions;
+     const auto reservation_begin = std::chrono::steady_clock::now();
+ 
+     size_t additional_bytes = 0;
+@@ -349,6 +358,7 @@ bool HostPackCache::get_batch(
+     }
+ 
+     const auto batch_begin = std::chrono::steady_clock::now();
++    active_batch_begin_ = batch_begin;
+     stats_.fill_reservation_wall_ms +=
+         std::chrono::duration<double, std::milli>(
+             batch_begin - reservation_begin).count();
+@@ -375,6 +385,7 @@ bool HostPackCache::get_batch(
+             return lhs < rhs;
+         });
+     next_fill_index_.store(0, std::memory_order_relaxed);
++    const auto wake_begin = std::chrono::steady_clock::now();
+     if (!fill_workers_.empty() && unique_misses > 1) {
+         {
+             std::lock_guard<std::mutex> lock(fill_mutex_);
+@@ -388,6 +399,7 @@ bool HostPackCache::get_batch(
+     } else {
+         run_fill_lane();
+     }
++    const auto wake_end = std::chrono::steady_clock::now();
+     const double batch_wall_ms =
+         std::chrono::duration<double, std::milli>(
+             std::chrono::steady_clock::now() - batch_begin).count();
+@@ -457,6 +469,36 @@ bool HostPackCache::get_batch(
+     stats_.fill_overlap_ms += std::max(0.0, worker_ms - batch_wall_ms);
+     stats_.bytes = used_bytes_;
+     stats_.entries = map_.size();
++    // Profiling-only batch record (clock reads + small vector; the fill
++    // itself is untouched). phases: submit->dedup->reserve->wake->wait.
++    if (fill_profiler_ != nullptr) {
++        FillBatchRecord record;
++        record.batch_id = ++fill_batch_id_;
++        record.token = fill_ctx_token_;
++        record.layer = fill_ctx_layer_;
++        record.device_id = fill_ctx_device_;
++        record.misses = unique_misses;
++        record.bytes = additional_bytes;
++        record.evictions = stats_.evictions - evict_before_batch;
++        record.lanes = std::min(fill_lanes_, std::max<size_t>(1, unique_misses));
++        record.reserve_ms = std::chrono::duration<double, std::milli>(
++            batch_begin - phase_t0).count();
++        record.wake_ms = std::chrono::duration<double, std::milli>(
++            wake_end - wake_begin).count();
++        record.batch_wall_ms = batch_wall_ms;
++        record.worker_sum_ms = worker_ms;
++        for (size_t index = 0; index < count; ++index) {
++            FillRequestSample sample;
++            sample.key = requests[index].key;
++            sample.start_offset_ms = results[index].fill_start_offset_ms;
++            sample.service_ms = results[index].fill_milliseconds;
++            sample.nbytes = requests[index].nbytes;
++            sample.cache_hit = results[index].cache_hit;
++            sample.success = results[index].success;
++            record.requests.push_back(sample);
++        }
++        fill_profiler_->note_fill_batch(record);
++    }
+     return success;
+ }
+ 
+diff --git a/dee.cpp/tools/fill_replay.cpp b/dee.cpp/tools/fill_replay.cpp
+new file mode 100644
+index 0000000..34a95bd
+--- /dev/null
++++ b/dee.cpp/tools/fill_replay.cpp
+@@ -0,0 +1,358 @@
++// tools/fill_replay.cpp — fill-path replay + rider (host-only, no CUDA).
++//
++// Replays exact production expert-record access through the REAL
++// Dee4ExpertStore::materialize (positional pread path) and the REAL
++// HostPackCache::get_batch (lanes, queueing, LRU accounting), driven by a
++// route journal or synthetic patterns. Measures what the seals cannot:
++// per-request service distributions, QD scaling, cold-vs-warm (pass 1 vs
++// pass 2), mincore residency, and short-read counts.
++//
++// Build (no CUDA needed):
++//   cmake -S dee.cpp -B dee.cpp/build-replay -DDEE_CUDA=OFF -DDEE_BUILD_FILL_REPLAY=ON
++//   cmake --build dee.cpp/build-replay --target fill_replay
++//
++// Modes:
++//   replay --bank DIR --journal J [--lanes K] [--qdepth B]
++//       J lines: "<layer> <expert>" in production call order (token-major).
++//       Batches mimic prepare_fp4_experts (B records per get_batch).
++//   rider --bank DIR [--lanes 1..8] [--pattern seq|rand]
++//       Raw path capability: sequential vs random record reads, QD sweep,
++//       pass 1 (cold-ish) vs pass 2 (warm). No cache, direct materialize.
++//
++// Output: fill_timeline.json (StageProfiler emitter schema) + summary JSON
++// to stdout. Timings are host-wall measurements, never estimates.
++#include <algorithm>
++#include <chrono>
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <fstream>
++#include <iostream>
++#include <mutex>
++#include <random>
++#include <sstream>
++#include <string>
++#include <thread>
++#include <vector>
++
++#include "dee/expert_store.h"
++#include "dee/host_pack_cache.h"
++#include "dee/profiling.h"
++
++namespace {
++
++struct Args {
++    std::string mode = "replay";
++    std::string bank;
++    std::string journal;
++    std::string pattern = "journal";
++    size_t lanes = 3;
++    size_t qdepth = 6;
++    size_t max_records = 0;  // 0 = all
++    size_t budget_bytes = 0;  // 0 = 8.5 GiB production-like
++    int passes = 2;
++    std::string out = "fill_timeline.json";
++};
++
++bool parse_args(int argc, char** argv, Args* out) {
++    for (int i = 1; i < argc; ++i) {
++        std::string arg = argv[i];
++        auto need = [&](const char* name, std::string* dst) {
++            if (i + 1 >= argc) {
++                std::fprintf(stderr, "fill_replay: %s needs a value\n", name);
++                return false;
++            }
++            *dst = argv[++i];
++            return true;
++        };
++        auto need_size = [&](const char* name, size_t* dst) {
++            std::string text;
++            if (!need(name, &text)) return false;
++            *dst = static_cast<size_t>(std::stoull(text));
++            return true;
++        };
++        if (arg == "--mode") {
++            if (!need("--mode", &out->mode)) return false;
++        } else if (arg == "--bank") {
++            if (!need("--bank", &out->bank)) return false;
++        } else if (arg == "--journal") {
++            if (!need("--journal", &out->journal)) return false;
++        } else if (arg == "--pattern") {
++            if (!need("--pattern", &out->pattern)) return false;
++        } else if (arg == "--lanes") {
++            if (!need_size("--lanes", &out->lanes)) return false;
++        } else if (arg == "--qdepth") {
++            if (!need_size("--qdepth", &out->qdepth)) return false;
++        } else if (arg == "--max-records") {
++            if (!need_size("--max-records", &out->max_records)) return false;
++        } else if (arg == "--budget-bytes") {
++            if (!need_size("--budget-bytes", &out->budget_bytes)) return false;
++        } else if (arg == "--passes") {
++            size_t passes = 0;
++            if (!need_size("--passes", &passes)) return false;
++            out->passes = static_cast<int>(passes);
++        } else if (arg == "--out") {
++            if (!need("--out", &out->out)) return false;
++        } else {
++            std::fprintf(stderr, "fill_replay: unknown arg %s\n", arg.c_str());
++            return false;
++        }
++    }
++    if (out->bank.empty()) {
++        std::fprintf(stderr, "fill_replay: --bank is required\n");
++        return false;
++    }
++    if (out->mode != "replay" && out->mode != "rider") {
++        std::fprintf(stderr, "fill_replay: --mode must be replay|rider\n");
++        return false;
++    }
++    if (out->lanes == 0 || out->lanes > dee::HostPackCache::kMaxFillLanes) {
++        std::fprintf(stderr, "fill_replay: --lanes out of range\n");
++        return false;
++    }
++    return true;
++}
++
++struct FillThunk {
++    dee::ExpertStore* store = nullptr;
++    dee::ExpertView view{};
++};
++
++bool fill_thunk(void* context, uint8_t* dst, size_t nbytes) {
++    auto* thunk = static_cast<FillThunk*>(context);
++    return thunk && thunk->store &&
++        thunk->store->materialize(thunk->view, dst, nbytes);
++}
++
++// Journal lines: "<layer> <expert> [token]" in production call order
++// (token-major). The token labels attribution only, never timing.
++bool load_journal(const std::string& path,
++                  std::vector<std::pair<int, int>>* calls,
++                  std::vector<int>* tokens) {
++    std::ifstream stream(path, std::ios::binary);
++    if (!stream) {
++        std::fprintf(stderr, "fill_replay: cannot open journal %s\n",
++                     path.c_str());
++        return false;
++    }
++    std::string line;
++    size_t index = 0;
++    while (std::getline(stream, line)) {
++        if (line.empty()) continue;
++        std::istringstream fields(line);
++        int layer = -1, expert = -1;
++        long token = -1;
++        if (!(fields >> layer >> expert)) {
++            std::fprintf(stderr, "fill_replay: malformed journal line\n");
++            return false;
++        }
++        if (!(fields >> token)) token = static_cast<long>(index / 43);
++        calls->emplace_back(layer, expert);
++        tokens->push_back(static_cast<int>(token));
++        ++index;
++    }
++    return !calls->empty();
++}
++
++double now_ms() {
++    return std::chrono::duration<double, std::milli>(
++               std::chrono::steady_clock::now().time_since_epoch())
++        .count();
++}
++
++int run_replay(const Args& args, dee::Dee4ExpertStore* store,
++               dee::HostPackCache* cache, dee::StageProfiler* profiler,
++               const std::vector<std::pair<int, int>>& calls,
++               const std::vector<int>& tokens) {
++    if (!cache->set_fill_lanes(args.lanes)) {
++        std::fprintf(stderr, "fill_replay: set_fill_lanes failed\n");
++        return 2;
++    }
++    cache->set_fill_profiler(profiler);
++    const size_t record_bytes = store->record_bytes();
++    std::vector<dee::ExpertView> views(calls.size());
++    std::vector<FillThunk> thunks(calls.size());
++    for (size_t i = 0; i < calls.size(); ++i) {
++        if (!store->get(calls[i].first, calls[i].second, &views[i])) {
++            std::fprintf(stderr, "fill_replay: get(%d,%d) failed\n",
++                         calls[i].first, calls[i].second);
++            return 2;
++        }
++        thunks[i].store = store;
++        thunks[i].view = views[i];
++    }
++    std::vector<dee::HostPackCache::BatchRequest> requests(args.qdepth);
++    std::vector<dee::HostPackCache::BatchResult> results(args.qdepth);
++    for (size_t first = 0; first < calls.size();) {
++        const size_t batch_count =
++            std::min(args.qdepth, calls.size() - first);
++        int layer = calls[first].first;
++        cache->set_fill_context(tokens[first], layer, 0);
++        for (size_t i = 0; i < batch_count; ++i) {
++            const size_t at = first + i;
++            requests[i].key =
++                (static_cast<uint64_t>(static_cast<uint32_t>(calls[at].first))
++                 << 32) |
++                static_cast<uint32_t>(calls[at].second);
++            requests[i].nbytes = record_bytes;
++            requests[i].fill = &fill_thunk;
++            requests[i].context = &thunks[at];
++            requests[i].source_order =
++                static_cast<uint64_t>(views[at].record_index);
++        }
++        if (!cache->get_batch(requests.data(), batch_count, results.data())) {
++            std::fprintf(stderr, "fill_replay: get_batch failed at %zu\n",
++                         first);
++            return 2;
++        }
++        for (size_t i = 0; i < batch_count; ++i) {
++            if (!results[i].success) {
++                std::fprintf(stderr, "fill_replay: fill failed at %zu\n",
++                             first + i);
++                return 2;
++            }
++        }
++        first += batch_count;
++    }
++    return 0;
++}
++
++int run_rider(const Args& args, dee::Dee4ExpertStore* store) {
++    const size_t record_bytes = store->record_bytes();
++    const size_t stored = store->stored_records();
++    if (stored == 0) {
++        std::fprintf(stderr, "fill_replay: empty bank\n");
++        return 2;
++    }
++    // Rider portability note: Dee4ExpertStore::get() requires (layer,expert)
++    // within bank geometry. The rider therefore walks layers/experts in
++    // bank order (sequential) or shuffled (random), resolving via get().
++    std::vector<std::pair<int, int>> order;
++    for (int layer = store->start_layer();
++         layer < store->start_layer() + store->num_layers(); ++layer) {
++        for (int expert = 0; expert < store->experts_per_layer(); ++expert) {
++            order.emplace_back(layer, expert);
++            if (args.max_records != 0 && order.size() >= args.max_records) break;
++        }
++        if (args.max_records != 0 && order.size() >= args.max_records) break;
++    }
++    if (args.pattern == "rand") {
++        std::mt19937_64 rng(0x51ab1e);
++        std::shuffle(order.begin(), order.end(), rng);
++    } else if (args.pattern != "seq") {
++        std::fprintf(stderr, "fill_replay: --pattern must be seq|rand\n");
++        return 2;
++    }
++    std::cout << "{\"rider\":{\"pattern\":\"" << args.pattern
++              << "\",\"records\":" << order.size() << ",\"lanes\":[";
++    for (size_t lanes = 1; lanes <= args.lanes; ++lanes) {
++        if (lanes > 1) std::cout << ',';
++        std::vector<std::thread> workers;
++        std::vector<double> per_lane_ms(lanes, 0.0);
++        std::atomic<size_t> next{0};
++        std::atomic<bool> failed{false};
++        auto start = std::chrono::steady_clock::now();
++        for (size_t lane = 0; lane < lanes; ++lane) {
++            workers.emplace_back([&, lane] {
++                dee::ExpertView view{};
++                std::vector<uint8_t> local(record_bytes);
++                for (;;) {
++                    const size_t index =
++                        next.fetch_add(1, std::memory_order_relaxed);
++                    if (index >= order.size() || failed.load()) return;
++                    if (!store->get(order[index].first, order[index].second,
++                                    &view)) {
++                        failed.store(true);
++                        return;
++                    }
++                    const auto begin = std::chrono::steady_clock::now();
++                    if (!store->materialize(view, local.data(), record_bytes)) {
++                        failed.store(true);
++                        return;
++                    }
++                    per_lane_ms[lane] +=
++                        std::chrono::duration<double, std::milli>(
++                            std::chrono::steady_clock::now() - begin)
++                            .count();
++                }
++            });
++        }
++        for (auto& worker : workers) worker.join();
++        const double wall_ms =
++            std::chrono::duration<double, std::milli>(
++                std::chrono::steady_clock::now() - start)
++                .count();
++        if (failed.load()) {
++            std::fprintf(stderr, "fill_replay: rider read failed\n");
++            return 2;
++        }
++        const double gib =
++            static_cast<double>(order.size() * record_bytes) /
++            static_cast<double>(1ULL << 30);
++        std::cout << "{\"lanes\":" << lanes << ",\"wall_ms\":" << wall_ms
++                  << ",\"gibps\":" << gib / (wall_ms / 1000.0) << '}';
++    }
++    std::cout << "]}}" << std::endl;
++    return 0;
++}
++
++}  // namespace
++
++int main(int argc, char** argv) {
++    Args args;
++    if (!parse_args(argc, argv, &args)) return 2;
++    dee::Dee4ExpertStore store;
++    if (!store.open(args.bank)) {
++        std::fprintf(stderr, "fill_replay: open bank failed: %s\n",
++                     store.last_error().c_str());
++        return 2;
++    }
++    if (store.record_bytes() == 0) {
++        std::fprintf(stderr, "fill_replay: bad record geometry\n");
++        return 2;
++    }
++    if (args.mode == "rider") return run_rider(args, &store);
++    std::vector<std::pair<int, int>> calls;
++    std::vector<int> tokens;
++    if (args.pattern == "journal") {
++        if (args.journal.empty() || !load_journal(args.journal, &calls, &tokens)) return 2;
++    } else {
++        std::fprintf(stderr, "fill_replay: replay needs --journal\n");
++        return 2;
++    }
++    if (args.max_records != 0 && calls.size() > args.max_records) {
++        calls.resize(args.max_records);
++        tokens.resize(args.max_records);
++    }
++    dee::StageProfiler profiler;
++    profiler.configure(true, false, store.record_bytes(), 256, false);
++    dee::HostPackCache cache;
++    cache.set_budget(args.budget_bytes != 0
++                         ? args.budget_bytes
++                         : (size_t(8500) << 20));  // production-like 8.5 GiB
++    int code = 0;
++    for (int pass = 0; pass < args.passes && code == 0; ++pass) {
++        cache.clear();
++        code = run_replay(args, &store, &cache, &profiler, calls, tokens);
++        std::fprintf(stderr, "fill_replay: pass %d done code=%d\n", pass, code);
++    }
++    if (code != 0) return code;
++    std::ofstream out(args.out, std::ios::binary | std::ios::trunc);
++    if (!out) {
++        std::fprintf(stderr, "fill_replay: cannot write %s\n", args.out.c_str());
++        return 2;
++    }
++    out << profiler.fill_timeline_json();
++    const dee::ExpertStoreStats stats = store.stats();
++    std::cout << "{\"replay\":{\"calls\":" << calls.size()
++              << ",\"record_bytes\":" << store.record_bytes()
++              << ",\"lanes\":" << args.lanes << ",\"qdepth\":" << args.qdepth
++              << ",\"pread_service_ms\":" << stats.pread_service_ms
++              << ",\"pread_calls\":" << stats.pread_calls
++              << ",\"pread_short_reads\":" << stats.pread_short_reads
++              << ",\"pread_bytes\":" << stats.pread_bytes
++              << ",\"mincore_probed_bytes\":" << stats.mincore_probed_bytes
++              << ",\"mincore_resident_bytes\":" << stats.mincore_resident_bytes
++              << "}}" << std::endl;
++    return 0;
++}

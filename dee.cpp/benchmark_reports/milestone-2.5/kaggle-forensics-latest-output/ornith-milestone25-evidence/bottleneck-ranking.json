@@ -1,0 +1,148 @@
+{
+  "artifact": "bottleneck-ranking",
+  "basis": "representative warm decode inclusive and additive measurements as labeled",
+  "bottlenecks": [
+    {
+      "blocks_milestone3": true,
+      "classification": [
+        "poor multi-GPU placement",
+        "missing transfer/compute overlap"
+      ],
+      "confidence": "high",
+      "expected_impact_range": "Limited by the measured device wall balance; must be tested.",
+      "fundamental_or_accidental": "implementation/layout defect",
+      "measured_contribution_fraction": 1.0,
+      "measured_cost_ms": 2249.123762000181,
+      "measured_overlap_fraction": 0.0,
+      "name": "sequential 20/20 two-GPU pipeline",
+      "rank": 1,
+      "severity": "high",
+      "suggested_repair_direction": "Evaluate a placement/scheduling plan that creates useful concurrency without replicating unbounded state.",
+      "supporting_evidence": [
+        "host-monotonic layer intervals",
+        "NVML concurrent samples"
+      ]
+    },
+    {
+      "blocks_milestone3": true,
+      "classification": [
+        "serialized transfer",
+        "synchronization overhead"
+      ],
+      "confidence": "high",
+      "expected_impact_range": "At most its measured inclusive wall share; must be remeasured.",
+      "fundamental_or_accidental": "implementation defect",
+      "measured_contribution_fraction": 0.8934418532010682,
+      "measured_cost_ms": 2009.461302,
+      "name": "serialized native routed-expert path",
+      "rank": 2,
+      "severity": "critical",
+      "suggested_repair_direction": "Remove per-expert round trips and barriers; batch/retain outputs on device and establish transfer/compute overlap.",
+      "supporting_evidence": [
+        "layer-timing representative_warm_decode",
+        "native host wait and synchronization counters"
+      ]
+    },
+    {
+      "blocks_milestone3": true,
+      "classification": [
+        "poor cache policy",
+        "insufficient cache capacity"
+      ],
+      "confidence": "high",
+      "expected_impact_range": "Bounded by measured transfer plus wait time; no TPS claim.",
+      "fundamental_or_accidental": "implementation defect with workload-dependent routing",
+      "measured_bytes": 1736441856,
+      "measured_contribution_fraction": 0.05624096732120596,
+      "measured_cost_ms": 126.492896,
+      "name": "expert cache misses and repeated expert-weight H2D",
+      "rank": 3,
+      "severity": "critical",
+      "suggested_repair_direction": "Use measured reuse/working sets to design cache placement in Milestone 3; do not assume capacity alone is sufficient.",
+      "supporting_evidence": [
+        "expert-cache-analysis reuse and eviction records",
+        "transfer-analysis expert weight H2D by token/layer/GPU"
+      ]
+    },
+    {
+      "blocks_milestone3": true,
+      "classification": [
+        "CPU preprocessing overhead",
+        "synchronization overhead"
+      ],
+      "confidence": "high",
+      "expected_impact_range": "At most the measured bridge wall share; interactions unmeasured.",
+      "fundamental_or_accidental": "implementation defect",
+      "measured_contribution_fraction": 0.028169902906390126,
+      "measured_cost_ms": 63.357597999999996,
+      "name": "router and expert Python CPU/GPU bridge copies",
+      "rank": 4,
+      "severity": "high",
+      "suggested_repair_direction": "Keep routing/expert activation and combine data on device.",
+      "supporting_evidence": [
+        "byte-qualified Python transfer spans",
+        "per-layer timing"
+      ]
+    },
+    {
+      "blocks_milestone3": false,
+      "classification": [
+        "dense Transformers overhead",
+        "unavoidable model-architecture cost"
+      ],
+      "confidence": "high",
+      "expected_impact_range": "No removal assumed; only separately measured future work.",
+      "fundamental_or_accidental": "largely fundamental",
+      "measured_contribution_fraction": 0.016169502814579694,
+      "measured_cost_ms": 36.367213,
+      "name": "dense attention and shared dense model work",
+      "rank": 5,
+      "severity": "high",
+      "suggested_repair_direction": "Treat as the irreducible baseline before expert-path work.",
+      "supporting_evidence": [
+        "CUDA-event-backed attention timing",
+        "per-layer hooks"
+      ]
+    },
+    {
+      "blocks_milestone3": true,
+      "classification": [
+        "unnecessary duplication"
+      ],
+      "confidence": "high",
+      "expected_impact_range": "Memory-only upper bound equals the measured allocation ledger.",
+      "fundamental_or_accidental": "implementation defect",
+      "measured_bytes": 252313600,
+      "measured_contribution_fraction": 0.012324315975454605,
+      "name": "persistent host expert staging duplication",
+      "rank": 6,
+      "severity": "high",
+      "suggested_repair_direction": "Bound or remove persistent duplicate host representations.",
+      "supporting_evidence": [
+        "native allocation ledger",
+        "smaps anonymous RSS"
+      ]
+    },
+    {
+      "blocks_milestone3": false,
+      "classification": [
+        "disk/page-fault overhead"
+      ],
+      "confidence": "high",
+      "expected_impact_range": "Cold-only; bounded by the measured cold/warm delta.",
+      "fundamental_or_accidental": "cold-start cost, not steady-state decode",
+      "measured_contribution_fraction": null,
+      "measured_cost_ms": null,
+      "name": "cold checkpoint page faults and storage reads",
+      "rank": 7,
+      "severity": "high for cold start",
+      "suggested_repair_direction": "Specify cold-start policy separately from warm decode.",
+      "supporting_evidence": [
+        "cold/warm prefill ratio",
+        "/proc faults and io deltas"
+      ]
+    }
+  ],
+  "no_optimization_performed": true,
+  "schema_version": 1
+}

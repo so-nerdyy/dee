@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "campaign": "deepseek-v4-flash-0731",
+  "phase": "DS9-state-contract",
+  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+  "layer": 20,
+  "compress_ratio": 4,
+  "source": "pinned official inference/model.py (Compressor, Indexer) verified against the DS9 reference port scripts/deepseek_v4_layer_reference.py",
+  "purpose": "Exact state initialization, write-mask, slot-selection, sentinel, and carry-forward contract for compressor_kv_state, compressor_score_state, indexer_compressor_kv_state, indexer_compressor_score_state. Used by the DS9 v7 focused state diagnostic to classify the first state divergence between the CPU reference and the T4 CUDA candidate.",
+  "note": "Declared BEFORE the v7 diagnostic. No values in this file are derived from v7 results.",
+
+  "state_tensors": {
+    "compressor_kv_state": {
+      "owner": "attention.compressor",
+      "logical_shape": "[max_batch, coff*compress_ratio, coff*head_dim]",
+      "physical_layout": "contiguous fp32",
+      "max_batch": 1,
+      "coff": 2,
+      "rows": 8,
+      "cols": 1024,
+      "dtype": "fp32",
+      "initial_fill_value": 0.0,
+      "sentinel_value": null,
+      "unwritten_positions": "remain exactly 0.0 (init fill, never written)",
+      "write_indices": {
+        "prefill_start_pos_0": "rows [0:ratio) = kv[:, cutoff-ratio:cutoff] (overlap path); rows [offset:offset+remainder) = kv_tail when remainder>0",
+        "decode_start_pos_gt_0": "row [ratio + start_pos % ratio] = kv.squeeze(1)"
+      },
+      "read_indices": "rows [0:ratio] + rows [ratio:] during compaction; softmax-weighted sum over dim=1 at wrap",
+      "update_order": "write current kv slice FIRST, then (only when should_compress) compact + shift rows [ratio:] -> [0:ratio]",
+      "ring_buffer_or_append": "ring: slot index derived from start_pos % ratio (decode); prefill writes a contiguous block",
+      "compression_slot_mapping": "prefill: last-ratio slice of the projected kv; decode: ratio + (start_pos % ratio)",
+      "window_interaction": "none (compressor state is independent of the sliding-window cache)",
+      "indexer_interaction": "the indexer owns a SECOND compressor with the SAME contract (index_compressor_*), head_dim = index_head_dim (128)",
+      "token_position_dependence": "yes: prefill vs decode branches differ; decode slot = ratio + start_pos % ratio",
+      "state_updated_before_output": "yes: the state write happens before the compressed kv is computed and stored",
+      "aliasing": "kv_state is an independent buffer; compressor.kv_cache is a VIEW of attention.kv_cache[:, window_size:] and is NOT the state buffer",
+      "expected_after_token_0": "rows [0:4) = kv[:, 12:16] fp32; rows [4:8) = 0.0",
+      "expected_after_token_1": "row [4] = kv.squeeze(1) of the decode step (start_pos 16 -> 16%4=0 -> row 4)"
+    },
+    "compressor_score_state": {
+      "owner": "attention.compressor",
+      "logical_shape": "[max_batch, coff*compress_ratio, coff*head_dim]",
+      "physical_layout": "contiguous fp32",
+      "max_batch": 1,
+      "coff": 2,
+      "rows": 8,
+      "cols": 1024,
+      "dtype": "fp32",
+      "initial_fill_value": "-inf",
+      "sentinel_value": "-inf",
+      "unwritten_positions": "remain exactly -inf (legitimate sentinel; NOT a numerical value)",
+      "write_indices": {
+        "prefill_start_pos_0": "rows [0:ratio) = score[:, cutoff-ratio:cutoff] + ape; rows [offset:offset+remainder) = score[:, cutoff:] + ape[:remainder] when remainder>0",
+        "decode_start_pos_gt_0": "row [ratio + start_pos % ratio] = (score + ape[start_pos % ratio]).squeeze(1)"
+      },
+      "read_indices": "softmax over rows at compaction (softmax of a row containing -inf sentinels yields 0 for sentinel positions)",
+      "update_order": "score += ape BEFORE the write; write current score slice FIRST, then compact+shift at wrap",
+      "ring_buffer_or_append": "ring (same slot mapping as kv_state)",
+      "compression_slot_mapping": "same as kv_state (ratio-aligned slots)",
+      "window_interaction": "none",
+      "indexer_interaction": "indexer owns a second compressor with the same contract (index_compressor_score_state)",
+      "token_position_dependence": "yes",
+      "state_updated_before_output": "yes",
+      "aliasing": "independent buffer",
+      "sentinel_required_agreement": "finite/-inf masks must agree EXACTLY between reference and candidate; a finite-vs-sentinel disagreement is a SEMANTIC failure regardless of numerical closeness elsewhere",
+      "expected_after_token_0": "rows [0:4) = score[:, 12:16] + ape (finite); rows [4:8) = -inf",
+      "expected_after_token_1": "row [4] = decode score + ape[0] (finite)"
+    },
+    "indexer_compressor_kv_state": {
+      "owner": "attention.indexer.compressor",
+      "logical_shape": "[max_batch, coff*compress_ratio, coff*index_head_dim]",
+      "physical_layout": "contiguous fp32",
+      "max_batch": 1,
+      "coff": 2,
+      "rows": 8,
+      "cols": 256,
+      "dtype": "fp32",
+      "initial_fill_value": 0.0,
+      "contract": "identical write/read/slot/carry semantics to compressor_kv_state with head_dim = index_head_dim = 128; rotate=True (hadamard + fp4 act-quant on the COMPRESSED output, AFTER the state write)"
+    },
+    "indexer_compressor_score_state": {
+      "owner": "attention.indexer.compressor",
+      "logical_shape": "[max_batch, coff*compress_ratio, coff*index_head_dim]",
+      "physical_layout": "contiguous fp32",
+      "max_batch": 1,
+      "coff": 2,
+      "rows": 8,
+      "cols": 256,
+      "dtype": "fp32",
+      "initial_fill_value": "-inf",
+      "sentinel_value": "-inf",
+      "contract": "identical to compressor_score_state with head_dim = 128"
+    }
+  },
+
+  "compressor_forward_semantics": {
+    "inputs": "x [b, s, hidden] (bf16 in the DS9 path); w: wkv.weight [2d, hidden], wgate.weight [2d, hidden], norm.weight [d], ape [ratio, 2d]",
+    "kv_projection": "kv = x.float() @ wkv.weight^T  (fp32)",
+    "score_projection": "score = x.float() @ wgate.weight^T  (fp32)",
+    "should_compress": "start_pos==0: seqlen >= ratio; else: (start_pos + 1) % ratio == 0",
+    "prefill_branch": {
+      "remainder": "seqlen % ratio",
+      "cutoff": "seqlen - remainder",
+      "offset": "ratio if overlap else 0",
+      "state_write": "if overlap and cutoff >= ratio: rows[0:ratio) = kv[:, cutoff-ratio:cutoff]; rows[0:ratio) of score = score[:, cutoff-ratio:cutoff] + ape",
+      "tail_write": "if remainder > 0: rows[offset:offset+remainder) = kv_tail; score rows = score[:, cutoff:] + ape[:remainder]",
+      "compressed_output": "kv.unflatten(1, (-1, ratio)) -> overlap_transform(kv, 0.0) when overlap -> (kv * score.softmax(dim=2)).sum(dim=2) -> rms_norm -> rotary -> [rotate: hadamard + fp4] or [else: ue8m0 act-quant on [..., :-rd]] -> store into compressor.kv_cache"
+    },
+    "decode_branch": {
+      "score": "score = score + ape[start_pos % ratio]",
+      "state_write": "overlap: rows[ratio + start_pos % ratio] = kv.squeeze(1); score rows = score.squeeze(1). else: rows[start_pos % ratio]",
+      "compaction_at_wrap": "if should_compress: kv_state = cat([kv_state[:, :ratio, :d], kv_state[:, ratio:, d:]], dim=1); score_state similarly; kv = (kv_state * score_state.softmax(dim=1)).sum(dim=1, keepdim=True); then kv_state[:, :ratio] = kv_state[:, ratio:]; score_state[:, :ratio] = score_state[:, ratio:]",
+      "compressed_output": "rms_norm -> rotary -> quant -> store into compressor.kv_cache at position start_pos // ratio"
+    },
+    "overlap_transform": "input [b, g, r, 2d] -> output [b, g, 2r, d]: new[:, :, ratio:] = tensor[:, :, :, d:]; new[:, 1:, :ratio] = tensor[:, :-1, :, :d]; rest filled with the provided value (0.0 for kv, -inf for score)"
+  },
+
+  "indexer_forward_semantics": {
+    "inputs": "x [b, s, hidden]; qr [b, s, q_lora_rank] (pre-attention low-rank query); start_pos; offset",
+    "q_path": "q = (qr.float() @ wq_b^T).to(qr.dtype) -> unflatten [b, s, index_n_heads, index_head_dim] -> rotary(q[..., -rd:]) -> hadamard(q, index_head_dim^-0.5) -> fp4_act_quant(q, 32)",
+    "compressor_call": "self.compressor.forward(x, start_pos, w['compressor'])  (updates indexer compressor state, writes indexer kv_cache)",
+    "weights_proj": "weights = (x.float() @ weights_proj^T).to(x.dtype) * (index_head_dim^-0.5 * index_n_heads^-0.5)",
+    "index_score": "einsum('bshd,btd->bsht', q, indexer_kv_cache[:, :end_pos//ratio]).relu() * weights.unsqueeze(-1) summed over h",
+    "causal_mask": "start_pos==0: index_score += where(arange(seqlen//ratio).repeat(seqlen,1) >= arange(1, seqlen+1).unsqueeze(1)//ratio, -inf, 0)  (positions are -inf sentinels, NOT numerical values)",
+    "topk": "index_score.topk(min(index_topk, end_pos//ratio)) -> ids",
+    "offset": "start_pos==0: ids where ids >= arange(1, seqlen+1).unsqueeze(1)//ratio -> -1, else ids + offset; decode: ids + offset",
+    "output": "topk_idxs.to(int32) concatenated with window indices"
+  },
+
+  "v6_evidence_boundaries": {
+    "known_passing": ["attn_norm_out", "kv", "kv_compressed", "attn_kv_cache", "indexer_kv_cache are bitwise identical (max_abs 0.0) at step 0"],
+    "known_failing": [
+      "compressor_kv_state: max_abs 0.387, max_rel 0.387, finite_agreement TRUE, gate 0.001",
+      "indexer_compressor_kv_state: max_abs 0.548, max_rel 0.548, finite_agreement TRUE, gate 0.001",
+      "compressor_score_state: finite_agreement FALSE (max_abs not computed)",
+      "indexer_compressor_score_state: finite_agreement FALSE"
+    ],
+    "classification": "score_state disagreement is a STRUCTURAL sentinel/write-mask defect candidate (finite-vs--inf positions differ), NOT ULP drift. kv_state divergence magnitude also exceeds ULP drift. First divergence occurs at step 0 (prefill), before any chained FFN drift.",
+    "v7_objective": "capture device-authentic compressor raw kv/score/ape/input + state buffers at the exact boundary, classify the first mismatching slot with ref/cand bits, values, abs/rel/ULP, and identify one primary cause"
+  },
+
+  "primary_cause_categories": [
+    "WRONG_INITIAL_SENTINEL",
+    "PARTIAL_INITIALIZATION",
+    "WRONG_STATE_DTYPE",
+    "WRONG_SLOT_MAPPING",
+    "WRONG_WRITE_MASK",
+    "WRONG_UPDATE_ORDER",
+    "OFF_BY_ONE_POSITION",
+    "WRONG_WINDOW_MAPPING",
+    "WRONG_COMPRESSION_MAPPING",
+    "STALE_STATE_REUSE",
+    "MISSING_EVENT_DEPENDENCY",
+    "BUFFER_ALIAS_OR_SWAP",
+    "WRONG_CARRY_FORWARD",
+    "UNOBSERVED"
+  ]
+}

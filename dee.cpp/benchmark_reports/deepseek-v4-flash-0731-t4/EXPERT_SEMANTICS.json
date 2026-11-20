@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+  "source": "official-source/inference/model.py, kernel.py, config.json",
+  "audited": "2026-07-31",
+  "expert_forward": {
+    "projections": {
+      "w1": "gate projection: x @ w1^T, [.., inter]",
+      "w2": "down projection: h @ w2^T, [.., hidden]",
+      "w3": "up projection: x @ w3^T, [.., inter]"
+    },
+    "operation_order": [
+      "gate = w1(x) cast float32",
+      "up = w3(x) cast float32",
+      "if swiglu_limit > 0: up = clamp(up, -limit, limit); gate = clamp(gate, max=limit)",
+      "h = silu(gate) * up",
+      "if weights is not None: h = weights * h   (routing weight applied BEFORE w2)",
+      "out = w2(h)  -> cast back to input dtype"
+    ],
+    "activation": "silu (hidden_act: silu)",
+    "clamp": {
+      "swiglu_limit": 10.0,
+      "gate": "max-only clamp (no lower bound)",
+      "up": "symmetric clamp [-10.0, 10.0]"
+    },
+    "multiplication_order": "gate-before-up is irrelevant (elementwise); weights applied to intermediate h before down projection",
+    "routing_weight_placement": "before w2 (intermediate h), NOT after the down projection",
+    "output_cast": "Expert.forward returns self.w2(x.to(dtype)) where dtype = input dtype (bf16 in official fp8 config)"
+  },
+  "router": {
+    "score_func": "sqrtsoftplus: scores = sqrt(softplus(linear(x, gate.weight))); linear computed in float32",
+    "topk_method": "noaux_tc",
+    "topk": 6,
+    "bias_role": "bias added AFTER softplus for SELECTION only; routing weights come from un-shifted original_scores",
+    "weight_normalization": "non-softmax: weights /= weights.sum(-1, keepdim=True)",
+    "route_scale": 1.5,
+    "hash_layers": {
+      "count": 3,
+      "layers": [0, 1, 2],
+      "tensor": "layers.{L}.ffn.gate.tid2eid  I64 [vocab, topk]",
+      "note": "hash layers select experts via tid2eid[input_ids]; no bias"
+    },
+    "gate_tensors": {
+      "weight": "layers.{L}.ffn.gate.weight  BF16 [n_routed_experts=256, dim=4096]",
+      "bias": "layers.{L}.ffn.gate.bias  F32 [256]"
+    }
+  },
+  "routed_expert_storage": {
+    "weight": "I8 packed FP4 e2m1fn, 2 values per byte, low nibble -> elem 2i, high nibble -> 2i+1",
+    "shape_w1": "[inter=2048, hidden//2=2048]",
+    "shape_w2": "[hidden=4096, inter//2=1024]",
+    "shape_w3": "[inter=2048, hidden//2=2048]",
+    "scale": "F8_E8M0 [out, in//32]; decode = 2^(bits - 127)",
+    "dequant": "w[o,i] = fp4_value(o,i) * scale[o, i//32]"
+  },
+  "shared_expert_storage": {
+    "weight": "F8_E4M3 [out, in] (NOT packed FP4)",
+    "shape_w1": "[inter=2048, hidden=4096]",
+    "shape_w2": "[hidden=4096, inter=2048]",
+    "shape_w3": "[inter=2048, hidden=4096]",
+    "scale": "F8_E8M0 [ceil(out/128), ceil(in/128)]; decode = 2^(bits - 127)",
+    "dequant": "w[o,i] = fp8[o,i] * scale[o//128, i//128]",
+    "weight_applied": "none (shared expert is added unweighted)"
+  },
+  "moe_combination": {
+    "official": "y = sum over selected experts of weights[tok] * expert(x[tok]); then y += shared_experts(x)",
+    "accumulation_dtype": "float32",
+    "per_token_expert_selection": true,
+    "output": "cast back to input dtype, reshaped to original"
+  },
+  "dtypes": {
+    "source_checkpoint": "expert I8-packed-FP4; shared F8_E4M3; scales F8_E8M0; gate BF16/F32",
+    "cache_storage": "raw packed (source) / FP16-expanded active expert (Family C, DS7 measured)",
+    "execution": "FP16 GEMV with FP32 accumulation (Family B candidate on SM75)",
+    "accumulation": "FP32",
+    "output": "FP16 / FP32"
+  }
+}

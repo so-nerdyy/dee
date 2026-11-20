@@ -1,1 +1,4 @@
 dee.cpp/oracle.pt filter=lfs diff=lfs merge=lfs -text
+# Preserve downloaded remote-run evidence byte-for-byte so manifest hashes
+# remain valid across Windows/Linux checkouts.
+dee.cpp/benchmark_reports/**/v*-evidence-*/** binary

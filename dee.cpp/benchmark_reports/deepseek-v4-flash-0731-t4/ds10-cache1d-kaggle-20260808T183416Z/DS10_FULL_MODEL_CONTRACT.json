@@ -1,0 +1,176 @@
+{
+  "schema_version": 1,
+  "phase": "DS10",
+  "name": "DS10_FULL_MODEL_CONTRACT",
+  "created": "2026-08-04",
+  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+  "branch": "freebuff/deepseek-v4-flash-0731-t4",
+  "reference_policy": "REFERENCE_POLICY.md (2026-08-04): sealed DS8/DS9 discipline is the trusted reference; official TileLang stack is NOT a DS10 prerequisite (DS5 hardware-format blocker preserved as evidence).",
+  "runtime_identity": {
+    "runtime_code_commit": "2056dc9ca8eb947a9121b73cda1e770b41bef3e5",
+    "harness_sha256": "8831a70de852c0ad50f78d56437947f9951961331d39331acc1e9ec1d5eb269d",
+    "identity_file": "dee.cpp/kaggle/deepseek-v4-flash-0731/harness-identity-ds10.json",
+    "stage_source": "identity-pinned; environment overrides fail closed"
+  },
+  "tokenizer_encoding_identity": {
+    "model_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+    "tokenizer_json_sha256": "8f9f37ca37fdc4f5fd36d5cf4d3b0e8392edb4e894fd10cc0d70b4957c8633cf",
+    "encoding_dsv4_sha256": "abc0d26120250dda0ae077dc64aa28836026e61e970854aaeb792445e6a0dde6",
+    "golden_gate": "17/17 PASS"
+  },
+  "gpu_topology": {
+    "hardware": "Kaggle dual Tesla T4 (SM75)",
+    "gpu_count": 2,
+    "vram_per_gpu_bytes": 16106127360,
+    "peer_access": "not assumed; host-staged handoff is the default",
+    "memory_ceiling_per_gpu_bytes": 14680064000,
+    "memory_target_per_gpu_bytes": 12000000000
+  },
+  "layer_to_gpu_assignment": {
+    "gpu_0": {"role": "embed + early layers", "layers": [0, 21], "extra": ["embed.weight"]},
+    "gpu_1": {"role": "later layers + LM head", "layers": [22, 42], "extra": ["norm.weight", "hc_head_fn", "hc_head_base", "hc_head_scale", "head.weight"]},
+    "handoff": {
+      "method": "host-staged D2D copy (pinned staging + side stream + events)",
+      "tensor": "hidden state [b, s, hc_mult, dim] bf16",
+      "checksum": "sha256 of exact BF16 storage bytes before and after; must be bitwise equal",
+      "location": "between layer 21 and layer 22"
+    }
+  },
+  "precision_family": {
+    "source_storage": "official checkpoint: routed experts packed FP4 (I8 + F8_E8M0 scales), dense F8_E4M3 + F8_E8M0 scales, embed/head/norm BF16, hc_head F32",
+    "dense_execution": "FP16 on GPU (dequantized from official storage; DS10 family C/D hybrid)",
+    "embed_head_execution": "BF16 storage, FP32-accumulated matmuls (embed) / FP32 spot-checked head",
+    "expert_execution": "FP16-expanded active experts (sealed DS8 family C) with FP32 accumulation",
+    "accumulation": "FP32 throughout",
+    "bitwise_exact": false,
+    "note": "Explicitly NON-bitwise vs any FP32 reference; candidate-vs-reference token equality is NOT an acceptance gate."
+  },
+  "checkpoint_access": {
+    "strategy": "RemoteTensorSource: per-tensor HTTP Range fetches from the pinned HF revision, offsets from the committed shard headers (48/48 committed, header hashes verified)",
+    "alternative": "LocalDirTensorSource when shard files are already on disk",
+    "no_full_checkpoint_expansion": true,
+    "mapped_bytes": 0,
+    "host_rss_budget_bytes": 12000000000,
+    "model_index_sha256": "98efab455cf08dfbbbaaba6f570e1bf10bf927d2b4c3c453a59c2f6f0e3be92b",
+    "checkpoint_manifest_sha256": "c5499dbd9588841c0956d8d38e02dea199f0ce30d859cc56fce1e80f1325c765",
+    "checkpoint_shards": 48,
+    "checkpoint_tensors": 72317
+  },
+  "persistent_tensor_placement": {
+    "gpu_0": ["embed.weight", "dense non-expert tensors for layers 0-21", "active routed/shared-expert cache for layers 0-21"],
+    "gpu_1": ["dense non-expert tensors for layers 22-42", "active routed/shared-expert cache for layers 22-42", "hc_head_fn", "hc_head_base", "hc_head_scale", "norm.weight", "head.weight"],
+    "host": ["committed shard headers", "no retained compact routed-expert payloads during DS10 generation", "one FP16 shared-expert payload per layer", "one pinned hidden-state handoff buffer"],
+    "forbidden": ["duplicate fully expanded model", "CPU expert execution", "implicit CPU-owned model state"]
+  },
+  "state_ownership": {
+    "owner": "the GPU that owns the corresponding layer; no state crosses the partition",
+    "buffers": ["attention KV cache", "compressor KV state", "compressor score state", "indexer KV cache", "indexer compressor KV state", "indexer compressor score state", "position and compression-index metadata"],
+    "dtype_shape": "derived exactly from the pinned config and layer compress ratio; emitted in state signatures",
+    "initialization": "zero for KV/state tensors; negative-infinity structural sentinel for unwritten score slots",
+    "update_point": "inside the owning layer attention/compressor/indexer forward",
+    "read_point": "the next prefill/decode call for the same layer",
+    "transfer_point": "none; only hidden state transfers between GPUs",
+    "reset": "zero/sentinel reset before every cold or deterministic run; warm run resets state but retains bounded expert cache",
+    "token_position": "explicit start_pos from prompt length and generated-token index",
+    "stream_rule": "owning-device current stream; explicit event chain only for the inter-GPU hidden-state handoff"
+  },
+  "staging_limits": {
+    "gpu_expert_cache_bytes_per_gpu": 2147483648,
+    "host_compact_experts_per_layer": 0,
+    "intergpu_buffers": 1,
+    "intergpu_dtype": "BF16 unchanged",
+    "intergpu_d2h_and_h2d_bytes": "exact hidden tensor storage bytes, emitted separately",
+    "full_checkpoint_expansions": 0
+  },
+  "expert_cache": {
+    "representation": "fp16_expanded (sealed DS8 DeepSeekExpertCache + DeepSeekExpertLoader)",
+    "budget_per_gpu_bytes": 2147483648,
+    "host_compact_reuse": "disabled for DS10 generation after sealed v5 measured 0 hits and 4,599,054,336 retained bytes; official packed tensors are fetched only on GPU-cache misses and discarded after expansion",
+    "shared_expert": "cache with priority, expert_id -1 per layer",
+    "miss_action": "on-demand fetch via RemoteTensorSource + async stage",
+    "fail_closed": ["invalid expert id", "missing tensor", "stale entry", "cross-shard split", "unbounded growth"]
+  },
+  "generation_memory_gate": {
+    "gpu_ceiling_bytes_each": 14680064000,
+    "host_current_and_process_peak_ceiling_bytes": 12000000000,
+    "required_snapshots": ["primary build", "after primary cold/warm inference", "after primary model deletion and allocator trim", "alternate-budget build", "after alternate-budget inference"],
+    "independent_rerun_release": "delete primary model, collect Python/CUDA objects, empty CUDA caches, call Linux malloc_trim, and record before/after RSS before constructing the alternate-budget model",
+    "acceptance_rule": "runtime verdict and independent host sealer must re-evaluate every recorded GPU and host ceiling; notebook booleans alone are insufficient"
+  },
+  "prompts": {
+    "canonical": "<\uff5cbegin\u2581of\u2581sentence\uff5c>Who is Alan Turing?<\uff5cAssistant\uff5c>",
+    "prefill_tokens": 7,
+    "smoke_generated_tokens": 4,
+    "acceptance_generated_tokens": 16,
+    "decoding": "greedy argmax",
+    "stop": "EOS token id 1 or max tokens"
+  },
+  "correctness_gates": [
+    "full official tensor coverage (zero unresolved, zero duplicate)",
+    "every layer executes in order on the assigned GPU",
+    "correct state initialization + structural masks (DS9 discipline)",
+    "exact attention window/compression indices on sampled layers (DS9 exact gates)",
+    "exact selected expert SET on sampled layers (DS9 v12 set policy)",
+    "valid expert-to-weight association",
+    "no invalid cache behavior; cold==warm output equality",
+    "no host expert fallback; native backend report per component",
+    "finite final hidden state; finite LM-head logits",
+    "valid generated token IDs (in-vocab, decoded by the DS4 tokenizer)",
+    "deterministic replay (same input + runtime -> same tokens)",
+    "cold/warm cache token equality",
+    "bounded memory per GPU and bounded host RSS",
+    "complete evidence + hash validation"
+  ],
+  "spot_checks": [
+    {"target": "router logits", "layers": [0, 2, 10, 20, 30, 41], "reference": "CPU FP32 gate recompute on candidate input", "bound": "relative 2% or cosine 0.99"},
+    {"target": "shared expert output", "layers": [2, 20, 41], "reference": "CPU FP32 shared_expert_forward", "bound": "relative p99 5%"},
+    {"target": "routed expert output", "layers": [2, 20, 41], "reference": "CPU FP32 routed_expert_forward_weighted", "bound": "relative p99 5%"},
+    {"target": "RMS norms", "layers": [0, 20, 42], "reference": "CPU FP32 rms_norm", "bound": "relative 1%"},
+    {"target": "LM head top-k", "reference": "CPU FP32 head on candidate hidden state", "bound": "top-10 set overlap >= 8/10"}
+  ],
+  "self_consistency_checks": [
+    "deterministic rerun",
+    "cold/warm cache equivalence",
+    "cache-capacity variation (two budgets, same tokens)",
+    "single-layer replay through sealed DS8/DS9 harness on DS10 hidden states",
+    "CPU-FP32 spot checks (above)",
+    "tensor identity (official bytes + scale metadata)",
+    "state invariants (structural masks)",
+    "no fallback backend report"
+  ],
+  "staged_runs": {
+    "ladder_input_token_ids": [0],
+    "v1": "model-load + tensor-coverage smoke (all 72,317 tensors resolve; memory plan; state init)",
+    "v2": "first partition (layers 0-21 prefill, boundary state)",
+    "v3": "inter-GPU handoff (first partition -> one layer on GPU 1)",
+    "v4": "all layers + first logits",
+    "v5": "first generated token",
+    "v6": "continued decode >= 4 tokens",
+    "final": ">= 16 tokens + deterministic replay + cold/warm + bounded memory"
+  },
+  "terminal_verdict_rules": {
+    "ACCEPT_DUAL_T4_FIRST_TOKEN": "all layers, accepted architecture path, finite logits, one genuine token, deterministic rerun, and bounded memory",
+    "ACCEPT_DUAL_T4_DECODE": "at least 16 genuine autoregressive tokens, deterministic and cold/warm equality, valid state carry, no unsupported fallback, bounded memory, and complete hashed evidence",
+    "REJECT_MODEL_LOAD": "checkpoint coverage, tensor loading, state initialization, or load-time memory gate fails",
+    "REJECT_ATTENTION_OR_STATE": "first failing layer is in attention, compression, indexer, mHC, or state invariants",
+    "REJECT_ROUTER_OR_EXPERT": "routing, expert identity, cache, staging, or expert execution fails",
+    "REJECT_INTERGPU": "explicit hidden-state transfer or exact storage checksum fails",
+    "REJECT_LM_HEAD": "all layers pass but final normalization or logits fail",
+    "REJECT_GENERATION_STATE": "first token succeeds but subsequent state carry, determinism, capacity invariance, or cold/warm equality fails",
+    "REJECT_MEMORY": "GPU ceiling, host RSS ceiling, or bounded staging cannot be maintained",
+    "INVALID_EXPERIMENT": "identity, topology, instrumentation, manifest, or execution-path evidence is incomplete"
+  },
+  "performance": {
+    "performance_comparable": false,
+    "no_tps_claims": true,
+    "timing_collected_but_not_interpreted": true
+  },
+  "immutable": [
+    "DS5-v6 hardware-format blocker evidence",
+    "DS7 smoke evidence",
+    "DS8 runtime evidence + sealed tolerances",
+    "DS9 v1-v13 evidence + REJECT_NUMERICAL verdict",
+    "Ornith seal 9ff967e"
+  ]
+}

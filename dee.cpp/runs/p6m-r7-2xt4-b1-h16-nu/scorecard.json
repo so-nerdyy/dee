@@ -1,0 +1,40 @@
+{
+  "run_id": "p6m-r7-2xt4-b1-h16-nu",
+  "evidence_dir": "runs\\p6m-r7-2xt4-b1-h16-nu",
+  "platform": "modal",
+  "cell": null,
+  "model": "dsv4_flash",
+  "gpu": "2xT4",
+  "host_gib": 16.0,
+  "host_basis": "TOTAL",
+  "spot": false,
+  "commit": "7fc878ac50a74c1216a208007986e7887d6ded25",
+  "measured_b_ssd_gib_s": 26.7584,
+  "est_cost_usd": 0.154,
+  "result_file": "result.json",
+  "prerequisite_failures": [
+    "Modal GPU '2xT4' is not a frozen cell"
+  ],
+  "warnings": [
+    "OWN-REFERENCE gate (Addendum 4): exact_16_token_ids/exact_decoded_text vs the sealed T4 answer were waived because this run is bit-identical to p6m-r7-2xt4-b1-h64-nu at another host budget. Weaker than the exact gate; it does not show one-GPU mode is bug-free."
+  ],
+  "registry": "theory/data/predecl_matrix.csv (frozen 2026-09-30)",
+  "own_reference": {
+    "peer_run_id": "p6m-r7-2xt4-b1-h64-nu",
+    "checks": [
+      "same gpu/commit/budget/model",
+      "different host_gib",
+      "identical generated_token_ids",
+      "identical routed_experts and route_weights (ex run_id/chain)"
+    ],
+    "waived_gates": [
+      "exact_16_token_ids",
+      "exact_decoded_text"
+    ]
+  },
+  "registered_id_tightening": "row prediction_ids per section 4 (P1, P1b, P2, P14, P15b/P15c vs the EXPENSIVE dense reading 0.12892 $/1k)",
+  "not_applied": "P5/P8b/P16/P17 (need a stage-profile bucket analysis; read the profile by hand), P2b (needs a MIN replay of the route journal)",
+  "b": 1,
+  "verdict": "UNTESTABLE",
+  "metrics": {}
+}

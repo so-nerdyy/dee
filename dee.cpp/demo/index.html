@@ -1,0 +1,316 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>DEE Live Replay</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: an instrument panel. Controls bar, then the expert map (the thing only DEE has) beside live
+   counters, then the eight answers streaming, then the six-GPU spec sheet. Tier colors are the semantic system. */
+:root {
+  --bg: #0d1117; --panel: #141b24; --line: #243041; --fg: #e6edf5; --muted: #8b9bb0;
+  --accent: #7cc4ff;
+  --vram: #3fd0b8; --ram: #a98bff; --ssd: #f2a541; --cell-off: #18212d;
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {
+  --bg: #eef2f6; --panel: #ffffff; --line: #d3dbe5; --fg: #111823; --muted: #566578;
+  --accent: #1f6fc0; --vram: #0f9e88; --ram: #6b4fd8; --ssd: #c77a12; --cell-off: #e3e9f0; color-scheme: light } }
+:root[data-theme="light"] {
+  --bg: #eef2f6; --panel: #ffffff; --line: #d3dbe5; --fg: #111823; --muted: #566578;
+  --accent: #1f6fc0; --vram: #0f9e88; --ram: #6b4fd8; --ssd: #c77a12; --cell-off: #e3e9f0; color-scheme: light }
+
+* { box-sizing: border-box }
+body { background: var(--bg); color: var(--fg); font: 15px/1.5 var(--body); }
+.wrap { max-width: 1320px; margin: 0 auto; padding-block: 20px 48px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 20px; }
+h1, h2 { font-family: var(--display); margin: 0; text-wrap: balance; letter-spacing: -0.01em }
+h1 { font-size: clamp(28px, 4vw, 44px); font-weight: 800; line-height: 1.05 }
+h2 { font-size: 20px; font-weight: 700 }
+.eyebrow { font: 500 11px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted) }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; min-width: 0 }
+
+header { display: flex; flex-wrap: wrap; gap: 16px 32px; align-items: end; justify-content: space-between }
+header .lede { max-width: 62ch; color: var(--muted); margin: 8px 0 0 }
+header .lede b { color: var(--fg); font-weight: 600 }
+.controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center }
+button { font: 600 14px var(--body); color: var(--fg); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 14px; cursor: pointer }
+button:hover { border-color: var(--accent) }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+button.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); min-width: 96px }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden }
+.seg button { border: 0; border-radius: 0; padding: 8px 12px; font-family: var(--mono); font-weight: 500 }
+.seg button[aria-pressed="true"] { background: var(--line); color: var(--fg) }
+.replay-note { font: 12px var(--mono); color: var(--muted) }
+
+.main { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 20px }
+@media (max-width: 900px) { .main { grid-template-columns: minmax(0, 1fr) } }
+.map-head { display: flex; flex-wrap: wrap; gap: 8px 20px; justify-content: space-between; align-items: baseline; margin-bottom: 10px }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--muted) }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px }
+.mapbox { position: relative }
+canvas { display: block; width: 100%; image-rendering: pixelated }
+#map { aspect-ratio: 256 / 86; max-width: 100% }
+.axis { display: flex; justify-content: space-between; font: 11px var(--mono); color: var(--muted); margin-top: 6px }
+#strip { height: 64px; margin-top: 14px }
+.strip-cap { font: 11px var(--mono); color: var(--muted); display: flex; justify-content: space-between; margin-top: 4px }
+
+.stats { display: grid; gap: 12px; align-content: start }
+.stat { display: grid; gap: 2px }
+.stat .v { font: 500 26px/1.1 var(--mono); font-variant-numeric: tabular-nums }
+.stat .s { font-size: 12px; color: var(--muted) }
+.tiers { display: grid; gap: 10px }
+.tier { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; align-items: baseline }
+.tier .name { font-weight: 600 }
+.tier .cap { font: 12px var(--mono); color: var(--muted) }
+.tier .bar { grid-column: 1 / -1; height: 6px; background: var(--cell-off); border-radius: 3px; overflow: hidden }
+.tier .bar span { display: block; height: 100%; width: 0; transition: width .25s linear }
+hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0 }
+
+.answers { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px }
+@media (max-width: 1100px) { .answers { grid-template-columns: repeat(2, minmax(0, 1fr)) } }
+@media (max-width: 560px) { .answers { grid-template-columns: minmax(0, 1fr) } }
+.ans { display: grid; grid-template-rows: auto 1fr; gap: 8px; min-height: 220px }
+.ans .q { font-size: 13px; font-weight: 600; color: var(--muted); display: flex; gap: 8px; justify-content: space-between }
+.ans .q .badge { font: 500 11px var(--mono); color: var(--vram); white-space: nowrap }
+.ans .a { font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow-y: auto }
+.ans .a code, .ans .a { font-variant-ligatures: none }
+.cursor { display: inline-block; width: 7px; height: 1em; background: var(--accent); vertical-align: -2px; margin-left: 1px; animation: blink 1s steps(1) infinite }
+@keyframes blink { 50% { opacity: 0 } }
+@media (prefers-reduced-motion: reduce) { .cursor { animation: none } .tier .bar span { transition: none } }
+
+.specs { display: grid; gap: 14px }
+.tablebox { overflow-x: auto }
+table { border-collapse: collapse; width: 100%; min-width: 760px; font-size: 13.5px }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top }
+th { font: 500 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted) }
+td.n { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap }
+th.n { text-align: right }
+.flag { font: 11px var(--mono); color: var(--ssd) }
+.tps { display: flex; align-items: center; gap: 8px; justify-content: flex-end }
+.tps span.b { display: inline-block; height: 8px; background: var(--accent); border-radius: 2px }
+.notes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px }
+@media (max-width: 900px) { .notes { grid-template-columns: minmax(0, 1fr) } }
+.notes p { margin: 6px 0 0; color: var(--muted); font-size: 14px }
+footer { font: 12px var(--mono); color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 20px }
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <div class="eyebrow">dee.cpp · Dynamic Expert Eviction</div>
+      <h1>A 284B-parameter model answering on one 24 GB GPU</h1>
+      <p class="lede">DeepSeek-V4-Flash has <b>146.6 GiB</b> of expert weights. This NVIDIA L4 keeps only <b>3.5 GiB</b> of them in VRAM and <b>16 GiB</b> in RAM, and pulls the rest from SSD the moment the router asks. The router stays in charge, and the answer is exactly what the full model computes.</p>
+    </div>
+    <div class="controls">
+      <button id="play" class="primary" type="button">Pause</button>
+      <button id="restart" type="button">Restart</button>
+      <div class="seg" role="group" aria-label="Replay speed">
+        <button type="button" data-speed="1" aria-pressed="false">1×</button>
+        <button type="button" data-speed="10" aria-pressed="true">10×</button>
+        <button type="button" data-speed="30" aria-pressed="false">30×</button>
+      </div>
+      <div class="replay-note" id="speedNote">Replay of a recorded run at 10× speed</div>
+    </div>
+  </header>
+
+  <section class="main">
+    <div class="panel">
+      <div class="map-head">
+        <div>
+          <div class="eyebrow">Expert map · 43 layers × 256 experts</div>
+          <h2>Where each expert came from on this token</h2>
+        </div>
+        <div class="legend">
+          <span><i style="background:var(--vram)"></i>Already in VRAM</span>
+          <span><i style="background:var(--ram)"></i>Copied from RAM</span>
+          <span><i style="background:var(--ssd)"></i>Read from SSD</span>
+        </div>
+      </div>
+      <div class="mapbox"><canvas id="map" width="1024" height="344" role="img" aria-label="Grid of 43 layers by 256 experts, colored by the memory tier each requested expert came from"></canvas></div>
+      <div class="axis"><span>expert 0</span><span>layer 0 at top, layer 42 at bottom</span><span>expert 255</span></div>
+      <canvas id="strip" width="1280" height="128" aria-label="Expert fetches per step, stacked by tier"></canvas>
+      <div class="strip-cap"><span>Expert fetches per step (8 answers together)</span><span id="stripMax"></span></div>
+    </div>
+
+    <aside class="panel stats" aria-live="off">
+      <div class="stat"><div class="eyebrow">Decode step</div><div class="v" id="sStep">0 / 160</div><div class="s" id="sPhase">prefill: reading the prompt</div></div>
+      <div class="stat"><div class="eyebrow">Run clock on the L4</div><div class="v" id="sClock">0:00</div><div class="s">time since the run started, from its log</div></div>
+      <div class="stat"><div class="eyebrow">Tokens generated</div><div class="v" id="sTok">0</div><div class="s" id="sRate">8 answers at once</div></div>
+      <hr>
+      <div class="tiers">
+        <div class="eyebrow">Memory hierarchy · this step</div>
+        <div class="tier"><span class="name">VRAM</span><span class="cap num" id="tV">0</span><span class="cap">3.5 GiB expert cache on the L4</span><div class="bar"><span id="bV" style="background:var(--vram)"></span></div></div>
+        <div class="tier"><span class="name">RAM</span><span class="cap num" id="tR">0</span><span class="cap">16 GiB host tier</span><div class="bar"><span id="bR" style="background:var(--ram)"></span></div></div>
+        <div class="tier"><span class="name">SSD</span><span class="cap num" id="tS">0</span><span class="cap">146.6 GiB, all 11,776 experts</span><div class="bar"><span id="bS" style="background:var(--ssd)"></span></div></div>
+      </div>
+      <hr>
+      <div class="stat"><div class="eyebrow">Served without touching SSD</div><div class="v" id="sHit">0%</div><div class="s">of expert fetches so far</div></div>
+      <div class="stat"><div class="eyebrow">Read from SSD so far</div><div class="v" id="sGiB">0.0 GiB</div><div class="s">12.75 MiB per expert record</div></div>
+    </aside>
+  </section>
+
+  <section>
+    <div class="eyebrow" style="margin-bottom:10px">Eight questions, decoded together in one batch</div>
+    <div class="answers" id="answers"></div>
+  </section>
+
+  <section class="panel specs">
+    <div>
+      <div class="eyebrow">Run r7 · same model, same code, six GPU setups on Modal</div>
+      <h2>Environment and measured speed</h2>
+    </div>
+    <div class="tablebox"><table id="envTable"></table></div>
+    <div class="notes">
+      <div><div class="eyebrow">Exact on the original hardware</div><p>On 2× T4, the GPUs where DEE first ran, the first 16 tokens match the sealed reference answer token for token.</p></div>
+      <div><div class="eyebrow">Placement never changes the output</div><p>On every GPU, 16 GiB and 64 GiB of RAM give byte-identical tokens and routing. Moving experts between tiers changes speed only.</p></div>
+      <div><div class="eyebrow">How to read the speeds</div><p>Tokens per second across the whole batch. b=1 is one answer, b=8 is eight at once. SSD readings marked "cache" measured RAM cache, not the disk.</p></div>
+    </div>
+  </section>
+
+  <footer id="foot"></footer>
+</div>
+
+<script src="demo_data.js"></script>
+<script>
+(() => {
+  const D = window.DEE_DEMO, N = D.elapsed.length, L = D.layers, E = D.experts;
+  const $ = id => document.getElementById(id);
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+  // unpack 2-bit tier grids lazily
+  const cache = new Map();
+  function grid(s) {
+    if (cache.has(s)) return cache.get(s);
+    const bin = atob(D.grid[s]), g = new Uint8Array(L * E);
+    for (let i = 0; i < g.length; i++) g[i] = (bin.charCodeAt(i >> 2) >> ((i & 3) * 2)) & 3;
+    cache.set(s, g); return g;
+  }
+
+  // answer cards
+  const ans = $("answers"), bodies = [], badges = [];
+  D.prompts.forEach((p, i) => {
+    const c = document.createElement("article"); c.className = "panel ans";
+    c.innerHTML = `<div class="q"><span></span><span class="badge"></span></div><div class="a"></div>`;
+    c.querySelector(".q span").textContent = p;
+    ans.appendChild(c); bodies.push(c.querySelector(".a")); badges.push(c.querySelector(".badge"));
+  });
+
+  // spec table
+  const best = Math.max(...D.results.flatMap(r => [r["b8-h64-nu"] || 0, r["b1-h16-nu"] || 0]));
+  const tpsCell = v => v == null ? `<td class="n">not run</td>` :
+    `<td class="n"><div class="tps"><span class="b" style="width:${Math.round(48 * v / best)}px"></span>${v.toFixed(2)}</div></td>`;
+  const rows = D.env.map((e, i) => {
+    const r = D.results[i], smi = e.nvidia_smi[0].split(", ");
+    const ssd = e.ssd_probe_suspect ? `${e.measured_b_ssd_gib_s.toFixed(0)} GiB/s <span class="flag">cache</span>` : `${e.measured_b_ssd_gib_s.toFixed(2)} GiB/s`;
+    return `<tr><td><b>${r.gpu}</b><br><span class="num" style="color:var(--muted);font-size:12px">${e.n_gpus} × ${smi[0]}</span></td>
+      <td class="n">${smi[1]}</td><td class="n">${smi[2]}</td><td class="n">${e.cpu_cores}</td><td class="n">${e.container_ram_gib} GiB</td>
+      <td class="n">${(e.vram_expert_budget_mib / 1024).toFixed(1)} GiB</td><td class="n">${ssd}</td>
+      ${tpsCell(r["b1-h16-nu"])}${tpsCell(r["b8-h64-nu"])}<td class="n">$${e.billed_usd_modal_report.toFixed(2)}</td></tr>`;
+  }).join("");
+  $("envTable").innerHTML = `<thead><tr><th>GPU</th><th class="n">VRAM</th><th class="n">Driver</th><th class="n">CPU cores</th><th class="n">RAM</th>
+    <th class="n">Expert cache</th><th class="n">SSD read</th><th class="n">tok/s b=1<br>16 GiB RAM</th><th class="n">tok/s b=8<br>64 GiB RAM</th><th class="n">Billed</th></tr></thead><tbody>${rows}</tbody>`;
+  $("foot").innerHTML = `<span>run ${D.run_id}</span><span>commit ${D.commit.slice(0, 7)}</span><span>${D.gpu}</span>
+    <span>Tokens, step times and every expert fetch come from this run's own journals.</span>`;
+
+  // canvases
+  const map = $("map"), mx = map.getContext("2d"), strip = $("strip"), sx = strip.getContext("2d");
+  const CW = 4, CH = 8; // cell pixels in the 1024 x 344 backing store
+  const heat = new Float32Array(L * E), heatTier = new Uint8Array(L * E);
+  function drawMap(s) {
+    const col = [null, css("--vram"), css("--ram"), css("--ssd")], off = css("--cell-off"), bg = css("--panel");
+    const g = grid(s);
+    for (let i = 0; i < g.length; i++) {
+      if (g[i]) { heat[i] = 1; heatTier[i] = g[i]; } else heat[i] *= 0.55;
+    }
+    mx.fillStyle = bg; mx.fillRect(0, 0, map.width, map.height);
+    for (let l = 0; l < L; l++) for (let e = 0; e < E; e++) {
+      const i = l * E + e, h = heat[i];
+      mx.globalAlpha = 1; mx.fillStyle = off; mx.fillRect(e * CW, l * CH, CW - 1, CH - 1);
+      if (h > 0.04) { mx.globalAlpha = h; mx.fillStyle = col[heatTier[i]]; mx.fillRect(e * CW, l * CH, CW - 1, CH - 1); }
+    }
+    mx.globalAlpha = 1;
+  }
+  const maxCount = Math.max(...D.counts.slice(1).map(c => c[0] + c[1] + c[2]));
+  $("stripMax").textContent = `tallest decode step: ${maxCount.toLocaleString()} fetches`;
+  function drawStrip(s) {
+    const w = strip.width, h = strip.height, bw = w / N;
+    const col = [css("--vram"), css("--ram"), css("--ssd")];
+    sx.fillStyle = css("--panel"); sx.fillRect(0, 0, w, h);
+    for (let i = 1; i < N; i++) {  // step 0 is prefill, off scale
+      let y = h; const c = D.counts[i];
+      for (let t = 0; t < 3; t++) {
+        const bh = c[t] / maxCount * (h - 4);
+        sx.globalAlpha = i <= s ? 1 : 0.18; sx.fillStyle = col[t];
+        sx.fillRect(i * bw, y - bh, Math.max(1, bw - 1), bh); y -= bh;
+      }
+    }
+    sx.globalAlpha = 1; sx.fillStyle = css("--fg"); sx.fillRect(Math.min(s, N - 1) * bw, 0, 2, h);
+  }
+
+  // playback state
+  let step = -1, speed = 10, playing = true, timer = null;
+  const text = D.prompts.map(() => "");
+  let cum = [0, 0, 0];
+  const fmt = t => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
+
+  function render(s) {
+    for (let r = 0; r < 8; r++) {
+      text[r] += D.frags[r][s];
+      const done = D.done_at[r] != null && s >= D.done_at[r];
+      bodies[r].textContent = text[r];
+      if (!done && s < N - 1) { const cur = document.createElement("span"); cur.className = "cursor"; bodies[r].appendChild(cur); }
+      badges[r].textContent = done ? "finished" : (s >= N - 1 ? "160-token limit" : "");
+      bodies[r].scrollTop = bodies[r].scrollHeight;
+    }
+    const c = D.counts[s]; cum = cum.map((v, i) => v + c[i]);
+    const tot = c[0] + c[1] + c[2] || 1;
+    $("tV").textContent = c[0].toLocaleString(); $("tR").textContent = c[1].toLocaleString(); $("tS").textContent = c[2].toLocaleString();
+    $("bV").style.width = (100 * c[0] / tot) + "%"; $("bR").style.width = (100 * c[1] / tot) + "%"; $("bS").style.width = (100 * c[2] / tot) + "%";
+    const all = cum[0] + cum[1] + cum[2];
+    $("sHit").textContent = all ? `${(100 * (cum[0] + cum[1]) / all).toFixed(1)}%` : "0%";
+    $("sGiB").textContent = `${(cum[2] * D.record_bytes / 2 ** 30).toFixed(1)} GiB`;
+    $("sStep").textContent = `${s + 1} / ${N}`;
+    $("sPhase").textContent = s === 0 ? "prefill: read the prompts, every expert cold" : "decoding: one token per answer";
+    $("sClock").textContent = fmt(D.elapsed[s]);
+    $("sTok").textContent = ((s + 1) * 8).toLocaleString();
+    const t0 = Math.max(0, s - 16), dt = D.elapsed[s] - D.elapsed[t0];
+    $("sRate").textContent = s > 0 && dt > 0 ? `${((s - t0) * 8 / dt).toFixed(2)} tok/s right now, 8 answers at once` : "8 answers at once";
+    drawMap(s); drawStrip(s);
+  }
+
+  function schedule() {
+    clearTimeout(timer);
+    if (!playing || step >= N - 1) { if (step >= N - 1) { playing = false; $("play").textContent = "Play"; } return; }
+    const wait = step < 0 ? 600 : Math.min(8000, (D.elapsed[step + 1] - D.elapsed[step]) * 1000 / speed);
+    timer = setTimeout(() => { step++; render(step); schedule(); }, step < 0 ? 600 : wait);
+  }
+  function restart() {
+    step = -1; cum = [0, 0, 0]; text.fill(""); heat.fill(0);
+    bodies.forEach(b => b.textContent = ""); badges.forEach(b => b.textContent = "");
+    drawMap(0); heat.fill(0); drawMap(0); drawStrip(-1);
+    playing = true; $("play").textContent = "Pause"; schedule();
+  }
+  $("play").onclick = () => {
+    if (step >= N - 1) return restart();
+    playing = !playing; $("play").textContent = playing ? "Pause" : "Play"; schedule();
+  };
+  $("restart").onclick = restart;
+  document.querySelectorAll(".seg button").forEach(b => b.onclick = () => {
+    speed = +b.dataset.speed;
+    document.querySelectorAll(".seg button").forEach(x => x.setAttribute("aria-pressed", x === b));
+    $("speedNote").textContent = speed === 1 ? "Replay of a recorded run in real time" : `Replay of a recorded run at ${speed}× speed`;
+    schedule();
+  });
+  matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => step >= 0 && (drawMap(step), drawStrip(step)));
+
+  // resting frame: show the first decode step so the page is complete before playback
+  restart();
+})();
+</script>

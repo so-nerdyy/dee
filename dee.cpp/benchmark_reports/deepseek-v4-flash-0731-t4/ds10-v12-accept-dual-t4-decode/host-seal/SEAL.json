@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "result": "PASS",
+  "terminal_verdict": "ACCEPT_DUAL_T4_DECODE",
+  "stage": "final",
+  "performance_comparable": false,
+  "evidence_dir": "dsv4-ds10-evidence-20260806T035518Z",
+  "identity": {
+    "repository_commit": "a0e8f65ecfcaaab3e4c8f43eb5516612278a1833",
+    "stage": "final",
+    "harness_sha256": "8831a70de852c0ad50f78d56437947f9951961331d39331acc1e9ec1d5eb269d",
+    "module_count": 9
+  },
+  "manifest": {
+    "path": "ds10-artifact-manifest.json",
+    "sha256": "54df6f696e751c3f9d83bcf8b4655e348c104d9e12bba2822419748bf7ec8607",
+    "artifact_count": 14
+  },
+  "archive": {
+    "path": "dsv4-ds10-evidence-20260806T035518Z.tar.gz",
+    "bytes": 283851,
+    "sha256": "86f795776a29f156a00c7cc4d5b3baf220c3572f2eda6d5608647f425d5f9048",
+    "member_count": 16
+  },
+  "gates": {
+    "dual_t4": true,
+    "performance_not_comparable": true,
+    "verdict": true,
+    "token_count": true,
+    "token_ids": true,
+    "token_layers": true,
+    "deterministic": true,
+    "cold_warm": true,
+    "cache_capacity": true,
+    "runtime_primary": true,
+    "runtime_alternate": true,
+    "generation_memory": true
+  },
+  "failed_gates": []
+}

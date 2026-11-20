@@ -1,0 +1,7 @@
+budget_records,gain_coverage_mass,n_selected,approximation
+1,18.799999999999997,1,"greedy (1-1/e) NWF bound, monotone submodular probabilistic coverage"
+2,33.152380952380945,2,"greedy (1-1/e) NWF bound, monotone submodular probabilistic coverage"
+4,55.99205721814416,4,"greedy (1-1/e) NWF bound, monotone submodular probabilistic coverage"
+8,91.44716402744687,8,"greedy (1-1/e) NWF bound, monotone submodular probabilistic coverage"
+16,137.52330573613256,16,"greedy (1-1/e) NWF bound, monotone submodular probabilistic coverage"
+32,194.52165415130997,32,"greedy (1-1/e) NWF bound, monotone submodular probabilistic coverage"

@@ -1,0 +1,40 @@
+{
+  "schema": "dee4-v2-repack-report",
+  "source_repository": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "source_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+  "start_layer": 0,
+  "end_layer": 3,
+  "num_layers": 3,
+  "experts_per_layer": 256,
+  "total_experts": 768,
+  "record_bytes": 13369344,
+  "estimated_total_gib": 9.5625,
+  "shard_count": 48,
+  "layers": [
+    {
+      "layer": 0,
+      "experts_repacked": 256,
+      "bytes": 3422552064,
+      "elapsed_s": 47.775
+    },
+    {
+      "layer": 1,
+      "experts_repacked": 256,
+      "bytes": 3422552064,
+      "elapsed_s": 47.759
+    },
+    {
+      "layer": 2,
+      "experts_repacked": 256,
+      "bytes": 3422552064,
+      "elapsed_s": 47.06
+    }
+  ],
+  "errors": [],
+  "success": true,
+  "total_experts_repacked": 768,
+  "total_bytes_repacked": 10267656192,
+  "total_elapsed_s": 153.737,
+  "throughput_mibps": 63.693,
+  "data_sha256": "2747bd8a6a7d71046d4a23aed6a9fe1325edc052cd44b357ab96a4305872d0ab"
+}

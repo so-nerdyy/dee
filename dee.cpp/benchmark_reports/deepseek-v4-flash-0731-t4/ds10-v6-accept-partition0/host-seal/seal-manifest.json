@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "artifacts": {
+    "SEAL.json": {
+      "bytes": 993,
+      "sha256": "1e6083b7d4616fd23e9af8b82115fd090bdcb267058e00b58e9d7b761c085a62"
+    }
+  }
+}

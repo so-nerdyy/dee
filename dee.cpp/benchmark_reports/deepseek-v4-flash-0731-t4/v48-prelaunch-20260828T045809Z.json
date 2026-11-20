@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "id": "v48-prelaunch",
+  "created_utc": "20260828T045809Z",
+  "run_id": "p2.3-fp4-repair-v48",
+  "pinned_commit": "HEAD-of freebuff/deepseek-v4-flash-0731-t4 at push (recorded below after push)",
+  "harness_sha256_local": "5c0569fca595d3570c7da28dcea6d9332818e7b992a4b5edaeda74087bd4c10d",
+  "run_config_sha256": "b8d4776bfb6dff19fda07ae60626cc7aa115059c8ae211f3a811da60e21c9bac",
+  "model_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+  "requested_topology": {
+    "accelerator": "NvidiaTeslaT4",
+    "gpu_count": 2
+  },
+  "cache_budget": {
+    "vram_gib_per_gpu": 3.5,
+    "host_pack_gib_per_gpu": 8.5,
+    "lru_cap_gib": 17.0
+  },
+  "config": {
+    "cache_dtype": "fp4",
+    "expert_store": "safetensors",
+    "profile_stages": false,
+    "n_tokens": 16
+  },
+  "identity_hygiene": "branch synced to origin before push so cloned commit == executing harness commit; seal constant is ASCII-escaped with import-time byte guard",
+  "expectation": "same physics as v47; expect 16/16 exact token IDs and exact decoded text -> ACCEPT_CORRECTNESS"
+}

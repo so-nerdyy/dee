@@ -1,0 +1,31 @@
+{
+  "closure_ok": true,
+  "candidates": {
+    "SHARED_OVERLAP": {
+      "rank": "HOLD",
+      "reason": "shared_expert fraction=None (need >=0.05 with closure>=0.85); measured contention c=0.0222"
+    },
+    "EVENT_HANDOFF": {
+      "rank": "PROMOTE",
+      "reason": "output-sync fraction=0.07389133531623208 (need >=0.05)"
+    },
+    "ROUTE_D2H_NARROW": {
+      "rank": "HOLD",
+      "reason": "route-d2h fraction=0.00023210817870245948 (need >=0.02); copy floor still applies"
+    },
+    "HASH_EARLY_STAGING": {
+      "rank": "HOLD",
+      "reason": "hidden -95.705 ms below 1.0 ms"
+    },
+    "C1_C2": {
+      "rank": "HOLD",
+      "reason": "return only when decode/materialization or expert compute is measured on the critical path after storage improves"
+    }
+  },
+  "closure_status": "OK",
+  "fractions": {
+    "compute_share": 0.004534986924946778,
+    "hidden_ms_A": -95.704903999831,
+    "efficiency_c_B": 0.0222
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "branch": "freebuff/deepseek-v4-flash-0731-t4",
+  "harness_sha256": "7d825a16fdc328259710d4508b03d5ea116d519bfcf17705b085652db61b6d04",
+  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "module_sha256": {
+    "cache": "c4d16b0cef031f1bbf8ed0c2a989e7a60394bc7f740973a85ed9a24e7271f0df",
+    "contract": "1b85c9bb513732329fb01f59571bf5b7f02de3fa0e3b4b5d109c36d9bc27e0f5",
+    "corpus": "9ffdb43f736a7dbade969619af44c8e8d817038be194050e3106eb51aa6ea215",
+    "expert_reference": "9c28375b17898a6908d61ca3a769f4ba2eab4104e4049439cfa76784eaa86ef5",
+    "layer_candidate": "2da4e551b0c5f64fe34f0db1d63ec96d88c9508b250864a2b438508d6b248db3",
+    "layer_common": "005c168e578724c4284a23c61273f65449a7a8b910e82782cbeb0100857121cc",
+    "layer_reference": "56ec9995f35aeb5bf7e72644bd2d4255d190f5569b9314f7701f2f89167c23fe",
+    "moe_reference": "895d1b1c97c201e45ab1ea2cfd1c9b16344e848b07d2469a5a88d5c7d037fb81",
+    "support": "58161d1525a4bbea1ea19779447006690602154ea680649cd0c4ba9b438d639b"
+  },
+  "performance_comparable": false,
+  "repository": "https://github.com/so-nerdyy/dee.git",
+  "repository_commit": "a3a90c2cb9ad18c75d7a39c475655585ad7fb41d",
+  "revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+  "run_id": "20260731T120000Z-dsv4-ds9-one-layer",
+  "schema_version": 1,
+  "shards": [
+    "model-00022-of-00048.safetensors"
+  ]
+}

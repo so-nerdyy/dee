@@ -1,0 +1,41 @@
+{
+  "status": "COMPLETE",
+  "classification": "ACCEPT_CORRECTNESS",
+  "process_final_and_peak_gib": {
+    "VmPeak": 430.73,
+    "VmLck": 0.0,
+    "VmHWM": 25.08,
+    "VmRSS": 25.06,
+    "VmData": 22.32,
+    "VmSwap": 0.0
+  },
+  "system_final_gib": {
+    "MemTotal": 31.35,
+    "MemAvailable": 7.85,
+    "Cached": 7.64,
+    "SReclaimable": 0.48
+  },
+  "gpu_final_and_peak_gib": {
+    "cuda0": {
+      "allocated_gib": 6.991,
+      "reserved_gib": 7.252,
+      "free_gib": 3.622,
+      "total_gib": 14.562,
+      "peak_allocated_gib": 7.131
+    },
+    "cuda1": {
+      "allocated_gib": 6.76,
+      "reserved_gib": 8.926,
+      "free_gib": 1.948,
+      "total_gib": 14.562,
+      "peak_allocated_gib": 8.747
+    }
+  },
+  "minimum_checkpoint_host_mem_available_gib": 7.84,
+  "checkpoint_records": 16,
+  "cache_budget_bytes_per_gpu": 3758096384,
+  "host_pack_budget_bytes": [
+    9126805504,
+    9126805504
+  ]
+}

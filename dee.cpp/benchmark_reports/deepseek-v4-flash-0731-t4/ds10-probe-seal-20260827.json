@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "ds10-storage-probe-seal",
+  "run_id": "ds10-storage-probe-v2",
+  "date": "2026-08-28T02:30:00Z",
+  "stage": "P2.2-storage-ground-truth",
+  "classification": "ACCEPT_COMPONENT",
+  "pinned_commit": "c085152 (local head; probe package ds10_storage_probe.py uncommitted as designed)",
+  "kernel": "nivind/dee-cpp-deepseek-v4-flash-0731-ds10-storage-probe",
+  "kernel_version": 2,
+  "evidence_dir": "dee.cpp/benchmark_reports/deepseek-v4-flash-0731-t4/ds10-probe-output-20260827/",
+  "gpu": {"count": 2, "name": "Tesla T4", "vram_gib": 14.56, "topology_confirmed": true},
+  "platform": {"python": "3.12.13", "torch": "2.10.0+cu128", "kernel": "Linux 6.12.90+", "ram_gib": 32.87},
+  "storage_matrix": {
+    "root_overlay_incl_tmp_free_gib": 1026,
+    "kaggle_working_loop_gib": 19.5,
+    "kaggle_working_verdict": "TOO_SMALL for 172 GiB checkpoint or full DEE4 bank; staging must use /tmp",
+    "hf_cdn_range_mbps": 117.1,
+    "kaggle_dataset_mount_mbps": 240,
+    "dataset_mount_verdict": "KEEP dataset mount as primary source (2x HF CDN)",
+    "safetensors_ranged_reads": "viable (header 172232 bytes, 1565 tensors via range request)",
+    "kaggle_creds_in_kernel_env": false,
+    "probe_dataset": "dee-cpp-ds10-probe exists (created by probe v1)"
+  },
+  "correctness": "diagnostic-only run; no model execution; no weights beyond one timed 256 MiB chunk",
+  "conclusions_for_v48": [
+    "DEE4 repack output MUST target /tmp (1.1 TB free), never /kaggle/working (19.5 GiB).",
+    "Serve experts from the Kaggle dataset mount (~240 MB/s) rather than HF CDN (117 MB/s).",
+    "Full 137 GiB routed-expert DEE4 bank repacks in ~10 min at the measured 239-245 MB/s.",
+    "DS10 dataset mirroring is available if per-shard partial reads from HF become necessary."
+  ],
+  "reason": "Ground-truth storage measurements on the exact dual-T4 worker shape; unblocks the Step 2 storage-pathology plan without model execution."
+}

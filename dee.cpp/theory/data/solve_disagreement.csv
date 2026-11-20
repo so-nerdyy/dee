@@ -1,0 +1,92 @@
+quantity,theory_value,solver_value,rel_delta,note
+tps_pred 2xT4 host=16 b=1,0.3914456571908779,0.39193664273503076,0.0012542878816852454,serving.py batch=1 vs solver k_grid nearest 1; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 2xT4 host=16 b=1,0.3981651019415936,0.157474431503272,-0.6044996642463865,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 2xT4 host=16 b=8,0.07794686396811247,0.07802211612699948,0.0009654289480818257,serving.py batch=8 vs solver k_grid nearest 8; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 2xT4 host=16 b=8,1.9995672957896198,0.7910577546952978,-0.6043855306290591,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 2xT4 host=64 b=1,2.3361334099021263,2.3363301426601897,8.421298082961215e-05,serving.py batch=1 vs solver k_grid nearest 1; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 2xT4 host=64 b=1,0.11233091350334923,0.07202749171758457,-0.35879189912012044,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 2xT4 host=64 b=8,1.3065478852782166,1.3067101137956068,0.0001241657647745864,serving.py batch=8 vs solver k_grid nearest 8; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 2xT4 host=64 b=8,0.2008498907363967,0.12878143225753133,-0.35881751398834894,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 2xT4 host=256 b=1,2.3361334099021263,2.3363301426601897,8.421298082961215e-05,serving.py batch=1 vs solver k_grid nearest 1; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 2xT4 host=256 b=1,0.29478624683033483,0.254467461230915,-0.13677295339570372,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 2xT4 host=256 b=8,1.3065478852782166,1.3067101137956068,0.0001241657647745864,serving.py batch=8 vs solver k_grid nearest 8; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 2xT4 host=256 b=8,0.5270836283611271,0.45497466784970003,-0.136807437437655,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 1xL4 host=16 b=1,4.816799901511193,4.824906078772454,0.0016828968250719445,serving.py batch=1 vs solver k_grid nearest 1; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 1xL4 host=16 b=1,0.08535957656680013,0.058803217175200165,-0.3111116579967763,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 1xL4 host=16 b=8,1.6185147295879365,1.624918985732097,0.003956872326883909,serving.py batch=8 vs solver k_grid nearest 8; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 1xL4 host=16 b=8,0.25403537730217546,0.17460562802900095,-0.312671999139288,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 1xL4 host=64 b=1,6.75899481237822,6.760554614078784,0.00023077421182615687,serving.py batch=1 vs solver k_grid nearest 1; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 1xL4 host=64 b=1,0.07659718854227601,0.05772899152197454,-0.24633015100662103,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 1xL4 host=64 b=8,6.7514685122787546,6.763559722845727,0.0017909008306833396,serving.py batch=8 vs solver k_grid nearest 8; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 1xL4 host=64 b=8,0.07668257639925795,0.05770334202590467,-0.24750386938664382,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 1xL4 host=256 b=1,6.75899481237822,6.760554614078784,0.00023077421182615687,serving.py batch=1 vs solver k_grid nearest 1; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 1xL4 host=256 b=1,0.13965982016604894,0.12077707327437393,-0.1352052928983033,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 1xL4 host=256 b=8,6.7514685122787546,6.763559722845727,0.0017909008306833396,serving.py batch=8 vs solver k_grid nearest 8; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 1xL4 host=256 b=8,0.13981550803106607,0.12072341096390203,-0.13655207019611804,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 2xL4 host=16 b=1,7.690883089273608,7.690883089273608,0.0,serving.py batch=1 vs solver k_grid nearest 1; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 2xL4 host=16 b=1,0.10230294634140798,0.06575577786448505,-0.35724453482460605,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 2xL4 host=16 b=8,14.627675607390909,14.627675607390909,0.0,serving.py batch=8 vs solver k_grid nearest 8; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 2xL4 host=16 b=8,0.05378845013506141,0.03457282028762487,-0.35724453482460616,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 2xL4 host=64 b=1,7.690883089273608,7.690883089273608,0.0,serving.py batch=1 vs solver k_grid nearest 1; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 2xL4 host=64 b=1,0.11615831233294387,0.07961114385602093,-0.3146323990328648,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 2xL4 host=64 b=8,14.627675607390909,14.627675607390909,0.0,serving.py batch=8 vs solver k_grid nearest 8; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 2xL4 host=64 b=8,0.0610732712413046,0.041857641393868064,-0.3146323990328648,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 2xL4 host=256 b=1,7.690883089273608,7.690883089273608,0.0,serving.py batch=1 vs solver k_grid nearest 1; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 2xL4 host=256 b=1,0.17157977629908738,0.1350326078221645,-0.21300394058805683,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 2xL4 host=256 b=8,14.627675607390909,14.627675607390909,0.0,serving.py batch=8 vs solver k_grid nearest 8; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 2xL4 host=256 b=8,0.09021255566627737,0.07099692581884084,-0.21300394058805694,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 1xA10 host=16 b=1,5.069824593108242,5.0774531913088286,0.0015047065357953748,serving.py batch=1 vs solver k_grid nearest 1; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 1xA10 host=16 b=1,0.09766807330437127,0.07242213490602595,-0.2584871139995695,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 1xA10 host=16 b=8,1.8543619438792598,1.8615191678346585,0.0038596693482750855,serving.py batch=8 vs solver k_grid nearest 8; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 1xA10 host=16 b=8,0.2670244617747832,0.19753758454592563,-0.260226635294054,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 1xA10 host=64 b=1,6.778172912054693,6.779741578973505,0.00023142916817930903,serving.py batch=1 vs solver k_grid nearest 1; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 1xA10 host=64 b=1,0.08877318531220509,0.06995546872625917,-0.21197523238313654,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 1xA10 host=64 b=8,6.76481796198488,6.776957077890228,0.0017944482724536748,serving.py batch=8 vs solver k_grid nearest 8; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 1xA10 host=64 b=8,0.08894843931963663,0.06998421187398914,-0.21320472389065148,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 1xA10 host=256 b=1,6.778172912054693,6.779741578973505,0.00023142916817930903,serving.py batch=1 vs solver k_grid nearest 1; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 1xA10 host=256 b=1,0.15165738810997528,0.13282512165254892,-0.12417638660485186,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 1xA10 host=256 b=8,6.76481796198488,6.776957077890228,0.0017944482724536748,serving.py batch=8 vs solver k_grid nearest 8; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 1xA10 host=256 b=8,0.1519567866831976,0.13287969654373932,-0.12554286357232958,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 1xL40S host=16 b=1,7.821307561649136,7.821307561649136,0.0,serving.py batch=1 vs solver k_grid nearest 1; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 1xL40S host=16 b=1,0.11426222443700526,0.07718913944265152,-0.32445618118342145,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 1xL40S host=16 b=8,14.95894240917215,14.95894240917215,0.0,serving.py batch=8 vs solver k_grid nearest 8; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 1xL40S host=16 b=8,0.05974219136320998,0.040358468097973686,-0.32445618118342145,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 1xL40S host=64 b=1,7.821307561649136,7.821307561649136,0.0,serving.py batch=1 vs solver k_grid nearest 1; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 1xL40S host=64 b=1,0.12788654481567244,0.0908134598213187,-0.2898904262976886,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 1xL40S host=64 b=8,14.95894240917215,14.95894240917215,0.0,serving.py batch=8 vs solver k_grid nearest 8; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 1xL40S host=64 b=8,0.06686568960829062,0.04748196634305432,-0.2898904262976887,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 1xL40S host=256 b=1,7.821307561649136,7.821307561649136,0.0,serving.py batch=1 vs solver k_grid nearest 1; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 1xL40S host=256 b=1,0.18238382633034111,0.14531074133598737,-0.20326958667489214,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 1xL40S host=256 b=8,14.95894240917215,14.95894240917215,0.0,serving.py batch=8 vs solver k_grid nearest 8; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 1xL40S host=256 b=8,0.09535968258861313,0.07597595932337682,-0.20326958667489226,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 1xRTXPRO6000 host=16 b=1,7.952632305425414,7.952632305425414,0.0,serving.py batch=1 vs solver k_grid nearest 1; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 1xRTXPRO6000 host=16 b=1,0.16349806580557677,0.11363784534379485,-0.30495908447671205,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 1xRTXPRO6000 host=16 b=8,15.296261303738001,15.296261303738001,0.0,serving.py batch=8 vs solver k_grid nearest 8; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 1xRTXPRO6000 host=16 b=8,0.08500377799392429,0.05908110367983546,-0.30495908447671205,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 1xRTXPRO6000 host=64 b=1,7.952632305425414,7.952632305425414,0.0,serving.py batch=1 vs solver k_grid nearest 1; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 1xRTXPRO6000 host=64 b=1,0.17689740276817,0.1270371823063881,-0.2818595393801535,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 1xRTXPRO6000 host=64 b=8,15.296261303738001,15.296261303738001,0.0,serving.py batch=8 vs solver k_grid nearest 8; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 1xRTXPRO6000 host=64 b=8,0.09197018618243762,0.06604751186834878,-0.2818595393801536,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 1xRTXPRO6000 host=256 b=1,7.952632305425414,7.952632305425414,0.0,serving.py batch=1 vs solver k_grid nearest 1; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 1xRTXPRO6000 host=256 b=1,0.23049475061854308,0.18063453015676115,-0.21631824728320181,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred 1xRTXPRO6000 host=256 b=8,15.296261303738001,15.296261303738001,0.0,serving.py batch=8 vs solver k_grid nearest 8; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok 1xRTXPRO6000 host=256 b=8,0.11983581893649095,0.09391314462240212,-0.2163182472832017,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred CPU-only host=16 b=1,0.001316713404854562,0.0013167140311592406,4.7565755489920036e-07,serving.py batch=1 vs solver k_grid nearest 1; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok CPU-only host=16 b=1,345.34470320078975,46.87426315770437,-0.864268185603383,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred CPU-only host=16 b=8,0.010339358963639775,0.010339593718000332,2.2704924104388624e-05,serving.py batch=8 vs solver k_grid nearest 8; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok CPU-only host=16 b=8,43.979515712638,5.969286771157251,-0.8642712027535603,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred CPU-only host=64 b=1,0.0013171888861115604,0.0013171888861115604,0.0,serving.py batch=1 vs solver k_grid nearest 1; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok CPU-only host=64 b=1,426.11959903255814,127.75692368372091,-0.7001852907639681,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred CPU-only host=64 b=8,0.01052536438413737,0.01052536438413737,0.0,serving.py batch=8 vs solver k_grid nearest 8; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok CPU-only host=64 b=8,53.32641982883721,15.988045055581393,-0.7001852907639681,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred CPU-only host=256 b=1,0.0013171888861115604,0.0013171888861115604,0.0,serving.py batch=1 vs solver k_grid nearest 1; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok CPU-only host=256 b=1,749.7178350139535,451.3551596651162,-0.3979666234607908,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+tps_pred CPU-only host=256 b=8,0.01052536438413737,0.01052536438413737,0.0,serving.py batch=8 vs solver k_grid nearest 8; solver adds batch-fillability + M/M/1 deployment conventions at saturation
+usd_per_1k_tok CPU-only host=256 b=8,93.82288004093023,56.484505267674415,-0.3979666234607907,includes volume amortisation + SOLVE_CORES=2 CPU accounting vs serving.py's full cell cores
+cpu cores billed 1xA10,8,2.0,-0.75,"serving.py bills the full cell core count per replica; the solver bills a 2-core container floor (SOLVE_CORES, ASSUMPTION 1-4 cores) -- dee cost delta"
+cpu cores billed 1xL4,8,2.0,-0.75,"serving.py bills the full cell core count per replica; the solver bills a 2-core container floor (SOLVE_CORES, ASSUMPTION 1-4 cores) -- dee cost delta"
+cpu cores billed 1xL40S,16,2.0,-0.875,"serving.py bills the full cell core count per replica; the solver bills a 2-core container floor (SOLVE_CORES, ASSUMPTION 1-4 cores) -- dee cost delta"
+cpu cores billed 1xRTXPRO6000,16,2.0,-0.875,"serving.py bills the full cell core count per replica; the solver bills a 2-core container floor (SOLVE_CORES, ASSUMPTION 1-4 cores) -- dee cost delta"
+cpu cores billed 2xL4,16,2.0,-0.875,"serving.py bills the full cell core count per replica; the solver bills a 2-core container floor (SOLVE_CORES, ASSUMPTION 1-4 cores) -- dee cost delta"
+cpu cores billed 2xT4,8,2.0,-0.75,"serving.py bills the full cell core count per replica; the solver bills a 2-core container floor (SOLVE_CORES, ASSUMPTION 1-4 cores) -- dee cost delta"
+cpu cores billed CPU-only,32,2.0,-0.9375,"serving.py bills the full cell core count per replica; the solver bills a 2-core container floor (SOLVE_CORES, ASSUMPTION 1-4 cores) -- dee cost delta"

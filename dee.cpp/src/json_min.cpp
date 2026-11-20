@@ -26,6 +26,7 @@ struct Parser {
         if (c == '[') return parse_array();
         if (c == '"') { auto v = mk(Value::Str); v->s = parse_string(); return v; }
         if (c == 't' || c == 'f') return parse_bool();
+        if (c == 'n') return parse_null();
         if (c == '-' || std::isdigit((unsigned char)c)) return parse_number();
         error = true; return mk(Value::Null);
     }
@@ -100,6 +101,24 @@ struct Parser {
         if (s.compare(i, 4, "true") == 0) { i += 4; auto v = mk(Value::Bool); v->b = true; return v; }
         if (s.compare(i, 5, "false") == 0) { i += 5; auto v = mk(Value::Bool); v->b = false; return v; }
         error = true; return mk(Value::Null);
+    }
+
+    // A `null` literal produces a Null-typed value (see json_min.h for the
+    // convention).  The literal must end on a token boundary so malformed
+    // inputs like `nul` (short) or `nulll`/`nullx` (suffixed) are rejected
+    // even at the top level, where parse() does not check for trailing
+    // garbage; inside arrays/objects the container's ,/]/} check would
+    // already reject such a suffix.
+    ValuePtr parse_null() {
+        if (s.compare(i, 4, "null") != 0) {
+            error = true; return mk(Value::Null);
+        }
+        if (i + 4 < s.size() &&
+            (std::isalnum((unsigned char)s[i + 4]) || s[i + 4] == '_')) {
+            error = true; return mk(Value::Null);
+        }
+        i += 4;
+        return mk(Value::Null);
     }
 
     ValuePtr parse_number() {

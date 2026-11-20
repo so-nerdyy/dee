@@ -1,0 +1,6 @@
+{
+  "classification": "ACCEPT_CORRECTNESS",
+  "gates": {
+    "accept_correctness": true
+  }
+}

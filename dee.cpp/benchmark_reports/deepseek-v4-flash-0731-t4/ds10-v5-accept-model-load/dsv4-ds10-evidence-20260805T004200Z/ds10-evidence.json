@@ -1,0 +1,995 @@
+{
+ "verdict": "ACCEPT_MODEL_LOAD",
+ "stage": "v1",
+ "performance_comparable": false,
+ "identity": {
+  "schema_version": 1,
+  "repository": "https://github.com/so-nerdyy/dee.git",
+  "branch": "freebuff/deepseek-v4-flash-0731-t4",
+  "repository_commit": "a199c1392b95fa3752bcb4db7a5bcd8d1a9f075e",
+  "stage": "v1",
+  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "model_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+  "harness_file": "dee.cpp/kaggle/deepseek-v4-flash-0731/deepseek_v4_model_runtime.py",
+  "harness_sha256": "a96e8e6f561f8e657d2ec7684bf919f1b9fe94180d6c1e1326f9e3e6962e9e13",
+  "module_sha256": {
+   "cache": "c4d16b0cef031f1bbf8ed0c2a989e7a60394bc7f740973a85ed9a24e7271f0df",
+   "encoding": "a87a5fe64d3650d9b4dd752f48020f9c095b0e8b7aaee8da31e92c4a373a18b8",
+   "expert_reference": "9c28375b17898a6908d61ca3a769f4ba2eab4104e4049439cfa76784eaa86ef5",
+   "layer_candidate": "43f83fc0a31503e5eec1413ae7eedf13913c9eec7247e1a0f6de37ef68e50537",
+   "layer_common": "9c318f77e4e4cb31eab7d3c46efc82c1de98eb170f5fe43612317170c63ccc94",
+   "layer_reference": "311aa69e4f3cfc4bcc8dd824483afe6550ad9319f2f5b7638b18b51b419976e0",
+   "model": "2f32b5c31f0ee7aa293cc70c3be49d2e22e2f3004878f301a765c248d07129a2",
+   "moe_reference": "76db84137e806a527752c51d3484086544e246113527996f554ca97620b103dd",
+   "support": "db12c12551b7a8da76f676225a4fbf07a73eb24875756b7e83b110cb9be29d6f"
+  }
+ },
+ "run_id": "20260805T004200Z",
+ "model_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+ "cuda_available": true,
+ "gpu_count": 2,
+ "gates": {
+  "coverage_audit": true,
+  "coverage": {
+   "all_resolved": true,
+   "tensor_count": 72317,
+   "shard_count": 48,
+   "layers": [
+    {
+     "layer": 0,
+     "hash_layer": true,
+     "dense_tensors": 29,
+     "shared_tensors": 6,
+     "router_tensors": 1,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 1,
+     "hash_layer": true,
+     "dense_tensors": 29,
+     "shared_tensors": 6,
+     "router_tensors": 1,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 2,
+     "hash_layer": true,
+     "dense_tensors": 40,
+     "shared_tensors": 6,
+     "router_tensors": 1,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 3,
+     "hash_layer": false,
+     "dense_tensors": 33,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 4,
+     "hash_layer": false,
+     "dense_tensors": 40,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 5,
+     "hash_layer": false,
+     "dense_tensors": 33,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 6,
+     "hash_layer": false,
+     "dense_tensors": 40,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 7,
+     "hash_layer": false,
+     "dense_tensors": 33,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 8,
+     "hash_layer": false,
+     "dense_tensors": 40,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 9,
+     "hash_layer": false,
+     "dense_tensors": 33,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 10,
+     "hash_layer": false,
+     "dense_tensors": 40,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 11,
+     "hash_layer": false,
+     "dense_tensors": 33,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 12,
+     "hash_layer": false,
+     "dense_tensors": 40,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 13,
+     "hash_layer": false,
+     "dense_tensors": 33,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 14,
+     "hash_layer": false,
+     "dense_tensors": 40,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 15,
+     "hash_layer": false,
+     "dense_tensors": 33,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 16,
+     "hash_layer": false,
+     "dense_tensors": 40,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 17,
+     "hash_layer": false,
+     "dense_tensors": 33,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 18,
+     "hash_layer": false,
+     "dense_tensors": 40,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 19,
+     "hash_layer": false,
+     "dense_tensors": 33,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 20,
+     "hash_layer": false,
+     "dense_tensors": 40,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 21,
+     "hash_layer": false,
+     "dense_tensors": 33,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 22,
+     "hash_layer": false,
+     "dense_tensors": 40,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 23,
+     "hash_layer": false,
+     "dense_tensors": 33,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 24,
+     "hash_layer": false,
+     "dense_tensors": 40,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 25,
+     "hash_layer": false,
+     "dense_tensors": 33,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 26,
+     "hash_layer": false,
+     "dense_tensors": 40,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 27,
+     "hash_layer": false,
+     "dense_tensors": 33,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 28,
+     "hash_layer": false,
+     "dense_tensors": 40,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 29,
+     "hash_layer": false,
+     "dense_tensors": 33,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 30,
+     "hash_layer": false,
+     "dense_tensors": 40,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 31,
+     "hash_layer": false,
+     "dense_tensors": 33,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 32,
+     "hash_layer": false,
+     "dense_tensors": 40,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 33,
+     "hash_layer": false,
+     "dense_tensors": 33,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 34,
+     "hash_layer": false,
+     "dense_tensors": 40,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 35,
+     "hash_layer": false,
+     "dense_tensors": 33,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 36,
+     "hash_layer": false,
+     "dense_tensors": 40,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 37,
+     "hash_layer": false,
+     "dense_tensors": 33,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 38,
+     "hash_layer": false,
+     "dense_tensors": 40,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 39,
+     "hash_layer": false,
+     "dense_tensors": 33,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 40,
+     "hash_layer": false,
+     "dense_tensors": 40,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 41,
+     "hash_layer": false,
+     "dense_tensors": 33,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    },
+    {
+     "layer": 42,
+     "hash_layer": false,
+     "dense_tensors": 40,
+     "shared_tensors": 6,
+     "router_tensors": 2,
+     "routed_expert_tensors": 1536,
+     "resolved": true
+    }
+   ],
+   "model_level_tensors": {
+    "embed.weight": {
+     "shard": "model-00001-of-00048.safetensors",
+     "shape": [
+      129280,
+      4096
+     ],
+     "stored_dtype": "BF16",
+     "byte_offset": 0,
+     "byte_length": 1059061760
+    },
+    "hc_head_fn": {
+     "shard": "model-00045-of-00048.safetensors",
+     "shape": [
+      4,
+      16384
+     ],
+     "stored_dtype": "F32",
+     "byte_offset": 16,
+     "byte_length": 262144
+    },
+    "hc_head_base": {
+     "shard": "model-00045-of-00048.safetensors",
+     "shape": [
+      4
+     ],
+     "stored_dtype": "F32",
+     "byte_offset": 0,
+     "byte_length": 16
+    },
+    "hc_head_scale": {
+     "shard": "model-00045-of-00048.safetensors",
+     "shape": [
+      1
+     ],
+     "stored_dtype": "F32",
+     "byte_offset": 262160,
+     "byte_length": 4
+    },
+    "norm.weight": {
+     "shard": "model-00045-of-00048.safetensors",
+     "shape": [
+      4096
+     ],
+     "stored_dtype": "BF16",
+     "byte_offset": 1059323924,
+     "byte_length": 8192
+    },
+    "head.weight": {
+     "shard": "model-00045-of-00048.safetensors",
+     "shape": [
+      129280,
+      4096
+     ],
+     "stored_dtype": "BF16",
+     "byte_offset": 262164,
+     "byte_length": 1059061760
+    }
+   },
+   "components": {
+    "attention_dense": {
+     "tensor_count": 603,
+     "compressed_bytes": 4600179840
+    },
+    "dspark": {
+     "tensor_count": 4705,
+     "compressed_bytes": 10862838300
+    },
+    "embedding": {
+     "tensor_count": 1,
+     "compressed_bytes": 1059061760
+    },
+    "hash_compress": {
+     "tensor_count": 615,
+     "compressed_bytes": 936624732
+    },
+    "lm_head": {
+     "tensor_count": 1,
+     "compressed_bytes": 1059061760
+    },
+    "routed_expert": {
+     "tensor_count": 66048,
+     "compressed_bytes": 147169738752
+    },
+    "router": {
+     "tensor_count": 86,
+     "compressed_bytes": 108834816
+    },
+    "shared_expert": {
+     "tensor_count": 258,
+     "compressed_bytes": 1082196480
+    }
+   },
+   "dspark_tensor_count": 4705,
+   "dspark_resolution_only": true
+  },
+  "memory_plan": {
+   "split": 22,
+   "n_layers": 43,
+   "devices": {
+    "cuda:0": {
+     "layers": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21
+     ],
+     "dense_bytes": 5259898952,
+     "state_bytes": 22216704,
+     "extra_persistent_bytes": 1059061760,
+     "cache_budget_bytes": 2147483648,
+     "activation_estimate_bytes": 67108864,
+     "context_estimate_bytes": 536870912,
+     "total_estimate_bytes": 9092640840,
+     "total_estimate_gib": 8.468181677162647
+    },
+    "cuda:1": {
+     "layers": [
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      39,
+      40,
+      41,
+      42
+     ],
+     "dense_bytes": 5075931228,
+     "state_bytes": 23461888,
+     "extra_persistent_bytes": 1059069952,
+     "cache_budget_bytes": 2147483648,
+     "activation_estimate_bytes": 67108864,
+     "context_estimate_bytes": 536870912,
+     "total_estimate_bytes": 8909926492,
+     "total_estimate_gib": 8.298015680164099
+    }
+   },
+   "per_layer_dense_bytes": [
+    219150572,
+    219150572,
+    257435116,
+    226120428,
+    255884268,
+    226120428,
+    255884268,
+    226120428,
+    255884268,
+    226120428,
+    255884268,
+    226120428,
+    255884268,
+    226120428,
+    255884268,
+    226120428,
+    255884268,
+    226120428,
+    255884268,
+    226120428,
+    255884268,
+    226120428,
+    255884268,
+    226120428,
+    255884268,
+    226120428,
+    255884268,
+    226120428,
+    255884268,
+    226120428,
+    255884268,
+    226120428,
+    255884268,
+    226120428,
+    255884268,
+    226120428,
+    255884268,
+    226120428,
+    255884268,
+    226120428,
+    255884268,
+    226120428,
+    255884268
+   ],
+   "per_layer_state_bytes": [
+    131072,
+    131072,
+    1507328,
+    688128,
+    1507328,
+    688128,
+    1507328,
+    688128,
+    1507328,
+    688128,
+    1507328,
+    688128,
+    1507328,
+    688128,
+    1507328,
+    688128,
+    1507328,
+    688128,
+    1507328,
+    688128,
+    1507328,
+    688128,
+    1507328,
+    688128,
+    1507328,
+    688128,
+    1507328,
+    688128,
+    1507328,
+    688128,
+    1507328,
+    688128,
+    1507328,
+    688128,
+    1507328,
+    688128,
+    1507328,
+    688128,
+    1507328,
+    688128,
+    1507328,
+    688128,
+    1507328
+   ]
+  },
+  "memory_ceilings_ok": true,
+  "model_load_ok": true,
+  "model_load": {
+   "memory": {
+    "build_seconds": 1880.06,
+    "fetch_stats": {
+     "requests": 1609,
+     "bytes": 8845959748,
+     "retries": 0
+    },
+    "cuda0_allocated_gib": 5.949,
+    "cuda1_allocated_gib": 5.765,
+    "cuda0_reserved_gib": 5.965,
+    "cuda1_reserved_gib": 5.771,
+    "device0": "cuda:0",
+    "device1": "cuda:1",
+    "split": 22,
+    "n_layers": 43,
+    "cache_budget_bytes": 2147483648,
+    "host_memory": {
+     "current_rss_bytes": 3962867712,
+     "peak_rss_bytes": 6986379264,
+     "ceiling_bytes": 12000000000
+    }
+   },
+   "state_signatures": {
+    "0": {
+     "attn_kv_cache": "8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90"
+    },
+    "1": {
+     "attn_kv_cache": "8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90"
+    },
+    "2": {
+     "attn_kv_cache": "96a12deebdc8a3421e923d2fc00a649326f0b5167b48ffd231941a415777308c",
+     "compressor_kv_state": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+     "compressor_score_state": "ab458255a699ea96c5dad8caf4cfd68701ecb44a19469a5f57100c3b2e3cf861",
+     "indexer_kv_cache": "07854d2fef297a06ba81685e660c332de36d5d18d546927d30daad6d7fda1541",
+     "indexer_compressor_kv_state": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+     "indexer_compressor_score_state": "e73cd3ad3ee3178862f24c38cc1bd4a381c400bcda75fa3de21afb759fe9d7f7"
+    },
+    "3": {
+     "attn_kv_cache": "dae4d3dce1bb0a9414f61a65ee07622fa225ec01e6efe6df6e78f9ad5c58480d",
+     "compressor_kv_state": "8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90",
+     "compressor_score_state": "6470bc26e7cc29bf2cc0672d57eb7062150933581c52927d2a4f7be0f5ed0778"
+    },
+    "4": {
+     "attn_kv_cache": "96a12deebdc8a3421e923d2fc00a649326f0b5167b48ffd231941a415777308c",
+     "compressor_kv_state": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+     "compressor_score_state": "ab458255a699ea96c5dad8caf4cfd68701ecb44a19469a5f57100c3b2e3cf861",
+     "indexer_kv_cache": "07854d2fef297a06ba81685e660c332de36d5d18d546927d30daad6d7fda1541",
+     "indexer_compressor_kv_state": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+     "indexer_compressor_score_state": "e73cd3ad3ee3178862f24c38cc1bd4a381c400bcda75fa3de21afb759fe9d7f7"
+    },
+    "5": {
+     "attn_kv_cache": "dae4d3dce1bb0a9414f61a65ee07622fa225ec01e6efe6df6e78f9ad5c58480d",
+     "compressor_kv_state": "8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90",
+     "compressor_score_state": "6470bc26e7cc29bf2cc0672d57eb7062150933581c52927d2a4f7be0f5ed0778"
+    },
+    "6": {
+     "attn_kv_cache": "96a12deebdc8a3421e923d2fc00a649326f0b5167b48ffd231941a415777308c",
+     "compressor_kv_state": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+     "compressor_score_state": "ab458255a699ea96c5dad8caf4cfd68701ecb44a19469a5f57100c3b2e3cf861",
+     "indexer_kv_cache": "07854d2fef297a06ba81685e660c332de36d5d18d546927d30daad6d7fda1541",
+     "indexer_compressor_kv_state": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+     "indexer_compressor_score_state": "e73cd3ad3ee3178862f24c38cc1bd4a381c400bcda75fa3de21afb759fe9d7f7"
+    },
+    "7": {
+     "attn_kv_cache": "dae4d3dce1bb0a9414f61a65ee07622fa225ec01e6efe6df6e78f9ad5c58480d",
+     "compressor_kv_state": "8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90",
+     "compressor_score_state": "6470bc26e7cc29bf2cc0672d57eb7062150933581c52927d2a4f7be0f5ed0778"
+    },
+    "8": {
+     "attn_kv_cache": "96a12deebdc8a3421e923d2fc00a649326f0b5167b48ffd231941a415777308c",
+     "compressor_kv_state": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+     "compressor_score_state": "ab458255a699ea96c5dad8caf4cfd68701ecb44a19469a5f57100c3b2e3cf861",
+     "indexer_kv_cache": "07854d2fef297a06ba81685e660c332de36d5d18d546927d30daad6d7fda1541",
+     "indexer_compressor_kv_state": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+     "indexer_compressor_score_state": "e73cd3ad3ee3178862f24c38cc1bd4a381c400bcda75fa3de21afb759fe9d7f7"
+    },
+    "9": {
+     "attn_kv_cache": "dae4d3dce1bb0a9414f61a65ee07622fa225ec01e6efe6df6e78f9ad5c58480d",
+     "compressor_kv_state": "8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90",
+     "compressor_score_state": "6470bc26e7cc29bf2cc0672d57eb7062150933581c52927d2a4f7be0f5ed0778"
+    },
+    "10": {
+     "attn_kv_cache": "96a12deebdc8a3421e923d2fc00a649326f0b5167b48ffd231941a415777308c",
+     "compressor_kv_state": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+     "compressor_score_state": "ab458255a699ea96c5dad8caf4cfd68701ecb44a19469a5f57100c3b2e3cf861",
+     "indexer_kv_cache": "07854d2fef297a06ba81685e660c332de36d5d18d546927d30daad6d7fda1541",
+     "indexer_compressor_kv_state": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+     "indexer_compressor_score_state": "e73cd3ad3ee3178862f24c38cc1bd4a381c400bcda75fa3de21afb759fe9d7f7"
+    },
+    "11": {
+     "attn_kv_cache": "dae4d3dce1bb0a9414f61a65ee07622fa225ec01e6efe6df6e78f9ad5c58480d",
+     "compressor_kv_state": "8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90",
+     "compressor_score_state": "6470bc26e7cc29bf2cc0672d57eb7062150933581c52927d2a4f7be0f5ed0778"
+    },
+    "12": {
+     "attn_kv_cache": "96a12deebdc8a3421e923d2fc00a649326f0b5167b48ffd231941a415777308c",
+     "compressor_kv_state": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+     "compressor_score_state": "ab458255a699ea96c5dad8caf4cfd68701ecb44a19469a5f57100c3b2e3cf861",
+     "indexer_kv_cache": "07854d2fef297a06ba81685e660c332de36d5d18d546927d30daad6d7fda1541",
+     "indexer_compressor_kv_state": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+     "indexer_compressor_score_state": "e73cd3ad3ee3178862f24c38cc1bd4a381c400bcda75fa3de21afb759fe9d7f7"
+    },
+    "13": {
+     "attn_kv_cache": "dae4d3dce1bb0a9414f61a65ee07622fa225ec01e6efe6df6e78f9ad5c58480d",
+     "compressor_kv_state": "8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90",
+     "compressor_score_state": "6470bc26e7cc29bf2cc0672d57eb7062150933581c52927d2a4f7be0f5ed0778"
+    },
+    "14": {
+     "attn_kv_cache": "96a12deebdc8a3421e923d2fc00a649326f0b5167b48ffd231941a415777308c",
+     "compressor_kv_state": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+     "compressor_score_state": "ab458255a699ea96c5dad8caf4cfd68701ecb44a19469a5f57100c3b2e3cf861",
+     "indexer_kv_cache": "07854d2fef297a06ba81685e660c332de36d5d18d546927d30daad6d7fda1541",
+     "indexer_compressor_kv_state": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+     "indexer_compressor_score_state": "e73cd3ad3ee3178862f24c38cc1bd4a381c400bcda75fa3de21afb759fe9d7f7"
+    },
+    "15": {
+     "attn_kv_cache": "dae4d3dce1bb0a9414f61a65ee07622fa225ec01e6efe6df6e78f9ad5c58480d",
+     "compressor_kv_state": "8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90",
+     "compressor_score_state": "6470bc26e7cc29bf2cc0672d57eb7062150933581c52927d2a4f7be0f5ed0778"
+    },
+    "16": {
+     "attn_kv_cache": "96a12deebdc8a3421e923d2fc00a649326f0b5167b48ffd231941a415777308c",
+     "compressor_kv_state": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+     "compressor_score_state": "ab458255a699ea96c5dad8caf4cfd68701ecb44a19469a5f57100c3b2e3cf861",
+     "indexer_kv_cache": "07854d2fef297a06ba81685e660c332de36d5d18d546927d30daad6d7fda1541",
+     "indexer_compressor_kv_state": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+     "indexer_compressor_score_state": "e73cd3ad3ee3178862f24c38cc1bd4a381c400bcda75fa3de21afb759fe9d7f7"
+    },
+    "17": {
+     "attn_kv_cache": "dae4d3dce1bb0a9414f61a65ee07622fa225ec01e6efe6df6e78f9ad5c58480d",
+     "compressor_kv_state": "8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90",
+     "compressor_score_state": "6470bc26e7cc29bf2cc0672d57eb7062150933581c52927d2a4f7be0f5ed0778"
+    },
+    "18": {
+     "attn_kv_cache": "96a12deebdc8a3421e923d2fc00a649326f0b5167b48ffd231941a415777308c",
+     "compressor_kv_state": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+     "compressor_score_state": "ab458255a699ea96c5dad8caf4cfd68701ecb44a19469a5f57100c3b2e3cf861",
+     "indexer_kv_cache": "07854d2fef297a06ba81685e660c332de36d5d18d546927d30daad6d7fda1541",
+     "indexer_compressor_kv_state": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+     "indexer_compressor_score_state": "e73cd3ad3ee3178862f24c38cc1bd4a381c400bcda75fa3de21afb759fe9d7f7"
+    },
+    "19": {
+     "attn_kv_cache": "dae4d3dce1bb0a9414f61a65ee07622fa225ec01e6efe6df6e78f9ad5c58480d",
+     "compressor_kv_state": "8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90",
+     "compressor_score_state": "6470bc26e7cc29bf2cc0672d57eb7062150933581c52927d2a4f7be0f5ed0778"
+    },
+    "20": {
+     "attn_kv_cache": "96a12deebdc8a3421e923d2fc00a649326f0b5167b48ffd231941a415777308c",
+     "compressor_kv_state": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+     "compressor_score_state": "ab458255a699ea96c5dad8caf4cfd68701ecb44a19469a5f57100c3b2e3cf861",
+     "indexer_kv_cache": "07854d2fef297a06ba81685e660c332de36d5d18d546927d30daad6d7fda1541",
+     "indexer_compressor_kv_state": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+     "indexer_compressor_score_state": "e73cd3ad3ee3178862f24c38cc1bd4a381c400bcda75fa3de21afb759fe9d7f7"
+    },
+    "21": {
+     "attn_kv_cache": "dae4d3dce1bb0a9414f61a65ee07622fa225ec01e6efe6df6e78f9ad5c58480d",
+     "compressor_kv_state": "8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90",
+     "compressor_score_state": "6470bc26e7cc29bf2cc0672d57eb7062150933581c52927d2a4f7be0f5ed0778"
+    },
+    "22": {
+     "attn_kv_cache": "96a12deebdc8a3421e923d2fc00a649326f0b5167b48ffd231941a415777308c",
+     "compressor_kv_state": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+     "compressor_score_state": "ab458255a699ea96c5dad8caf4cfd68701ecb44a19469a5f57100c3b2e3cf861",
+     "indexer_kv_cache": "07854d2fef297a06ba81685e660c332de36d5d18d546927d30daad6d7fda1541",
+     "indexer_compressor_kv_state": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+     "indexer_compressor_score_state": "e73cd3ad3ee3178862f24c38cc1bd4a381c400bcda75fa3de21afb759fe9d7f7"
+    },
+    "23": {
+     "attn_kv_cache": "dae4d3dce1bb0a9414f61a65ee07622fa225ec01e6efe6df6e78f9ad5c58480d",
+     "compressor_kv_state": "8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90",
+     "compressor_score_state": "6470bc26e7cc29bf2cc0672d57eb7062150933581c52927d2a4f7be0f5ed0778"
+    },
+    "24": {
+     "attn_kv_cache": "96a12deebdc8a3421e923d2fc00a649326f0b5167b48ffd231941a415777308c",
+     "compressor_kv_state": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+     "compressor_score_state": "ab458255a699ea96c5dad8caf4cfd68701ecb44a19469a5f57100c3b2e3cf861",
+     "indexer_kv_cache": "07854d2fef297a06ba81685e660c332de36d5d18d546927d30daad6d7fda1541",
+     "indexer_compressor_kv_state": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+     "indexer_compressor_score_state": "e73cd3ad3ee3178862f24c38cc1bd4a381c400bcda75fa3de21afb759fe9d7f7"
+    },
+    "25": {
+     "attn_kv_cache": "dae4d3dce1bb0a9414f61a65ee07622fa225ec01e6efe6df6e78f9ad5c58480d",
+     "compressor_kv_state": "8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90",
+     "compressor_score_state": "6470bc26e7cc29bf2cc0672d57eb7062150933581c52927d2a4f7be0f5ed0778"
+    },
+    "26": {
+     "attn_kv_cache": "96a12deebdc8a3421e923d2fc00a649326f0b5167b48ffd231941a415777308c",
+     "compressor_kv_state": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+     "compressor_score_state": "ab458255a699ea96c5dad8caf4cfd68701ecb44a19469a5f57100c3b2e3cf861",
+     "indexer_kv_cache": "07854d2fef297a06ba81685e660c332de36d5d18d546927d30daad6d7fda1541",
+     "indexer_compressor_kv_state": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+     "indexer_compressor_score_state": "e73cd3ad3ee3178862f24c38cc1bd4a381c400bcda75fa3de21afb759fe9d7f7"
+    },
+    "27": {
+     "attn_kv_cache": "dae4d3dce1bb0a9414f61a65ee07622fa225ec01e6efe6df6e78f9ad5c58480d",
+     "compressor_kv_state": "8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90",
+     "compressor_score_state": "6470bc26e7cc29bf2cc0672d57eb7062150933581c52927d2a4f7be0f5ed0778"
+    },
+    "28": {
+     "attn_kv_cache": "96a12deebdc8a3421e923d2fc00a649326f0b5167b48ffd231941a415777308c",
+     "compressor_kv_state": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+     "compressor_score_state": "ab458255a699ea96c5dad8caf4cfd68701ecb44a19469a5f57100c3b2e3cf861",
+     "indexer_kv_cache": "07854d2fef297a06ba81685e660c332de36d5d18d546927d30daad6d7fda1541",
+     "indexer_compressor_kv_state": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+     "indexer_compressor_score_state": "e73cd3ad3ee3178862f24c38cc1bd4a381c400bcda75fa3de21afb759fe9d7f7"
+    },
+    "29": {
+     "attn_kv_cache": "dae4d3dce1bb0a9414f61a65ee07622fa225ec01e6efe6df6e78f9ad5c58480d",
+     "compressor_kv_state": "8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90",
+     "compressor_score_state": "6470bc26e7cc29bf2cc0672d57eb7062150933581c52927d2a4f7be0f5ed0778"
+    },
+    "30": {
+     "attn_kv_cache": "96a12deebdc8a3421e923d2fc00a649326f0b5167b48ffd231941a415777308c",
+     "compressor_kv_state": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+     "compressor_score_state": "ab458255a699ea96c5dad8caf4cfd68701ecb44a19469a5f57100c3b2e3cf861",
+     "indexer_kv_cache": "07854d2fef297a06ba81685e660c332de36d5d18d546927d30daad6d7fda1541",
+     "indexer_compressor_kv_state": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+     "indexer_compressor_score_state": "e73cd3ad3ee3178862f24c38cc1bd4a381c400bcda75fa3de21afb759fe9d7f7"
+    },
+    "31": {
+     "attn_kv_cache": "dae4d3dce1bb0a9414f61a65ee07622fa225ec01e6efe6df6e78f9ad5c58480d",
+     "compressor_kv_state": "8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90",
+     "compressor_score_state": "6470bc26e7cc29bf2cc0672d57eb7062150933581c52927d2a4f7be0f5ed0778"
+    },
+    "32": {
+     "attn_kv_cache": "96a12deebdc8a3421e923d2fc00a649326f0b5167b48ffd231941a415777308c",
+     "compressor_kv_state": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+     "compressor_score_state": "ab458255a699ea96c5dad8caf4cfd68701ecb44a19469a5f57100c3b2e3cf861",
+     "indexer_kv_cache": "07854d2fef297a06ba81685e660c332de36d5d18d546927d30daad6d7fda1541",
+     "indexer_compressor_kv_state": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+     "indexer_compressor_score_state": "e73cd3ad3ee3178862f24c38cc1bd4a381c400bcda75fa3de21afb759fe9d7f7"
+    },
+    "33": {
+     "attn_kv_cache": "dae4d3dce1bb0a9414f61a65ee07622fa225ec01e6efe6df6e78f9ad5c58480d",
+     "compressor_kv_state": "8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90",
+     "compressor_score_state": "6470bc26e7cc29bf2cc0672d57eb7062150933581c52927d2a4f7be0f5ed0778"
+    },
+    "34": {
+     "attn_kv_cache": "96a12deebdc8a3421e923d2fc00a649326f0b5167b48ffd231941a415777308c",
+     "compressor_kv_state": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+     "compressor_score_state": "ab458255a699ea96c5dad8caf4cfd68701ecb44a19469a5f57100c3b2e3cf861",
+     "indexer_kv_cache": "07854d2fef297a06ba81685e660c332de36d5d18d546927d30daad6d7fda1541",
+     "indexer_compressor_kv_state": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+     "indexer_compressor_score_state": "e73cd3ad3ee3178862f24c38cc1bd4a381c400bcda75fa3de21afb759fe9d7f7"
+    },
+    "35": {
+     "attn_kv_cache": "dae4d3dce1bb0a9414f61a65ee07622fa225ec01e6efe6df6e78f9ad5c58480d",
+     "compressor_kv_state": "8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90",
+     "compressor_score_state": "6470bc26e7cc29bf2cc0672d57eb7062150933581c52927d2a4f7be0f5ed0778"
+    },
+    "36": {
+     "attn_kv_cache": "96a12deebdc8a3421e923d2fc00a649326f0b5167b48ffd231941a415777308c",
+     "compressor_kv_state": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+     "compressor_score_state": "ab458255a699ea96c5dad8caf4cfd68701ecb44a19469a5f57100c3b2e3cf861",
+     "indexer_kv_cache": "07854d2fef297a06ba81685e660c332de36d5d18d546927d30daad6d7fda1541",
+     "indexer_compressor_kv_state": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+     "indexer_compressor_score_state": "e73cd3ad3ee3178862f24c38cc1bd4a381c400bcda75fa3de21afb759fe9d7f7"
+    },
+    "37": {
+     "attn_kv_cache": "dae4d3dce1bb0a9414f61a65ee07622fa225ec01e6efe6df6e78f9ad5c58480d",
+     "compressor_kv_state": "8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90",
+     "compressor_score_state": "6470bc26e7cc29bf2cc0672d57eb7062150933581c52927d2a4f7be0f5ed0778"
+    },
+    "38": {
+     "attn_kv_cache": "96a12deebdc8a3421e923d2fc00a649326f0b5167b48ffd231941a415777308c",
+     "compressor_kv_state": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+     "compressor_score_state": "ab458255a699ea96c5dad8caf4cfd68701ecb44a19469a5f57100c3b2e3cf861",
+     "indexer_kv_cache": "07854d2fef297a06ba81685e660c332de36d5d18d546927d30daad6d7fda1541",
+     "indexer_compressor_kv_state": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+     "indexer_compressor_score_state": "e73cd3ad3ee3178862f24c38cc1bd4a381c400bcda75fa3de21afb759fe9d7f7"
+    },
+    "39": {
+     "attn_kv_cache": "dae4d3dce1bb0a9414f61a65ee07622fa225ec01e6efe6df6e78f9ad5c58480d",
+     "compressor_kv_state": "8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90",
+     "compressor_score_state": "6470bc26e7cc29bf2cc0672d57eb7062150933581c52927d2a4f7be0f5ed0778"
+    },
+    "40": {
+     "attn_kv_cache": "96a12deebdc8a3421e923d2fc00a649326f0b5167b48ffd231941a415777308c",
+     "compressor_kv_state": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+     "compressor_score_state": "ab458255a699ea96c5dad8caf4cfd68701ecb44a19469a5f57100c3b2e3cf861",
+     "indexer_kv_cache": "07854d2fef297a06ba81685e660c332de36d5d18d546927d30daad6d7fda1541",
+     "indexer_compressor_kv_state": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+     "indexer_compressor_score_state": "e73cd3ad3ee3178862f24c38cc1bd4a381c400bcda75fa3de21afb759fe9d7f7"
+    },
+    "41": {
+     "attn_kv_cache": "dae4d3dce1bb0a9414f61a65ee07622fa225ec01e6efe6df6e78f9ad5c58480d",
+     "compressor_kv_state": "8a39d2abd3999ab73c34db2476849cddf303ce389b35826850f9a700589b4a90",
+     "compressor_score_state": "6470bc26e7cc29bf2cc0672d57eb7062150933581c52927d2a4f7be0f5ed0778"
+    },
+    "42": {
+     "attn_kv_cache": "96a12deebdc8a3421e923d2fc00a649326f0b5167b48ffd231941a415777308c",
+     "compressor_kv_state": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479",
+     "compressor_score_state": "ab458255a699ea96c5dad8caf4cfd68701ecb44a19469a5f57100c3b2e3cf861",
+     "indexer_kv_cache": "07854d2fef297a06ba81685e660c332de36d5d18d546927d30daad6d7fda1541",
+     "indexer_compressor_kv_state": "9f1dcbc35c350d6027f98be0f5c8b43b42ca52b7604459c0c42be3aa88913d47",
+     "indexer_compressor_score_state": "e73cd3ad3ee3178862f24c38cc1bd4a381c400bcda75fa3de21afb759fe9d7f7"
+    }
+   },
+   "state_count": 43,
+   "actual_memory_ceilings_ok": true,
+   "fetch_stats": {
+    "requests": 1609,
+    "bytes": 8845959748,
+    "retries": 0
+   }
+  }
+ }
+}

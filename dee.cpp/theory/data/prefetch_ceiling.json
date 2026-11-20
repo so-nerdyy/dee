@@ -1,0 +1,28 @@
+{
+  "delta_H_ceiling": 0.7293762575452716,
+  "predictor": {
+    "family": "empirical P(j in S_{l+1} | i in S_l), min_support=5",
+    "lead_calls": 1,
+    "precision_at_m": {
+      "1": 0.27456225680933855,
+      "2": 0.22948503916784385,
+      "4": 0.18281893698926183,
+      "8": 0.1309799103916751
+    },
+    "recall_at_m": {
+      "1": 0.22716297786720321,
+      "2": 0.35955734406438633,
+      "4": 0.5446680080482897,
+      "8": 0.7293762575452716
+    }
+  },
+  "prior_art_gate": {
+    "measured_lead": 1,
+    "measured_precision_max": 0.27456225680933855,
+    "passes_gate": false,
+    "required": "lead >= 2 AND precision >= 0.75 to clear the idle-gap bound (AGENTS.md research assimilation R1-R11)",
+    "verdict": "k=1 next-layer prediction: measurable reuse exists but does not clear the prior-art gate; consistent with the in-repo verdict that k=1 mechanisms are worth 0 s on the sealed bank."
+  },
+  "sigma_corr_max_recall": 0.7293762575452716,
+  "statement": "Delta H <= Sigma_corr: prefetch can only convert accesses predictable from already-observed information into earlier hits. Compulsory first touches (2,364 records on the sealed window) are immovable, and a wrong hint wastes bandwidth without changing execution (exactness contract)."
+}

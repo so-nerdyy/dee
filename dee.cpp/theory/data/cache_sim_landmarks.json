@@ -1,0 +1,27 @@
+{
+  "finite_window_hit_ceiling": -0.0968817415179447,
+  "frac_knee_records_measured": {
+    "lru_at_50pct_of_max": {
+      "measured_gib": 6,
+      "measured_records": 481
+    },
+    "lru_at_80pct_of_max": {
+      "measured_gib": 10,
+      "measured_records": 803
+    },
+    "lru_at_95pct_of_max": {
+      "measured_gib": 20,
+      "measured_records": 1606
+    }
+  },
+  "lru_hit_max": 0.5363796822906453,
+  "measured_knee_gib": 16.0,
+  "measured_lru_minus_min_pp": 2.8,
+  "measured_reaches_min_gib": 32.0,
+  "measured_repeat_records": 935,
+  "recomputed_knee_gib": 16.0,
+  "recomputed_lru_minus_min_pp_at_knee": -2.82408315355952,
+  "recomputed_reaches_min_gib": 24.0,
+  "recomputed_repeat_records": 935,
+  "unique_records": 2364
+}

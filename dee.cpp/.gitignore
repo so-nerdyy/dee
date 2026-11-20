@@ -1,10 +1,20 @@
 # Build artifacts
 build/
-build-cmake/
-build-cmake*/
+build-*/
+CMakeCache.txt
+CMakeFiles/
+compile_commands.json
 
 # Logs
 *.log
+*.nvvp
+*.nsys-rep
+*.ncu-rep
+core
+core.*
+
+# Reproducible local benchmark assets; never commit generated shards as normal Git blobs.
+tests/data/*.safetensors
 
 # Editor / OS cruft
 *.swp

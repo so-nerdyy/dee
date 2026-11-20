@@ -1,0 +1,23 @@
+{
+  "model": "MiniMaxAI/MiniMax-M3",
+  "revision": "f0e1c1e04d40177e4673a22097036854f536e9c0",
+  "codec": "bf16-raw-w1w3w2",
+  "codec_note": "Routed experts are raw BF16 matrices (w1/w3/w2, no scale tensors). Record = three bf16 [out,in] weights concatenated. Requires the bf16 expert codec path in the engine (not the fp4 codec).",
+  "no_scales": true,
+  "experts_per_layer": 128,
+  "record_bytes": 113246208,
+  "n_buckets": 57,
+  "layer_start": 3,
+  "n_layers": 60,
+  "n_mtp_buckets": 0,
+  "projections": {"w1": "w1", "w3": "w3", "w2": "w2"},
+  "kind_field": {"weight": "weight"},
+  "tensor_pattern": "language_model.model.layers.{layer}.block_sparse_moe.experts.{expert}.{proj}.{kind}",
+  "expert_name_re": "^language_model\\.model\\.layers\\.(\\d+)\\.block_sparse_moe\\.experts\\.(\\d+)\\.(w[123])\\.(weight)$",
+  "coverage_re": "\\.block_sparse_moe\\.experts\\.",
+  "expected": {
+    "w1.weight": {"dtype": "BF16", "shape": [3072, 6144], "nbytes": 37748736},
+    "w3.weight": {"dtype": "BF16", "shape": [3072, 6144], "nbytes": 37748736},
+    "w2.weight": {"dtype": "BF16", "shape": [6144, 3072], "nbytes": 37748736}
+  }
+}

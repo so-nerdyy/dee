@@ -1,0 +1,13 @@
+{
+  "git_commit": "217a33359b06a0453444a698ec52e4078b77e388",
+  "source_bundle_sha256": "76e1b437c6bf521d0c38d8797adf4d354a07c836fa1c92eae9328e38a11c353b",
+  "executing_harness_sha256": "36aa545892978b63cb63c82c28bbccbf0b9b30e81bf3cee68eb481765851df49",
+  "extension_sha256": {
+    "pydee/pydee_core.cpython-312-x86_64-linux-gnu.so": "927d4600d3891bc72301d287f32d0bf6eedf36ae5e5fadbaffa4e2fb191a8922"
+  },
+  "core_library_sha256": {
+    "build-kaggle/libdee_core.a": "75a31b559e2fe9fc433788ef0ee10441e3263a66b33fc7e222c7f21c9b2933ef"
+  },
+  "fresh_clone": true,
+  "forced_extension_rebuild": true
+}

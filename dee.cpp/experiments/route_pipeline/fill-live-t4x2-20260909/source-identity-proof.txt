@@ -1,0 +1,12 @@
+base=217a333 patch_sha=b68da4a91a9408da62552161345ecd1fd3ffed0e30427857be1d9d22b7efcd80
+dee.cpp/CMakeLists.txt
+dee.cpp/include/dee/engine.h
+dee.cpp/include/dee/expert_store.h
+dee.cpp/include/dee/host_pack_cache.h
+dee.cpp/include/dee/profiling.h
+dee.cpp/pydee/pydee.cpp
+dee.cpp/scripts/deepseek_v4_layer_candidate.py
+dee.cpp/src/engine.cpp
+dee.cpp/src/expert_store.cpp
+dee.cpp/src/host_pack_cache.cpp
+dee.cpp/src/profiling.cpp

@@ -1,0 +1,4 @@
+# Evidence bundle: preserve bytes exactly. The route journals carry
+# published file_sha256 values computed over LF bytes; EOL conversion
+# would break hash verification on checkout.
+* -text

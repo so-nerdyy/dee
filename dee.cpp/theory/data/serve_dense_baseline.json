@@ -1,0 +1,8 @@
+{
+  "assumption": "DENSE_BASELINE (constants.py): 568 GiB bf16, 8xH100, $0.003223/GPU/s, 200 tok/s achieved (all ASSUMPTION)",
+  "n_gpu": 8,
+  "price_s": 0.025784,
+  "resident_gib": 568.0,
+  "tok_s": 200.0,
+  "usd_per_1k_tok": 0.12892
+}

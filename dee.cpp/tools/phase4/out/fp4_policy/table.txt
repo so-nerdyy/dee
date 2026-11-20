@@ -1,0 +1,48 @@
+
+--- vram=3.50GiB fp4 (281 slots) policy=lru | host=8.50GiB per-device consult=eager qd=6 regime=cold persist=1 ---
+prompt dev       req  vHit vCold   vEv  hHit hMiss   hEv  vHit%  hHit%   e2e% belady
+q0     cuda:0   2841   751  2090  1809  1147  1694  1012  26.4%  40.4%  40.4%   1289
+q0     cuda:1   2671  1082  1589  1308  1385  1286   604  40.5%  51.9%  51.9%   1461
+q0     pooled   5512  1833  3679  3117  2532  2980  1616  33.3%  45.9%  45.9%   2750
+
+--- vram=3.50GiB fp4 (281 slots) policy=priority_lru | host=8.50GiB per-device consult=eager qd=6 regime=cold persist=1 ---
+prompt dev       req  vHit vCold   vEv  hHit hMiss   hEv  vHit%  hHit%   e2e% belady
+q0     cuda:0   2841   267  2574  2293  1147  1694  1012   9.4%  40.4%  40.4%   1289
+q0     cuda:1   2671   285  2386  2105  1385  1286   604  10.7%  51.9%  51.9%   1461
+q0     pooled   5512   552  4960  4398  2532  2980  1616  10.0%  45.9%  45.9%   2750
+
+--- vram=3.50GiB fp4 (281 slots) policy=lfu | host=8.50GiB per-device consult=eager qd=6 regime=cold persist=1 ---
+prompt dev       req  vHit vCold   vEv  hHit hMiss   hEv  vHit%  hHit%   e2e% belady
+q0     cuda:0   2841   770  2071  1790  1147  1694  1012  27.1%  40.4%  40.4%   1289
+q0     cuda:1   2671  1107  1564  1283  1385  1286   604  41.4%  51.9%  51.9%   1461
+q0     pooled   5512  1877  3635  3073  2532  2980  1616  34.1%  45.9%  45.9%   2750
+
+--- vram=3.50GiB fp4 (281 slots) policy=freq_x_recency | host=8.50GiB per-device consult=eager qd=6 regime=cold persist=1 ---
+prompt dev       req  vHit vCold   vEv  hHit hMiss   hEv  vHit%  hHit%   e2e% belady
+q0     cuda:0   2841   770  2071  1790  1147  1694  1012  27.1%  40.4%  40.4%   1289
+q0     cuda:1   2671  1107  1564  1283  1385  1286   604  41.4%  51.9%  51.9%   1461
+q0     pooled   5512  1877  3635  3073  2532  2980  1616  34.1%  45.9%  45.9%   2750
+
+--- vram=3.50GiB fp4 (281 slots) policy=segmented | host=8.50GiB per-device consult=eager qd=6 regime=cold persist=1 ---
+prompt dev       req  vHit vCold   vEv  hHit hMiss   hEv  vHit%  hHit%   e2e% belady
+q0     cuda:0   2841     0  2841  2785  1147  1694  1012   0.0%  40.4%  40.4%   1289
+q0     cuda:1   2671     0  2671  2615  1385  1286   604   0.0%  51.9%  51.9%   1461
+q0     pooled   5512     0  5512  5400  2532  2980  1616   0.0%  45.9%  45.9%   2750
+
+--- vram=3.50GiB fp4 (281 slots) policy=layer_lru | host=8.50GiB per-device consult=eager qd=6 regime=cold persist=1 ---
+prompt dev       req  vHit vCold   vEv  hHit hMiss   hEv  vHit%  hHit%   e2e% belady
+q0     cuda:0   2841   780  2061  1780  1147  1694  1012  27.5%  40.4%  40.4%   1289
+q0     cuda:1   2671  1109  1562  1281  1385  1286   604  41.5%  51.9%  51.9%   1461
+q0     pooled   5512  1889  3623  3061  2532  2980  1616  34.3%  45.9%  45.9%   2750
+
+--- vram=3.50GiB fp4 (281 slots) policy=static_hotset+dyn | host=8.50GiB per-device consult=eager qd=6 regime=cold persist=1 ---
+prompt dev       req  vHit vCold   vEv  hHit hMiss   hEv  vHit%  hHit%   e2e% belady
+q0     cuda:0   2841   848  1993  1712  1147  1694  1012  29.8%  40.4%  40.4%   1289
+q0     cuda:1   2671  1135  1536  1255  1385  1286   604  42.5%  51.9%  51.9%   1461
+q0     pooled   5512  1983  3529  2967  2532  2980  1616  36.0%  45.9%  45.9%   2750
+
+--- vram=3.50GiB fp4 (281 slots) policy=belady | host=8.50GiB per-device consult=eager qd=6 regime=cold persist=1 ---
+prompt dev       req  vHit vCold   vEv  hHit hMiss   hEv  vHit%  hHit%   e2e% belady
+q0     cuda:0   2841  1289  1552  1169  1147  1694  1012  45.4%  40.4%  40.4%   1289
+q0     cuda:1   2671  1461  1210   929  1385  1286   604  54.7%  51.9%  51.9%   1461
+q0     pooled   5512  2750  2762  2098  2532  2980  1616  49.9%  45.9%  45.9%   2750

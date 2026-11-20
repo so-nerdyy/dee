@@ -1,0 +1,32 @@
+{
+  "recorded_at_utc": "2026-09-18T04:54:49Z",
+  "run_id": "p4-campaign",
+  "repository": "https://github.com/so-nerdyy/dee.git",
+  "branch": "freebuff/deepseek-v4-flash-0731-t4",
+  "git_commit": "216ad6553ebd961c6688e335f79f6a7588dd3653",
+  "model_revision": "9e165c30e2704aec5d9d593cce3eebd58bbef1cb",
+  "executing_harness_sha256": "df8d8fef4a211582d76d951d124cea740595025d60b775f3582303d70cfd6a43",
+  "cloned_harness_sha256": "df8d8fef4a211582d76d951d124cea740595025d60b775f3582303d70cfd6a43",
+  "run_config_sha256": "29c960e0560ee90dd1b43d65cdb6ad05748fc91ce381e0da0ef2c94dc8b1e0fe",
+  "kernel_metadata_sha256": "b4f3f5ea04a8099801fe6f03611e9bffb5ad7e4e6e420020ba4d2174ff11ea79",
+  "expected_token_ids": [
+    666,
+    95140,
+    96807,
+    343,
+    4470,
+    20,
+    1127,
+    3298,
+    22,
+    22604,
+    515,
+    411,
+    3947,
+    85349,
+    14,
+    6341
+  ],
+  "expected_decoded_text": "**Alan Turing (1912\u20131954)** was an English mathematician, computer",
+  "required_gpu": "2x Tesla T4 for performance acceptance"
+}
