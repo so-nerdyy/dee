@@ -138,6 +138,8 @@ exact source revision (r7 used `7fc878a`).
 | `dee.cpp/runs/` | Phase 6 per-run evidence and scorecards |
 | `dee.cpp/benchmark_reports/` | earlier Kaggle/T4 evidence bundles, kept byte-for-byte |
 | `dee.cpp/kaggle/`, `dee.cpp/experiments/`, `research/` | earlier campaign drivers and research notes |
+| `paper/` | the arXiv paper (LaTeX source, figures, build script) |
+| `dee.cpp/demo/` | a replay page of a real r7 run, built from its evidence |
 | `docs/phase3/` | Phase 3 design notes and results |
 | `archive/` | superseded prototype and supervisor scripts, kept for provenance |
 
