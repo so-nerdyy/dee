@@ -1,0 +1,133 @@
+{
+  "addendum5": {
+    "addendum": "PREDICTIONS_PHASE6.md Addendum 5",
+    "graded_metrics": [
+      "host_hit_rate",
+      "cold_records_per_tok"
+    ],
+    "not_registered": [
+      "decode_tps",
+      "usd_per_1k_tok"
+    ],
+    "registered": "2026-11-11",
+    "requires": {
+      "b": 8,
+      "budget_mib": 3584,
+      "cohort": "0-7",
+      "gpu": "L4",
+      "min_decode_steps": 64,
+      "prompts_file": "dee.cpp/aws/phase6/prompts_phase4_8.json",
+      "window": "last 32 decode steps (score.py)"
+    },
+    "rows": [
+      {
+        "b": 8,
+        "capacity_records": 1445,
+        "cold_records_per_tok": {
+          "hi": 217.9,
+          "kill_hi": 237.71,
+          "kill_lo": 158.38,
+          "lo": 178.28,
+          "nominal": 198.09
+        },
+        "gpu": "L4",
+        "host_gib": 18,
+        "host_hit_rate": {
+          "hi": 0.02,
+          "kill_hi": 0.0406,
+          "kill_lo": 0.0,
+          "lo": 0.0,
+          "nominal": 0.0
+        },
+        "model": "dsv4_flash"
+      },
+      {
+        "b": 8,
+        "capacity_records": 1927,
+        "cold_records_per_tok": {
+          "hi": 117.58,
+          "kill_hi": 128.27,
+          "kill_lo": 85.51,
+          "lo": 96.2,
+          "nominal": 106.89
+        },
+        "gpu": "L4",
+        "host_gib": 24,
+        "host_hit_rate": {
+          "hi": 0.4804,
+          "kill_hi": 0.5004,
+          "kill_lo": 0.4204,
+          "lo": 0.4404,
+          "nominal": 0.4604
+        },
+        "model": "dsv4_flash"
+      },
+      {
+        "b": 8,
+        "capacity_records": 2570,
+        "cold_records_per_tok": {
+          "hi": 97.56,
+          "kill_hi": 110.64,
+          "kill_lo": 66.31,
+          "lo": 74.59,
+          "nominal": 83.61
+        },
+        "gpu": "L4",
+        "host_gib": 32,
+        "host_hit_rate": {
+          "hi": 0.6016,
+          "kill_hi": 0.6216,
+          "kill_lo": 0.4945,
+          "lo": 0.5323,
+          "nominal": 0.5779
+        },
+        "model": "dsv4_flash"
+      }
+    ],
+    "source": "theory.batch_cliff_replay (exact LRU replay of the rebuilt r5 b=8 stream)"
+  },
+  "cliff_gib": {
+    "rebuilt_pop_b7_model": 18.63,
+    "rebuilt_pop_b8_model_iid": 20.75,
+    "replay_first_hit_gib": 19.1,
+    "sealed_pop_b8_model": 16.4
+  },
+  "cohort": "aws/phase6/prompts_phase4_8.json == Phase-4 q0..q7 (q7 repeats q0)",
+  "journals": "dee.cpp/benchmark_reports/deepseek-v4-flash-0731-t4/gpu2-phase4-cache-hierarchy/evidence/a1_asis",
+  "r5_check": [
+    {
+      "capacity_records": 1285,
+      "host_gib": 16,
+      "measured_hit": 0.0,
+      "replay_hit": 0.0,
+      "replay_lookups": 50711,
+      "run": "p6m-l4-r5-b8-h16"
+    },
+    {
+      "capacity_records": 5140,
+      "host_gib": 64,
+      "measured_hit": 0.8351,
+      "replay_hit": 0.8234,
+      "replay_lookups": 50711,
+      "run": "p6m-l4-r5-b8-h64"
+    }
+  ],
+  "record_bytes": 13369344,
+  "records_seen_rebuilt": 10004,
+  "records_seen_sealed": 2364,
+  "stream_check": {
+    "decode_step_set_max": 1654,
+    "decode_step_set_mean": 1521.8,
+    "decode_step_set_min": 927,
+    "prefill_set": 5831,
+    "r5_measured": {
+      "prefill_set": 6147,
+      "step_set_max": 1644,
+      "step_set_mean": 1521,
+      "step_set_min": 915,
+      "window_lookups": 49463
+    },
+    "window_lookups": 50711,
+    "window_step_set_max": 1654
+  }
+}
