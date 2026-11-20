@@ -234,8 +234,8 @@ def belady_times(records: List[Record]) -> List[Dict]:
     return out
 
 
-def run_classlru(tune, layers, n_expert, n_slots, records, skip_tokens, first_layer):
-    c = tune.ClassLRU(layers, n_expert, n_slots)
+def run_classlru(tune, layers, n_expert, n_slots, records, skip_tokens, first_layer, policy="classlru"):
+    c = tune.ClassLRU(layers, n_expert, n_slots, policy) if policy != "classlru" else tune.ClassLRU(layers, n_expert, n_slots)
     hits = lookups = seen = 0
     for il, n_used, ids in records:
         n_tokens = len(ids) // n_used
@@ -290,6 +290,8 @@ def main() -> None:
                 h, n = run_classlru(tune, layers, n_expert, n_slots, records, args.skip_tokens, first)
             elif p == "lru":
                 h, n = run_pool(LRU(n_slots), records, args.skip_tokens, first)
+            elif p == "upstream_next_use":  # the mirror in the patched moe-cache-tune.py
+                h, n = run_classlru(tune, layers, n_expert, n_slots, records, args.skip_tokens, first, "next_use")
             elif p == "next_use":
                 h, n = run_pool(NextUse(n_slots, layers), records, args.skip_tokens, first)
             elif p == "belady":
