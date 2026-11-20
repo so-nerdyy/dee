@@ -32,7 +32,7 @@ take responsibility for the paper, so only you can do this.
 | License | **CC BY 4.0** (anyone may share and reuse with credit; best for visibility). arXiv's default "non-exclusive license to distribute" also works if you'd rather keep more rights. |
 | Title | Exact by Construction, Graded in Advance: A Pre-Registered Hardware Evaluation of SSD-to-GPU Expert Offloading for DeepSeek-V4-Flash |
 | Authors | Nivin Karthick |
-| Comments | `12 pages, 2 figures, 3 tables. Code, frozen predictions and scorecards: https://github.com/so-nerdyy/dee` |
+| Comments | `15 pages, 10 figures, 3 tables. Code, frozen predictions and scorecards: https://github.com/so-nerdyy/dee` |
 | Abstract | paste from below (plain text, no LaTeX commands; arXiv limit is 1,920 characters) |
 | Upload | `paper/arxiv.tar.gz` (contains `dee.tex`, `dee.bbl`, two figure PDFs). arXiv does not run BibTeX, which is why the `.bbl` is included. |
 

@@ -6,6 +6,8 @@
 \usepackage{amsmath,amssymb}
 \usepackage{booktabs}
 \usepackage{multirow}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,fit,backgrounds}
 \usepackage{graphicx}
 \usepackage{xcolor}
 \usepackage{microtype}
@@ -169,6 +171,36 @@ non-determinism in LLM inference is a known problem
 more data point.
 
 \section{System}\label{sec:system}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  box/.style={draw, rounded corners=2pt, align=center, font=\footnotesize,
+              minimum height=13mm, text width=37mm, inner sep=2pt},
+  arr/.style={-{Stealth[length=2mm]}, thick},
+  lab/.style={font=\scriptsize, align=center, fill=white, inner sep=1pt}]
+\node[box, fill=orange!12] (ssd)  at (0,0)    {NVMe SSD\\FP4 expert store\\146.6\,GiB};
+\node[box, fill=orange!12] (host) at (5.6,0)  {Host tier (RAM)\\16 or 64\,GiB\\LRU or next-use};
+\node[box, fill=blue!10]   (vram) at (11.2,0) {VRAM expert cache\\3.5--60\,GiB\\LRU or next-use};
+\node[box, fill=gray!10]   (gate) at (0,-2.6)    {Exactness gate\\token ids and\\route journal};
+\node[box, fill=green!10]  (torch) at (5.6,-2.6) {PyTorch backbone\\attention, router,\\shared expert};
+\node[box, fill=blue!10]   (ffn) at (11.2,-2.6)  {Routed-expert FFN\\(\texttt{dee.cpp})\\FP4 dequant, cuBLAS};
+\draw[arr] (ssd) -- node[lab, above=1mm]{cold read} (host);
+\draw[arr] (host) -- node[lab, above=1mm]{copy to GPU} (vram);
+\draw[arr] (vram) -- node[lab, right=1mm]{weights} (ffn);
+\draw[arr] ([yshift=2.5mm]torch.east) -- node[lab, above=0.5mm]{chosen experts} ([yshift=2.5mm]ffn.west);
+\draw[arr] ([yshift=-2.5mm]ffn.west) -- node[lab, below=0.5mm]{expert output} ([yshift=-2.5mm]torch.east);
+\draw[arr] (torch) -- node[lab, above=1mm]{tokens, routes} (gate);
+\end{tikzpicture}
+\caption{\dee{}'s data path. The router in the PyTorch backbone chooses
+experts; the native engine only makes sure the chosen experts are on the GPU
+(VRAM, else host tier, else SSD) and runs them. Placement policies act only on the
+cache tiers (top row), never on the router. Every run's tokens and
+routing journal go to the exactness gate.}
+\label{fig:arch}
+\end{figure}
+
+Figure~\ref{fig:arch} shows the data path.
 
 \paragraph{Model.} DeepSeek-V4-Flash-0731 (revision \texttt{9e165c30}) has 43
 MoE layers with 256 routed experts each (top-6, \texttt{sqrtsoftplus} scores,
@@ -343,7 +375,7 @@ ran 48 tokens; the first 16 ids match exactly.} This is the strongest evidence
 we have that the cloud harness reproduces the original computation.
 
 Other architectures do not reproduce the T4 tokens, but agree among
-themselves in a pattern that follows the hardware:
+themselves in a pattern that follows the hardware (Figure~\ref{fig:crossgpu}):
 \begin{itemize}
 \item At batch 1, L4, 2$\times$L4, L40S (all SM89) and RTX PRO 6000 (Blackwell)
 produce identical tokens; the A10 (SM86) differs from them; the T4 (SM75)
@@ -360,6 +392,13 @@ a confound we cannot yet separate: the GPUs that diverge from the L4 also run
 with much larger VRAM budgets, so either the cuBLAS kernel choice or the budget
 could be responsible. The contract says the budget must not matter, so this is
 the most important open check (Section~\ref{sec:limits}).
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.85\linewidth]{figures/cross_gpu.pdf}
+\caption{Token agreement between GPU types in r7. Each GPU is identical to itself at every host budget (diagonal). At $b=1$ the cards fall into three groups that follow the architecture: T4 (SM75), A10 (SM86), and SM89 plus Blackwell. At $b=8$ only the L4 pair was compared against every card; \emph{?} marks pairs we did not compare.}
+\label{fig:crossgpu}
+\end{figure}
 
 \subsection{Throughput across GPUs}
 
@@ -399,7 +438,10 @@ tier, about 3.4$\times$ the L4, and 2.2 tokens/s at batch 1. For reference, the
 original Kaggle 2$\times$T4 anchor ran at about 0.21 tokens/s. Growing the host
 tier from 16 to 64\,GiB roughly doubles the batch-8 host hit rate (0.43--0.45 to
 0.85) and cuts cold reads per token from about 108 to about 29 on every GPU,
-which raises batch-8 throughput by 1.3--1.6$\times$ (1.26$\times$ on 2$\times$L4).
+which raises batch-8 throughput by 1.3--1.6$\times$ (1.26$\times$ on 2$\times$L4;
+Figure~\ref{fig:hosttier}). Per token, the A10 and RTX PRO 6000 are the cheapest
+(about \$0.19 and \$0.22 per 1,000 tokens at list price; Figure~\ref{fig:cost}),
+and 2$\times$L4 is the most expensive.
 A second GPU does not help: 2$\times$L4 is no faster than 1$\times$L4, which is
 consistent with a single-stream engine whose bottleneck is the host-side read
 and copy path, not GPU compute.
@@ -412,6 +454,20 @@ operating system's page cache. Either could explain it; we have not tested
 which, so we do not fit a batch-1 model and report this as an open anomaly. A repeat of r6's L4 batch-8 row in r7 gave 1.230 tokens/s against
 1.204 for the same configuration later in the container (2\% apart), so
 run-to-run noise at batch 8 is small compared with the effects above.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\linewidth]{figures/host_tier.pdf}
+\caption{Effect of the host tier at $b=8$ in r7. (a) A 64\,GiB tier cuts SSD reads per token about 3.7$\times$ on every GPU; the counts barely depend on the GPU because routing and cache policy are the same. (b) The resulting speedup is 1.26--1.56$\times$.}
+\label{fig:hosttier}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.5\linewidth]{figures/cost.pdf}
+\caption{Cost per 1,000 generated tokens at $b=8$ with a 64\,GiB host tier, at Modal's all-in list rate (GPU, 8 CPU cores and reserved RAM). The fastest card is also among the cheapest per token.}
+\label{fig:cost}
+\end{figure}
 
 \subsection{Pre-registered predictions}
 
@@ -433,7 +489,15 @@ slower than the nominal prediction; the largest misses are at batch 8 with a
 copies. The same picture appeared in r5 (four L4 rows, all killed), before
 the host-path fixes that made the engine about 1.8$\times$ faster between r5 and r6.
 
-The stage profile from r5 shows why. At batch 8 with 64\,GiB, GPU copy time was
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.5\linewidth]{figures/l4_progress.pdf}
+\caption{Decode speed of the same L4 cell (b=8, 16\,GiB host tier) across runs. Host-path fixes between r5 and r6 gave 1.8$\times$ with the same reads per token; next-use eviction gave a further 1.30$\times$. The two r7 bars are the same configuration at the start and later in one container.}
+\label{fig:progress}
+\end{figure}
+
+The stage profile from r5 shows why (Figure~\ref{fig:progress} shows how much
+the later host-path fixes changed). At batch 8 with 64\,GiB, GPU copy time was
 5.2\,s and GPU compute about 1\,s of a 640\,s row, while the host-side copy from
 memory-mapped or read buffers into pinned memory took 262\,s of CPU time. The
 engine read about 1.5\,GiB/s against 3.96\,GiB/s from \texttt{fio} on the same
@@ -474,13 +538,27 @@ A9 & hints / next-use tok/s & 1.24 [1.05, 1.45] & 1.053 & PASS (edge) \\
 \end{tabular}
 \end{table}
 
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.55\linewidth]{figures/eviction_sizes.pdf}
+\caption{Host hit rate at $b=8$ by host-tier size: trace-replay simulator (lines) and hardware (open markers). LRU collapses to 0 at 16\,GiB; next-use recovers 0.42 (measured 0.44); the offline Belady bound is 0.61. Above 32\,GiB the policies converge.}
+\label{fig:eviction}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\linewidth]{figures/r6_policies.pdf}
+\caption{Run r6, one container, four placement policies with byte-identical outputs. (a) Throughput. (b) Host hit rate split into what eviction kept and what hints added. Hints added only 0.06--0.11 of hit rate against a predicted 0.87 total, at the cost of 27\% more reads.}
+\label{fig:r6}
+\end{figure}
+
 Run r5 found the batch-8, 16\,GiB host tier at a hit rate of exactly 0 (0 of
 49,463 lookups), because one decode step needs more records than the tier
 holds and LRU evicts each one just before it is reused. A free trace-replay
 simulator reproduced this (0.000) and the 64\,GiB rate (0.824 vs.\ 0.835
 measured), and predicted that next-use eviction would recover 0.42 host hit
 against an offline Belady bound of 0.61. Addendum 5 registered those numbers.
-Table~\ref{tab:r6} shows the outcome: every eviction prediction passed, and
+Table~\ref{tab:r6} and Figures~\ref{fig:eviction} and~\ref{fig:r6} show the outcome: every eviction prediction passed, and
 next-use raised throughput 1.30$\times$ over LRU (1.348 vs.\ 1.037 tokens/s),
 with cold reads per token down 44\%.
 
@@ -504,7 +582,7 @@ After r7 we fitted a two-term model to the batch-8 rows:
 T_\text{step} = t_\text{fixed}(\text{GPU}) + R_\text{cold} \cdot c_\text{read},
 \end{equation}
 where $R_\text{cold}$ is cold reads per step and $c_\text{read}$ the cost of one
-12.75\,MiB record. Each GPU's 16/64\,GiB pair determines both terms. The fitted
+12.75\,MiB record. Each GPU's 16/64\,GiB pair determines both terms (Figure~\ref{fig:tpsmodel}). The fitted
 $t_\text{fixed}$ ranges from 3.41\,s/step (L4) to 1.14\,s/step (RTX PRO 6000) and
 follows $t_\text{fixed} \approx 114\,\text{BW}^{-0.62}$ in the GPU's datasheet
 memory bandwidth (GB/s). The fitted $c_\text{read}$ does \emph{not} follow the
@@ -515,6 +593,13 @@ from the other three (leave-one-GPU-out) gives a median absolute error of
 14\% and a maximum of 56\% (L4 at 16\,GiB). This model was fitted after the
 data and is not a pre-registration; we include it so that the next campaign
 can register it.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\linewidth]{figures/tps_model.pdf}
+\caption{Post-hoc step-time model at $b=8$. (a) Each bar splits a decode step into a fixed part and the cost of cold reads; the 64\,GiB rows (right of each pair) are mostly fixed time. (b) The fixed part falls with GPU memory bandwidth as a power law (2$\times$L4 omitted).}
+\label{fig:tpsmodel}
+\end{figure}
 
 \section{Limitations}\label{sec:limits}
 

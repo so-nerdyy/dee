@@ -6,5 +6,5 @@ cd "$(dirname "$0")"
 python3 figures/make_figures.py
 latexmk -pdf -interaction=nonstopmode dee.tex
 rm -f arxiv.tar.gz
-tar czf arxiv.tar.gz dee.tex dee.bbl figures/r7_tps.pdf figures/pred_vs_meas.pdf
+tar czf arxiv.tar.gz dee.tex dee.bbl figures/*.pdf
 echo "wrote arxiv.tar.gz:"; tar tzf arxiv.tar.gz
