@@ -54,7 +54,7 @@ def _m3v62_resolve_kaggle_dir():
     """Return the user's ~/.kaggle directory on any platform.
 
     Windows `pathlib.Path.home()` ERRORS when only ``HOME`` (Cygwin form
-    ``C:\\Users\\carth``) is set and ``USERPROFILE`` is missing -- which
+    ``C:\\Users\\<you>``) is set and ``USERPROFILE`` is missing -- which
     is exactly what `setsid + nohup </dev/null` produces for v10-style
     supervised launches. Try ``USERPROFILE`` first (Windows Python's
     real home), fall back to ``HOME`` (Cygwin/Linux MSYS form), and
@@ -104,8 +104,9 @@ except Exception:
     pass
 
 ROOT = Path(__file__).resolve().parent
+REPO_ROOT = ROOT.parents[1]  # this file lives in archive/kaggle-supervisors/
 SLUG_DEFAULT = "nivind/dee-cpp-ornith-milestone-3-forensics"
-KERNEL_DIR_DEFAULT = ROOT.parent / "dee.cpp" / "kaggle" / "ornith-milestone3"
+KERNEL_DIR_DEFAULT = REPO_ROOT / "dee.cpp" / "kaggle" / "ornith-milestone3"
 EVIDENCE_DIR_DEFAULT = ROOT / "m3_v6_output"
 ANALYZER_SCRIPT = ROOT / "m3_analyze_trace.py"
 LOG_FILE = ROOT / "m3_supervisor_v6.log"
@@ -803,7 +804,7 @@ def _main_unlocked(argv):
             resume_identity = {}
     if not args.commit_expected:
         args.commit_expected = subprocess.check_output(
-            ["git", "-C", str(ROOT.parent), "rev-parse", "HEAD"],
+            ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
             text=True, encoding="utf-8",
         ).strip()
 

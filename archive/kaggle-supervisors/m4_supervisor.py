@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Phase 1 Milestone-4 supervisor: push the integration commit, poll,
 download evidence, and run the local seal harness against the downloaded
-artifacts. Modeled on tmp/m3_supervisor_v6.py; the same `kaggle_invoke()`
+artifacts. Modeled on m3_supervisor_v6.py; the same `kaggle_invoke()`
 fallback chain, lock + heartbeat + state machine, and `_stage_kernel()`-style
 literal-override pattern are reused verbatim so the M3-proven execution
 path carries over.
@@ -55,7 +55,7 @@ def _resolve_kaggle_dir() -> Path:
 
 
 # v6.2 / FIX-13 carry-over: explicit propagation of Kaggle creds into the
-# subprocess env. Mirrors tmp/m3_supervisor_v6.py lines 80-108 but is
+# subprocess env. Mirrors m3_supervisor_v6.py lines 80-108 but is
 # reduced to the parts the M4 launch path actually needs.
 try:
     _kdir = _resolve_kaggle_dir()
@@ -82,7 +82,7 @@ except Exception:
     pass
 
 
-ROOT = Path(__file__).resolve().parent.parent  # dynamic_expert_eviction/
+ROOT = Path(__file__).resolve().parents[2]  # dynamic_expert_eviction/
 SLUG_DEFAULT = "nivind/dee-cpp-ornith-milestone-4-phase-2-cap-32-matrix"
 KERNEL_DIR_DEFAULT = ROOT / "dee.cpp" / "kaggle" / "ornith-milestone4"
 EVIDENCE_DIR_DEFAULT = ROOT / "tmp" / "m4_ledger_seal_redo"

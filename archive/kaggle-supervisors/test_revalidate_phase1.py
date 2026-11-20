@@ -30,8 +30,8 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
-WRAPPER_PATH = REPO / "tmp" / "revalidate_phase1.py"
+REPO = Path(__file__).resolve().parents[2]
+WRAPPER_PATH = REPO / "archive" / "kaggle-supervisors" / "revalidate_phase1.py"
 HARNESS_PATH = (
     REPO / "dee.cpp" / "scripts" / "run_milestone4_ledger_seal.py"
 )

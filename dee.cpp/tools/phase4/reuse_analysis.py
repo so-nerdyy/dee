@@ -11,7 +11,8 @@ Sanity gate: replay must reproduce GPU-2 measured counters on q0:
 import json, sys, math
 from collections import defaultdict, Counter
 
-BASE = r"C:/Users/carth/Downloads/dynamic_expert_eviction/.freebuff/wt/p4/dee.cpp/benchmark_reports/deepseek-v4-flash-0731-t4/gpu2-phase3-fullstore"
+import os
+BASE = os.environ.get("DEE_P3_EVIDENCE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "benchmark_reports", "deepseek-v4-flash-0731-t4", "gpu2-phase3-fullstore"))
 REC_BYTES = 13_369_344
 
 def load(path):

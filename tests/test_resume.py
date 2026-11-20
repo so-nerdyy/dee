@@ -12,6 +12,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -26,7 +27,7 @@ from run_evidence import (  # noqa: E402
 
 MOCK = EXP / "mock_campaign.py"
 RUN = EXP / "run_evidence.py"
-TMP = Path("C:/Users/carth/AppData/Local/Temp/opencode/rpresume")
+TMP = Path(tempfile.gettempdir()) / "dee-rpresume"
 
 
 def _base_cmd(workname: str, scenario: int) -> list[str]:

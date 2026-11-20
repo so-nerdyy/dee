@@ -1,5 +1,9 @@
 # dee.cpp: Dynamic Expert Eviction
 
+> Start with the [repository README](../README.md) for what DEE is, the current
+> DeepSeek-V4-Flash results, and how to reproduce them. This file documents the
+> engine internals and the original synthetic-shard / T4 benchmark path.
+
 `dee.cpp` is a correctness-first C++17/CUDA implementation of the Dynamic
 Expert Eviction control path: a safetensors shard is mapped read-only, Oracle
 predictions select experts, a fixed cache manages residency, and CUDA runs a
