@@ -47,6 +47,14 @@ first comment.
 > - Best speed: 6.3 tokens/s aggregate at batch 8 on an RTX PRO 6000; about 0.75 tok/s single
 >   stream on an L4.
 >
+> To be clear about what this is *not*: it's not a cheaper way to run a model than an API. On
+> rented GPUs it works out to roughly $0.19-0.42 per 1,000 tokens, which is roughly 140 to
+> 2,300 times what API providers charge for this same model ($0.18-1.32 per million output
+> tokens on OpenRouter, Nov 20 2026), because they keep the whole model in memory across
+> many GPUs and batch hundreds of users together. Offloading is for running a model that doesn't
+> fit on the GPU you have (locally, privately, offline), and this project is mostly about
+> checking that kind of system honestly.
+>
 > Code, the frozen predictions, every scorecard and the scorer: https://github.com/so-nerdyy/dee
 >
 > I used AI coding assistants a lot for this; the design decisions and the evaluation rules are
