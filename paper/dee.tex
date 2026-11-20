@@ -55,7 +55,9 @@ not pay for their extra reads, offline or on hardware. One positive result held
 exactly as registered: replacing LRU with a next-use eviction rule removed a
 0\% host-hit cliff at batch size 8 and raised throughput 1.30$\times$ (predicted
 1.27$\times$). The fastest configuration, an RTX PRO 6000, decoded 6.27
-tokens/s in aggregate at batch 8. We release the engine, the frozen
+tokens/s in aggregate at batch 8; on rented GPUs that costs far more per token
+than hosted APIs, so the case for offloading is running a model larger than
+the GPU's memory, verifiably, not serving it cheaply. We release the engine, the frozen
 predictions, all scorecards and the scorer.
 \end{abstract}
 
@@ -86,8 +88,12 @@ model fitted after the fact will always look accurate.
 
 \dee{} is a small, single-author research engine, and it is slower than the
 fastest recent systems on similar hardware (Section~\ref{sec:related}). This
-paper does not argue that it is the fastest. It reports what happens when an
-offloading engine is held to two rules:
+paper does not argue that it is the fastest, and it does not argue that
+offloading is a cheaper way to serve a model: on rented GPUs it costs orders of
+magnitude more per token than hosted APIs (Section~\ref{sec:limits}). What
+offloading buys is the ability to run a model whose weights do not fit in GPU
+memory on a GPU you already have. This paper reports what happens when such an
+engine is held to two rules:
 
 \begin{enumerate}
 \item \textbf{Exactness.} Placement may change; outputs may not. Every run
@@ -441,7 +447,8 @@ tier from 16 to 64\,GiB roughly doubles the batch-8 host hit rate (0.43--0.45 to
 which raises batch-8 throughput by 1.3--1.6$\times$ (1.26$\times$ on 2$\times$L4;
 Figure~\ref{fig:hosttier}). Per token, the A10 and RTX PRO 6000 are the cheapest
 (about \$0.19 and \$0.22 per 1,000 tokens at list price; Figure~\ref{fig:cost}),
-and 2$\times$L4 is the most expensive.
+and 2$\times$L4 is the most expensive. These figures compare GPUs with each
+other; they are not competitive with hosted inference (Section~\ref{sec:limits}).
 A second GPU does not help: 2$\times$L4 is no faster than 1$\times$L4, which is
 consistent with a single-stream engine whose bottleneck is the host-side read
 and copy path, not GPU compute.
@@ -465,7 +472,7 @@ run-to-run noise at batch 8 is small compared with the effects above.
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=0.5\linewidth]{figures/cost.pdf}
-\caption{Cost per 1,000 generated tokens at $b=8$ with a 64\,GiB host tier, at Modal's all-in list rate (GPU, 8 CPU cores and reserved RAM). The fastest card is also among the cheapest per token.}
+\caption{Cost per 1,000 generated tokens at $b=8$ with a 64\,GiB host tier, at Modal's all-in list rate (GPU, 8 CPU cores and reserved RAM). For scale, hosted APIs for models of this class typically charge well under \$0.01 per 1,000 output tokens, so these rented-GPU costs are roughly 20--2,000$\times$ higher (Section~\ref{sec:limits}).}
 \label{fig:cost}
 \end{figure}
 
@@ -621,6 +628,23 @@ the batch-1 16 vs.\ 64\,GiB anomaly is unexplained.
 \item \textbf{Speed.} \dee{} is slower than recent systems that report results
 on the same model and similar or larger hardware. Our profile points at the
 host-side copy path as the main remaining cost.
+\item \textbf{Cost and practicality.} Offloading trades throughput for memory,
+and on rented hardware that trade is expensive. At the best measured setting
+(batch 8, 64\,GiB host tier) a rented GPU container costs about \$0.19--0.42 per
+1,000 generated tokens at list price (Figure~\ref{fig:cost}), i.e.\
+\$190--420 per million. Hosted APIs serve models of this class for well under
+\$10 per million output tokens, and some for under \$1, because they keep the
+whole model in the memory of many GPUs and batch hundreds of requests per
+forward pass. Our rented-GPU cost per token is therefore roughly 20 to 2,000
+times higher. \dee{} is not a way to serve a model more cheaply than a
+provider. It is useful where hosted inference is not an option or the GPU is
+already paid for: a local or private deployment, offline use, a model too large
+for the available VRAM, or research that needs to inspect and verify the
+exact computation. On owned hardware the marginal cost is mostly electricity,
+but at 0.7--2.2 tokens/s for a single stream the experience is still far from
+interactive. The Phase-7 cost model predicted DEE could undercut dense,
+fully resident serving at large batch; nothing in this campaign tested that
+claim, and we do not make it.
 \end{itemize}
 
 \section{Conclusion}
