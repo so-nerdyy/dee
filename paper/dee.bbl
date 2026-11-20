@@ -1,4 +1,4 @@
-\begin{thebibliography}{25}
+\begin{thebibliography}{26}
 \providecommand{\natexlab}[1]{#1}
 \providecommand{\url}[1]{\texttt{#1}}
 \expandafter\ifx\csname urlstyle\endcsname\relax
@@ -104,6 +104,14 @@ Brian~A. Nosek, Charles~R. Ebersole, Alexander~C. DeHaven, and David~T. Mellor.
 \newblock The preregistration revolution.
 \newblock \emph{Proceedings of the National Academy of Sciences}, 115\penalty0
   (11):\penalty0 2600--2606, 2018.
+
+\bibitem[{OpenRouter}(2026)]{openrouter2026dsv4}
+{OpenRouter}.
+\newblock {DeepSeek V4 Flash 0731}: provider prices.
+\newblock \url{https://openrouter.ai/models/deepseek/deepseek-v4-flash-0731},
+  2026.
+\newblock Listed output prices per million tokens: DeepInfra \$0.18, Cohere
+  \$0.28, Cloudflare \$1.32; accessed 2026-11-20.
 
 \bibitem[Shazeer et~al.(2017)Shazeer, Mirhoseini, Maziarz, Davis, Le, Hinton,
   and Dean]{shazeer2017outrageously}

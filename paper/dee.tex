@@ -472,7 +472,7 @@ run-to-run noise at batch 8 is small compared with the effects above.
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=0.5\linewidth]{figures/cost.pdf}
-\caption{Cost per 1,000 generated tokens at $b=8$ with a 64\,GiB host tier, at Modal's all-in list rate (GPU, 8 CPU cores and reserved RAM). For scale, hosted APIs for models of this class typically charge well under \$0.01 per 1,000 output tokens, so these rented-GPU costs are roughly 20--2,000$\times$ higher (Section~\ref{sec:limits}).}
+\caption{Cost per 1,000 generated tokens at $b=8$ with a 64\,GiB host tier, at Modal's all-in list rate (GPU, 8 CPU cores and reserved RAM). For scale, hosted APIs for the same model listed \$0.00018--0.00132 per 1,000 output tokens on 2026-11-20 \citep{openrouter2026dsv4}, so these rented-GPU costs are roughly 140--2,300$\times$ higher (Section~\ref{sec:limits}).}
 \label{fig:cost}
 \end{figure}
 
@@ -632,11 +632,14 @@ host-side copy path as the main remaining cost.
 and on rented hardware that trade is expensive. At the best measured setting
 (batch 8, 64\,GiB host tier) a rented GPU container costs about \$0.19--0.42 per
 1,000 generated tokens at list price (Figure~\ref{fig:cost}), i.e.\
-\$190--420 per million. Hosted APIs serve models of this class for well under
-\$10 per million output tokens, and some for under \$1, because they keep the
-whole model in the memory of many GPUs and batch hundreds of requests per
-forward pass. Our rented-GPU cost per token is therefore roughly 20 to 2,000
-times higher. \dee{} is not a way to serve a model more cheaply than a
+\$190--420 per million. The same model, DeepSeek-V4-Flash-0731, is sold as a
+hosted API by more than twenty providers. On 2026-11-20 their listed output
+prices ranged from \$0.18 per million tokens (DeepInfra) to \$1.32 (Cloudflare
+and others), with Cohere at \$0.28 \citep{openrouter2026dsv4}. Providers can
+charge this because they keep the whole model in the memory of many GPUs and
+batch hundreds of requests per forward pass. Our rented-GPU cost per token is
+therefore roughly 140 to 2,300 times higher than hosted inference of the same
+model. \dee{} is not a way to serve a model more cheaply than a
 provider. It is useful where hosted inference is not an option or the GPU is
 already paid for: a local or private deployment, offline use, a model too large
 for the available VRAM, or research that needs to inspect and verify the

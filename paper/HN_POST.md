@@ -48,8 +48,9 @@ first comment.
 >   stream on an L4.
 >
 > To be clear about what this is *not*: it's not a cheaper way to run a model than an API. On
-> rented GPUs it works out to roughly $0.19-0.42 per 1,000 tokens, which is roughly 20 to
-> 2,000 times what hosted APIs charge, because they keep the whole model in memory across
+> rented GPUs it works out to roughly $0.19-0.42 per 1,000 tokens, which is roughly 140 to
+> 2,300 times what API providers charge for this same model ($0.18-1.32 per million output
+> tokens on OpenRouter, Nov 20 2026), because they keep the whole model in memory across
 > many GPUs and batch hundreds of users together. Offloading is for running a model that doesn't
 > fit on the GPU you have (locally, privately, offline), and this project is mostly about
 > checking that kind of system honestly.
