@@ -7,7 +7,7 @@ from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SUPERVISOR_PATH = REPO_ROOT / "tmp" / "m3_supervisor_v6.py"
+SUPERVISOR_PATH = REPO_ROOT / "archive" / "kaggle-supervisors" / "m3_supervisor_v6.py"
 SPEC = importlib.util.spec_from_file_location("m3_supervisor_v6", SUPERVISOR_PATH)
 SUPERVISOR = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None

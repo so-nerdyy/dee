@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 SUPERVISOR_PATH = (
-    Path(__file__).resolve().parents[2] / "tmp" / "m4_supervisor.py"
+    Path(__file__).resolve().parents[2] / "archive" / "kaggle-supervisors" / "m4_supervisor.py"
 )
 SPEC = importlib.util.spec_from_file_location("m4_supervisor_phase2", SUPERVISOR_PATH)
 assert SPEC is not None and SPEC.loader is not None

@@ -2,8 +2,9 @@
 """Push the host-sync profile kernel (local use)."""
 import os
 import sys
+from pathlib import Path
 
-os.environ.setdefault("KAGGLE_CONFIG_DIR", r"C:\Users\carth\.kaggle")
+os.environ.setdefault("KAGGLE_CONFIG_DIR", str(Path.home() / ".kaggle"))
 
 import kaggle  # noqa: E402
 

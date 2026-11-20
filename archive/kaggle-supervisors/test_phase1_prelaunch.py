@@ -29,9 +29,9 @@ import uuid
 from pathlib import Path
 
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parents[2]
 HARNESS = REPO / "dee.cpp" / "scripts" / "run_milestone4_ledger_seal.py"
-SUPER = REPO / "tmp" / "m4_supervisor.py"
+SUPER = REPO / "archive" / "kaggle-supervisors" / "m4_supervisor.py"
 
 EXPECTED_GENERATED_TOKEN_IDS = [11, 271, 40, 1044]
 

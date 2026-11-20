@@ -84,7 +84,7 @@ def _file_sha256(p: Path) -> str | None:
 
 def _resolve_harness_path() -> Path:
     return (
-        Path(__file__).resolve().parent.parent
+        Path(__file__).resolve().parents[2]
         / "dee.cpp"
         / "scripts"
         / "run_milestone4_ledger_seal.py"

@@ -28,7 +28,7 @@ def main() -> int:
     args = parser.parse_args()
 
     import os
-    os.environ.setdefault("KAGGLE_CONFIG_DIR", r"C:\Users\carth\.kaggle")
+    os.environ.setdefault("KAGGLE_CONFIG_DIR", str(Path.home() / ".kaggle"))
     import kaggle  # noqa: PLC0415
 
     args.out.mkdir(parents=True, exist_ok=True)

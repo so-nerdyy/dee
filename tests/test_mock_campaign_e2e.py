@@ -13,13 +13,14 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 EXP = ROOT / "dee.cpp" / "experiments" / "route_pipeline"
 MOCK = EXP / "mock_campaign.py"
 RUN = EXP / "run_evidence.py"
-TMP = Path("C:/Users/carth/AppData/Local/Temp/opencode/rpe2e")
+TMP = Path(tempfile.gettempdir()) / "dee-rpe2e"
 
 
 def _run_scenario(number: int, extra: str = "") -> tuple[int, dict, Path]:

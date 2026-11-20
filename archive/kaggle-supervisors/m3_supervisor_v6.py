@@ -54,7 +54,7 @@ def _m3v62_resolve_kaggle_dir():
     """Return the user's ~/.kaggle directory on any platform.
 
     Windows `pathlib.Path.home()` ERRORS when only ``HOME`` (Cygwin form
-    ``C:\\Users\\carth``) is set and ``USERPROFILE`` is missing -- which
+    ``C:\\Users\\<you>``) is set and ``USERPROFILE`` is missing -- which
     is exactly what `setsid + nohup </dev/null` produces for v10-style
     supervised launches. Try ``USERPROFILE`` first (Windows Python's
     real home), fall back to ``HOME`` (Cygwin/Linux MSYS form), and
