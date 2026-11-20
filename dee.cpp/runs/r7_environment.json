@@ -1,0 +1,109 @@
+{
+ "source": "summary.json per container + modal billing report (2026-11-19..20 UTC)",
+ "containers": [
+  {
+   "run": "p6m-r7-l4",
+   "app_id": "ap-STlG2bqPZjFlPyj0JJ0MER",
+   "gpu": "L4",
+   "n_gpus": 1,
+   "nvidia_smi": [
+    "NVIDIA L4, 23034 MiB, 610.57.04"
+   ],
+   "cpu_cores": 8,
+   "container_ram_gib": 96.0,
+   "vram_expert_budget_mib": 3584,
+   "measured_b_ssd_gib_s": 4.5225,
+   "ssd_probe_suspect": false,
+   "allin_price_s": 0.00053992,
+   "billed_usd_modal_report": 2.566,
+   "commit": "7fc878ac50a74c1216a208007986e7887d6ded25"
+  },
+  {
+   "run": "p6m-r7-2xl4",
+   "app_id": "ap-Vs7Tr6KHrXsEV4XGBC0z6L",
+   "gpu": "2xL4",
+   "n_gpus": 2,
+   "nvidia_smi": [
+    "NVIDIA L4, 23034 MiB, 610.57.04",
+    "NVIDIA L4, 23034 MiB, 610.57.04"
+   ],
+   "cpu_cores": 8,
+   "container_ram_gib": 96.0,
+   "vram_expert_budget_mib": 3584,
+   "measured_b_ssd_gib_s": 3.512,
+   "ssd_probe_suspect": false,
+   "allin_price_s": 0.00076192,
+   "billed_usd_modal_report": 1.391,
+   "commit": "7fc878ac50a74c1216a208007986e7887d6ded25"
+  },
+  {
+   "run": "p6m-r7-a10",
+   "app_id": "ap-Oj2Ns9SV9QKTsT1WvniOLT",
+   "gpu": "A10",
+   "n_gpus": 1,
+   "nvidia_smi": [
+    "NVIDIA A10G, 23028 MiB, 620.70.06"
+   ],
+   "cpu_cores": 8,
+   "container_ram_gib": 96.0,
+   "vram_expert_budget_mib": 3584,
+   "measured_b_ssd_gib_s": 1.4262,
+   "ssd_probe_suspect": false,
+   "allin_price_s": 0.00062392,
+   "billed_usd_modal_report": 2.031,
+   "commit": "7fc878ac50a74c1216a208007986e7887d6ded25"
+  },
+  {
+   "run": "p6m-r7-l40s",
+   "app_id": "ap-w2Grb1P7Bw4huGcdh7Hjro",
+   "gpu": "L40S",
+   "n_gpus": 1,
+   "nvidia_smi": [
+    "NVIDIA L40S, 46068 MiB, 610.57.04"
+   ],
+   "cpu_cores": 8,
+   "container_ram_gib": 128.0,
+   "vram_expert_budget_mib": 26624,
+   "measured_b_ssd_gib_s": 89.3308,
+   "ssd_probe_suspect": true,
+   "allin_price_s": 0.0009309599999999999,
+   "billed_usd_modal_report": 1.179,
+   "commit": "7fc878ac50a74c1216a208007986e7887d6ded25"
+  },
+  {
+   "run": "p6m-r7-rtx",
+   "app_id": "ap-INMQxoOMJItyjjcwFjLFep",
+   "gpu": "RTXPRO6000",
+   "n_gpus": 1,
+   "nvidia_smi": [
+    "NVIDIA RTX PRO 6000 Blackwell Server Edition, 97887 MiB, 610.57.04"
+   ],
+   "cpu_cores": 8,
+   "container_ram_gib": 192.0,
+   "vram_expert_budget_mib": 61440,
+   "measured_b_ssd_gib_s": 149.024,
+   "ssd_probe_suspect": true,
+   "allin_price_s": 0.00137304,
+   "billed_usd_modal_report": 1.091,
+   "commit": "7fc878ac50a74c1216a208007986e7887d6ded25"
+  },
+  {
+   "run": "p6m-r7-2xt4",
+   "app_id": "ap-kY196jsuYunNVSKbHCEp1O",
+   "gpu": "2xT4",
+   "n_gpus": 2,
+   "nvidia_smi": [
+    "Tesla T4, 15360 MiB, 620.70.06",
+    "Tesla T4, 15360 MiB, 620.70.06"
+   ],
+   "cpu_cores": 8,
+   "container_ram_gib": 96.0,
+   "vram_expert_budget_mib": 3584,
+   "measured_b_ssd_gib_s": 26.7584,
+   "ssd_probe_suspect": true,
+   "allin_price_s": 0.00064592,
+   "billed_usd_modal_report": 0.484,
+   "commit": "7fc878ac50a74c1216a208007986e7887d6ded25"
+  }
+ ]
+}
