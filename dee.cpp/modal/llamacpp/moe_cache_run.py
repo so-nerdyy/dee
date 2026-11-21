@@ -206,7 +206,7 @@ def run(models: dict) -> dict:
         capture_output=True, text=True).stdout.strip()
 
     # 1. exactness on the GPU: the MoE cache rows of test-llama-archs, including the new invariance check
-    t = subprocess.run(["/opt/llama.cpp/build/bin/test-llama-archs", "-a", "deepseek2", "-b", "CUDA0"],
+    t = subprocess.run(["/opt/llama.cpp/build/bin/test-llama-archs", "-a", "^deepseek[24]$", "-b", "CUDA0"],
                        capture_output=True, text=True, timeout=1200)
     open(f"{root}/test-llama-archs.txt", "w").write(t.stdout + "\n--- stderr ---\n" + t.stderr[-20000:])
     summary["archs_test"] = {"rc": t.returncode,
@@ -260,6 +260,13 @@ def run(models: dict) -> dict:
                 summary["rows"].append(row)
                 save()
                 port += 1
+                if "error" not in row and not (row["policy_ok"] and row["cache_stats"]):
+                    # r1 spent its whole GPU budget without proof of the policy: stop at the first server instead
+                    summary["notes"].append(f"aborted after {tag}: policy_logged={row['policy_logged']}, "
+                                            f"cache_stats={row['cache_stats']}")
+                    summary["est_usd"] = round(spent(), 3)
+                    save()
+                    return summary
                 if "error" not in row:
                     chosen = mib
                     break
@@ -292,21 +299,30 @@ def analyze() -> dict:
         if not os.path.exists(trace_path):
             continue
         n_layer, n_used, groups, records = tune.read_trace(trace_path)
-        g = groups[0]
-        n_slots = tune.n_slots_of(g, row["cache_mib"], 0, n_used)
-        res = {"tag": row["tag"], "n_slots": n_slots, "cpp": row.get("cache_stats")}
+        # mixed quants (UD, Q4_K_M) split the layers into several groups with their own slots: replay all of them
+        n_slots = [tune.n_slots_of(g, row["cache_mib"], 0, n_used) for g in groups]
+        res = {"tag": row["tag"], "n_slots": n_slots, "n_layers": [len(g.layers) for g in groups],
+               "cpp": row.get("cache_stats")}
         for policy in POLICIES:
-            c = tune.ClassLRU(g.layers, g.n_expert, n_slots, policy)
+            caches = {}
+            for g, n in zip(groups, n_slots):
+                if n > 0:
+                    c = tune.ClassLRU(g.layers, g.n_expert, n, policy)
+                    caches.update((il, (c, g, n)) for il in g.layers)
             hits = lookups = 0
             for il, nu, ids in records:
+                if il not in caches:
+                    continue
+                c, g, n = caches[il]
                 n_tok = len(ids) // nu
-                if il not in c.slot_map or n_tok > tune.MAX_BATCH or min(n_tok * nu, g.n_expert) > n_slots:
+                if n_tok > tune.MAX_BATCH or min(n_tok * nu, g.n_expert) > n:
                     continue
                 uniq = len(set(ids))
                 n_fill, _ = c.plan(il, list(ids), nu, 0, lambda n: 0)
                 hits += uniq - n_fill
                 lookups += uniq
             res[f"sim_{policy}"] = round(hits / max(lookups, 1), 4)
+            res[f"sim_{policy}_hits_lookups"] = [hits, lookups]
         out.append(res)
         print(json.dumps(res))
     json.dump(out, open(f"{root}/replay.json", "w"), indent=1)
