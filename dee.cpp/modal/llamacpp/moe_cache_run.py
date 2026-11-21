@@ -70,7 +70,7 @@ image = (
     .add_local_file(str(PATCH), "/opt/next_use.patch", copy=True)
     .run_commands(
         f"git clone {LLAMA_REPO} /opt/llama.cpp && cd /opt/llama.cpp && git checkout {LLAMA_COMMIT}",
-        "cd /opt/llama.cpp && git apply --check /opt/next_use.patch && git apply /opt/next_use.patch",
+        "sed -i 's/\\r$//' /opt/next_use.patch && cd /opt/llama.cpp && git apply --check /opt/next_use.patch && git apply /opt/next_use.patch",
         # CUDA builds without a GPU at image-build time (CPU price); the driver library comes from the stubs
         "cd /opt/llama.cpp && cmake -B build -DGGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES=89 -DLLAMA_BUILD_TESTS=ON "
         "-DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS=-Wl,--allow-shlib-undefined "
