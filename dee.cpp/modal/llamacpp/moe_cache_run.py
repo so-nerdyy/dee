@@ -9,7 +9,7 @@ What it measures (all in one container, so the build and model load are paid onc
   4. text        greedy output at 1 request must be identical across policies and cache sizes
 
 Usage (from the dee repo root, on the laptop with the Modal CLI):
-  modal run dee.cpp/modal/llamacpp/moe_cache_run.py::preflight      # CPU only, ~$0.05: build + models + checks
+  modal run dee.cpp/modal/llamacpp/moe_cache_run.py::preflight      # CPU only: build + ~85 GiB download + checks
   modal run dee.cpp/modal/llamacpp/moe_cache_run.py::main           # preflight, then the L4 run, then the CPU replay
 Evidence: volume dee-p6-evidence, folder llamacpp-moe-<run id>/.
 """
@@ -30,22 +30,23 @@ PATCH = HERE / "next_use.patch"
 
 RUN_ID = os.environ.get("RUN_ID", "r2")
 GPU = "L4"
-MEM_MIB = 65536
+MEM_MIB = 131072  # the ~85 GiB GGUF stays in the page cache between servers
 CPUS = 8
-# all-in list price per second: L4 + 8 cores + 64 GiB RAM (same basis as modal/phase6/modal_p6.py)
+# all-in list price per second: L4 + 8 cores + 128 GiB RAM (same basis as modal/phase6/modal_p6.py)
 PRICE_PER_S = 0.000222 + CPUS * 0.0000131 + (MEM_MIB / 1024) * 0.00000222
 MAX_USD = float(os.environ.get("MAX_USD", "2.5"))
-GPU_TIMEOUT_S = min(3600, int(MAX_USD / PRICE_PER_S))  # hard stop by Modal, ~$1.69/h
+GPU_TIMEOUT_S = min(3600, int(MAX_USD / PRICE_PER_S))  # hard stop by Modal, ~$2.20/h
 
+# r1 used Qwen3-30B-A3B (17 GiB), which fits in the L4's 24 GB, with -cmoe forcing the experts to host RAM.
+# r2 uses a model that does NOT fit in VRAM: DeepSeek-V4-Flash at ~2.6 bits (~85 GiB), the case the cache is for.
+# The first pattern with files in the repo wins; split GGUFs are downloaded whole and loaded from shard 1.
 MODELS = {
-    "qwen3-30b-a3b": ("unsloth/Qwen3-30B-A3B-GGUF", "Qwen3-30B-A3B-Q4_K_M.gguf"),
-    # r1: "gpt-oss-20b-mxfp4.gguf" was a 404; preflight now picks the repo's mxfp4 .gguf by listing it
-    "gpt-oss-20b": ("ggml-org/gpt-oss-20b-GGUF", "*mxfp4*.gguf"),
+    "dsv4-flash": ("unsloth/DeepSeek-V4-Flash-0731-GGUF", ["*UD-IQ2_M*.gguf", "*UD-IQ1_S*.gguf"]),
 }
 POLICIES = ["classlru", "next_use"]
-# of the expert bytes. r1 ran 5% and 10%, which on Qwen3-30B-A3B is fewer slots than one token's 384 expert
-# lookups (thrash regime). r2 covers the sizes people actually use: the upstream PR's runs used ~40-100%.
-CACHE_FRACTIONS = {"qwen3-30b-a3b": [0.10, 0.25, 0.50], "gpt-oss-20b": [0.10, 0.25]}
+# cache MiB: "large" is the biggest that fits next to the dense weights and KV (tried in order, the first that
+# starts is kept for both policies), "small" is a 24 GB card that also holds a longer context
+CACHE_MIB = {"large": [15000, 12000, 9000], "small": [6000]}
 CONCURRENCY = [1, 4, 8]
 N_PREDICT = 128
 
@@ -84,34 +85,33 @@ image = (
 app = modal.App("dee-llamacpp-moe")
 
 
-def _resolve(name: str) -> str:
-    """the file name in the repo; a glob pattern is matched against the repo listing (one file, no split GGUFs)"""
+def _resolve(name: str) -> list:
+    """the repo files of the first pattern that matches, sorted, so a split GGUF starts with shard 1"""
     import fnmatch
     from huggingface_hub import list_repo_files
-    repo, fname = MODELS[name]
-    if "*" not in fname:
-        return fname
-    hits = sorted(f for f in list_repo_files(repo) if fnmatch.fnmatch(f.lower(), fname.lower()) and "-of-" not in f)
-    if not hits:
-        raise FileNotFoundError(f"{repo}: no file matches {fname}")
-    return hits[0]
+    repo, patterns = MODELS[name]
+    files = list_repo_files(repo)
+    for pat in patterns:
+        hits = sorted(f for f in files if fnmatch.fnmatch(f.lower(), pat.lower()))
+        if hits:
+            return hits
+    raise FileNotFoundError(f"{repo}: no file matches {patterns}; .gguf files: {[f for f in files if f.endswith('.gguf')][:20]}")
 
 
-def _model_path(name: str, fname: str) -> str:
+def _local_dir(name: str) -> str:
     repo, _ = MODELS[name]
-    return f"{VOL_MODELS}/gguf/{repo.replace('/', '__')}/{fname}"
+    return f"{VOL_MODELS}/gguf/{repo.replace('/', '__')}"
 
 
-def _expert_mib(path: str) -> float:
+def _expert_mib(paths: list) -> float:
     import gguf
-    r = gguf.GGUFReader(path)
-    return sum(int(t.n_bytes) for t in r.tensors if "_exps" in t.name) / 2**20
+    return sum(int(t.n_bytes) for p in paths for t in gguf.GGUFReader(p).tensors if "_exps" in t.name) / 2**20
 
 
-@app.function(image=image, volumes={VOL_MODELS: vol_models}, cpu=4, memory=8192, timeout=3600)
+@app.function(image=image, volumes={VOL_MODELS: vol_models}, cpu=4, memory=8192, timeout=3 * 3600)
 def preflight() -> dict:
-    """CPU only: the patched build exists, the models are on the volume, sizes are read. Downloads once."""
-    from huggingface_hub import hf_hub_download
+    """CPU only: the patched build exists, the models are on the volume, sizes are read. Downloads once (~85 GiB)."""
+    from huggingface_hub import snapshot_download
 
     out = {"ok": True, "models": {}}
     for b in ("llama-server", "test-llama-archs"):
@@ -122,14 +122,19 @@ def preflight() -> dict:
     out["ok"] &= out["patch_applied"]
     for name, (repo, _) in MODELS.items():
         try:
-            fname = _resolve(name)
-            dst = _model_path(name, fname)
-            if not os.path.exists(dst):
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-                hf_hub_download(repo, fname, local_dir=os.path.dirname(dst))
+            fnames = _resolve(name)
+            local = _local_dir(name)
+            paths = [f"{local}/{f}" for f in fnames]
+            if not all(os.path.exists(p) for p in paths):
+                os.makedirs(local, exist_ok=True)
+                snapshot_download(repo, allow_patterns=fnames, local_dir=local)
                 vol_models.commit()
-            out["models"][name] = {"path": dst, "gib": round(os.path.getsize(dst) / 2**30, 2),
-                                   "expert_mib": round(_expert_mib(dst), 1)}
+            gib = sum(os.path.getsize(p) for p in paths) / 2**30
+            out["models"][name] = {"path": paths[0], "files": fnames, "gib": round(gib, 2),
+                                   "expert_mib": round(_expert_mib(paths), 1)}
+            # the point of r2: the model must not fit in the L4's 24 GB
+            out["models"][name]["fits_in_vram"] = gib < 22.0
+            out["ok"] &= gib >= 22.0
         except Exception as e:  # a missing model is skipped, not fatal, as long as one remains
             out["models"][name] = {"error": repr(e)[:300]}
     out["ok"] &= any("error" not in m for m in out["models"].values())
@@ -214,14 +219,16 @@ def run(models: dict) -> dict:
         if "error" in info:
             summary["notes"].append(f"{name}: skipped, {info['error']}")
             continue
-        for frac in CACHE_FRACTIONS[name]:
-            mib = int(info["expert_mib"] * frac)
-            for policy in POLICIES:
+        for size_name, candidates in CACHE_MIB.items():
+          chosen = None  # the first candidate that starts, kept for the second policy
+          for policy in POLICIES:
+            for mib in ([chosen] if chosen else candidates):
                 if spent() > MAX_USD * 0.85:
-                    summary["notes"].append(f"stopped before {name}/{policy}/{frac}: ${spent():.2f} spent")
+                    summary["notes"].append(f"stopped before {name}/{policy}/{size_name}: ${spent():.2f} spent")
                     save()
                     return summary
-                tag = f"{name}-{policy}-c{int(frac * 100)}"
+                frac = round(mib / info["expert_mib"], 4)
+                tag = f"{name}-{policy}-{size_name}-{mib}"
                 trace = f"{root}/{tag}.mct"
                 env = dict(os.environ, LLAMA_MOE_CACHE_POLICY=policy, LLAMA_MOE_CACHE_TRACE=trace)
                 cmd = ["/opt/llama.cpp/build/bin/llama-server", "-m", info["path"], "-ngl", "99", "-cmoe",
@@ -231,7 +238,7 @@ def run(models: dict) -> dict:
                 proc = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)
                 row = {"tag": tag, "model": name, "policy": policy, "cache_frac": frac, "cache_mib": mib}
                 try:
-                    if not _wait_health(port, proc):
+                    if not _wait_health(port, proc, 1200):
                         row["error"] = "server did not start"
                     else:
                         _round(port, 8, 64, 0)  # warm-up, fills the cache
@@ -253,6 +260,11 @@ def run(models: dict) -> dict:
                 summary["rows"].append(row)
                 save()
                 port += 1
+                if "error" not in row:
+                    chosen = mib
+                    break
+                if row["error"] != "server did not start":
+                    break  # failed mid-run: don't retry smaller sizes
 
     # text exactness at 1 request: every (policy, size) of a model must give the same greedy text
     for name in models:
