@@ -28,21 +28,24 @@ LLAMA_COMMIT = "374d90a"  # master on 2026-11-20, the patch is made against it
 HERE = pathlib.Path(__file__).parent
 PATCH = HERE / "next_use.patch"
 
-RUN_ID = os.environ.get("RUN_ID", "r1")
+RUN_ID = os.environ.get("RUN_ID", "r2")
 GPU = "L4"
 MEM_MIB = 65536
 CPUS = 8
 # all-in list price per second: L4 + 8 cores + 64 GiB RAM (same basis as modal/phase6/modal_p6.py)
 PRICE_PER_S = 0.000222 + CPUS * 0.0000131 + (MEM_MIB / 1024) * 0.00000222
-MAX_USD = float(os.environ.get("MAX_USD", "2.0"))
+MAX_USD = float(os.environ.get("MAX_USD", "2.5"))
 GPU_TIMEOUT_S = min(3600, int(MAX_USD / PRICE_PER_S))  # hard stop by Modal, ~$1.69/h
 
 MODELS = {
     "qwen3-30b-a3b": ("unsloth/Qwen3-30B-A3B-GGUF", "Qwen3-30B-A3B-Q4_K_M.gguf"),
-    "gpt-oss-20b": ("ggml-org/gpt-oss-20b-GGUF", "gpt-oss-20b-mxfp4.gguf"),
+    # r1: "gpt-oss-20b-mxfp4.gguf" was a 404; preflight now picks the repo's mxfp4 .gguf by listing it
+    "gpt-oss-20b": ("ggml-org/gpt-oss-20b-GGUF", "*mxfp4*.gguf"),
 }
 POLICIES = ["classlru", "next_use"]
-CACHE_FRACTIONS = [0.05, 0.10]  # of the expert bytes; next-use's sim gain is at 5-10%
+# of the expert bytes. r1 ran 5% and 10%, which on Qwen3-30B-A3B is fewer slots than one token's 384 expert
+# lookups (thrash regime). r2 covers the sizes people actually use: the upstream PR's runs used ~40-100%.
+CACHE_FRACTIONS = {"qwen3-30b-a3b": [0.10, 0.25, 0.50], "gpt-oss-20b": [0.10, 0.25]}
 CONCURRENCY = [1, 4, 8]
 N_PREDICT = 128
 
@@ -81,8 +84,21 @@ image = (
 app = modal.App("dee-llamacpp-moe")
 
 
-def _model_path(name: str) -> str:
+def _resolve(name: str) -> str:
+    """the file name in the repo; a glob pattern is matched against the repo listing (one file, no split GGUFs)"""
+    import fnmatch
+    from huggingface_hub import list_repo_files
     repo, fname = MODELS[name]
+    if "*" not in fname:
+        return fname
+    hits = sorted(f for f in list_repo_files(repo) if fnmatch.fnmatch(f.lower(), fname.lower()) and "-of-" not in f)
+    if not hits:
+        raise FileNotFoundError(f"{repo}: no file matches {fname}")
+    return hits[0]
+
+
+def _model_path(name: str, fname: str) -> str:
+    repo, _ = MODELS[name]
     return f"{VOL_MODELS}/gguf/{repo.replace('/', '__')}/{fname}"
 
 
@@ -104,9 +120,10 @@ def preflight() -> dict:
         out["ok"] &= out[b]
     out["patch_applied"] = "next_use" in open("/opt/llama.cpp/src/llama-moe-cache.cpp").read()
     out["ok"] &= out["patch_applied"]
-    for name, (repo, fname) in MODELS.items():
-        dst = _model_path(name)
+    for name, (repo, _) in MODELS.items():
         try:
+            fname = _resolve(name)
+            dst = _model_path(name, fname)
             if not os.path.exists(dst):
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 hf_hub_download(repo, fname, local_dir=os.path.dirname(dst))
@@ -197,7 +214,7 @@ def run(models: dict) -> dict:
         if "error" in info:
             summary["notes"].append(f"{name}: skipped, {info['error']}")
             continue
-        for frac in CACHE_FRACTIONS:
+        for frac in CACHE_FRACTIONS[name]:
             mib = int(info["expert_mib"] * frac)
             for policy in POLICIES:
                 if spent() > MAX_USD * 0.85:
@@ -229,8 +246,10 @@ def run(models: dict) -> dict:
                         proc.kill()
                     log.close()
                 text = open(f"{root}/{tag}.log").read()
-                row["cache_stats"] = re.findall(r"llama_moe_cache: (ubatch [<>]=? *\d+): hits = (\d+), misses = (\d+)", text)
-                row["policy_logged"] = re.findall(r"MoE cache eviction policy: (\w+)", text)
+                # r1 found no llama_moe_cache INFO lines in the server log; the patch now also prints these to stderr
+                row["cache_stats"] = re.findall(r"llama_moe_cache: stats (\w+): hits = (\d+), misses = (\d+)", text)
+                row["policy_logged"] = re.findall(r"llama_moe_cache: eviction policy = (\w+)", text)
+                row["policy_ok"] = row["policy_logged"] == [policy]
                 summary["rows"].append(row)
                 save()
                 port += 1
@@ -246,7 +265,7 @@ def run(models: dict) -> dict:
     return summary
 
 
-@app.function(image=image, volumes={VOL_EVID: vol_evid}, cpu=4, memory=16384, timeout=3600)
+@app.function(image=image, volumes={VOL_EVID: vol_evid}, cpu=4, memory=16384, timeout=4 * 3600)
 def analyze() -> dict:
     """CPU: replay each server's trace through the patched moe-cache-tune.py, both policies, and compare to C++."""
     import importlib.util

@@ -103,7 +103,7 @@ index d0680fa..6ec7822 100755
  
      first = min(il for il, _, _ in records)
 diff --git a/src/llama-moe-cache.cpp b/src/llama-moe-cache.cpp
-index ba35af0..c23e601 100644
+index ba35af0..0287fe0 100644
 --- a/src/llama-moe-cache.cpp
 +++ b/src/llama-moe-cache.cpp
 @@ -54,6 +54,27 @@ struct moe_cache_lru {
@@ -239,7 +239,7 @@ index ba35af0..c23e601 100644
      // LLAMA_MOE_CACHE_TRACE: the selected experts of each slot lookup, for a simulator of the cache
      FILE * trace = nullptr;
  
-@@ -492,6 +586,14 @@ struct llama_moe_cache::impl {
+@@ -492,6 +586,16 @@ struct llama_moe_cache::impl {
  
          // within a device the budget is split by the size of the experts, so each group caches the same fraction of its experts
          cpu_share_q = (uint32_t) std::lround(cpu_share*65536.0f);
@@ -250,11 +250,13 @@ index ba35af0..c23e601 100644
 +                throw std::runtime_error(std::string("unknown MoE cache policy ") + policy + ", expected classlru or next_use");
 +            }
 +            LLAMA_LOG_INFO("%s: MoE cache eviction policy: %s\n", __func__, next_use ? "next_use" : "classlru");
++            fprintf(stderr, "llama_moe_cache: eviction policy = %s\n", next_use ? "next_use" : "classlru");
++            fflush(stderr);
 +        }
          if (const char * path = getenv("LLAMA_MOE_CACHE_TRACE"); path != nullptr && *path != '\0') {
              trace = fopen(path, "wb");
              if (trace == nullptr) {
-@@ -515,6 +617,9 @@ struct llama_moe_cache::impl {
+@@ -515,6 +619,9 @@ struct llama_moe_cache::impl {
                  continue;
              }
              g.lru.init(model.layers.size(), n_expert, g.n_slots);
@@ -264,6 +266,19 @@ index ba35af0..c23e601 100644
              n_tensors[g.id] += g.ref.size()*(1 + g.layers.size());
              n_tensors_host  += g.layers.size()*(n_zero > 0 ? 3 : 1); // slot maps and CPU map
          }
+@@ -870,6 +977,12 @@ struct llama_moe_cache::impl {
+             LLAMA_LOG_INFO("llama_moe_cache: %s: hits = %zu, misses = %zu (%zu on the CPU), hit rate = %.2f%%, uploaded = %.2f MiB\n",
+                 name, st.hits, st.misses, st.cpu, 100.0*st.hits/n, st.bytes/1024.0/1024.0);
+         };
++        for (const auto & [name, st] : { std::pair<const char *, const stats &>{ "small", stats_small }, { "large", stats_large } }) {
++            if (getenv("LLAMA_MOE_CACHE_POLICY") != nullptr && st.hits + st.misses > 0) {
++                fprintf(stderr, "llama_moe_cache: stats %s: hits = %zu, misses = %zu\n", name, st.hits, st.misses);
++            }
++        }
++        fflush(stderr);
+         log("ubatch <= 8", stats_small);
+         log("ubatch  > 8", stats_large);
+         if (stats_copy.hits > 0) {
 diff --git a/tests/test-llama-archs.cpp b/tests/test-llama-archs.cpp
 index 90a32ab..c7ca42a 100644
 --- a/tests/test-llama-archs.cpp
