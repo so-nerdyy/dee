@@ -1,0 +1,570 @@
+From 65e5b8398adc87488b325a1736f17f8a3e785153 Mon Sep 17 00:00:00 2001
+From: Nivin <107146054+so-nerdyy@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 19:08:55 +0000
+Subject: [PATCH] llama : next-use eviction policy for the MoE cache
+
+Adds --moe-cache-policy {classlru,next_use} (default classlru, unchanged).
+next_use evicts the expert with the largest expected next use: decode visits
+the cached layers in a fixed order, so an expert of layer L can next run when
+that order reaches L again (d layer calls); with a per-expert reuse estimate p
+the expectation is d + n_layers*(1/p - 1). Experts of the current layer leave
+last.
+
+- test-llama-archs: logits with the MoE cache must be bit-identical across
+  cache sizes (one that holds every expert) and policies
+- moe-cache-tune.py: Python mirror of next_use, used by the replay when the
+  server command has --moe-cache-policy
+- docs/moe-cache.md: the policies and the measured replay
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ common/arg.cpp             |  15 +++++
+ common/common.cpp          |   1 +
+ common/common.h            |   1 +
+ docs/moe-cache.md          |  12 ++++
+ include/llama.h            |   7 +++
+ scripts/moe-cache-tune.py  |  61 ++++++++++++++++++--
+ src/llama-context.cpp      |   4 +-
+ src/llama-cparams.h        |   1 +
+ src/llama-moe-cache.cpp    | 113 +++++++++++++++++++++++++++++++++++--
+ src/llama-moe-cache.h      |   4 +-
+ tests/test-llama-archs.cpp |  43 +++++++++++++-
+ 11 files changed, 248 insertions(+), 14 deletions(-)
+
+diff --git a/common/arg.cpp b/common/arg.cpp
+index e99b48c..45d7fe4 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -2769,6 +2769,21 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+             params.moe_cache_cpu_share = share;
+         }
+     ).set_env("LLAMA_ARG_MOE_CACHE_CPU_SHARE"));
++    add_opt(common_arg(
++        {"--moe-cache-policy"}, "{classlru,next_use}",
++        "eviction policy of the MoE cache (default: classlru)\n"
++        "- classlru: recency and frequency classes\n"
++        "- next_use: expected next use from the layer order, can help a small cache with parallel sequences",
++        [](common_params & params, const std::string & value) {
++            if (value == "classlru") {
++                params.moe_cache_policy = LLAMA_MOE_CACHE_POLICY_CLASSLRU;
++            } else if (value == "next_use") {
++                params.moe_cache_policy = LLAMA_MOE_CACHE_POLICY_NEXT_USE;
++            } else {
++                throw std::invalid_argument("invalid value");
++            }
++        }
++    ).set_env("LLAMA_ARG_MOE_CACHE_POLICY"));
+     add_opt(common_arg(
+         {"-ncffn", "--n-cpu-ffn"}, "N",
+         "keep the dense FFN weights of the first N layers in the CPU\n"
+diff --git a/common/common.cpp b/common/common.cpp
+index b009d46..9f3fb01 100644
+--- a/common/common.cpp
++++ b/common/common.cpp
+@@ -1778,6 +1778,7 @@ struct llama_context_params common_context_params_to_llama(const common_params &
+ 
+     cparams.moe_cache_size      = params.moe_cache_size;
+     cparams.moe_cache_cpu_share = params.moe_cache_cpu_share;
++    cparams.moe_cache_policy    = params.moe_cache_policy;
+ 
+     return cparams;
+ }
+diff --git a/common/common.h b/common/common.h
+index a8e89ed..cdf4a0f 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -618,6 +618,7 @@ struct common_params {
+ 
+     size_t moe_cache_size      = 0;    // GPU cache size in bytes for the MoE experts kept in the CPU, split among the GPUs like the layers
+     float  moe_cache_cpu_share = 0.0f; // share of the MoE cache misses computed on the CPU instead of uploaded
++    enum llama_moe_cache_policy moe_cache_policy = LLAMA_MOE_CACHE_POLICY_CLASSLRU; // eviction policy of the MoE cache
+ 
+     common_conversation_mode conversation_mode = COMMON_CONVERSATION_MODE_AUTO;
+ 
+diff --git a/docs/moe-cache.md b/docs/moe-cache.md
+index 7491a2a..c3ebf1b 100644
+--- a/docs/moe-cache.md
++++ b/docs/moe-cache.md
+@@ -6,6 +6,7 @@ When the experts of MoE layers stay in host memory (`-cmoe`, `-ncmoe`, `-ot`), t
+ |---|---|
+ | `--moe-cache-mib N` | cache size in MiB, split among the GPUs like the layers (default: 0, disabled) |
+ | `--moe-cache-cpu-share F` | share of the cache misses computed on the CPU from the host experts instead of uploaded, once the cache is full (default: 0) |
++| `--moe-cache-policy P` | eviction policy: `classlru` (default) or `next_use`, see below |
+ 
+ The cache hits run on the device. With `--moe-cache-cpu-share F` the CPU computes a share `F` of the misses while the device computes the hits and uploads the other misses into the cache. This is faster when the CPU reads the host experts faster than the device can upload them, for example with fast RAM, a PCIe 4 link or experts that are not in pinned memory. The host experts are pinned with `-lm none`, `-lm mlock` and `-lm dio`, unless `--no-host`, but not when they are mmap'd (the default). The device uploads pinned experts at the full speed of the link, so the CPU share often does not help then. Until the cache is full every miss is uploaded, so the cache fills as fast as without the CPU share. The best share depends on the machine, the model and the cache size.
+ 
+@@ -24,3 +25,14 @@ From these runs it fits the upload and CPU speeds of the machine, then replays t
+ - **Server command:** keep your own arguments (`-t`, `-c`, expert placement, load mode); the speeds and the free device memory depend on them.
+ - **`--max-mib N`:** tunes a smaller cache than what fits on the device. The runs in `--out` are reused while the command stays the same, so trying another value is instant.
+ - **`--markdown`:** prints Markdown tables to paste in a PR.
++
++## Eviction policy
++
++The cache keeps the experts of all its layers in one pool of slots. When it is full, a miss evicts one expert:
++
++- `classlru` (default): the least recently used expert of a frequency class, scaled by the class (ClassLRU).
++- `next_use`: the expert expected to be used last. Decode visits the cached layers in a fixed order, so an expert of layer L can next be used when that order reaches L again: `d` layer calls from now. It is used then with probability `p`, else one cycle later, which gives `d + n_layers*(1/p - 1)` layer calls. `p` is a per-expert reuse estimate that decays at every visit of its layer and grows at every use. The experts of the current layer are evicted last.
++
++Both policies only decide which expert leaves the cache, never which experts run, so the outputs do not change. `test-llama-archs` checks that the logits are bit-identical across cache sizes and policies.
++
++On routing recorded from DeepSeek-V4-Flash UD-IQ2_M (85 GiB, NVIDIA L4 24 GB, 1 to 8 parallel requests), replayed with `moe-cache-tune.py`, `next_use` had 4% to 9% fewer misses than `classlru` at 3 to 12 GiB of cache. The replay matched the measured `classlru` hit rate within 1 point. `moe-cache-tune.py` replays the policy given with `--moe-cache-policy` in the server command.
+diff --git a/include/llama.h b/include/llama.h
+index 7122143..a6b7e2b 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -374,6 +374,12 @@ extern "C" {
+ 
+     // NOTE: changing the default values of parameters marked as [EXPERIMENTAL] may cause crashes or incorrect results in certain configurations
+     //       https://github.com/ggml-org/llama.cpp/pull/7544
++    // eviction policy of the MoE cache, see docs/moe-cache.md
++    enum llama_moe_cache_policy {
++        LLAMA_MOE_CACHE_POLICY_CLASSLRU = 0, // recency and frequency classes (default)
++        LLAMA_MOE_CACHE_POLICY_NEXT_USE = 1, // expected next use from the layer cycle and a per-expert reuse estimate
++    };
++
+     struct llama_context_params {
+         uint32_t n_ctx;                 // text context, 0 = from model
+         uint32_t n_batch;               // logical maximum batch size that can be submitted to llama_decode
+@@ -408,6 +414,7 @@ extern "C" {
+ 
+         size_t moe_cache_size;      // device cache in bytes for the experts kept in host memory, split among the devices like the layers, 0 = disabled [EXPERIMENTAL]
+         float  moe_cache_cpu_share; // share of the MoE cache misses computed on the CPU instead of uploaded, 0 = all uploaded [EXPERIMENTAL]
++        enum llama_moe_cache_policy moe_cache_policy; // eviction policy of the MoE cache [EXPERIMENTAL]
+ 
+         // Abort callback
+         // if it returns true, execution of llama_decode() will be aborted
+diff --git a/scripts/moe-cache-tune.py b/scripts/moe-cache-tune.py
+index d0680fa..b9b5104 100755
+--- a/scripts/moe-cache-tune.py
++++ b/scripts/moe-cache-tune.py
+@@ -137,7 +137,16 @@ class ClassLRU:
+     N_CLASS = 8
+     CRF_HALF_LIFE = 128.0  # tokens
+ 
+-    def __init__(self, layers, n_expert, n_slots):
++    NU_ALPHA, NU_P0, NU_P_FLOOR = 0.2, 0.1, 1e-3
++
++    def __init__(self, layers, n_expert, n_slots, policy="classlru"):
++        self.next_use = policy == "next_use"
++        self.nu_pos = {il: i for i, il in enumerate(layers)}
++        self.nu_cycle = len(layers)
++        self.nu_cur = 0
++        self.nu_visits = [0] * len(layers)
++        self.nu_ewma = {}        # key -> reuse estimate
++        self.nu_last_visit = {}  # key -> visit of its layer at the last use
+         self.n_expert = n_expert
+         self.n_slots = n_slots
+         self.slot_map = {il: [n_slots] * n_expert for il in layers}
+@@ -211,6 +220,37 @@ class ClassLRU:
+             raise RuntimeError("no MoE cache victim")
+         return res
+ 
++    def nu_use(self, il, key):
++        v = self.nu_visits[self.nu_pos[il]]
++        a = self.NU_ALPHA
++        if key not in self.nu_ewma:
++            self.nu_ewma[key] = self.NU_P0 * (1.0 - a) + a
++        else:
++            self.nu_ewma[key] = self.nu_ewma[key] * math.pow(1.0 - a, float(v - self.nu_last_visit[key])) + a
++        self.nu_last_visit[key] = v
++
++    def nu_victim_rank(self, s):
++        key = self.key_of[s]
++        pos = self.nu_pos[key // self.n_expert]
++        if pos == self.nu_cur:
++            return -1.0
++        p = self.nu_ewma[key] * math.pow(1.0 - self.NU_ALPHA, float(self.nu_visits[pos] - self.nu_last_visit[key]))
++        p = max(self.NU_P_FLOOR, min(1.0, p))
++        d = (pos - self.nu_cur) % self.nu_cycle
++        return float(d) + float(self.nu_cycle) * (1.0 / p - 1.0)
++
++    def nu_victims(self, il, n):
++        """moe_cache_lru::nu_victims: empty slots, then by rank, then by slot"""
++        cand = []
++        for s in range(self.n_slots):
++            key = self.key_of[s]
++            if key < 0:
++                cand.append((math.inf, s))
++            elif not self.is_selected(il, key):
++                cand.append((self.nu_victim_rank(s), s))
++        cand.sort(key=lambda c: (-c[0], c[1]))
++        return [s for _, s in cand[:n]]
++
+     def plan(self, il, ids, n_used, n_zero, n_cpu):
+         """returns (uploaded, computed on the CPU)"""
+         self.seen_gen += 1
+@@ -226,6 +266,11 @@ class ClassLRU:
+         slots = self.slot_map[il]
+         n_slots = self.n_slots
+         n_tokens = len(ids) // n_used
++        if self.next_use:
++            self.nu_cur = self.nu_pos[il]
++            self.nu_visits[self.nu_cur] += 1
++            for e in uniq:
++                self.nu_use(il, il * self.n_expert + e)
+         misses = []
+         for e in uniq:
+             key = il * self.n_expert + e
+@@ -263,8 +308,9 @@ class ClassLRU:
+             del misses[:n_keep]
+ 
+         misses.sort()
+-        for e in misses:
+-            s = self.victim(il)
++        nu = self.nu_victims(il, len(misses)) if self.next_use else None
++        for i, e in enumerate(misses):
++            s = nu[i] if nu is not None else self.victim(il)
+             key = self.key_of[s]
+             if key >= 0:
+                 self.slot_map[key // self.n_expert][key % self.n_expert] = n_slots
+@@ -278,7 +324,7 @@ class ClassLRU:
+         return len(misses), n_cpu_done
+ 
+ 
+-def replay(trace, size_mib, share, skip_tokens):
++def replay(trace, size_mib, share, skip_tokens, policy=None):
+     """GiB of experts uploaded and computed on the CPU per token, after skip_tokens"""
+     n_layer, n_expert_used, groups, records = trace
+     share = f32(share)
+@@ -287,7 +333,9 @@ def replay(trace, size_mib, share, skip_tokens):
+     caches, group_of = [], {}
+     for ig, g in enumerate(groups):
+         n = n_slots_of(g, size_mib, n_zero, n_expert_used)
+-        caches.append(ClassLRU(g.layers, g.n_expert, n) if n > 0 else None)
++        if policy is None:
++            policy = os.environ.get("LLAMA_ARG_MOE_CACHE_POLICY") or "classlru"
++        caches.append(ClassLRU(g.layers, g.n_expert, n, policy) if n > 0 else None)
+         group_of.update((il, ig) for il in g.layers)
+ 
+     first = min(il for il, _, _ in records)
+@@ -620,6 +668,9 @@ def main():
+     cmd = args.cmd[1:] if args.cmd[:1] == ["--"] else args.cmd
+     if not cmd:
+         ap.error("pass the llama-server command after --")
++    # the replay follows the server's eviction policy
++    if "--moe-cache-policy" in cmd[:-1]:
++        os.environ["LLAMA_ARG_MOE_CACHE_POLICY"] = cmd[cmd.index("--moe-cache-policy") + 1]
+     logging.basicConfig(level=logging.INFO, format="%(message)s")
+     FMT["markdown"] = args.markdown
+     FMT["tty"] = sys.stdout.isatty() and not args.markdown
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 07a0dba..cb6c3db 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -369,6 +369,7 @@ llama_context::llama_context(
+     cparams.kv_unified     = params.kv_unified;
+     cparams.moe_cache_size      = params.moe_cache_size;
+     cparams.moe_cache_cpu_share = params.moe_cache_cpu_share;
++    cparams.moe_cache_policy    = params.moe_cache_policy;
+ 
+     // resolved after flash attention, see resolve_fused_ops()
+     {
+@@ -607,7 +608,7 @@ llama_context::llama_context(
+         }
+ 
+         if (cparams.moe_cache_size > 0) {
+-            moe_cache = std::make_unique<llama_moe_cache>(model, model.no_alloc(), backend_ptrs, backend_buft, cparams.moe_cache_size, cparams.moe_cache_cpu_share);
++            moe_cache = std::make_unique<llama_moe_cache>(model, model.no_alloc(), backend_ptrs, backend_buft, cparams.moe_cache_size, cparams.moe_cache_cpu_share, cparams.moe_cache_policy);
+         }
+ 
+         sched_reserve();
+@@ -4417,6 +4418,7 @@ llama_context_params llama_context_default_params() {
+         /*.type_v                      =*/ GGML_TYPE_F16,
+         /*.moe_cache_size              =*/ 0,
+         /*.moe_cache_cpu_share         =*/ 0.0f,
++        /*.moe_cache_policy            =*/ LLAMA_MOE_CACHE_POLICY_CLASSLRU,
+         /*.abort_callback              =*/ nullptr,
+         /*.abort_callback_data         =*/ nullptr,
+         /*.embeddings                  =*/ false,
+diff --git a/src/llama-cparams.h b/src/llama-cparams.h
+index c93494f..1a6e3b0 100644
+--- a/src/llama-cparams.h
++++ b/src/llama-cparams.h
+@@ -56,6 +56,7 @@ struct llama_cparams {
+ 
+     size_t moe_cache_size;
+     float  moe_cache_cpu_share;
++    enum llama_moe_cache_policy moe_cache_policy;
+ 
+     std::vector<bool> embeddings_layer_inp; // [n_layer()] extract input embeddings for layer
+     bool embeddings_layer_inp_dev; // write enabled layer inputs to a device buffer instead of host
+diff --git a/src/llama-moe-cache.cpp b/src/llama-moe-cache.cpp
+index ba35af0..71bd046 100644
+--- a/src/llama-moe-cache.cpp
++++ b/src/llama-moe-cache.cpp
+@@ -54,6 +54,27 @@ struct moe_cache_lru {
+     std::vector<int32_t> misses;
+     std::vector<uint64_t> token_zero; // [n_tokens] zero slots used by each token
+ 
++    // next-use eviction (--moe-cache-policy next_use), in place of the ClassLRU victim
++    // decode visits the cached layers in a fixed cycle, so an expert of layer L can next be used when the cycle reaches L,
++    // d = (pos(L) - pos(current)) mod cycle layer calls from now; it is used at that visit with probability p, else one cycle later:
++    //     E[next use] = d + cycle*(1/p - 1)
++    // p is a per-expert reuse estimate: each visit of its layer multiplies it by (1 - alpha), each use adds alpha, an unseen expert starts at p0
++    // the victim is the slot with the largest E; experts of the current layer leave last, empty slots first
++    // with several sequences per ubatch, one cycle asks for more experts than a small cache holds, so LRU and ClassLRU evict the experts
++    // whose layer comes next; next-use keeps them
++    static constexpr double nu_alpha   = 0.2;
++    static constexpr double nu_p0      = 0.1;
++    static constexpr double nu_p_floor = 1e-3;
++
++    bool next_use = false;
++    int32_t nu_cycle = 0;
++    int32_t nu_cur   = 0;
++    std::vector<int32_t>  nu_pos;        // [n_layer] position of the layer in the cycle, -1 if not in this group
++    std::vector<uint32_t> nu_visits;     // [nu_cycle] visits of each layer
++    std::vector<double>   nu_ewma;       // [n_layer*n_expert] reuse estimate, < 0 if never used
++    std::vector<uint32_t> nu_last_visit; // [n_layer*n_expert] visit of the layer at the last use
++    std::vector<std::pair<double, int32_t>> nu_rank; // (rank, slot) of the candidates of one plan()
++
+     void init(int32_t n_layer, int32_t n_expert, int32_t n_slots) {
+         GGML_ASSERT(n_class == (int) std::log2(1.0f/(1.0f - std::exp2(-1.0f/crf_half_life))) + 1);
+         this->n_expert = n_expert;
+@@ -80,6 +101,64 @@ struct moe_cache_lru {
+         seen.assign(n_expert, 0);
+     }
+ 
++    void init_next_use(int32_t n_layer, const std::vector<int32_t> & layers) {
++        next_use = true;
++        nu_cycle = layers.size();
++        nu_cur   = 0;
++        nu_pos.assign(n_layer, -1);
++        for (size_t i = 0; i < layers.size(); ++i) {
++            nu_pos[layers[i]] = i;
++        }
++        nu_visits.assign(nu_cycle, 0);
++        nu_ewma.assign((size_t) n_layer*n_expert, -1.0);
++        nu_last_visit.assign((size_t) n_layer*n_expert, 0);
++    }
++
++    // once per plan() for each distinct selected expert, after the visit of its layer is counted
++    void nu_use(int32_t il, int32_t key) {
++        const uint32_t v = nu_visits[nu_pos[il]];
++        if (nu_ewma[key] < 0.0) {
++            nu_ewma[key] = nu_p0*(1.0 - nu_alpha) + nu_alpha;
++        } else {
++            nu_ewma[key] = nu_ewma[key]*std::pow(1.0 - nu_alpha, (double) (v - nu_last_visit[key])) + nu_alpha;
++        }
++        nu_last_visit[key] = v;
++    }
++
++    // expected layer calls until the next use of the expert in slot s, larger leaves first
++    double nu_victim_rank(int32_t s) const {
++        const int32_t key = key_of[s];
++        const int32_t pos = nu_pos[key_layer(key)];
++        if (pos == nu_cur) {
++            return -1.0;
++        }
++        // the visits since the last use are known misses
++        const uint32_t elapsed = nu_visits[pos] - nu_last_visit[key];
++        double p = nu_ewma[key]*std::pow(1.0 - nu_alpha, (double) elapsed);
++        p = std::max(nu_p_floor, std::min(1.0, p));
++        const int32_t d = ((pos - nu_cur) % nu_cycle + nu_cycle) % nu_cycle;
++        return (double) d + (double) nu_cycle*(1.0/p - 1.0);
++    }
++
++    // the n slots that next-use evicts first among the slots this plan() does not select: empty slots, then by rank, then by slot
++    void nu_victims(int32_t il, size_t n) {
++        nu_rank.clear();
++        for (int32_t s = 0; s < n_slots; ++s) {
++            const int32_t key = key_of[s];
++            if (key < 0) {
++                nu_rank.push_back({ INFINITY, s });
++            } else if (!is_selected(il, key)) {
++                nu_rank.push_back({ nu_victim_rank(s), s });
++            }
++        }
++        GGML_ASSERT(nu_rank.size() >= n);
++        auto order = [](const std::pair<double, int32_t> & a, const std::pair<double, int32_t> & b) {
++            return a.first != b.first ? a.first > b.first : a.second < b.second;
++        };
++        std::partial_sort(nu_rank.begin(), nu_rank.begin() + n, nu_rank.end(), order);
++        nu_rank.resize(n);
++    }
++
+     // move slot s to the most recently used end of list c
+     void move(int32_t s, int c) {
+         const int from = list_of[s];
+@@ -209,6 +288,14 @@ struct moe_cache_lru {
+ 
+         int32_t * slots = slot_map[il];
+ 
++        if (next_use) {
++            nu_cur = nu_pos[il];
++            nu_visits[nu_cur]++;
++            for (int32_t e : uniq) {
++                nu_use(il, make_key(il, e));
++            }
++        }
++
+         // update the CRF of all selected experts and promote hits before choosing victims for misses
+         misses.clear();
+         for (int32_t e : uniq) {
+@@ -269,8 +356,12 @@ struct moe_cache_lru {
+         // fill the misses in expert order: victim() takes unused slots, and slots filled by one plan(), in list order,
+         // so consecutive experts often get consecutive slots and one upload
+         std::sort(misses.begin(), misses.end());
+-        for (int32_t e : misses) {
+-            const int32_t s = victim(il);
++        if (next_use) {
++            nu_victims(il, misses.size());
++        }
++        for (size_t i = 0; i < misses.size(); ++i) {
++            const int32_t e = misses[i];
++            const int32_t s = next_use ? nu_rank[i].second : victim(il);
+             if (key_of[s] >= 0) {
+                 slot_map[key_layer(key_of[s])][key_expert(key_of[s])] = empty;
+             } else {
+@@ -388,6 +479,9 @@ struct llama_moe_cache::impl {
+     uint32_t cpu_share_q = 0; // cpu_share in 1/65536, integer so that a simulator can reproduce the rounding
+     int32_t  n_zero    = 0; // zero slots per group
+ 
++    // eviction policy (--moe-cache-policy): ClassLRU, or next-use if true, see moe_cache_lru
++    bool next_use = false;
++
+     // LLAMA_MOE_CACHE_TRACE: the selected experts of each slot lookup, for a simulator of the cache
+     FILE * trace = nullptr;
+ 
+@@ -399,8 +493,10 @@ struct llama_moe_cache::impl {
+     // views used by copy_experts
+     ggml_context_ptr ctx_views;
+ 
+-    impl(const llama_model & model, bool no_alloc, const std::vector<ggml_backend_t> & backends, const std::vector<ggml_backend_buffer_type_t> & bufts, size_t size, float cpu_share) :
+-            n_expert_used(model.hparams.n_expert_used_max()), layers(model.layers.size()), cpu_share(std::clamp(cpu_share, 0.0f, 1.0f)) {
++    impl(const llama_model & model, bool no_alloc, const std::vector<ggml_backend_t> & backends, const std::vector<ggml_backend_buffer_type_t> & bufts, size_t size, float cpu_share,
++            enum llama_moe_cache_policy policy) :
++            n_expert_used(model.hparams.n_expert_used_max()), layers(model.layers.size()), cpu_share(std::clamp(cpu_share, 0.0f, 1.0f)),
++            next_use(policy == LLAMA_MOE_CACHE_POLICY_NEXT_USE) {
+         for (size_t i = 0; i < backends.size(); ++i) {
+             const auto dev_type = ggml_backend_dev_type(ggml_backend_get_device(backends[i]));
+             if (dev_type == GGML_BACKEND_DEVICE_TYPE_GPU || dev_type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+@@ -492,6 +588,7 @@ struct llama_moe_cache::impl {
+ 
+         // within a device the budget is split by the size of the experts, so each group caches the same fraction of its experts
+         cpu_share_q = (uint32_t) std::lround(cpu_share*65536.0f);
++        LLAMA_LOG_INFO("%s: MoE cache eviction policy: %s\n", __func__, next_use ? "next_use" : "classlru");
+         if (const char * path = getenv("LLAMA_MOE_CACHE_TRACE"); path != nullptr && *path != '\0') {
+             trace = fopen(path, "wb");
+             if (trace == nullptr) {
+@@ -515,6 +612,9 @@ struct llama_moe_cache::impl {
+                 continue;
+             }
+             g.lru.init(model.layers.size(), n_expert, g.n_slots);
++            if (next_use) {
++                g.lru.init_next_use(model.layers.size(), g.layers);
++            }
+             n_tensors[g.id] += g.ref.size()*(1 + g.layers.size());
+             n_tensors_host  += g.layers.size()*(n_zero > 0 ? 3 : 1); // slot maps and CPU map
+         }
+@@ -878,8 +978,9 @@ struct llama_moe_cache::impl {
+     }
+ };
+ 
+-llama_moe_cache::llama_moe_cache(const llama_model & model, bool no_alloc, const std::vector<ggml_backend_t> & backends, const std::vector<ggml_backend_buffer_type_t> & bufts, size_t size, float cpu_share) :
+-    pimpl(new impl(model, no_alloc, backends, bufts, size, cpu_share)) {
++llama_moe_cache::llama_moe_cache(const llama_model & model, bool no_alloc, const std::vector<ggml_backend_t> & backends, const std::vector<ggml_backend_buffer_type_t> & bufts, size_t size, float cpu_share,
++        enum llama_moe_cache_policy policy) :
++    pimpl(new impl(model, no_alloc, backends, bufts, size, cpu_share, policy)) {
+ }
+ 
+ llama_moe_cache::~llama_moe_cache() = default;
+diff --git a/src/llama-moe-cache.h b/src/llama-moe-cache.h
+index 833eac3..6a21b30 100644
+--- a/src/llama-moe-cache.h
++++ b/src/llama-moe-cache.h
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include "ggml-backend.h"
++#include "llama.h"
+ 
+ #include <map>
+ #include <memory>
+@@ -36,7 +37,8 @@ class llama_moe_cache {
+ public:
+     // backends are all the backends of the context, each GPU gets its own cache of the given size for the layers assigned to it
+     // cpu_share is the share of the misses computed on the CPU instead of uploaded
+-    llama_moe_cache(const llama_model & model, bool no_alloc, const std::vector<ggml_backend_t> & backends, const std::vector<ggml_backend_buffer_type_t> & bufts, size_t size, float cpu_share);
++    llama_moe_cache(const llama_model & model, bool no_alloc, const std::vector<ggml_backend_t> & backends, const std::vector<ggml_backend_buffer_type_t> & bufts, size_t size, float cpu_share,
++            enum llama_moe_cache_policy policy = LLAMA_MOE_CACHE_POLICY_CLASSLRU);
+     ~llama_moe_cache();
+ 
+     // the experts of w in the cache, nullptr if w is not cached
+diff --git a/tests/test-llama-archs.cpp b/tests/test-llama-archs.cpp
+index 6faa884..b65ba2d 100644
+--- a/tests/test-llama-archs.cpp
++++ b/tests/test-llama-archs.cpp
+@@ -895,7 +895,8 @@ static std::pair<llama_model_ptr, llama_context_ptr> get_model_and_ctx(
+         struct gguf_context * gguf_ctx, FILE * file, const size_t seed, const float stdev,
+         const std::vector<ggml_backend_dev_t> & devs,
+         const llama_split_mode split_mode = LLAMA_SPLIT_MODE_LAYER, bool encode = false,
+-        const llama_model_tensor_buft_override * tensor_buft_overrides = nullptr, const size_t moe_cache_size = 0) {
++        const llama_model_tensor_buft_override * tensor_buft_overrides = nullptr, const size_t moe_cache_size = 0,
++        const enum llama_moe_cache_policy moe_cache_policy = LLAMA_MOE_CACHE_POLICY_CLASSLRU) {
+     llama_model_ptr model = get_model(gguf_ctx, file, seed, stdev, devs, split_mode, tensor_buft_overrides);
+ 
+     llama_context_params ctx_params = llama_context_default_params();
+@@ -908,6 +909,7 @@ static std::pair<llama_model_ptr, llama_context_ptr> get_model_and_ctx(
+     if (moe_cache_size > 0) {
+         // the MoE cache is only used for small ubatches
+         ctx_params.moe_cache_size = moe_cache_size;
++        ctx_params.moe_cache_policy = moe_cache_policy;
+         ctx_params.n_ubatch = 2;
+     }
+ 
+@@ -948,6 +950,34 @@ static std::vector<float> get_logits(
+     return ret;
+ }
+ 
++// logits with a MoE cache that holds every expert, and with each eviction policy at the small cache size, must equal logits_ref bit for bit
++// returns the name of the first variant that differs, nullptr if all match
++template <typename DC>
++static const char * check_moe_cache_invariance(
++        struct gguf_context * gguf_ctx, const size_t seed, const float stdev, const DC & dc,
++        const llama_model_tensor_buft_override * overrides, const std::vector<llama_token> & tokens, const std::vector<float> & logits_ref) {
++    struct variant {
++        const char *                name;
++        enum llama_moe_cache_policy policy;
++        size_t                      size;
++    };
++    const variant variants[] = {
++        { "cache size", LLAMA_MOE_CACHE_POLICY_CLASSLRU, (size_t) 256*1024*1024 },
++        { "next_use",   LLAMA_MOE_CACHE_POLICY_NEXT_USE, dc.moe_cache_size      },
++    };
++    for (const variant & v : variants) {
++        std::vector<float> logits;
++        {
++            auto mc = get_model_and_ctx(gguf_ctx, nullptr, seed, stdev, dc.devs, dc.split_mode, false, overrides, v.size, v.policy);
++            logits = get_logits(mc.first.get(), mc.second.get(), tokens);
++        }
++        if (logits.size() != logits_ref.size() || memcmp(logits.data(), logits_ref.data(), logits.size()*sizeof(float)) != 0) {
++            return v.name;
++        }
++    }
++    return nullptr;
++}
++
+ // entries [n/4, n/2) are embd rows, decoded either as token/embd/token chunks or as one mixed batch
+ // returns the llama_process() error code
+ static int32_t get_logits_mixed(
+@@ -1522,6 +1552,17 @@ static int test_backends(const std::string & arch_filter, const size_t seed, con
+                             test_ok = false;
+                         }
+ 
++                        // the cache only decides where an expert is read from: neither the cache size nor the eviction policy may change a logit
++                        if (dc.moe_cache_size > 0) {
++                            const char * bad = check_moe_cache_invariance(gguf_ctx.get(), seed, stdev, dc, overrides, tokens, logits_dev);
++                            if (bad != nullptr) {
++                                if (test_ok) {
++                                    status_nmse = std::string("\033[1;31mFAIL\033[0m (") + bad + ")";
++                                }
++                                test_ok = false;
++                            }
++                        }
++
+                         // the k-pool layout is updated in place when drafts are rejected
+                         // TODO: the meta backend aborts with n_rs_seq > 0 (view of permuted tensor not implemented)
+                         if ((arch == LLM_ARCH_QWEN4EXP || arch == LLM_ARCH_GLM5_NEXT) && dc.split_mode != LLAMA_SPLIT_MODE_TENSOR) {
+-- 
+2.43.0
+
