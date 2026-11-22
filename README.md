@@ -173,7 +173,7 @@ realistic cache sizes.
   tokens), an 8-prompt cohort, and an exactness reference that is DEE's own
   sealed path, not DeepSeek's official kernels (which cannot run on SM75).
 
-## What I would run next with SSH access to hardware
+## Left Open
 
 Every run so far was in Modal containers. They are cheap, but under gVisor I
 can't drop the page cache, can't do true O_DIRECT reads, and can't run full
